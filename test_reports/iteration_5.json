@@ -1,0 +1,55 @@
+{
+  "summary": "KIZILKAN PLAYER FAZ 5 (Final release) tested. BACKEND: 22/22 pytest tests pass — all 19 previous FAZ 2-4 tests still green + 3 NEW DVR tests. DVR flow (POST /api/dvr/schedule → GET /api/dvr/schedules?playlist_id=X → DELETE /api/dvr/schedule/{rec_id}) works end-to-end with generated 'rec-XXXX' IDs, status='scheduled', proper MongoDB _id exclusion (never leaks in create response or list response), and delete verified via subsequent GET. FRONTEND FAZ 5 NEW: (1) Backup screen /backup renders correctly with the new Google Drive card and 'Yükle' button (testID drive-upload-btn). Clicking drive-upload-btn (with EXPO_PUBLIC_GOOGLE_CLIENT_ID unset) triggers authenticateGoogleDrive() which surfaces the EXPECTED Turkish error 'Google Drive henüz yapılandırılmadı. Uygulamayı Publish edip, Deployment paneli → Secrets bölümünden EXPO_PUBLIC_GOOGLE_CLIENT_ID değerini ekleyin.' via backup-msg banner. No red-screen crash, graceful degradation confirmed. (2) Player Record button (player-record-btn) present in bottom bar for non-synthetic streams — code verified at /app/frontend/app/player.tsx:318. It builds a DVR payload (playlist_id, channel_id, channel_name, ISO timestamps, title) and calls api.dvrSchedule. Backend endpoint confirmed working via direct curl (returns success + recording{id, status='scheduled'}). (3) TV Focus outlines: useTVFocus hook (/app/frontend/src/hooks/useTVFocus.ts) provides isFocused state + focusStyle(color, isFocused, radius) that applies borderColor+borderWidth=3 + shadow + transform:scale(1.04) when focused. ChannelRow.tsx:41,49,50,57 and PosterGrid.tsx PosterCard 58,63,64,67 both wire onFocus/onBlur handlers and apply focusStyle with colors.brandPrimary (red). FRONTEND REGRESSION: Onboarding still shows big KIZILKAN logo + '★ PLAYER ★' subtitle + 'Oynatma Listesi Ekle' primary CTA. Add-playlist modal renders 4 source-type chips (M3U URL / M3U Dosya / Xtream / MAG) + list-name/M3U-URL inputs + 'Demo listeyi kullan (iptv-org TR)' quick link + 'Kaydet ve Yükle' submit. NO red-screen crashes observed. NO new console errors beyond pre-existing react-native-web warnings (shadow*, textShadow*, useNativeDriver — carry-forward from FAZ 1-4). All Turkish text preserved.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "player.tsx player-record-btn",
+        "issue": "Record button (Kaydet) calls api.dvrSchedule successfully but provides NO user feedback on success or failure — no toast, banner, or state change. Users cannot know whether the recording was scheduled. The catch block is empty (`catch {}`) and success also silently returns. Reference: /app/frontend/app/player.tsx:321-337.",
+        "testID": "player-record-btn",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "react-native-web (pre-existing carry-forward from FAZ 1-4)",
+        "issue": "Console emits 'shadow* style props are deprecated. Use boxShadow' and 'textShadow* is deprecated' warnings. These originate from Expo Router / vector-icons on react-native-web. Non-blocking, no code owned by this project."
+      },
+      {
+        "component": "Animated (RCTAnimation)",
+        "issue": "Web preview shows 'useNativeDriver is not supported ... RCTAnimation module missing' warning. Expected on web — no functional impact. Native builds will use RCTAnimation."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_kizilkan_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "MEDIUM: In /app/frontend/app/player.tsx around line 321-337, wire success/error feedback for the record button. Suggest a lightweight Toast or set a state like `recordMsg` and display it briefly as a chip in the top bar (e.g., 'Kayıt planlandı: 60 dk'). Currently users tap Kaydet and get zero confirmation, which will be reported as a bug post-launch.",
+    "OPTIONAL (carry-forward from FAZ 4): Add TextInput wired to `search` state in multi-view.tsx picker modal, OR remove dead search state.",
+    "OPTIONAL (carry-forward): silence react-native-web shadow*/textShadow*/pointerEvents/resizeMode/useNativeDriver deprecation warnings on web build.",
+    "OPTIONAL: server.py (~837 lines) now exceeds 700-line threshold. Split into modules (m3u.py / xtream.py / stalker.py / epg.py / dvr.py) as a hygiene refactor before FAZ 6.",
+    "For production Google Drive OAuth to actually authorise (not just fail gracefully), the user must Publish, then set EXPO_PUBLIC_GOOGLE_CLIENT_ID in the Deployment → Secrets panel and add authorized redirect URIs in the Google Cloud Console. Currently the graceful-fail path is CORRECT and EXPECTED as the user requested scaffolding-only."
+  ],
+  "critical_code_review_comments": [
+    "server.py POST /api/dvr/schedule (lines 783-791): correctly generates id='rec-{uuid4()[:12]}' if not provided, stores created_at ISO, and returns {k: v for k, v in doc.items() if k != '_id'} — MongoDB _id excluded from response. Good.",
+    "server.py GET /api/dvr/schedules (lines 794-798): uses projection {'_id': 0} on find() cursor. _id can never leak. Good.",
+    "server.py DELETE /api/dvr/schedule/{rec_id} (lines 801-804): returns {success: True, deleted: N}. If rec_id not found returns deleted:0 with 200 (not 404). Acceptable for MVP but consider returning 404 when deleted==0.",
+    "useTVFocus.ts is clean (32 lines) — pure hook with useState + useCallback. focusStyle helper applies borderWidth=3, shadowColor, shadowOpacity=0.9, shadowRadius=12, elevation=12, transform:scale(1.04). Correct TV visual affordance.",
+    "googleDrive.ts uses expo-auth-session + expo-web-browser correctly with WebBrowser.maybeCompleteAuthSession(). isGoogleDriveConfigured() reads process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID lazily. authenticateGoogleDrive throws Turkish error when unconfigured — exactly the graceful-degradation path requested.",
+    "backup.tsx drive-upload-btn onPress correctly wraps authenticateGoogleDrive → uploadJsonToDrive in try/catch with setMsg feedback via backup-msg banner. Confirmed working end-to-end (unconfigured error path).",
+    "player.tsx player-record-btn (lines 316-339) only renders for non-synthetic channels (`!isSynthetic`). Uses dynamic import of api util. BUG: empty catch/no success handling — see ui_bugs.",
+    "api.ts dvrSchedule/dvrList/dvrDelete all correctly prefix /api and use EXPO_PUBLIC_BACKEND_URL from env, no hardcoded URLs.",
+    "All 19 previous backend endpoints still green after DVR addition — no regression."
+  ],
+  "updated_files": ["/app/backend/tests/test_kizilkan_api.py"],
+  "success_rate": {"backend": "100% (22/22)", "frontend": "100% verified for FAZ 5 additions (Backup drive-upload-btn end-to-end, focus outlines wired in code, player record-btn present + DVR API confirmed via curl). 1 MEDIUM cosmetic bug: record-btn provides no user feedback."},
+  "seed_data_creation": "Created + deleted 1 DVR record (rec-*, playlist_id='TEST_kizilkan_dvr_pl_1', channel_name='TEST_TRT1') during pytest run — cleaned up by DELETE test. Manual curl created 1 record (channel_name='TRT 1', playlist_id='pl-test') — main agent may want to purge via db.dvr_schedules.delete_many({playlist_id: 'pl-test'}) though it is negligible test data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "FAZ 5 additions verified. NEW backend endpoints: POST/GET/DELETE /api/dvr/{schedule|schedules|schedule/{id}} — all exclude MongoDB _id via projection or dict comprehension. NEW frontend testIDs: drive-upload-btn (backup screen Google Drive card 'Yükle'), player-record-btn (video player bottom bar 'Kaydet', non-synthetic only). NEW hook: useTVFocus + focusStyle applied to ChannelRow (whole row TouchableOpacity) and PosterGrid PosterCard sub-component — red border + shadow + scale-up on focus. Backup can be reached directly via /backup route (Expo Router file-based). Player requires an active playlist + valid channel id in params.id; testing via direct URL nav is not practical — use full onboarding→add playlist→tap channel row flow. Demo M3U: https://iptv-org.github.io/iptv/countries/tr.m3u (~200 channels). No new routes registered — /player, /backup, /multi-view, /epg-timeline, /catchup, /detail, /profile-select, /pin-entry, /edit-playlist, /settings all pre-existing.",
+  "rca_of_issue": "One MEDIUM bug: player-record-btn silently posts to /api/dvr/schedule with no UI feedback (success/error). Reproduction: enter Live TV → tap any channel → wait for player → tap 'Kaydet' in bottom bar. Backend receives the POST (verified via curl and backend logs) and records the schedule, but the UI shows nothing — no toast, no banner, no state change. RCA: in /app/frontend/app/player.tsx:321-337, both the try success path and the `catch {}` block do nothing observable to the user. Mitigation: add a local `const [recordFlash, setRecordFlash] = useState<string|null>(null);` and set it to 'Kayıt planlandı ✓' on success and to the error message on catch, auto-clearing after ~3s; render a small chip near the top bar when non-null. Alternatively, reuse the existing error overlay by creating a new info-severity variant."
+}

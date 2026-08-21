@@ -1,0 +1,111 @@
+#!/usr/bin/env node
+/**
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.0.1 BUILD FIX)
+ *
+ * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
+ * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
+ */
+const fs = require('fs');
+const path = require('path');
+const ts = require('./_ts');
+
+const root = process.cwd();
+const player = path.join(root, 'src/player/PlayerHost.tsx');
+const controller = path.join(root, 'src/player/v2/controller.ts');
+const health = path.join(root, 'src/player/v2/health.ts');
+const prefs = path.join(root, 'src/player/v2/preferences.ts');
+const appJson = path.join(root, 'app.json');
+const mpvTs = path.join(root, 'modules/mpv-player/index.tsx');
+const mpvView = path.join(root, 'modules/mpv-player/android/src/main/java/expo/modules/kizilkanmpv/KizilkanMpvView.kt');
+const mpvModule = path.join(root, 'modules/mpv-player/android/src/main/java/expo/modules/kizilkanmpv/KizilkanMpvModule.kt');
+const mpvGradle = path.join(root, 'modules/mpv-player/android/build.gradle');
+
+let problems = 0;
+function problem(msg) { console.log(`  PLAYER-CORE  ${msg}`); problems++; }
+function requireText(text, needle, label) { if (!text.includes(needle)) problem(`eksik: ${label}`); }
+function forbidText(text, needle, label) { if (text.includes(needle)) problem(`yasak kalıntı: ${label}`); }
+
+for (const f of [player, controller, health, prefs, appJson, mpvTs, mpvView, mpvModule, mpvGradle]) {
+  if (!fs.existsSync(f)) problem(`dosya yok: ${path.relative(root, f)}`);
+}
+if (problems) { console.log(`\n${problems} SORUN`); process.exit(1); }
+
+const src = fs.readFileSync(player, 'utf8');
+const ctrl = fs.readFileSync(controller, 'utf8');
+const hlth = fs.readFileSync(health, 'utf8');
+const pref = fs.readFileSync(prefs, 'utf8');
+const app = JSON.parse(fs.readFileSync(appJson, 'utf8'));
+const mpvJs = fs.readFileSync(mpvTs, 'utf8');
+const mpvKt = fs.readFileSync(mpvView, 'utf8');
+const mpvModKt = fs.readFileSync(mpvModule, 'utf8');
+const mpvGradleSrc = fs.readFileSync(mpvGradle, 'utf8');
+
+// v14.2 açılış crash'i: ref.current yazımı useRef tanımından önce OLMAMALI.
+const refNames = ['isPlayingRef','isBufferingRef','showControlsRef','sheetRef'];
+for (const name of refNames) {
+  const decl = src.indexOf(`const ${name} = useRef`);
+  const write = src.indexOf(`${name}.current =`);
+  if (decl < 0) problem(`${name} useRef tanımı bulunamadı`);
+  if (write < 0) problem(`${name}.current senkronizasyonu bulunamadı`);
+  if (decl >= 0 && write >= 0 && write < decl) problem(`${name}.current useRef'ten önce yazılıyor`);
+}
+
+// v14.1/v14.2: snapshot timeout çalışan VLC'yi öldürmemeli.
+forbidText(src, 'verifyVlcRenderedFrame', 'snapshot AUTO health');
+forbidText(src, 'vlcHealthCheckRef', 'snapshot health promise ref');
+forbidText(src, 'vlcSnapshotWaiterRef', 'snapshot waiter ref');
+forbidText(src, 'VLC_VIDEO_HEALTH_TIMEOUT', 'VLC timed health watchdog');
+forbidText(src, 'gerçek-kare doğrulaması başarısız', 'destructive snapshot failure');
+
+// Player V2/V15 temel güvenlik sözleşmeleri.
+requireText(src, 'PlaybackSessionGate', 'session izolasyonu');
+requireText(src, 'activeProfileKeyRef', 'profile-generation izolasyonu');
+requireText(src, 'onFirstFrameRender', 'Media3 gerçek first-frame');
+requireText(src, 'markVlcHealthy', 'VLC non-destructive health');
+requireText(src, 'vlcPlaybackIsAlive', 'VLC geç/spurious error koruması');
+requireText(src, 'Runtime stall: ${profileKey} playback clock ilerlemedi; aynı profil restart', 'stall aynı-profile restart');
+requireText(src, 'setPlaybackRetryNonce(n => n + 1)', 'temiz session restart');
+requireText(src, 'playbackCandidates', 'Xtream alternatif URL zinciri');
+requireText(src, 'lower.includes(".m3u8") ? "hls"', 'HLS explicit content type');
+requireText(pref, 'PLAYER_BUFFER_PRESETS', 'Hızlı/Dengeli/Stabil buffer profilleri');
+requireText(pref, 'PLAYER_BUFFER_DEFAULT_MS = 1500', 'Dengeli varsayılan');
+requireText(hlth, 'LIVE_SOFT_STALL_MS', 'runtime stall health eşikleri');
+
+// v15 MPV/FFmpeg native engine sözleşmesi.
+requireText(src, 'KizilkanMpvView', 'PlayerHost MPV native view');
+requireText(src, 'key="kizilkan-mpv-core"', 'MPV singleton için stabil native view key');
+requireText(src, 'nextSessionProfileRef', 'alternatif URL motor profili koruması');
+requireText(src, 'v2Profile.engine === "mpv" ? mpvClockRef.current', 'stall monitor MPV clock');
+requireText(src, 'testID="engine-mpv-btn"', 'kullanıcı MPV motor seçimi');
+requireText(src, 'translateX: -20000', 'TV player hidden off-screen surface policy');
+forbidText(src, 'playerHidden: { opacity:', 'TV SurfaceView alpha ile gizleme regresyonu');
+forbidText(src, 'playerHidden: { opacity: 0, zIndex: -1 }', 'eski şerit/tint playerHidden regresyonu');
+
+requireText(mpvJs, 'nativeRef.current?.play?.()', 'Expo View ref play bridge');
+requireText(mpvJs, 'nativeRef.current?.seekTo?.(seconds)', 'Expo View ref seek bridge');
+forbidText(mpvJs, 'NativeModule.play(', 'yanlış module-level MPV View çağrısı');
+
+requireText(mpvKt, 'MPVLib.observeProperty("time-pos"', 'MPV playback progress property');
+forbidText(mpvKt, '"time-pos/full"', 'MPV yanlış observed time-pos/full');
+requireText(mpvKt, 'fun destroyPlayer()', 'MPV explicit destroy lifecycle');
+requireText(mpvKt, 'PixelFormat.OPAQUE', 'MPV TV opaque SurfaceView');
+requireText(mpvKt, 'setZOrderOnTop(false)', 'MPV normal SurfaceView Z-order');
+requireText(mpvKt, 'SURFACE_LIFECYCLE_FOLLOWS_ATTACHMENT', 'Android 14 MPV attachment surface lifecycle');
+forbidText(mpvKt, 'override fun onDetachedFromWindow()', 'geçici detach sırasında MPV destroy');
+requireText(mpvKt, 'playbackStarted', 'MPV stale END_FILE error koruması');
+requireText(mpvModKt, 'OnViewDestroys', 'Expo MPV gerçek view destroy lifecycle');
+requireText(mpvGradleSrc, "dev.jdtech.mpv:libmpv:0.5.1", 'MPV/FFmpeg AAR dependency');
+
+if (app?.expo?.version !== '15.0.1') problem(`app version ${app?.expo?.version} (15.0.1 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150001) problem(`versionCode ${app?.expo?.android?.versionCode} (150001 bekleniyor)`);
+if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
+
+// Parse PlayerHost itself; syntax regressions must not pass this gate.
+const sf = ts.createSourceFile(player, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TSX);
+const parseErrors = sf.parseDiagnostics || [];
+if (parseErrors.length) {
+  for (const e of parseErrors.slice(0, 10)) problem(`parse: ${ts.flattenDiagnosticMessageText(e.messageText, ' ')}`);
+}
+
+console.log(problems === 0 ? '\nTEMIZ — Player Core v15 sozlesmesi saglam' : `\n${problems} SORUN`);
+process.exit(problems === 0 ? 0 : 1);

@@ -1,0 +1,1822 @@
+import React, { useState } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  TextInput,
+  ScrollView,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Keyboard,
+  Platform,
+  Alert,
+  Modal,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import * as DocumentPicker from "expo-document-picker";
+import { useTheme } from "@/src/theme/ThemeContext";
+import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
+import { usePlaylists } from "@/src/store/PlaylistContext";
+import { api } from "@/src/utils/api";
+import {
+  fetchAndParseM3U, parseM3U,
+  xtreamLogin as xtLoginLocal,
+  xtreamLiveStreams, xtreamVod as xtVodLocal, xtreamSeries as xtSeriesLocal,
+  detectXtreamFromM3U,
+} from "@/src/utils/iptv";
+import type { Playlist, AccountInfo, ServerCodeBinding } from "@/src/types";
+import { FocusButton } from "@/src/components/FocusButton";
+import {
+  DEFAULT_CODE_SOURCE, CODE_SOURCE_KEY,
+  fetchPanelDirectory, discoverPanelsByCredentials, discoverServerCodeHosts,
+  resolvePanelName, resolveHosts,
+  type PanelDirectoryItem, type PanelCredentialMatch,
+} from "@/src/utils/serverCode";
+import { PanelScan } from "@/modules/panel-scan";
+import { storage } from "@/src/utils/storage";
+import {
+  BULK_ACCOUNT_EXAMPLE,
+  bulkAccountFromManual,
+  bulkAccountLocatorLabel,
+  parseBulkAccounts,
+  type BulkAccountInput,
+} from "@/src/utils/bulkAccounts";
+
+type Method = "m3u_url" | "m3u_file" | "xtream" | "stalker" | "code" | "bulk";
+type CodeMode = "code" | "directory" | "auto";
+type ScanSpeed = "safe" | "balanced" | "fast";
+
+export default function AddPlaylist() {
+  /**
+   * ALAN ARASI GEÇİŞ (v9.3.0 — kullanıcı isteği)
+   * Telefon/tablette klavyedeki "İleri" tuşu, TV'de kumanda OK tuşu bir
+   * sonraki alana geçirir. Eskiden her alanı elle seçmek gerekiyordu.
+   */
+  const refXtUser = React.useRef<any>(null);
+  const refXtPass = React.useRef<any>(null);
+  const refStMac = React.useRef<any>(null);
+  const refStSerial = React.useRef<any>(null);
+  const refM3uUrl = React.useRef<any>(null);
+  const refXtServer = React.useRef<any>(null);
+  const refStPortal = React.useRef<any>(null);
+  const formScrollRef = React.useRef<ScrollView>(null);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  const router = useRouter();
+  const { colors } = useTheme();
+  const { playlists, addPlaylist } = usePlaylists();
+  const playlistServerKeysRef = React.useRef<Set<string>>(new Set());
+  React.useEffect(() => {
+    playlistServerKeysRef.current = new Set(
+      playlists
+        .filter((pl:any) => pl.source === "xtream" && pl.xtreamServer && pl.xtreamUsername)
+        .map((pl:any) => `${String(pl.xtreamUsername)}\u0000${String(pl.xtreamServer).replace(/\/+$/, "").toLowerCase()}`)
+    );
+  }, [playlists]);
+
+  const [method, setMethod] = useState<Method>("m3u_url");
+  const [name, setName] = useState("");
+  const [m3uUrl, setM3uUrl] = useState("");
+  const [xtServer, setXtServer] = useState("");
+  const [xtUser, setXtUser] = useState("");
+  const [xtPass, setXtPass] = useState("");
+  const [stPortal, setStPortal] = useState("");
+  const [stMac, setStMac] = useState("");
+  const [stSerial, setStSerial] = useState("");
+  // v9.13.0: Sunucu Kodu ile giriş
+  const [codeVal, setCodeVal] = useState("");
+  const [codeSource, setCodeSource] = useState(DEFAULT_CODE_SOURCE);
+  const [showCodeSource, setShowCodeSource] = useState(false);
+  // GPT v10.5.0: Yaşlı/teknik olmayan kullanıcılar için üç kolay sunucu-kodu yolu.
+  const [codeMode, setCodeMode] = useState<CodeMode>("code");
+  const [panelDirectory, setPanelDirectory] = useState<PanelDirectoryItem[]>([]);
+  const [panelSearch, setPanelSearch] = useState("");
+  const [directoryLoading, setDirectoryLoading] = useState(false);
+  const [selectedPanelName, setSelectedPanelName] = useState("");
+  // GPT v10.5.1: aynı kullanıcı/şifre birden fazla panelde bulunursa
+  // otomatik karar VERME; kullanıcı doğru aboneliği seçsin.
+  const [discoveryMatches, setDiscoveryMatches] = useState<PanelCredentialMatch[]>([]);
+  const [showDiscoveryMatches, setShowDiscoveryMatches] = useState(false);
+  const [discoveryTitle, setDiscoveryTitle] = useState("Hesap / DNS Eşleşmeleri Bulundu");
+  const [discoverySubtitle, setDiscoverySubtitle] = useState("Geçerli hesapları seçin.");
+  const [selectedDiscoveryKeys, setSelectedDiscoveryKeys] = useState<string[]>([]);
+  const [bulkAdding, setBulkAdding] = useState(false);
+  const [fileName, setFileName] = useState<string>("");
+  const [fileContent, setFileContent] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<string>("");
+  const [scanSpeed, setScanSpeed] = useState<ScanSpeed>("balanced");
+  const [error, setError] = useState<string | null>(null);
+  const nativeScanTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const nativeScanSeenRef = React.useRef<Set<string>>(new Set());
+  const [nativeScanRunning, setNativeScanRunning] = useState(false);
+  // GPT ELITE v14.2.0 — çoklu hesap: manuel ve dosya birlikte kullanılabilir.
+  // Ham dosya içeriği ayrı state'te tutulur; farklı CSV/TXT/JSON biçimleri
+  // birbirine metin olarak yapıştırılıp parser'ı bozmaz.
+  const [bulkText, setBulkText] = useState("");
+  const [bulkFileText, setBulkFileText] = useState("");
+  const [bulkFileName, setBulkFileName] = useState("");
+  const [bulkPreviewOpen, setBulkPreviewOpen] = useState(false);
+  const [bulkManualRows, setBulkManualRows] = useState<Array<{ id: string; name: string; username: string; password: string; locator: string }>>([
+    { id: "bulk-row-1", name: "", username: "", password: "", locator: "" },
+  ]);
+
+  const bulkParsed = React.useMemo(() => {
+    const manual = bulkText.trim() ? parseBulkAccounts(bulkText) : { accounts: [] as BulkAccountInput[], warnings: [] as string[] };
+    const file = bulkFileText.trim() ? parseBulkAccounts(bulkFileText) : { accounts: [] as BulkAccountInput[], warnings: [] as string[] };
+    const formAccounts = bulkManualRows
+      .map((r, i) => bulkAccountFromManual(r, i + 1))
+      .filter((a): a is BulkAccountInput => !!a);
+    const incompleteFormRows = bulkManualRows.filter(r => (r.username.trim() || r.password.trim()) && (!r.username.trim() || !r.password.trim()));
+    const warnings = [
+      ...manual.warnings.map(w => `Hızlı giriş: ${w}`),
+      ...file.warnings.map(w => `${bulkFileName || "Dosya"}: ${w}`),
+      ...incompleteFormRows.map((_, i) => `Form satırı ${i + 1}: kullanıcı adı ve şifre birlikte girilmelidir.`),
+    ];
+    const seen = new Set<string>();
+    const accounts: BulkAccountInput[] = [];
+    for (const a of [...formAccounts, ...manual.accounts, ...file.accounts]) {
+      const locator = a.server || a.serverCode || a.panelName || "auto";
+      const key = `${a.username}\u0000${a.password}\u0000${locator}`.toLocaleLowerCase("tr");
+      if (seen.has(key)) {
+        warnings.push(`${a.name || a.username}: aynı hesap/konum birden fazla kez girildi; tek kez işlenecek.`);
+        continue;
+      }
+      seen.add(key);
+      accounts.push(a);
+    }
+    return { accounts, warnings };
+  }, [bulkManualRows, bulkText, bulkFileText, bulkFileName]);
+
+
+  // v9.13.0: Kaydedilmiş "kod kaynağı" URL'ini yükle (yoksa varsayılan = senin adresin).
+  React.useEffect(() => () => {
+    if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
+  }, []);
+
+  React.useEffect(() => {
+    storage.getItem<string>(CODE_SOURCE_KEY, "").then((v) => {
+      if (v && v.trim()) setCodeSource(v.trim());
+    }).catch(() => {});
+  }, []);
+
+  // GPT v10.5.2 — Android klavye güvenliği. Edge-to-edge cihazlarda yalnız
+  // KeyboardAvoidingView yeterli olmayabiliyor; gerçek klavye yüksekliğini
+  // içerik alt boşluğuna ekleyip odaklanan kimlik alanını görünür bölgeye kaydır.
+  React.useEffect(() => {
+    const show = Keyboard.addListener("keyboardDidShow", (e) => {
+      setKeyboardHeight(e.endCoordinates?.height || 0);
+    });
+    const hide = Keyboard.addListener("keyboardDidHide", () => setKeyboardHeight(0));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+
+  const revealCredentialFields = React.useCallback((event: any) => {
+    // GPT v11.5.1: scrollToEnd tüm formu gereğinden fazla yukarı fırlatıyordu.
+    // Yalnız odaklanan TextInput'u klavyenin hemen üstüne getir.
+    if (Platform.OS === "web") return;
+    const target = event?.target;
+    if (!target) return;
+    setTimeout(() => {
+      const scroll: any = formScrollRef.current;
+      scroll?.scrollResponderScrollNativeHandleToKeyboard?.(target, 48, true);
+    }, 80);
+  }, []);
+
+  const formatExpiry = (raw: any): string => {
+    if (raw == null || raw === "") return "Bilinmiyor";
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return String(raw);
+    try {
+      return new Date(n * 1000).toLocaleDateString("tr-TR");
+    } catch {
+      return String(raw);
+    }
+  };
+
+  const accountSummary = (m: PanelCredentialMatch) => {
+    const ui = m.login?.user_info || {};
+    const status = String(ui.status || (ui.auth === 1 || ui.auth === "1" ? "Aktif" : "Bilinmiyor"));
+    const exp = formatExpiry(ui.exp_date);
+    const active = ui.active_cons ?? ui.active_connections ?? "?";
+    const max = ui.max_connections ?? "?";
+    return { status, exp, active, max };
+  };
+
+  const filteredPanels = React.useMemo(() => {
+    const q = panelSearch.trim().toLocaleLowerCase("tr");
+    if (!q) return panelDirectory.slice(0, 100);
+    return panelDirectory
+      .filter(p => p.panelName.toLocaleLowerCase("tr").includes(q) || p.code.toLocaleLowerCase("tr").includes(q))
+      .slice(0, 100);
+  }, [panelDirectory, panelSearch]);
+
+  const loadPanelDirectory = async () => {
+    if (directoryLoading) return;
+    setError(null);
+    setDirectoryLoading(true);
+    try {
+      const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
+      await storage.setItem(CODE_SOURCE_KEY, src);
+      const list = await fetchPanelDirectory(src);
+      setPanelDirectory(list);
+      if (list.length === 0) throw new Error("Panel rehberi boş.");
+    } catch (e: any) {
+      setError(e?.message || "Panel rehberi yüklenemedi.");
+    } finally {
+      setDirectoryLoading(false);
+    }
+  };
+
+  const choosePanel = (item: PanelDirectoryItem) => {
+    setCodeVal(item.code);
+    setSelectedPanelName(item.panelName);
+    if (!name.trim()) setName(item.panelName);
+    setCodeMode("code");
+    setError(null);
+    setTimeout(() => refXtUser.current?.focus?.(), 50);
+  };
+
+  const makeBinding = (
+    code: string,
+    panelName: string,
+    server: string,
+    validatedHosts: string[] = [server],
+  ): ServerCodeBinding => ({
+    code: String(code).trim(),
+    panelName: String(panelName).trim(),
+    codeSource: codeSource.trim() || DEFAULT_CODE_SOURCE,
+    autoResolve: true,
+    preferredServer: server,
+    validatedHosts: Array.from(new Set(validatedHosts)),
+    lastResolvedServer: server,
+    lastResolvedAt: new Date().toISOString(),
+  });
+
+  const discoveryKey = (m: PanelCredentialMatch) => `${m.code}\u0000${m.panelName}\u0000${m.server}`;
+
+  const hostName = (server: string) => {
+    try { return new URL(server).hostname || server; } catch { return server.replace(/^https?:\/\//i, "").replace(/\/$/, ""); }
+  };
+
+  const presentMatches = (
+    matches: PanelCredentialMatch[],
+    title: string,
+    subtitle: string,
+  ) => {
+    const sortedMatches = [...matches].sort((a, b) => {
+      const sa = String(a.login?.user_info?.status || "").toLowerCase() === "active" ? 0 : 1;
+      const sb = String(b.login?.user_info?.status || "").toLowerCase() === "active" ? 0 : 1;
+      return sa - sb || a.panelName.localeCompare(b.panelName, "tr") || a.server.localeCompare(b.server);
+    });
+    setDiscoveryTitle(title);
+    setDiscoverySubtitle(subtitle);
+    setDiscoveryMatches(sortedMatches);
+    const activeKeys = sortedMatches
+      .filter(m => String(m.login?.user_info?.status || "").toLowerCase() === "active")
+      .map(discoveryKey);
+    setSelectedDiscoveryKeys(activeKeys.length ? activeKeys : sortedMatches.map(discoveryKey));
+    setShowDiscoveryMatches(true);
+    setLoading(false);
+    setProgress("");
+  };
+
+  const scanConfigForSpeed = () => scanSpeed === "safe"
+    ? { concurrency: 3, timeoutMs: 12000, label: "Güvenli" }
+    : scanSpeed === "fast"
+      ? { concurrency: 10, timeoutMs: 5000, label: "Hızlı" }
+      : { concurrency: 6, timeoutMs: 8000, label: "Dengeli" };
+
+  const mergeStreamingMatches = React.useCallback((incoming: PanelCredentialMatch[], title: string, subtitle: string) => {
+    if (!incoming.length) return;
+    setDiscoveryTitle(title);
+    setDiscoverySubtitle(subtitle);
+    setDiscoveryMatches(prev => {
+      const map = new Map(prev.map(m => [discoveryKey(m), m]));
+      for (const m of incoming) map.set(discoveryKey(m), m);
+      return Array.from(map.values()).sort((a,b) => {
+        const sa = String(a.login?.user_info?.status || "").toLowerCase() === "active" ? 0 : 1;
+        const sb = String(b.login?.user_info?.status || "").toLowerCase() === "active" ? 0 : 1;
+        return sa - sb || a.panelName.localeCompare(b.panelName, "tr") || a.server.localeCompare(b.server);
+      });
+    });
+    setSelectedDiscoveryKeys(prev => {
+      const next = new Set(prev);
+      for (const m of incoming) {
+        const key = discoveryKey(m);
+        if (!nativeScanSeenRef.current.has(key) &&
+            String(m.login?.user_info?.status || "").toLowerCase() === "active") next.add(key);
+        nativeScanSeenRef.current.add(key);
+      }
+      return Array.from(next);
+    });
+    setShowDiscoveryMatches(true);
+  }, []);
+
+  const runNativeBackgroundScan = async (
+    candidates: Array<{panelName:string; code:string; server:string}>,
+    title: string,
+    subtitle: string,
+    cfg: { concurrency:number; timeoutMs:number; label:string },
+  ): Promise<PanelCredentialMatch[]> => {
+    if (!PanelScan.available || Platform.OS !== "android") {
+      throw new Error("__NATIVE_SCAN_UNAVAILABLE__");
+    }
+    if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
+    nativeScanSeenRef.current = new Set();
+    setDiscoveryMatches([]);
+    setSelectedDiscoveryKeys([]);
+    setNativeScanRunning(true);
+    setLoading(true);
+    await PanelScan.startScan(candidates, xtUser.trim(), xtPass.trim(), cfg.concurrency, cfg.timeoutMs);
+
+    return await new Promise<PanelCredentialMatch[]>((resolve, reject) => {
+      let settled = false;
+      nativeScanTimerRef.current = setInterval(() => {
+        const snap = PanelScan.getSnapshot();
+        if (snap.error) {
+          if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
+          nativeScanTimerRef.current = null;
+          setNativeScanRunning(false); setLoading(false);
+          if (!settled) { settled = true; reject(new Error(snap.error)); }
+          return;
+        }
+        const matches = Array.isArray(snap.matches) ? snap.matches as PanelCredentialMatch[] : [];
+        mergeStreamingMatches(matches, title, subtitle);
+        const pct = snap.total ? Math.round(((snap.tested || 0) / snap.total) * 100) : 0;
+        setProgress(
+          `${cfg.label} · %${pct}\n` +
+          `Panel: ${snap.panelTested || 0}/${snap.panelTotal || 0} · Adres: ${snap.tested || 0}/${snap.total || candidates.length} · Bulunan: ${snap.found || matches.length}` +
+          (snap.panelName ? `\nŞu an: ${snap.panelName}` : "") +
+          `\nUygulamadan çıksanız da Android taramayı sürdürecek.`
+        );
+        if (snap.running === false && (snap.total || 0) > 0) {
+          if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
+          nativeScanTimerRef.current = null;
+          setNativeScanRunning(false); setLoading(false);
+          if (!settled) {
+            settled = true;
+            if (matches.length) resolve(matches);
+            else reject(new Error("Bu kullanıcı adı ve şifre taranan DNS adreslerinde bulunamadı."));
+          }
+        }
+      }, 450);
+    });
+  };
+
+  const submitKnownPanelDiscovery = async () => {
+    if (!codeVal.trim() || !xtUser.trim() || !xtPass.trim()) {
+      throw new Error("Panel kodu, kullanıcı adı ve şifre gereklidir");
+    }
+    const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
+    await storage.setItem(CODE_SOURCE_KEY, src);
+    const cfg = scanConfigForSpeed();
+    setProgress("Panelin tüm DNS adresleri hazırlanıyor...");
+
+    const panelName = await resolvePanelName(src, codeVal.trim());
+    const hosts = await resolveHosts(src, panelName);
+    const candidates = hosts.map(server => ({ panelName, code: codeVal.trim(), server }));
+
+    try {
+      const matches = await runNativeBackgroundScan(
+        candidates,
+        `${panelName} · DNS Hesapları`,
+        "Geçerli DNS hesapları bulundukça anında listelenir. Eklemek istediklerinizi seçin.",
+        cfg,
+      );
+      mergeStreamingMatches(matches, `${panelName} · DNS Hesapları`,
+        `${matches.length} geçerli DNS hesabı bulundu. Eklemek istediklerinizi seçin.`);
+    } catch (e:any) {
+      if (e?.message !== "__NATIVE_SCAN_UNAVAILABLE__") throw e;
+      const matches = await discoverServerCodeHosts(
+        src, codeVal.trim(), xtUser.trim(), xtPass.trim(),
+        (p) => {
+          const pct = p.total ? Math.round((p.tested / p.total) * 100) : 0;
+          setProgress(`${cfg.label} · %${pct} · DNS ${p.tested}/${p.total} · Bulunan ${p.found}${p.server ? `\nŞu an: ${p.server}` : ""}`);
+        },
+        cfg.concurrency, cfg.timeoutMs,
+      );
+      presentMatches(matches, `${panelName} · DNS Hesapları`,
+        `${matches.length} geçerli DNS hesabı bulundu. Eklemek istediklerinizi seçin.`);
+    }
+  };
+
+  const addDiscoveredMatch = async (found: PanelCredentialMatch) => {
+    setShowDiscoveryMatches(false);
+    setDiscoveryMatches([]);
+    setCodeVal(found.code);
+    setSelectedPanelName(found.panelName);
+    if (!name.trim()) setName(found.panelName);
+    setProgress(`Seçildi: ${found.panelName}. İçerik yükleniyor...`);
+
+    await submitXtreamDirect(
+      {
+        server: found.server,
+        username: xtUser.trim(),
+        password: xtPass.trim(),
+      },
+      name.trim() || found.panelName,
+      makeBinding(found.code, found.panelName, found.server),
+    );
+  };
+
+  const submitAutoDiscovery = async () => {
+    if (!xtUser.trim() || !xtPass.trim()) throw new Error("Kullanıcı adı ve şifre gereklidir");
+
+    const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
+    await storage.setItem(CODE_SOURCE_KEY, src);
+    setDiscoveryMatches([]);
+    setShowDiscoveryMatches(false);
+    setProgress("Panel rehberi yükleniyor...");
+    const cfg = scanConfigForSpeed();
+
+    const directory = await fetchPanelDirectory(src);
+    const seen = new Set<string>();
+    const candidates: Array<{panelName:string; code:string; server:string}> = [];
+    for (const item of directory) for (const server of item.hosts) {
+      const key = `${item.code}\u0000${item.panelName}\u0000${String(server).replace(/\/+$/,"").toLowerCase()}`;
+      if (!seen.has(key)) { seen.add(key); candidates.push({panelName:item.panelName, code:item.code, server}); }
+    }
+
+    try {
+      const matches = await runNativeBackgroundScan(
+        candidates,
+        "Panel / DNS Hesapları Bulundu",
+        "Sonuçlar tarama tamamlanmadan anında görünür. İsterseniz bulunan hesabı hemen seçebilirsiniz.",
+        cfg,
+      );
+      mergeStreamingMatches(matches, "Panel / DNS Hesapları Bulundu",
+        "Tarama tamamlandı. Geçerli panel/DNS hesaplarını seçin.");
+    } catch (e:any) {
+      if (e?.message !== "__NATIVE_SCAN_UNAVAILABLE__") throw e;
+      const matches = await discoverPanelsByCredentials(
+        src, xtUser.trim(), xtPass.trim(),
+        (p) => {
+          const pct = p.total > 0 ? Math.round((p.tested / p.total) * 100) : 0;
+          setProgress(`${cfg.label} · %${pct}\nPanel: ${p.panelTested}/${p.panelTotal} · Adres: ${p.tested}/${p.total} · Bulunan: ${p.found}${p.panelName ? `\nŞu an: ${p.panelName}` : ""}`);
+        },
+        cfg.concurrency, cfg.timeoutMs,
+      );
+      presentMatches(matches, "Panel / DNS Hesapları Bulundu",
+        "Aynı bilgiler birden fazla panel veya DNS adresinde geçerli. Satın aldığınız hesapları seçin.");
+    }
+  };
+
+  const pickFile = async () => {
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ["*/*"],
+        copyToCacheDirectory: true,
+      });
+      if (res.canceled || !res.assets?.[0]) return;
+      const asset = res.assets[0];
+      setFileName(asset.name);
+      const response = await fetch(asset.uri);
+      const text = await response.text();
+      setFileContent(text);
+    } catch (e: any) {
+      setError("Dosya seçilemedi: " + e.message);
+    }
+  };
+
+  const useDemo = () => {
+    setMethod("m3u_url");
+    setName("iptv-org (Demo)");
+    setM3uUrl("https://iptv-org.github.io/iptv/countries/tr.m3u");
+  };
+
+  const loadXtreamContentWithProgress = async (cred: { server: string; username: string; password: string }) => {
+    const state = { live: "⏳", vod: "⏳", series: "⏳", liveCount: 0, vodCount: 0, seriesCount: 0 };
+    const publish = () => setProgress(
+      `İçerikler paralel yükleniyor...\n` +
+      `Canlı ${state.live}${state.liveCount ? ` ${state.liveCount}` : ""} · ` +
+      `Film ${state.vod}${state.vodCount ? ` ${state.vodCount}` : ""} · ` +
+      `Dizi ${state.series}${state.seriesCount ? ` ${state.seriesCount}` : ""}`
+    );
+    publish();
+    const liveP = xtreamLiveStreams(cred).then(v => { state.live = "✅"; state.liveCount = v.length; publish(); return v; }).catch(e => { state.live = "❌"; publish(); throw e; });
+    const vodP = xtVodLocal(cred).then(v => { state.vod = "✅"; state.vodCount = v.length; publish(); return v; }).catch(e => { state.vod = "❌"; publish(); throw e; });
+    const seriesP = xtSeriesLocal(cred).then(v => { state.series = "✅"; state.seriesCount = v.length; publish(); return v; }).catch(e => { state.series = "❌"; publish(); throw e; });
+    const [chRes, vodRes, serRes] = await Promise.allSettled([liveP, vodP, seriesP]);
+    return { chRes, vodRes, serRes };
+  };
+
+  /**
+   * Algılanan Xtream bilgileriyle DOĞRUDAN yükler.
+   * (setState asenkron olduğu için state'e güvenmeden yerel değerlerle çalışır.)
+   */
+  const submitXtreamDirect = async (
+    cred: { server: string; username: string; password: string },
+    displayName?: string,
+    serverCodeBinding?: ServerCodeBinding,
+    navigateAfter = true,
+    manageLoading = true,
+  ): Promise<boolean> => {
+    if (manageLoading) setLoading(true);
+    setProgress("Kimlik doğrulanıyor (Xtream)...");
+    try {
+      const id = `pl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const login = await xtLoginLocal(cred);
+      const { chRes, vodRes, serRes } = await loadXtreamContentWithProgress(cred);
+      const channels = chRes.status === "fulfilled" ? chRes.value : [];
+      const vod = vodRes.status === "fulfilled" ? vodRes.value : [];
+      const series = serRes.status === "fulfilled" ? serRes.value : [];
+      if (chRes.status === "rejected" && vod.length === 0 && series.length === 0) {
+        throw new Error("İçerik yüklenemedi. Sunucu veya bilgileri kontrol edin.");
+      }
+      const normalizedServer = cred.server.replace(/\/+$/, "").toLowerCase();
+      const accountKey = `${cred.username}\u0000${normalizedServer}`;
+      if (playlistServerKeysRef.current.has(accountKey)) {
+        throw new Error(`${displayName?.trim() || "Bu hesap"} zaten ekli.`);
+      }
+
+      const playlist: Playlist = {
+        id, name: displayName?.trim() || name.trim() || "Xtream Codes", source: "xtream",
+        xtreamServer: cred.server, xtreamUsername: cred.username, xtreamPassword: cred.password,
+        serverCodeBinding,
+        accountInfo: login.user_info as AccountInfo,
+        serverInfo: login.server_info || null,
+        channels, vod, series,
+        createdAt: new Date().toISOString(),
+      };
+      const total = channels.length + vod.length + series.length;
+      if (total === 0) throw new Error("Hiç içerik bulunamadı. Kaynağı kontrol edin.");
+      setProgress(`Cihaza kaydediliyor...\n${channels.length} kanal · ${vod.length} film · ${series.length} dizi`);
+      await addPlaylist(playlist);
+      setProgress("Playlist hazır. +18 filtresi arka planda hazırlanıyor...");
+      playlistServerKeysRef.current.add(`${cred.username}\u0000${normalizedServer}`);
+      if (navigateAfter) router.replace("/(tabs)");
+      return true;
+    } catch (e: any) {
+      setError(e.message || "Bilinmeyen hata");
+      return false;
+    } finally {
+      if (manageLoading) {
+        setLoading(false);
+        setProgress("");
+      }
+    }
+  };
+
+  const pickBulkFile = async () => {
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ["text/*", "application/json", "text/csv", "application/csv", "*/*"],
+        copyToCacheDirectory: true,
+      });
+      if (res.canceled || !res.assets?.[0]) return;
+      const asset = res.assets[0];
+      const response = await fetch(asset.uri);
+      const text = await response.text();
+      const parsed = parseBulkAccounts(text);
+      if (!parsed.accounts.length) throw new Error(parsed.warnings[0] || "Dosyada geçerli hesap bulunamadı.");
+      setBulkFileName(asset.name || "hesaplar");
+      setBulkFileText(text);
+      setBulkPreviewOpen(true);
+      setError(parsed.warnings.length ? parsed.warnings.join("\n") : null);
+    } catch (e: any) {
+      setError("Toplu hesap dosyası okunamadı: " + String(e?.message || e));
+    }
+  };
+
+  const normalizePanelName = (v: string) => v.trim().toLocaleLowerCase("tr");
+
+  const addOneBulkAccount = async (
+    account: BulkAccountInput,
+    index: number,
+    total: number,
+    directoryCache: { value?: PanelDirectoryItem[] },
+  ): Promise<{ ok: boolean; label: string; reason?: string }> => {
+    const label = account.name.trim() || `Hesap ${index + 1}`;
+    const cfg = scanConfigForSpeed();
+    const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
+    const progressPrefix = `${index + 1}/${total} · ${label}`;
+
+    try {
+      setError(null);
+      if (account.server) {
+        setProgress(`${progressPrefix}\nDoğrudan Xtream sunucusu doğrulanıyor…`);
+        const ok = await submitXtreamDirect(
+          { server: account.server, username: account.username, password: account.password },
+          account.name.trim() || label,
+          undefined,
+          false,
+          false,
+        );
+        return ok ? { ok: true, label } : { ok: false, label, reason: "Sunucu/hesap doğrulanamadı." };
+      }
+
+      let matches: PanelCredentialMatch[] = [];
+      if (account.serverCode) {
+        setProgress(`${progressPrefix}\nSunucu kodu ${account.serverCode} için tüm DNS adresleri deneniyor…`);
+        matches = await discoverServerCodeHosts(
+          src, account.serverCode, account.username, account.password,
+          (pr) => setProgress(`${progressPrefix}\nDNS ${pr.tested}/${pr.total} · Bulunan ${pr.found}`),
+          cfg.concurrency, cfg.timeoutMs,
+        );
+      } else if (account.panelName) {
+        if (!directoryCache.value) directoryCache.value = await fetchPanelDirectory(src);
+        const wanted = normalizePanelName(account.panelName);
+        const rawPanel = account.panelName.trim();
+        const exactCode = directoryCache.value.find(x => x.code === rawPanel);
+        const sameName = directoryCache.value.filter(x => normalizePanelName(x.panelName) === wanted);
+        if (!exactCode && sameName.length > 1) {
+          throw new Error(`Panel adı rehberde ${sameName.length} kez geçiyor: ${account.panelName}. Güvenli seçim için sunucu kodunu belirtin.`);
+        }
+        const panel = exactCode || sameName[0];
+        if (!panel) throw new Error(`Panel rehberinde bulunamadı: ${account.panelName}`);
+        setProgress(`${progressPrefix}\n${panel.panelName} panelinin ${panel.hosts.length} DNS adresi deneniyor…`);
+        matches = await discoverServerCodeHosts(
+          src, panel.code, account.username, account.password,
+          (pr) => setProgress(`${progressPrefix}\nDNS ${pr.tested}/${pr.total} · Bulunan ${pr.found}`),
+          cfg.concurrency, cfg.timeoutMs,
+        );
+      } else {
+        if (!directoryCache.value) directoryCache.value = await fetchPanelDirectory(src);
+        setProgress(`${progressPrefix}\nPanel bilinmiyor; tüm panel rehberi taranıyor…`);
+        matches = await discoverPanelsByCredentials(
+          src, account.username, account.password,
+          (pr) => setProgress(`${progressPrefix}\nPanel ${pr.panelTested}/${pr.panelTotal} · Adres ${pr.tested}/${pr.total} · Bulunan ${pr.found}`),
+          cfg.concurrency, cfg.timeoutMs, directoryCache.value,
+        );
+      }
+
+      if (!matches.length) throw new Error("Geçerli panel/DNS hesabı bulunamadı.");
+      const panelIds = Array.from(new Set(matches.map(m => `${m.code}\u0000${m.panelName}`)));
+      if (panelIds.length > 1) {
+        throw new Error(`Aynı kullanıcı/şifre ${panelIds.length} farklı panelde bulundu. Güvenlik için otomatik seçim yapılmadı; dosyada sunucu kodu veya panel adı belirtin.`);
+      }
+
+      const sorted = [...matches].sort((a, b) => {
+        const aa = String(a.login?.user_info?.status || "").toLowerCase() === "active" ? 0 : 1;
+        const bb = String(b.login?.user_info?.status || "").toLowerCase() === "active" ? 0 : 1;
+        return aa - bb;
+      });
+      const chosen = sorted[0];
+      const validatedHosts = Array.from(new Set(matches.map(m => m.server)));
+      const displayName = account.name.trim() || chosen.panelName;
+      setProgress(`${progressPrefix}\n${chosen.panelName} bulundu; içerikler yükleniyor…`);
+      const ok = await submitXtreamDirect(
+        { server: chosen.server, username: account.username, password: account.password },
+        displayName,
+        makeBinding(chosen.code, chosen.panelName, chosen.server, validatedHosts),
+        false,
+        false,
+      );
+      return ok ? { ok: true, label: displayName } : { ok: false, label: displayName, reason: "Playlist kaydedilemedi." };
+    } catch (e: any) {
+      return { ok: false, label, reason: String(e?.message || e) };
+    }
+  };
+
+  const submitBulkAccounts = async () => {
+    const parsed = bulkParsed;
+    if (!parsed.accounts.length) throw new Error(parsed.warnings[0] || "Geçerli toplu hesap bulunamadı.");
+
+    setLoading(true);
+    setError(null);
+    const results: Array<{ ok: boolean; label: string; reason?: string }> = [];
+    const directoryCache: { value?: PanelDirectoryItem[] } = {};
+    try {
+      // Tek tuşla toplu ekleme; sunucuları gereksiz yüklememek için hesaplar seri işlenir.
+      for (let i = 0; i < parsed.accounts.length; i++) {
+        results.push(await addOneBulkAccount(parsed.accounts[i], i, parsed.accounts.length, directoryCache));
+      }
+      const ok = results.filter(r => r.ok);
+      const failed = results.filter(r => !r.ok);
+      const warningText = parsed.warnings.length ? `\n\nDosya uyarıları:\n${parsed.warnings.slice(0, 5).join("\n")}` : "";
+      const failedText = failed.length ? `\n\nEklenemeyenler:\n${failed.slice(0, 8).map(r => `• ${r.label}: ${r.reason}`).join("\n")}` : "";
+      Alert.alert(
+        "Toplu Hesap Ekleme",
+        `${ok.length}/${results.length} hesap playlist olarak eklendi.${failedText}${warningText}`,
+        [{ text: "Tamam", onPress: () => { if (ok.length) router.replace("/(tabs)"); } }],
+      );
+    } finally {
+      setLoading(false);
+      setProgress("");
+    }
+  };
+
+  /** Kullanıcıya Evet/Hayır sorar (Promise tabanlı). */
+  const askYesNo = (title: string, message: string): Promise<boolean> =>
+    new Promise((resolve) => {
+      Alert.alert(
+        title,
+        message,
+        [
+          { text: "Hayır, M3U olarak ekle", onPress: () => resolve(false), style: "cancel" },
+          { text: "Evet, Xtream olarak ekle", onPress: () => resolve(true) },
+        ],
+        { cancelable: true, onDismiss: () => resolve(false) }
+      );
+    });
+
+  const submit = async () => {
+    setError(null);
+    if (method === "bulk") {
+      try { await submitBulkAccounts(); } catch (e: any) { setError(e?.message || "Toplu hesap eklenemedi."); }
+      return;
+    }
+
+    // XTREAM OTOMATİK ALGILAMA (kullanıcı isteği):
+    // M3U URL'i aslında bir Xtream portalı (get.php / player_api.php) ise,
+    // kullanıcıya sor. Kabul ederse Xtream moduna geçir — kategoriler, EPG ve
+    // hesap bilgisi gibi çok daha zengin veri gelir.
+    if (method === "m3u_url" && m3uUrl.trim()) {
+      const detected = detectXtreamFromM3U(m3uUrl.trim());
+      if (detected) {
+        const useXtream = await askYesNo(
+          "Xtream Portalı Algılandı",
+          "Girdiğiniz bağlantı bir Xtream Codes portalı gibi görünüyor. Xtream olarak eklerseniz kategoriler, EPG ve hesap bilgileri de yüklenir. Nasıl eklemek istersiniz?"
+        );
+        if (useXtream) {
+          // Alanları doldur ve Xtream moduna geç, sonra normal akış devam etsin.
+          setMethod("xtream");
+          setXtServer(detected.server);
+          setXtUser(detected.username);
+          setXtPass(detected.password);
+          // Not: state güncellemesi asenkron; bu yüzden aşağıda yerel değişkenlerle
+          // devam etmek için doğrudan Xtream yükleme akışını burada tetikliyoruz.
+          await submitXtreamDirect(detected);
+          return;
+        }
+        // Hayır dediyse normal M3U akışıyla devam eder.
+      }
+    }
+
+    setLoading(true);
+    setProgress("");
+    try {
+      // GPT v10.5.0: "Paneli bilmiyorum" yolunda kullanıcı yalnız kullanıcı
+      // adı + şifre verir. Firebase yalnız katalog olarak kullanılır; kimlik
+      // bilgileri doğrudan aday Xtream sunucularına gider.
+      if (method === "code" && codeMode === "auto") {
+        await submitAutoDiscovery();
+        return;
+      }
+      if (method === "code" && codeMode === "directory" && !codeVal.trim()) {
+        throw new Error("Panel rehberinden bir panel seçin veya 'Kodum var' seçeneğine dönün.");
+      }
+      if (method === "code" && codeMode !== "auto") {
+        await submitKnownPanelDiscovery();
+        return;
+      }
+
+      const id = `pl-${Date.now()}`;
+      let playlist: Playlist;
+
+      if (method === "m3u_url") {
+        if (!m3uUrl.trim()) throw new Error("M3U URL boş olamaz");
+        setProgress("Kanallar yükleniyor (cihazdan doğrudan)...");
+        const res = await fetchAndParseM3U(m3uUrl.trim());
+        playlist = {
+          id, name: name.trim() || "M3U Listesi", source: "m3u_url",
+          m3uUrl: m3uUrl.trim(),
+          channels: res.channels,
+          vod: res.vod,
+          series: res.series,
+          createdAt: new Date().toISOString(),
+        };
+      } else if (method === "m3u_file") {
+        if (!fileContent) throw new Error("Lütfen bir M3U dosyası seçin");
+        setProgress("Kanallar ayrıştırılıyor...");
+        const res = parseM3U(fileContent);
+        playlist = {
+          id, name: name.trim() || fileName || "M3U Dosyası", source: "m3u_file",
+          channels: res.channels,
+          vod: res.vod,
+          series: res.series,
+          createdAt: new Date().toISOString(),
+        };
+      } else if (method === "xtream") {
+        if (!xtServer.trim() || !xtUser.trim() || !xtPass.trim())
+          throw new Error("Sunucu, kullanıcı adı ve şifre gereklidir");
+        setProgress("Kimlik doğrulanıyor (cihazdan doğrudan)...");
+        const cred = { server: xtServer.trim(), username: xtUser.trim(), password: xtPass.trim() };
+        const login = await xtLoginLocal(cred);
+
+        // HIZ: Kanallar + Filmler + Diziler ARTIK PARALEL yükleniyor (IPTV Extreme gibi).
+        // ESKİ: art arda await -> kanallar bitmeden filmler başlamıyordu (3x yavaş).
+        // YENİ: Promise.allSettled -> üçü aynı anda; biri yoksa (VOD/Series olmayan
+        // sağlayıcı) diğerleri yine yüklenir, hata tüm işlemi durdurmaz.
+        const { chRes, vodRes, serRes } = await loadXtreamContentWithProgress(cred);
+
+        const channels = chRes.status === "fulfilled" ? chRes.value : [];
+        const vod = vodRes.status === "fulfilled" ? vodRes.value : [];
+        const series = serRes.status === "fulfilled" ? serRes.value : [];
+
+        if (chRes.status === "rejected" && vod.length === 0 && series.length === 0) {
+          // Hiçbiri gelmediyse gerçek bir bağlantı sorunu var.
+          throw new Error("İçerik yüklenemedi. Sunucu veya bilgileri kontrol edin.");
+        }
+
+        playlist = {
+          id, name: name.trim() || "Xtream Codes", source: "xtream",
+          xtreamServer: xtServer.trim(), xtreamUsername: xtUser.trim(), xtreamPassword: xtPass.trim(),
+          accountInfo: login.user_info as AccountInfo,
+          serverInfo: login.server_info || null,
+          channels, vod, series,
+          createdAt: new Date().toISOString(),
+        };
+      } else if (method === "code") {
+        // Yukarıdaki submitKnownPanelDiscovery bu yolu seçim ekranına taşır.
+        throw new Error("Sunucu DNS taraması tamamlanamadı.");
+      } else {
+        /**
+         * STALKER / MAG — ARTIK CİHAZ İÇİ (v9.1.0)
+         * Eskiden backend proxy'ye bağımlıydı (emergent kalıntısı). Protokolün
+         * tamamı src/utils/stalker.ts içinde cihazda çalışıyor:
+         *   handshake -> get_profile -> get_genres -> get_all_channels
+         * Yayın adresleri GEÇİCİ olduğu için oynatma anında create_link ile
+         * ayrıca çözülür (player tarafında).
+         */
+        if (!stPortal.trim() || !stMac.trim())
+          throw new Error("Portal adresi ve MAC adresi gereklidir");
+
+        const { stalkerLogin: stLogin, stalkerChannels, normalizeMac } = await import("@/src/utils/stalker");
+        const cred = {
+          portal: stPortal.trim(),
+          mac: normalizeMac(stMac.trim()),
+          serial: stSerial.trim() || undefined,
+        };
+
+        setProgress("Portala bağlanılıyor...");
+        const { session, profile: prof } = await stLogin(cred);
+
+        setProgress("Kanallar yükleniyor...");
+        const chans = await stalkerChannels(cred, session);
+        if (chans.length === 0) {
+          throw new Error(
+            "Portal bağlandı ama kanal listesi BOŞ.\n\n" +
+              "Olası sebepler:\n" +
+              "• MAC adresi bu portalda kayıtlı değil\n" +
+              "• Abonelik süresi dolmuş\n" +
+              "• Portal bu cihaz türünü kabul etmiyor"
+          );
+        }
+        const load = { channels: chans };
+        const profile = prof || {};
+        playlist = {
+          id, name: name.trim() || "MAG Portal", source: "stalker",
+          stalkerPortal: stPortal.trim(), stalkerMac: stMac.trim().toUpperCase(),
+          stalkerSerial: stSerial.trim() || undefined,
+          accountInfo: {
+            username: profile.login,
+            status: profile.status,
+            mac: profile.mac,
+            phone: profile.phone,
+            tariff_plan: profile.tariff_plan,
+            tariff_expired_date: profile.tariff_expired_date || profile.exp_billing_date,
+          },
+          channels: load.channels, createdAt: new Date().toISOString(),
+        };
+      }
+
+      const totalItems = (playlist.channels?.length || 0) + (playlist.vod?.length || 0) + (playlist.series?.length || 0);
+      if (totalItems === 0) throw new Error("Hiç kanal/film/dizi bulunamadı. Kaynağı kontrol edin.");
+      setProgress("Cihaza kaydediliyor...");
+      await addPlaylist(playlist);
+      setProgress("Playlist hazır. +18 filtresi arka planda hazırlanıyor...");
+      router.replace("/(tabs)");
+    } catch (e: any) {
+      setError(e.message || "Bilinmeyen hata");
+    } finally {
+      setLoading(false);
+      setProgress("");
+    }
+  };
+
+  const methods: { key: Method; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+    { key: "m3u_url", label: "M3U URL", icon: "link" },
+    { key: "m3u_file", label: "M3U Dosya", icon: "document-attach" },
+    { key: "xtream", label: "Xtream", icon: "server" },
+    { key: "code", label: "Sunucu Kodu", icon: "keypad" },
+    { key: "stalker", label: "MAG", icon: "hardware-chip" },
+    { key: "bulk", label: "Çoklu Hesap", icon: "people" },
+  ];
+
+  return (
+    <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top", "bottom"]} testID="add-playlist-screen">
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 16}
+      >
+        <View style={styles.header}>
+          <FocusButton testID="close-btn" onPress={() => router.back()} hitSlop={12}>
+            <Ionicons name="chevron-back" size={26} color={colors.onSurface} />
+          </FocusButton>
+          <Text style={[styles.title, { color: colors.onSurface }]}>Oynatma Listesi Ekle</Text>
+          <View style={{ width: 26 }} />
+        </View>
+
+        <ScrollView
+          ref={formScrollRef}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+          contentContainerStyle={{
+            padding: SPACING.lg,
+            paddingBottom: SPACING.xxxl + (keyboardHeight > 0 ? SPACING.xxl : 0),
+          }}
+        >
+          <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary }]}>KAYNAK TÜRÜ</Text>
+          <View style={styles.methodGrid}>
+            {methods.map(m => {
+              const active = method === m.key;
+              return (
+                <FocusButton
+                  key={m.key}
+                  testID={`method-${m.key}-btn`}
+                  onPress={() => setMethod(m.key)}
+                  activeOpacity={0.85}
+                  focusable
+                  style={[
+                    styles.methodCard,
+                    { backgroundColor: colors.surfaceSecondary, borderColor: colors.border },
+                    active && { borderColor: colors.brandPrimary, backgroundColor: colors.surfaceTertiary },
+                  ]}
+                >
+                  <Ionicons name={m.icon} size={26} color={active ? colors.brandPrimary : colors.onSurfaceSecondary} />
+                  <Text style={[styles.methodLabel, { color: active ? colors.onSurface : colors.onSurfaceSecondary }]}>{m.label}</Text>
+                </FocusButton>
+              );
+            })}
+          </View>
+
+          {method !== "code" && method !== "bulk" && (
+            <>
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>LİSTE ADI (isteğe bağlı)</Text>
+              <TextInput
+                testID="playlist-name-input"
+                value={name}
+                onChangeText={setName}
+                placeholder="Örn: MAG254 Aboneliğim"
+                placeholderTextColor={colors.onSurfaceTertiary}
+                returnKeyType="next"
+                blurOnSubmit={false}
+                onSubmitEditing={() => {
+                  (refM3uUrl.current || refXtServer.current || refStPortal.current)?.focus();
+                }}
+                style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+              />
+            </>
+          )}
+
+          {method === "m3u_url" && (
+            <>
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>M3U URL</Text>
+              <TextInput
+                testID="m3u-url-input"
+                ref={refM3uUrl}
+                value={m3uUrl}
+                onChangeText={setM3uUrl}
+                placeholder="https://example.com/playlist.m3u"
+                placeholderTextColor={colors.onSurfaceTertiary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                returnKeyType="done"
+                blurOnSubmit
+                style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+              />
+              <FocusButton testID="use-demo-btn" onPress={useDemo} style={styles.demoRow}>
+                <Ionicons name="flash" size={16} color={colors.brandPrimary} />
+                <Text style={[styles.demoText, { color: colors.brandPrimary }]}>Demo listeyi kullan (iptv-org TR)</Text>
+              </FocusButton>
+            </>
+          )}
+
+          {method === "m3u_file" && (
+            <>
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>M3U DOSYASI</Text>
+              <FocusButton
+                testID="pick-file-btn"
+                onPress={pickFile}
+                style={[styles.fileBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+              >
+                <Ionicons name="cloud-upload-outline" size={22} color={colors.brandPrimary} />
+                <Text style={[styles.fileText, { color: colors.onSurface }]} numberOfLines={1}>
+                  {fileName || "Dosya seç (.m3u / .m3u8)"}
+                </Text>
+              </FocusButton>
+            </>
+          )}
+
+          {method === "xtream" && (
+            <>
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>SUNUCU</Text>
+              <TextInput
+                testID="xtream-server-input"
+                ref={refXtServer}
+                value={xtServer}
+                returnKeyType="next"
+                blurOnSubmit={false}
+                onSubmitEditing={() => refXtUser.current?.focus()}
+                onChangeText={setXtServer}
+                placeholder="http://sunucu.com:8080"
+                placeholderTextColor={colors.onSurfaceTertiary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+              />
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.md }]}>KULLANICI ADI</Text>
+              <TextInput
+                testID="xtream-username-input"
+                ref={refXtUser}
+                onFocus={revealCredentialFields}
+                value={xtUser}
+                returnKeyType="next"
+                blurOnSubmit={false}
+                onSubmitEditing={() => refXtPass.current?.focus()}
+                onChangeText={setXtUser}
+                placeholder="kullanici_adiniz"
+                placeholderTextColor={colors.onSurfaceTertiary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+              />
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.md }]}>ŞİFRE</Text>
+              <TextInput
+                testID="xtream-password-input"
+                ref={refXtPass}
+                onFocus={revealCredentialFields}
+                value={xtPass}
+                returnKeyType="done"
+                onChangeText={setXtPass}
+                placeholder="••••••••"
+                placeholderTextColor={colors.onSurfaceTertiary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+                style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+              />
+            </>
+          )}
+
+          {method === "code" && (
+            <>
+              <View style={[styles.infoBanner, { backgroundColor: colors.brandPrimary + "22", borderColor: colors.brandPrimary }]}>
+                <Ionicons name="people" size={18} color={colors.brandPrimary} />
+                <Text style={{ color: colors.onSurface, flex: 1, fontSize: FONT.size.sm }}>
+                  Panel kodunu bilmiyorsanız sorun değil. Panel adından seçebilir veya yalnız kullanıcı adı ve şifre ile hesabınızı otomatik aratabilirsiniz.
+                </Text>
+              </View>
+
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>NASIL EKLEMEK İSTİYORSUNUZ?</Text>
+              <View style={styles.codeModeGrid}>
+                {([
+                  { key: "code" as CodeMode, label: "Kodum var", icon: "keypad" as const },
+                  { key: "directory" as CodeMode, label: "Paneli biliyorum", icon: "list" as const },
+                  { key: "auto" as CodeMode, label: "Paneli bilmiyorum", icon: "search" as const },
+                ]).map(opt => {
+                  const active = codeMode === opt.key;
+                  return (
+                    <FocusButton
+                      key={opt.key}
+                      testID={`code-mode-${opt.key}`}
+                      focusable
+                      onPress={() => {
+                        setCodeMode(opt.key);
+                        setError(null);
+                        if (opt.key === "directory" && panelDirectory.length === 0) void loadPanelDirectory();
+                      }}
+                      style={[
+                        styles.codeModeCard,
+                        { backgroundColor: colors.surfaceSecondary, borderColor: active ? colors.brandPrimary : colors.border },
+                        active && { backgroundColor: colors.surfaceTertiary },
+                      ]}
+                    >
+                      <Ionicons name={opt.icon} size={22} color={active ? colors.brandPrimary : colors.onSurfaceSecondary} />
+                      <Text style={{ color: active ? colors.onSurface : colors.onSurfaceSecondary, fontWeight: FONT.weight.semibold, textAlign: "center" }}>
+                        {opt.label}
+                      </Text>
+                    </FocusButton>
+                  );
+                })}
+              </View>
+
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>OYNATMA LİSTESİ ADI (isteğe bağlı)</Text>
+              <TextInput
+                testID="server-playlist-name-input"
+                value={name}
+                onFocus={revealCredentialFields}
+                onChangeText={setName}
+                placeholder="Örn: Annemin TV'si"
+                placeholderTextColor={colors.onSurfaceTertiary}
+                returnKeyType="next"
+                blurOnSubmit={false}
+                onSubmitEditing={() => {
+                  if (codeMode === "auto") refXtUser.current?.focus?.();
+                  else if (codeMode === "code" && codeVal.trim()) refXtUser.current?.focus?.();
+                }}
+                style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+              />
+              <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: SPACING.xs, lineHeight: 18 }}>
+                Boş bırakırsanız panel adı otomatik kullanılır. Bu görünen adı sonradan değiştirmek DNS/panel eşleştirmesini bozmaz.
+              </Text>
+
+              {codeMode === "directory" && (
+                <>
+                  <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>PANEL / SUNUCU REHBERİ</Text>
+                  <TextInput
+                    testID="panel-directory-search"
+                    value={panelSearch}
+                    onChangeText={setPanelSearch}
+                    placeholder="Panel adı veya sunucu kodu ara"
+                    placeholderTextColor={colors.onSurfaceTertiary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+                  />
+                  <FocusButton
+                    testID="panel-directory-refresh"
+                    onPress={loadPanelDirectory}
+                    disabled={directoryLoading}
+                    style={[styles.directoryRefresh, { borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}
+                  >
+                    {directoryLoading ? <ActivityIndicator color={colors.brandPrimary} /> : <Ionicons name="refresh" size={18} color={colors.brandPrimary} />}
+                    <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.semibold }}>
+                      {directoryLoading ? "Rehber yükleniyor..." : `Rehberi Yenile${panelDirectory.length ? ` (${panelDirectory.length})` : ""}`}
+                    </Text>
+                  </FocusButton>
+
+                  {panelDirectory.length > 0 && (
+                    <View style={[styles.directoryBox, { borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}>
+                      {filteredPanels.length === 0 ? (
+                        <Text style={{ color: colors.onSurfaceSecondary, padding: SPACING.md }}>Eşleşen panel bulunamadı.</Text>
+                      ) : filteredPanels.map(item => (
+                        <FocusButton
+                          key={`${item.code}-${item.panelName}`}
+                          testID={`panel-directory-${item.code}`}
+                          focusable
+                          onPress={() => choosePanel(item)}
+                          style={[styles.directoryRow, { borderBottomColor: colors.border }]}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold, fontSize: FONT.size.base }}>{item.panelName}</Text>
+                            <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm }}>
+                              Sunucu kodu: {item.code} · {item.hosts.length} adres
+                            </Text>
+                          </View>
+                          <Ionicons name="chevron-forward" size={20} color={colors.brandPrimary} />
+                        </FocusButton>
+                      ))}
+                    </View>
+                  )}
+                  {panelDirectory.length > 100 && !panelSearch.trim() && (
+                    <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: SPACING.xs }}>
+                      İlk 100 panel gösteriliyor. Panel adını yazarak tüm rehberde arayabilirsiniz.
+                    </Text>
+                  )}
+                </>
+              )}
+
+              {codeMode === "auto" && (
+                <>
+                  <View style={[styles.infoBanner, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+                    <Ionicons name="shield-checkmark" size={18} color={colors.brandPrimary} />
+                    <Text style={{ color: colors.onSurface, flex: 1, fontSize: FONT.size.sm }}>
+                      Kullanıcı adı ve şifreniz Firebase'e gönderilmez. Uygulama Firebase'den yalnız panel/sunucu rehberini alır ve giriş bilgilerini cihazınızdan doğrudan aday IPTV sunucularında dener.
+                    </Text>
+                  </View>
+                  <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>KULLANICI ADI</Text>
+                  <TextInput
+                    testID="auto-panel-user-input"
+                    ref={refXtUser}
+                    onFocus={revealCredentialFields}
+                    value={xtUser}
+                    onChangeText={setXtUser}
+                    placeholder="Kullanıcı adı"
+                    placeholderTextColor={colors.onSurfaceTertiary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="next"
+                    blurOnSubmit={false}
+                    onSubmitEditing={() => refXtPass.current?.focus()}
+                    style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+                  />
+                  <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.md }]}>ŞİFRE</Text>
+                  <TextInput
+                    testID="auto-panel-pass-input"
+                    ref={refXtPass}
+                    onFocus={revealCredentialFields}
+                    value={xtPass}
+                    onChangeText={setXtPass}
+                    placeholder="Şifre"
+                    placeholderTextColor={colors.onSurfaceTertiary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    secureTextEntry
+                    returnKeyType="done"
+                    style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+                  />
+                  <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.md }]}>TARAMA HIZI</Text>
+                  <View style={{ flexDirection: "row", gap: SPACING.sm }}>
+                    {([
+                      ["safe", "Güvenli", "Yavaş sunucuları kaçırmaz"],
+                      ["balanced", "Dengeli", "Önerilen"],
+                      ["fast", "Hızlı", "Yavaş paneller atlanabilir"],
+                    ] as const).map(([key, label, hint]) => {
+                      const active = scanSpeed === key;
+                      return (
+                        <FocusButton key={key} focusable onPress={() => setScanSpeed(key)}
+                          style={[styles.scanSpeedBtn, { borderColor: active ? colors.brandPrimary : colors.border, backgroundColor: active ? colors.brandPrimary + "18" : colors.surfaceSecondary }]}>
+                          <Text style={{ color: active ? colors.brandPrimary : colors.onSurface, fontWeight: FONT.weight.bold }}>{label}</Text>
+                          <Text numberOfLines={2} style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, textAlign: "center" }}>{hint}</Text>
+                        </FocusButton>
+                      );
+                    })}
+                  </View>
+                  <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: SPACING.sm, lineHeight: 18 }}>
+                    Otomatik arama tüm panel rehberini tarar. Tek eşleşme varsa doğrudan ekler; birden fazla panelde aynı kullanıcı adı/şifre geçerliyse doğru aboneliği sizin seçmenizi ister.
+                  </Text>
+                </>
+              )}
+
+              {codeMode === "code" && (
+                <>
+                  {selectedPanelName ? (
+                    <View style={[styles.selectedPanel, { backgroundColor: colors.brandPrimary + "18", borderColor: colors.brandPrimary }]}>
+                      <Ionicons name="checkmark-circle" size={20} color={colors.brandPrimary} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold }}>{selectedPanelName}</Text>
+                        <Text style={{ color: colors.onSurfaceSecondary }}>Sunucu kodu: {codeVal}</Text>
+                      </View>
+                      <FocusButton onPress={() => { setSelectedPanelName(""); setCodeVal(""); setCodeMode("directory"); }}>
+                        <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>Değiştir</Text>
+                      </FocusButton>
+                    </View>
+                  ) : (
+                    <>
+                      <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>PANEL KODU</Text>
+                      <TextInput
+                        testID="code-value-input"
+                        value={codeVal}
+                        onChangeText={t => { setCodeVal(t); setSelectedPanelName(""); }}
+                        placeholder="Örn: 0001"
+                        placeholderTextColor={colors.onSurfaceTertiary}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        keyboardType="default"
+                        returnKeyType="next"
+                        blurOnSubmit={false}
+                        onSubmitEditing={() => refXtUser.current?.focus()}
+                        style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+                      />
+                    </>
+                  )}
+
+                  <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.md }]}>KULLANICI ADI</Text>
+                  <TextInput
+                    testID="code-user-input"
+                    ref={refXtUser}
+                    onFocus={revealCredentialFields}
+                    value={xtUser}
+                    onChangeText={setXtUser}
+                    placeholder="Kullanıcı adı"
+                    placeholderTextColor={colors.onSurfaceTertiary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="next"
+                    blurOnSubmit={false}
+                    onSubmitEditing={() => refXtPass.current?.focus()}
+                    style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+                  />
+
+                  <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.md }]}>ŞİFRE</Text>
+                  <TextInput
+                    testID="code-pass-input"
+                    ref={refXtPass}
+                    onFocus={revealCredentialFields}
+                    value={xtPass}
+                    onChangeText={setXtPass}
+                    placeholder="Şifre"
+                    placeholderTextColor={colors.onSurfaceTertiary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    secureTextEntry
+                    returnKeyType="done"
+                    style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+                  />
+                </>
+              )}
+
+              {/* Kaynak URL — varsayılan uygulama sahibinindir; gelişmiş kullanıcı değiştirebilir. */}
+              <FocusButton
+                testID="code-source-toggle"
+                onPress={() => setShowCodeSource(v => !v)}
+                style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 8, marginTop: SPACING.sm }}
+              >
+                <Ionicons name={showCodeSource ? "chevron-down" : "chevron-forward"} size={16} color={colors.onSurfaceSecondary} />
+                <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm }}>Kod kaynağı (gelişmiş)</Text>
+              </FocusButton>
+              {showCodeSource && (
+                <>
+                  <TextInput
+                    testID="code-source-input"
+                    value={codeSource}
+                    onChangeText={setCodeSource}
+                    placeholder={DEFAULT_CODE_SOURCE}
+                    placeholderTextColor={colors.onSurfaceTertiary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="url"
+                    style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+                  />
+                  <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: -4, marginBottom: 4 }}>
+                    Boş bırakılırsa varsayılan kaynak kullanılır.
+                  </Text>
+                </>
+              )}
+            </>
+          )}
+
+          {method === "bulk" && (
+            <>
+              <View style={[styles.infoBanner, { backgroundColor: colors.brandPrimary + "16", borderColor: colors.brandPrimary }]}> 
+                <Ionicons name="shield-checkmark" size={20} color={colors.brandPrimary} />
+                <Text style={[styles.infoBannerText, { color: colors.onSurface }]}> 
+                  Birden fazla Xtream hesabını tek işlemde ekleyin. Kullanıcı adı ve şifreler Firebase'e gönderilmez; yalnız cihazınızdan aday IPTV sunucularında doğrulanır.
+                </Text>
+              </View>
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>FORM İLE HESAP EKLE</Text>
+              {bulkManualRows.map((row, rowIndex) => (
+                <View key={row.id} style={{ backgroundColor: colors.surfaceSecondary, borderColor: colors.border, borderWidth: 1, borderRadius: RADIUS.md, padding: SPACING.md, marginBottom: SPACING.md, gap: 9 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                    <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold }}>Hesap {rowIndex + 1}</Text>
+                    {bulkManualRows.length > 1 && (
+                      <FocusButton focusable onPress={() => setBulkManualRows(rows => rows.filter(x => x.id !== row.id))} style={{ padding: 6 }}>
+                        <Ionicons name="trash-outline" size={20} color={colors.error} />
+                      </FocusButton>
+                    )}
+                  </View>
+                  <TextInput value={row.name} onChangeText={v => setBulkManualRows(rows => rows.map(x => x.id === row.id ? { ...x, name: v } : x))} onFocus={revealCredentialFields} placeholder="Liste adı (örn. Annem)" placeholderTextColor={colors.onSurfaceTertiary} style={[styles.input, { backgroundColor: colors.surface, color: colors.onSurface, borderColor: colors.border }]} />
+                  <TextInput value={row.username} onChangeText={v => setBulkManualRows(rows => rows.map(x => x.id === row.id ? { ...x, username: v } : x))} onFocus={revealCredentialFields} placeholder="Kullanıcı adı" autoCapitalize="none" autoCorrect={false} placeholderTextColor={colors.onSurfaceTertiary} style={[styles.input, { backgroundColor: colors.surface, color: colors.onSurface, borderColor: colors.border }]} />
+                  <TextInput value={row.password} onChangeText={v => setBulkManualRows(rows => rows.map(x => x.id === row.id ? { ...x, password: v } : x))} onFocus={revealCredentialFields} placeholder="Şifre" secureTextEntry autoCapitalize="none" autoCorrect={false} placeholderTextColor={colors.onSurfaceTertiary} style={[styles.input, { backgroundColor: colors.surface, color: colors.onSurface, borderColor: colors.border }]} />
+                  <TextInput value={row.locator} onChangeText={v => setBulkManualRows(rows => rows.map(x => x.id === row.id ? { ...x, locator: v } : x))} onFocus={revealCredentialFields} placeholder="Sunucu kodu / panel adı / DNS (isteğe bağlı)" autoCapitalize="none" autoCorrect={false} placeholderTextColor={colors.onSurfaceTertiary} style={[styles.input, { backgroundColor: colors.surface, color: colors.onSurface, borderColor: colors.border }]} />
+                </View>
+              ))}
+              <FocusButton focusable onPress={() => setBulkManualRows(rows => [...rows, { id: `bulk-row-${Date.now()}-${rows.length}`, name: "", username: "", password: "", locator: "" }])} style={[styles.fileBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+                <Ionicons name="person-add" size={21} color={colors.brandPrimary} />
+                <Text style={[styles.fileText, { color: colors.onSurface }]}>Yeni hesap satırı ekle</Text>
+              </FocusButton>
+
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>HIZLI YAPIŞTIRMA (İSTEĞE BAĞLI)</Text>
+              <TextInput
+                testID="bulk-accounts-input"
+                value={bulkText}
+                onChangeText={setBulkText}
+                onFocus={revealCredentialFields}
+                placeholder={BULK_ACCOUNT_EXAMPLE}
+                placeholderTextColor={colors.onSurfaceTertiary}
+                multiline textAlignVertical="top" autoCapitalize="none" autoCorrect={false}
+                style={[styles.bulkTextInput, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+              />
+              <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, lineHeight: 17, marginTop: 6 }}>
+                Çok sayıda hesap için CSV/TXT satırlarını yapıştırabilirsiniz. Form, hızlı yapıştırma ve dosya aynı işlemde birlikte kullanılabilir.
+              </Text>
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>DOSYADAN EKLE (İSTEĞE BAĞLI)</Text>
+              <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, lineHeight: 17, marginBottom: 7 }}>
+                Manuel giriş ve dosya aynı anda kullanılabilir; hesaplar tek önizlemede birleştirilir.
+              </Text>
+              <FocusButton testID="bulk-pick-file-btn" focusable onPress={pickBulkFile} style={[styles.fileBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+                <Ionicons name="document-attach" size={22} color={colors.brandPrimary} />
+                <Text style={[styles.fileText, { color: colors.onSurface }]} numberOfLines={1}>{bulkFileName || "CSV / TXT / JSON dosyası seç"}</Text>
+              </FocusButton>
+              {!!bulkFileText && (
+                <FocusButton focusable onPress={() => { setBulkFileText(""); setBulkFileName(""); }} style={{ alignSelf: "flex-start", paddingVertical: 8, paddingHorizontal: 4 }}>
+                  <Text style={{ color: colors.error, fontWeight: FONT.weight.semibold }}>Dosyayı kaldır</Text>
+                </FocusButton>
+              )}
+              {(bulkParsed.accounts.length || bulkParsed.warnings.length) ? (() => {
+                const parsed = bulkParsed;
+                return (
+                  <View style={[styles.bulkPreview, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}> 
+                    <FocusButton focusable onPress={() => setBulkPreviewOpen(v => !v)} style={styles.bulkPreviewHeader}>
+                      <Ionicons name={parsed.accounts.length ? "checkmark-circle" : "alert-circle"} size={20} color={parsed.accounts.length ? colors.brandPrimary : colors.error} />
+                      <Text style={{ color: colors.onSurface, flex: 1, fontWeight: FONT.weight.bold }}>{parsed.accounts.length} hesap algılandı</Text>
+                      <Ionicons name={bulkPreviewOpen ? "chevron-up" : "chevron-down"} size={18} color={colors.onSurfaceSecondary} />
+                    </FocusButton>
+                    {bulkPreviewOpen && <View style={{ gap: 7, marginTop: SPACING.sm }}>
+                      {parsed.accounts.slice(0, 12).map(a => <View key={`${a.row}-${a.username}`} style={{ borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, paddingTop: 7 }}>
+                        <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.semibold }}>{a.name || `Hesap ${a.row}`} · {a.username}</Text>
+                        <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, marginTop: 2 }}>{bulkAccountLocatorLabel(a)}</Text>
+                      </View>)}
+                      {parsed.accounts.length > 12 && <Text style={{ color: colors.onSurfaceTertiary }}>+ {parsed.accounts.length - 12} hesap daha</Text>}
+                      {parsed.warnings.slice(0, 4).map((w, i) => <Text key={i} style={{ color: colors.error, fontSize: FONT.size.xs }}>⚠ {w}</Text>)}
+                    </View>}
+                  </View>
+                );
+              })() : null}
+            </>
+          )}
+
+          {method === "stalker" && (
+            <>
+              <View style={[styles.infoBanner, { backgroundColor: colors.brandPrimary + "22", borderColor: colors.brandPrimary }]}>
+                <Ionicons name="information-circle" size={18} color={colors.brandPrimary} />
+                <Text style={[styles.infoBannerText, { color: colors.onSurface }]}>
+                  Sadece SİZE AİT MAG cihazının MAC adresini girin. Başkasının MAC adresini kullanmak yasadışıdır.
+                </Text>
+              </View>
+
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>PORTAL URL</Text>
+              <TextInput
+                testID="stalker-portal-input"
+                ref={refStPortal}
+                value={stPortal}
+                returnKeyType="next"
+                blurOnSubmit={false}
+                onSubmitEditing={() => refStMac.current?.focus()}
+                onChangeText={setStPortal}
+                placeholder="http://portal.saglayici.com"
+                placeholderTextColor={colors.onSurfaceTertiary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+              />
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.md }]}>MAC ADRESİ</Text>
+              <TextInput
+                testID="stalker-mac-input"
+                ref={refStMac}
+                value={stMac}
+                returnKeyType="next"
+                blurOnSubmit={false}
+                onSubmitEditing={() => refStSerial.current?.focus()}
+                onChangeText={t => setStMac(t.toUpperCase())}
+                placeholder="00:1A:79:AA:BB:CC"
+                placeholderTextColor={colors.onSurfaceTertiary}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+              />
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.md }]}>
+                SERIAL NUMBER (isteğe bağlı)
+              </Text>
+              <TextInput
+                testID="stalker-serial-input"
+                ref={refStSerial}
+                value={stSerial}
+                returnKeyType="done"
+                onChangeText={setStSerial}
+                placeholder="062015N001999"
+                placeholderTextColor={colors.onSurfaceTertiary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+              />
+            </>
+          )}
+
+          {error && (
+            <View testID="error-box" style={[styles.errorBox, { backgroundColor: colors.error + "22", borderColor: colors.error }]}>
+              <View style={{ flexDirection: "row", gap: SPACING.sm, alignItems: "flex-start" }}>
+                <Ionicons name="alert-circle" size={18} color={colors.error} style={{ marginTop: 2 }} />
+                <Text style={[styles.errorText, { color: colors.error }]}>{error}</Text>
+              </View>
+              {/sunucu|ulaş|network|erişil|internet/i.test(error) && (
+                <FocusButton
+                  testID="error-diagnostic-btn"
+                  onPress={() => router.push("/diagnostic")}
+                  style={{
+                    flexDirection: "row", alignItems: "center", justifyContent: "center",
+                    gap: 6, marginTop: SPACING.sm, paddingVertical: SPACING.sm,
+                    borderRadius: RADIUS.pill, borderWidth: 1, borderColor: colors.error,
+                  }}
+                >
+                  <Ionicons name="pulse" size={16} color={colors.error} />
+                  <Text style={{ color: colors.error, fontWeight: FONT.weight.bold }}>Bağlantıyı Test Et</Text>
+                </FocusButton>
+              )}
+            </View>
+          )}
+
+          {loading && progress && (
+            <View style={[styles.progressBox, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+              <ActivityIndicator color={colors.brandPrimary} />
+              <Text style={[styles.progressText, { color: colors.onSurface }]}>{progress}</Text>
+            </View>
+          )}
+
+          <View style={[styles.footer, { backgroundColor: colors.surface, borderTopColor: colors.border, marginTop: SPACING.lg, marginBottom: keyboardHeight > 0 ? SPACING.sm : SPACING.lg }]}>
+            <FocusButton testID="submit-playlist-btn" onPress={submit} disabled={loading} activeOpacity={0.85} style={[styles.cta, { backgroundColor: colors.brandPrimary, opacity: loading ? 0.7 : 1 }]}>
+              {loading ? <ActivityIndicator color={colors.onBrandPrimary} /> : <>
+                <Ionicons name={method === "bulk" ? "people" : method === "code" && codeMode === "auto" ? "search" : "checkmark-circle"} size={22} color={colors.onBrandPrimary} />
+                <Text style={[styles.ctaText, { color: colors.onBrandPrimary }]}>{method === "bulk" ? "Hesapları Toplu Ekle" : method === "code" && codeMode === "auto" ? "Hesabımı Bul ve Ekle" : "Kaydet ve Yükle"}</Text>
+              </>}
+            </FocusButton>
+          </View>
+        </ScrollView>
+
+        <Modal
+          visible={showDiscoveryMatches}
+          transparent
+          animationType="fade"
+          onRequestClose={() => {
+            setShowDiscoveryMatches(false);
+            setDiscoveryMatches([]);
+            setSelectedDiscoveryKeys([]);
+          }}
+        >
+          <View style={styles.matchModalBackdrop}>
+            <View style={[styles.matchModalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <View style={styles.matchModalHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.matchModalTitle, { color: colors.onSurface }]}>
+                    {discoveryTitle}
+                  </Text>
+                  <Text style={{ color: colors.onSurfaceSecondary, marginTop: 4, lineHeight: 18 }}>
+                    {discoverySubtitle}
+                  </Text>
+                </View>
+                <FocusButton
+                  testID="discovery-match-close"
+                  focusable
+                  onPress={() => {
+                    setShowDiscoveryMatches(false);
+                    setDiscoveryMatches([]);
+                  }}
+                  style={styles.matchCloseBtn}
+                >
+                  <Ionicons name="close" size={24} color={colors.onSurface} />
+                </FocusButton>
+              </View>
+
+              <ScrollView
+                style={{ maxHeight: 480 }}
+                contentContainerStyle={{ gap: SPACING.sm, paddingBottom: SPACING.sm }}
+                keyboardShouldPersistTaps="handled"
+              >
+                {discoveryMatches.map((m, index) => {
+                  const info = accountSummary(m);
+                  const key = discoveryKey(m);
+                  const selected = selectedDiscoveryKeys.includes(key);
+                  return (
+                    <FocusButton
+                      key={`${m.code}-${m.panelName}-${m.server}`}
+                      testID={`discovery-match-${index}`}
+                      focusable
+                      autoFocus={index === 0}
+                      onPress={() => setSelectedDiscoveryKeys(prev => selected ? prev.filter(k => k !== key) : [...prev, key])}
+                      style={[styles.matchRow,{ backgroundColor: selected ? colors.brandPrimary + "14" : colors.surfaceSecondary, borderColor: selected ? colors.brandPrimary : colors.border }]}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold, fontSize: FONT.size.base }}>
+                          {m.panelName}
+                        </Text>
+                        <Text style={{ color: colors.onSurfaceSecondary, marginTop: 2 }}>
+                          Sunucu kodu: {m.code}
+                        </Text>
+                        <Text style={{ color: colors.onSurfaceSecondary, marginTop: 2 }}>
+                          Durum: {info.status} · Bitiş: {info.exp}
+                        </Text>
+                        <Text style={{ color: colors.onSurfaceTertiary, marginTop: 2, fontSize: FONT.size.xs }}>
+                          Bağlantı: {info.active}/{info.max} · {m.server}
+                        </Text>
+                      </View>
+                      <Ionicons name={selected ? "checkbox" : "square-outline"} size={26} color={selected ? colors.brandPrimary : colors.onSurfaceTertiary} />
+                    </FocusButton>
+                  );
+                })}
+              </ScrollView>
+
+              <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.md }}>
+                <FocusButton focusable onPress={() => setSelectedDiscoveryKeys(selectedDiscoveryKeys.length === discoveryMatches.length ? [] : discoveryMatches.map(discoveryKey))} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
+                  <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{selectedDiscoveryKeys.length === discoveryMatches.length ? "Seçimi Kaldır" : "Tümünü Seç"}</Text>
+                </FocusButton>
+                <FocusButton testID="discovery-add-selected" focusable disabled={bulkAdding || selectedDiscoveryKeys.length===0} onPress={async()=>{
+                  const chosen=discoveryMatches.filter(m=>selectedDiscoveryKeys.includes(discoveryKey(m))); setBulkAdding(true); let ok=0; const failed:string[]=[];
+                  try {
+                    const hostsByPanel = new Map<string, string[]>();
+                    for (const all of discoveryMatches) {
+                      const panelKey = `${all.code}\u0000${all.panelName}`;
+                      hostsByPanel.set(panelKey, [...(hostsByPanel.get(panelKey) || []), all.server]);
+                    }
+                    const selectedCountByPanel = new Map<string, number>();
+                    for (const m of chosen) {
+                      const panelKey = `${m.code}\u0000${m.panelName}`;
+                      selectedCountByPanel.set(panelKey, (selectedCountByPanel.get(panelKey) || 0) + 1);
+                    }
+                    for(let i=0;i<chosen.length;i++){
+                      const m=chosen[i];
+                      const panelKey = `${m.code}\u0000${m.panelName}`;
+                      const multiDns = (selectedCountByPanel.get(panelKey) || 0) > 1;
+                      const customBase = name.trim();
+                      const displayName = customBase
+                        ? (chosen.length === 1
+                            ? customBase
+                            : multiDns
+                              ? `${customBase} · ${hostName(m.server)}`
+                              : `${customBase} · ${m.panelName}`)
+                        : (multiDns ? `${m.panelName} · ${hostName(m.server)}` : m.panelName);
+                      setProgress(`${i+1}/${chosen.length} · ${displayName} ekleniyor...`);
+                      const added=await submitXtreamDirect(
+                        {server:m.server,username:xtUser.trim(),password:xtPass.trim()},
+                        displayName,
+                        makeBinding(m.code,m.panelName,m.server,hostsByPanel.get(panelKey) || [m.server]),
+                        false
+                      );
+                      if(added) ok++; else failed.push(displayName);
+                    }
+                    setShowDiscoveryMatches(false); setDiscoveryMatches([]); setSelectedDiscoveryKeys([]);
+                    Alert.alert("Panel Ekleme",`${ok}/${chosen.length} playlist eklendi.`+(failed.length?`\nEklenemeyen: ${failed.join(", ")}`:""));
+                    if(ok>0) router.replace("/(tabs)");
+                  } finally { setBulkAdding(false); setLoading(false); setProgress(""); }
+                }} style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedDiscoveryKeys.length?1:0.5}]}>
+                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{selectedDiscoveryKeys.length} Seçileni Ekle</Text>}
+                </FocusButton>
+              </View>
+
+              {bulkAdding && !!progress && (
+                <View style={[styles.progressBox, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginTop: SPACING.sm }]}>
+                  <ActivityIndicator size="small" color={colors.brandPrimary} />
+                  <Text style={{ color: colors.onSurfaceSecondary, flex: 1, fontSize: FONT.size.sm, lineHeight: 19 }}>{progress}</Text>
+                </View>
+              )}
+
+              <View style={[styles.infoBanner, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginTop: SPACING.md }]}>
+                <Ionicons name="shield-checkmark" size={18} color={colors.brandPrimary} />
+                <Text style={{ color: colors.onSurface, flex: 1, fontSize: FONT.size.sm }}>
+                  Seçtiğiniz her DNS hesabı ayrı playlist olarak kaydedilir. Tercih edilen DNS çalıştığı sürece korunur; arıza halinde yalnız aynı panelin doğrulanmış/yeni DNS adresleri denenir.
+                </Text>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1 },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.md,
+  },
+  title: { fontSize: FONT.size.lg, fontWeight: FONT.weight.bold },
+  sectionLabel: {
+    fontSize: FONT.size.xs,
+    fontWeight: FONT.weight.bold,
+    letterSpacing: 1.5,
+    marginBottom: SPACING.sm,
+  },
+  methodGrid: { flexDirection: "row", gap: SPACING.sm, flexWrap: "wrap" },
+  methodCard: {
+    width: "23%",
+    minWidth: 74,
+    flexGrow: 1,
+    borderWidth: 1.5,
+    borderRadius: RADIUS.md,
+    paddingVertical: SPACING.md,
+    alignItems: "center",
+    gap: SPACING.xs,
+  },
+  methodLabel: { fontSize: FONT.size.sm, fontWeight: FONT.weight.semibold },
+  input: {
+    height: 52,
+    borderWidth: 1,
+    borderRadius: RADIUS.md,
+    paddingHorizontal: SPACING.lg,
+    fontSize: FONT.size.lg,
+  },
+  demoRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: SPACING.sm },
+  demoText: { fontSize: FONT.size.base, fontWeight: FONT.weight.semibold },
+  fileBtn: {
+    flexDirection: "row", alignItems: "center", gap: SPACING.md,
+    height: 52, borderWidth: 1, borderRadius: RADIUS.md, paddingHorizontal: SPACING.lg,
+  },
+  fileText: { fontSize: FONT.size.base, flex: 1 },
+  codeModeGrid: { flexDirection: "row", gap: SPACING.sm, flexWrap: "wrap" },
+  codeModeCard: {
+    flex: 1,
+    minWidth: 120,
+    minHeight: 78,
+    borderWidth: 1.5,
+    borderRadius: RADIUS.md,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: SPACING.md,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: SPACING.xs,
+  },
+  directoryRefresh: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: SPACING.sm,
+    borderWidth: 1,
+    borderRadius: RADIUS.md,
+    minHeight: 46,
+    marginTop: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+  },
+  directoryBox: {
+    borderWidth: 1,
+    borderRadius: RADIUS.md,
+    overflow: "hidden",
+    marginTop: SPACING.sm,
+  },
+  directoryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 60,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: SPACING.sm,
+  },
+  selectedPanel: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: SPACING.sm,
+    borderWidth: 1,
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+    marginTop: SPACING.lg,
+  },
+  infoBanner: {
+    flexDirection: "row", alignItems: "center", gap: SPACING.sm,
+    padding: SPACING.md, borderRadius: RADIUS.md, borderWidth: 1,
+    marginTop: SPACING.md,
+  },
+  infoBannerText: { flex: 1, fontSize: FONT.size.sm, lineHeight: 18 },
+  errorBox: {
+    borderWidth: 1, borderRadius: RADIUS.md, padding: SPACING.md, marginTop: SPACING.lg,
+  },
+  errorText: { flex: 1, fontSize: FONT.size.base, lineHeight: 20 },
+  progressBox: {
+    flexDirection: "row", alignItems: "center", gap: SPACING.md,
+    borderWidth: 1, borderRadius: RADIUS.md, padding: SPACING.md, marginTop: SPACING.lg,
+  },
+  progressText: { fontSize: FONT.size.base },
+  matchModalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: SPACING.lg,
+  },
+  matchModalCard: {
+    width: "100%",
+    maxWidth: 760,
+    maxHeight: "86%",
+    borderWidth: 1,
+    borderRadius: RADIUS.lg,
+    padding: SPACING.lg,
+  },
+  matchModalHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: SPACING.md,
+    marginBottom: SPACING.md,
+  },
+  matchModalTitle: {
+    fontSize: FONT.size.lg,
+    fontWeight: FONT.weight.bold,
+  },
+  matchCloseBtn: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: RADIUS.pill,
+  },
+  matchRow: {
+    minHeight: 92,
+    borderWidth: 1,
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: SPACING.md,
+  },
+  scanSpeedBtn: { flex: 1, minHeight: 68, borderWidth: 1, borderRadius: RADIUS.md, alignItems: "center", justifyContent: "center", paddingHorizontal: 6, paddingVertical: 8, gap: 3 },
+  bulkBtn: { flex: 1, minHeight: 46, borderRadius: RADIUS.pill, borderWidth: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: SPACING.sm },
+  matchSelectBadge: {
+    minWidth: 54,
+    minHeight: 36,
+    borderRadius: RADIUS.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: SPACING.sm,
+  },
+  bulkTextInput: { minHeight: 180, maxHeight: 320, borderWidth: 1, borderRadius: RADIUS.md, paddingHorizontal: SPACING.md, paddingVertical: SPACING.md, fontSize: FONT.size.base, lineHeight: 21 },
+  bulkPreview: { borderWidth: 1, borderRadius: RADIUS.md, padding: SPACING.md, marginTop: SPACING.md },
+  bulkPreviewHeader: { minHeight: 38, flexDirection: "row", alignItems: "center", gap: SPACING.sm },
+  footer: { padding: SPACING.lg, borderTopWidth: 1 },
+  cta: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: SPACING.sm,
+    height: 56, borderRadius: RADIUS.pill,
+  },
+  ctaText: { fontSize: FONT.size.lg, fontWeight: FONT.weight.bold },
+});

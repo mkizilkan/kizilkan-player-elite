@@ -1,0 +1,22 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.kizilkanmpv'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.kizilkanmpv"
+  defaultConfig {
+    minSdkVersion 26
+    versionCode 1
+    versionName "1.0.0"
+  }
+}
+
+dependencies {
+  // GPT ELITE v15: Expo SDK 54 ile Streamyfin'in Android MPV entegrasyonunda
+  // kullanılan, Maven Central'da yayınlanmış libmpv/FFmpeg AAR.
+  implementation 'dev.jdtech.mpv:libmpv:0.5.1'
+}
