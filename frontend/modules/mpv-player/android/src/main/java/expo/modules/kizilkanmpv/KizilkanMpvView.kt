@@ -9,8 +9,6 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.FrameLayout
 import dev.jdtech.mpv.MPVLib
-import dev.jdtech.mpv.MPVLib.MpvEvent
-import dev.jdtech.mpv.MPVLib.MpvFormat
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
@@ -114,12 +112,12 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
 
       MPVLib.addObserver(this)
       MPVLib.addLogObserver(this)
-      MPVLib.observeProperty("time-pos", MpvFormat.MPV_FORMAT_DOUBLE)
-      MPVLib.observeProperty("duration/full", MpvFormat.MPV_FORMAT_DOUBLE)
-      MPVLib.observeProperty("pause", MpvFormat.MPV_FORMAT_FLAG)
-      MPVLib.observeProperty("paused-for-cache", MpvFormat.MPV_FORMAT_FLAG)
-      MPVLib.observeProperty("video-params/w", MpvFormat.MPV_FORMAT_INT64)
-      MPVLib.observeProperty("video-params/h", MpvFormat.MPV_FORMAT_INT64)
+      MPVLib.observeProperty("time-pos", MPVLib.MPV_FORMAT_DOUBLE)
+      MPVLib.observeProperty("duration/full", MPVLib.MPV_FORMAT_DOUBLE)
+      MPVLib.observeProperty("pause", MPVLib.MPV_FORMAT_FLAG)
+      MPVLib.observeProperty("paused-for-cache", MPVLib.MPV_FORMAT_FLAG)
+      MPVLib.observeProperty("video-params/w", MPVLib.MPV_FORMAT_INT64)
+      MPVLib.observeProperty("video-params/h", MPVLib.MPV_FORMAT_INT64)
       initialized = true
     } catch (e: Throwable) {
       emitError("MPV başlatılamadı: ${e.message ?: e.javaClass.simpleName}")
@@ -302,14 +300,14 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
 
   override fun event(eventId: Int) {
     when (eventId) {
-      MpvEvent.MPV_EVENT_FILE_LOADED -> {
+      MPVLib.MPV_EVENT_FILE_LOADED -> {
         post {
           onLoad(mapOf("url" to (currentUrl ?: "")))
           onTracks(getTracks())
         }
       }
-      MpvEvent.MPV_EVENT_VIDEO_RECONFIG, MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> emitVideoReadyIfPossible()
-      MpvEvent.MPV_EVENT_END_FILE -> {
+      MPVLib.MPV_EVENT_VIDEO_RECONFIG, MPVLib.MPV_EVENT_PLAYBACK_RESTART -> emitVideoReadyIfPossible()
+      MPVLib.MPV_EVENT_END_FILE -> {
         post { onPlayingChange(mapOf("isPlaying" to false)) }
         val err = lastError
 
@@ -326,7 +324,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   override fun logMessage(prefix: String, level: Int, text: String) {
     // Yalnız gerçek error/fatal logu son hata adayı olarak sakla. Log tek başına
     // çalışan playback'i kesmez; END_FILE/onError akışında kullanılır.
-    if (level <= MPVLib.MpvLogLevel.MPV_LOG_LEVEL_ERROR) {
+    if (level <= MPVLib.MPV_LOG_LEVEL_ERROR) {
       lastError = "$prefix: ${text.trim()}"
       Log.w(TAG, lastError ?: "MPV error")
     }

@@ -1,7 +1,7 @@
 # ============================================================================
 # KIZILKAN PLAYER — GitHub Actions APK Derleyici
 # Dosya   : .github/workflows/build-apk.yml   (DEPO KÖKÜNE, frontend'in içine DEĞİL)
-# Sürüm   : v1.4.0 (v15.0.2: Node 22 + setup-node v6 + setup-java v5) (GPT v10.6.6 Build Tools uyumlu sertifika doğrulama + kalıcı signing)
+# Sürüm   : v1.4.1 (v15.0.3: libmpv 0.5.1 Kotlin API uyumu; Node 22 + setup-node v6 + setup-java v5) (GPT v10.6.6 Build Tools uyumlu sertifika doğrulama + kalıcı signing)
 # Faz     : FAZ A / test altyapısı
 # ============================================================================
 #

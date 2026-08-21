@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.0.2 CLEAN CI BUILD FIX)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.0.3 MPV 0.5.1 KOTLIN API FIX)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -95,9 +95,20 @@ forbidText(mpvKt, 'override fun onDetachedFromWindow()', 'geçici detach sıras�
 requireText(mpvKt, 'playbackStarted', 'MPV stale END_FILE error koruması');
 requireText(mpvModKt, 'OnViewDestroys', 'Expo MPV gerçek view destroy lifecycle');
 requireText(mpvGradleSrc, "dev.jdtech.mpv:libmpv:0.5.1", 'MPV/FFmpeg AAR dependency');
+// v15.0.3: libmpv 0.5.1 Java API exposes format/event/log constants directly on MPVLib.
+forbidText(mpvKt, 'MPVLib.MpvFormat', 'libmpv 0.5.1 nested MpvFormat regresyonu');
+forbidText(mpvKt, 'MPVLib.MpvEvent', 'libmpv 0.5.1 nested MpvEvent regresyonu');
+forbidText(mpvKt, 'MPVLib.MpvLogLevel', 'libmpv 0.5.1 nested MpvLogLevel regresyonu');
+forbidText(mpvKt, 'import dev.jdtech.mpv.MPVLib.Mpv', 'libmpv 0.5.1 nested constant import regresyonu');
+requireText(mpvKt, 'MPVLib.MPV_FORMAT_DOUBLE', 'libmpv 0.5.1 format sabiti');
+requireText(mpvKt, 'MPVLib.MPV_FORMAT_FLAG', 'libmpv 0.5.1 flag sabiti');
+requireText(mpvKt, 'MPVLib.MPV_FORMAT_INT64', 'libmpv 0.5.1 int64 sabiti');
+requireText(mpvKt, 'MPVLib.MPV_EVENT_FILE_LOADED', 'libmpv 0.5.1 file-loaded event sabiti');
+requireText(mpvKt, 'MPVLib.MPV_EVENT_END_FILE', 'libmpv 0.5.1 end-file event sabiti');
+requireText(mpvKt, 'MPVLib.MPV_LOG_LEVEL_ERROR', 'libmpv 0.5.1 log-level sabiti');
 
-if (app?.expo?.version !== '15.0.2') problem(`app version ${app?.expo?.version} (15.0.2 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150002) problem(`versionCode ${app?.expo?.android?.versionCode} (150002 bekleniyor)`);
+if (app?.expo?.version !== '15.0.3') problem(`app version ${app?.expo?.version} (15.0.3 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150003) problem(`versionCode ${app?.expo?.android?.versionCode} (150003 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.

@@ -87,7 +87,14 @@ credentials.json
 *.key
 .credentials
 
-# Release signing secrets
+# Android release signing - NEVER COMMIT
 *.jks
 *.keystore
 *.base64
+*-release-GITHUB.txt
+
+# Android release signing - NEVER COMMIT
+*.jks
+*.keystore
+*.base64
+*-release-GITHUB.txt
