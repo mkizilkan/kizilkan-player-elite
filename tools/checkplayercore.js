@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.0.3 MPV 0.5.1 KOTLIN API FIX)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.0.4 CERTIFICATE GATE + AI DEVIR CONTRACT)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -107,9 +107,47 @@ requireText(mpvKt, 'MPVLib.MPV_EVENT_FILE_LOADED', 'libmpv 0.5.1 file-loaded eve
 requireText(mpvKt, 'MPVLib.MPV_EVENT_END_FILE', 'libmpv 0.5.1 end-file event sabiti');
 requireText(mpvKt, 'MPVLib.MPV_LOG_LEVEL_ERROR', 'libmpv 0.5.1 log-level sabiti');
 
-if (app?.expo?.version !== '15.0.3') problem(`app version ${app?.expo?.version} (15.0.3 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150003) problem(`versionCode ${app?.expo?.android?.versionCode} (150003 bekleniyor)`);
+if (app?.expo?.version !== '15.0.4') problem(`app version ${app?.expo?.version} (15.0.4 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150004) problem(`versionCode ${app?.expo?.android?.versionCode} (150004 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
+
+
+// v15.0.4: release certificate identity must live in GitHub Secrets, never hard-coded.
+const projectRoot = path.resolve(root, '..');
+const workflowPath = path.join(projectRoot, '.github', 'workflows', 'build-apk.yml');
+if (!fs.existsSync(workflowPath)) {
+  problem('CI workflow yok: .github/workflows/build-apk.yml');
+} else {
+  const workflow = fs.readFileSync(workflowPath, 'utf8');
+  if (!workflow.includes('ANDROID_CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}')) {
+    problem('CI release sertifika fingerprint secret baglantisi eksik (ANDROID_CERT_SHA256)');
+  }
+  if (!workflow.includes('EXPECTED_CERT_SHA256=$(printf')) {
+    problem('CI sertifika SHA-256 normalize/secret karsilastirma kapisi eksik');
+  }
+  if (/EXPECTED_CERT_SHA256="[0-9A-Fa-f]{64}"/.test(workflow)) {
+    problem('CI icinde hard-coded release certificate SHA-256 yasak; GitHub Secret kullanilmali');
+  }
+}
+
+// Sohbet devri sözleşmesi: her paket güncel ve ayrıntılı AI bağlam belgesi taşır.
+const handoffPath = path.join(projectRoot, 'AI-PROJE-DEVIR-BAGLAM.md');
+if (!fs.existsSync(handoffPath)) {
+  problem('AI-PROJE-DEVIR-BAGLAM.md eksik');
+} else {
+  const handoff = fs.readFileSync(handoffPath, 'utf8');
+  const requiredHandoffTokens = [
+    'v15.0.4',
+    'Media3 → MPV/FFmpeg → VLC',
+    'ANDROID_CERT_SHA256',
+    'KALAN / SONRAKI ISLER',
+    'SOHBET DEVİR SÖZLEŞMESİ',
+    'APK v15.0.3 DERLENDI',
+  ];
+  for (const token of requiredHandoffTokens) {
+    if (!handoff.includes(token)) problem(`AI devir belgesi guncel/eksiksiz degil: ${token}`);
+  }
+}
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.
 const sf = ts.createSourceFile(player, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TSX);

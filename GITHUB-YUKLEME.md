@@ -1,98 +1,68 @@
-# GitHub'a Telefondan Yükleme ve APK Alma
+# KIZILKAN PLAYER ELITE — GitHub / Termux / APK Akışı (v15.0.4)
 
-Bu zip GitHub'a yüklenmeye HAZIR, eksiksiz projedir. emergent.sh ile ilgisi yoktur — tertemiz bir başlangıçtır.
+## Güncel kimlik
+- Repo: `mkizilkan/kizilkan-player-elite`
+- Telefon klasörü: `/sdcard/Download/gpt-kizilkan-player-elite`
+- Branch: `main`
+- Package: `com.gpt.kizilkan.player`
+- Güncel sürüm: `15.0.4` / versionCode `150004`
 
----
+> Yeni sohbet/devralma için önce `AI-PROJE-DEVIR-BAGLAM.md` okunmalıdır.
 
-## 1. GitHub hesabı ve repo (bir kez)
+## Güvenli ZIP senkronu
+Yeni ZIP her zaman `gpt-kizilkan-player-elite/` köküyle gelir. Mevcut çalışma ağacına aktarırken `.git` ve yerel release signing materyali korunmalıdır.
 
-1. github.com → Sign up (ücretsiz)
-2. Sağ üst **"+"** → **New repository**
-3. İsim: `kizilkan-player`
-4. **Public** seç (Actions sınırsız ücretsiz olur; Private'ta ayda 2000 dk)
-5. **Create repository**
-
----
-
-## 2. Dosyaları yükleme (telefondan) — 3 yol
-
-### Yol C — Termux (EN KOLAY, önerilen)
-
-F-Droid'den **Termux** kur (ücretsiz), sonra:
+Örnek mantık:
 
 ```bash
-pkg update && pkg install git
-cd /sdcard/Download/kizilkan-player    # zip'i açtığın klasör
-git init
-git add -A
-git commit -m "KIZILKAN v4.3.1 FAZ A"
-git branch -M main
-git remote add origin https://github.com/KULLANICI_ADIN/kizilkan-player.git
-git push -u origin main
+rsync -av --delete \
+  --exclude='.git' \
+  --exclude='frontend/kizilkan-player-elite-release.jks' \
+  --exclude='frontend/kizilkan-player-elite-release.jks.base64' \
+  --exclude='frontend/kizilkan-player-elite-release-GITHUB.txt' \
+  YENI_ZIP_ACILMIS_KOK/ \
+  /sdcard/Download/gpt-kizilkan-player-elite/
 ```
 
-> Şifre sorulunca GitHub şifresi DEĞİL, **Personal Access Token** gir:
-> GitHub → Settings → Developer settings → Personal access tokens →
-> Tokens (classic) → Generate new token → `repo` yetkisi ver → kopyala.
+## Commit / push
 
-### Yol A — GitHub web arayüzü
+```bash
+cd /sdcard/Download/gpt-kizilkan-player-elite
+git status --short
+git diff --check
+git add .
+git commit -m "fix: GPT KIZILKAN PLAYER ELITE v15.0.4 certificate gate"
+git push origin main
+```
 
-Yeni repoda **"uploading an existing file"** linkine bas. Bu zip'i telefonda
-aç, klasörleri tek tek sürükle. Tarayıcıyı "masaüstü site" moduna alırsan kolaylaşır.
-(Çok dosya olduğu için Termux'tan daha zahmetli.)
+Signing dosyaları `git status` içinde görünüyorsa DUR; `.gitignore` kontrol edilmeden commit yapılmaz.
 
-### Yol B — GitHub mobil uygulaması
+## Release signing Secrets
+Repository → Settings → Secrets and variables → Actions altında release build için beş değer gerekir:
 
-GitHub uygulamasını kur, repoda "Add file" ile dosyaları ekle. Küçük
-değişiklikler için pratik, ilk toplu yükleme için değil.
+- `ANDROID_KEYSTORE_BASE64`
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
+- `ANDROID_CERT_SHA256`
 
----
+`ANDROID_CERT_SHA256`, kalıcı keystore için `keytool -list -v` çıktısındaki SHA256 fingerprint'tir. Şifre veya private key değildir. Keystore/Base64/parolalar repo veya Markdown içine yazılmaz.
 
-## 3. APK derleme (telefondan tek dokunuş)
+## GitHub Actions sırası
+1. dependencies
+2. `denetle.js` HARD gate
+3. `tsc --noEmit` HARD gate
+4. Expo clean prebuild
+5. kalıcı release signing
+6. manifest/TV/HTTP doğrulama
+7. Gradle release APK
+8. package/version/apksigner/certificate fingerprint HARD gate
+9. APK adlandırma
+10. artifact upload
+11. GitHub Release
 
-1. Repo → **Actions** sekmesi
-2. Sol menüden **"KIZILKAN APK Derle"**
-3. Sağda **"Run workflow"** butonu
-4. Seçenekler:
-   - **Yeni Mimari**: `true` bırak (build patlarsa `false` yapıp tekrar çalıştır)
-   - **Build tipi**: `release`
-   - **Release oluştur**: işaretli
-5. Yeşil **"Run workflow"** butonuna bas
+## v15.0.3'te doğrulanan gerçek durum
+v15.0.3 full Gradle release APK'yı gerçekten üretti, MPV Kotlin compile geçti, package/version ve `apksigner verify` geçti. Son failure yalnız eski hard-coded expected certificate fingerprint'iydi. v15.0.4 bunu `ANDROID_CERT_SHA256` Secret tabanlı gate'e taşır.
 
-20–40 dk sürer (sonraki build'ler 8–15 dk). İlerlemeyi Actions'tan izleyebilirsin.
-
----
-
-## 4. APK'yı indirme ve kurma
-
-Build bitince:
-
-1. Repo → **Releases** (sağ tarafta)
-2. En üstteki sürüme tıkla
-3. **KIZILKAN-Player-v4.3.1-buildN.apk** linkine bas → iner
-4. **ÖNEMLİ:** Kurmadan önce **eski uygulamayı kaldır** (paket adı değişti)
-5. APK'yı aç → "Bilinmeyen kaynaklara izin ver" → kur
-
-TV Box için: APK linkini `Downloader` uygulamasına yapıştır veya USB ile taşı.
-
----
-
-## 5. Kurunca test et
-
-| # | Test | Beklenen |
-|---|---|---|
-| 1 | `http://` bir kanal aç | **Görüntü gelmeli** (asıl düzeltme) |
-| 2 | `https://` bir kanal aç | Eskisi gibi çalışmalı |
-| 3 | TV Box ana ekranı | Uygulama görünmeli |
-| 4 | Aç-kapa | Beyaz ekran yok |
-
----
-
-## 6. Build patlarsa
-
-Actions'ta build kırmızı olursa:
-
-1. Önce **Yeni Mimari = false** ile tekrar dene (en olası çözüm)
-2. Hâlâ patlıyorsa: build log'unun **son ekranını** al, geliştiricine gönder
-3. Manifest doğrulaması build'in 8. adımında çıkar — "Summary" sayfasında
-   http düzeltmesinin uygulanıp uygulanmadığını PC'siz görebilirsin
+## APK alma
+Actions tamamen yeşil olduktan sonra APK hem Artifact hem GitHub Release olarak yüklenir. Build zinciri tamamlanmadan “APK hazır” kabul edilmez.
