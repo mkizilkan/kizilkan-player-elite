@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.0.1 BUILD FIX)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.0.2 CLEAN CI BUILD FIX)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -96,8 +96,8 @@ requireText(mpvKt, 'playbackStarted', 'MPV stale END_FILE error koruması');
 requireText(mpvModKt, 'OnViewDestroys', 'Expo MPV gerçek view destroy lifecycle');
 requireText(mpvGradleSrc, "dev.jdtech.mpv:libmpv:0.5.1", 'MPV/FFmpeg AAR dependency');
 
-if (app?.expo?.version !== '15.0.1') problem(`app version ${app?.expo?.version} (15.0.1 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150001) problem(`versionCode ${app?.expo?.android?.versionCode} (150001 bekleniyor)`);
+if (app?.expo?.version !== '15.0.2') problem(`app version ${app?.expo?.version} (15.0.2 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150002) problem(`versionCode ${app?.expo?.android?.versionCode} (150002 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.

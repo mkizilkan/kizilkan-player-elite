@@ -20,7 +20,7 @@ import React, { useEffect, useImperativeHandle, useMemo, useRef, useState, forwa
 import { View, StyleSheet, Platform, Text } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
 // v15.0.1 BUILD FIX: legacy wrapper, güncel VlcPlayerView prop sözleşmesine bağlanır; component truthiness capability olarak kullanılmaz.
-import { VLCPlayer, VLC_AVAILABLE } from "@/src/native/vlc";
+import { VLCPlayer, VLC_AVAILABLE, type VlcFirstPlayInfo } from "@/src/native/vlc";
 
 export type Engine = "exo" | "vlc";
 
@@ -190,7 +190,7 @@ export const SmartVideoPlayer = forwardRef<SmartVideoRef, Props>(function SmartV
             if (vlcDuration > 0) onProgress?.(cur, vlcDuration);
           }}
           onError={(msg: string) => onError?.(msg || "VLC oynatma hatası")}
-          onFirstPlay={(info) => {
+          onFirstPlay={(info: VlcFirstPlayInfo) => {
             const dur = Math.max(0, info.length || 0) / 1000;
             setVlcDuration(dur);
             onLoad?.({ duration: dur, width: info.width, height: info.height });

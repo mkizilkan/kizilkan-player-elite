@@ -7,7 +7,7 @@
  * yeniden export eder.
  */
 export { VlcPlayerView, DEFAULT_VLC_OPTIONS } from "@/src/components/VlcPlayerView";
-export type { VlcPlayerHandle, VlcTracks, VlcTrack } from "@/src/components/VlcPlayerView";
+export type { VlcPlayerHandle, VlcTracks, VlcTrack, VlcFirstPlayInfo } from "@/src/components/VlcPlayerView";
 
 // Geriye dönük ad (eski import'lar kırılmasın): artık gerçek bileşen var.
 export { VlcPlayerView as VLCPlayer } from "@/src/components/VlcPlayerView";

@@ -1,7 +1,7 @@
 # ============================================================================
 # KIZILKAN PLAYER — GitHub Actions APK Derleyici
 # Dosya   : .github/workflows/build-apk.yml   (DEPO KÖKÜNE, frontend'in içine DEĞİL)
-# Sürüm   : v1.3.0 (GPT v10.6.6 Build Tools uyumlu sertifika doğrulama + kalıcı signing)
+# Sürüm   : v1.4.0 (v15.0.2: Node 22 + setup-node v6 + setup-java v5) (GPT v10.6.6 Build Tools uyumlu sertifika doğrulama + kalıcı signing)
 # Faz     : FAZ A / test altyapısı
 # ============================================================================
 #
@@ -78,16 +78,16 @@ jobs:
 
       # ---------------------------------------------------------------- 2
       - name: JDK 17 kur
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
       # ---------------------------------------------------------------- 3
-      - name: Node.js 20 kur
-        uses: actions/setup-node@v4
+      - name: Node.js 22 kur
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           cache: yarn
           cache-dependency-path: frontend/yarn.lock
 
