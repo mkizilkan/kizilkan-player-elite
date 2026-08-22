@@ -1,4 +1,4 @@
-# KIZILKAN PLAYER ELITE v15.1.0-RC1 — GitHub / Termux Yükleme
+# KIZILKAN PLAYER ELITE v15.1.1-RC1 — GitHub / Termux Yükleme
 
 Repo: `https://github.com/mkizilkan/kizilkan-player-elite.git`
 Telefon çalışma klasörü: `/sdcard/Download/gpt-kizilkan-player-elite`
@@ -51,7 +51,7 @@ Daha sonra:
 git add .
 git diff --cached --check
 git status
-git commit -m "feat: KIZILKAN PLAYER ELITE v15.1.0 RC1 player core mpv1 scan v2 ui fixes"
+git commit -m "feat: KIZILKAN PLAYER ELITE v15.1.1 RC1 player core mpv1 scan v2 ui fixes"
 git push origin main
 ```
 

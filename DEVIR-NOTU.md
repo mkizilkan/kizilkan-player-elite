@@ -1,13 +1,13 @@
 # KIZILKAN PLAYER ELITE — DEVİR NOTU
 
-**Güncel çalışma:** v15.1.0-RC1
+**Güncel çalışma:** v15.1.1-RC1
 
 Bu kısa dosya yalnız yönlendirmedir. Yeni sohbet/model önce **`AI-PROJE-DEVIR-BAGLAM.md`** dosyasını tamamen okumalıdır; ayrıntılı mimari, gerçek cihaz bulguları, libmpv 1.0.0 migration, Scan Engine v2, Settings UI düzeltmesi, CI/signing ve kalan işler oradadır.
 
 ## Güncel teknik kimlik
 
-- Uygulama: `15.1.0`
-- Android versionCode: `150100`
+- Uygulama: `15.1.1`
+- Android versionCode: `150101`
 - Player Engine: `1.0.0-RC`
 - Native MPV: `dev.jdtech.mpv:libmpv:1.0.0`
 - Motor zinciri: **Media3 → MPV/FFmpeg → VLC**
@@ -16,7 +16,7 @@ Bu kısa dosya yalnız yönlendirmedir. Yeni sohbet/model önce **`AI-PROJE-DEVI
 
 ## Son kanıtlı APK
 
-**APK v15.0.4 DERLENDI**, imza/SHA gate geçti ve gerçek telefona kuruldu. v15.1.0-RC1 henüz GitHub full build + gerçek cihaz kabul testinden geçmedi; başarılı gibi sunulmayacaktır.
+**APK v15.0.4 DERLENDI**, imza/SHA gate geçti ve gerçek telefona kuruldu. v15.1.1-RC1 henüz GitHub full build + gerçek cihaz kabul testinden geçmedi; başarılı gibi sunulmayacaktır.
 
 ## Bu RC'de ana değişiklikler
 

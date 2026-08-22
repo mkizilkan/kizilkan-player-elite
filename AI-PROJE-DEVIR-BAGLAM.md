@@ -1,8 +1,8 @@
 # KIZILKAN PLAYER ELITE — AI PROJE DEVİR / TAM BAĞLAM BELGESİ
 
-> **Güncel çalışma paketi:** **v15.1.0-RC1 — Player Core 1.0 RC / libmpv 1.0.0 / Scan Engine v2 / Telefon UI düzeltme hattı**
+> **Güncel çalışma paketi:** **v15.1.1-RC1 — MPV Event Bridge Kotlin type fix / Player Core 1.0 RC / libmpv 1.0.0 / Scan Engine v2**
 > **Son doğrulanmış kurulabilir APK:** **v15.0.4**
-> **Durum:** v15.1.0-RC1 kaynak geliştirmesi yapıldı; bu paket henüz GitHub Actions full native/release build ve gerçek cihaz kabul testinden geçmedi. Başarılı build varmış gibi kabul edilmemelidir.
+> **Durum:** v15.1.0-RC1 GitHub Actions gerçek native buildinde `:mpv-player:compileReleaseKotlin` aşamasına ulaştı ve yalnız iki EventDispatcher payload nullability/type uyuşmazlığında durdu. v15.1.1-RC1 bu kanıtlanmış iki Kotlin hatasını düzeltir; henüz yeniden GitHub full build ve gerçek cihaz kabul testi geçmedi.
 > **Bu belge zorunludur.** Sohbet mesaj sınırı nedeniyle yeni sohbete geçildiğinde yeni yapay zekâ önce bu dosyayı, sonra en güncel sürüm notu ve regresyon belgesini okumalıdır.
 
 ## 1. SOHBET DEVİR SÖZLEŞMESİ
@@ -32,13 +32,25 @@ Bu dosya eski snapshot gibi bırakılmayacak. `tools/checkplayercore.js`, sürü
 - Temiz GPT GitHub repo: `mkizilkan/kizilkan-player-elite`
 - Telefon çalışma klasörü: `/sdcard/Download/gpt-kizilkan-player-elite`
 - ZIP iç kökü: `gpt-kizilkan-player-elite/`
-- Güncel uygulama sürümü: **15.1.0**
-- Android versionCode: **150100**
-- iOS buildNumber metadata: **15.1.0**
+- Güncel uygulama sürümü: **15.1.1**
+- Android versionCode: **150101**
+- iOS buildNumber metadata: **15.1.1**
 - Player Engine hedef etiketi: **1.0.0-RC** — gerçek cihaz kabul matrisi bitmeden Stable denmez.
 - Native MPV dependency: **`dev.jdtech.mpv:libmpv:1.0.0`**
 
 Eski GPT/Claude sürümlerinin aynı çalışma ağacına üst üste açılması daha önce build'e artık dosyalar karıştırdı (`device-mode.tsx`, eski `kizilkan-media3` vb.). Bu yüzden temiz GPT repo oluşturuldu. Bundan sonra ZIP senkronlarında `.git` ve yerel signing materyali korunmalı; başka modelin ZIP'i bu klasörün üstüne açılmamalı.
+
+
+## 2A. v15.1.1-RC1 — KANITLANMIŞ KOTLIN BUILD FIX
+
+GitHub Actions v15.1.0-RC1 buildi TypeScript/prebuild katmanlarını geçerek gerçek `:mpv-player:compileReleaseKotlin` aşamasına ulaştı. Compiler iki somut hata verdi:
+
+- `KizilkanMpvView.kt:385`: nullable `videoCodec/videoFormat/hwdecCurrent` nedeniyle `Map<String, Any>` bekleyen Expo EventDispatcher'a nullable-inferred map gönderiliyordu.
+- `KizilkanMpvView.kt:403`: diagnostic payload açıkça `LinkedHashMap<String, Any?>` idi; EventDispatcher `Map<String, Any>` bekliyordu.
+
+Çözüm kör cast değildir. `onVideoReady` payload'ı açıkça `mapOf<String, Any>` olarak kurulur ve nullable telemetry stringleri bridge sınırında `""` ile normalize edilir. Diagnostic payload `linkedMapOf<String, Any>` olur; `extra` içindeki null değerler JS event payload'ına eklenmez. Böylece libmpv 1.0.0 instance mimarisi, Scan Engine v2, resume, 4K recovery ve UI değişiklikleri korunur. `tools/checkplayercore.js` nullable diagnostic EventDispatcher payload'ının geri gelmesini HARD gate ile yasaklar.
+
+Bu düzeltmenin gerçek başarısı ancak yeni GitHub Kotlin/Gradle buildi ile doğrulanacaktır.
 
 ## 3. KULLANICI ÇALIŞMA SÖZLEŞMESİ — BAĞLAYICI
 

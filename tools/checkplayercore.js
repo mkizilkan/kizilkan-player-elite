@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.1.0 RC1 PLAYER/SCAN/RESPONSIVE MIGRATION)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.1.1 RC1 MPV EVENT BRIDGE TYPE FIX)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -104,6 +104,9 @@ requireText(mpvKt, 'player.addLogObserver(this)', 'libmpv 1.0 instance log obser
 requireText(mpvKt, 'MpvFormat.MPV_FORMAT_DOUBLE', 'libmpv 1.0 nested format constant');
 requireText(mpvKt, 'MpvEvent.MPV_EVENT_FILE_LOADED', 'libmpv 1.0 nested event constant');
 requireText(mpvKt, 'MpvLogLevel.MPV_LOG_LEVEL_ERROR', 'libmpv 1.0 nested log constant');
+requireText(mpvKt, 'mapOf<String, Any>(', 'MPV EventDispatcher non-null video-ready payload');
+requireText(mpvKt, 'linkedMapOf<String, Any>(', 'MPV EventDispatcher non-null diagnostic payload');
+forbidText(mpvKt, 'linkedMapOf<String, Any?>(', 'nullable MPV diagnostic EventDispatcher payload');
 requireText(mpvKt, 'emitDiagnostic("SURFACE_ATTACH")', 'MPV surface telemetry');
 requireText(mpvKt, 'emitDiagnostic("NATIVE_DESTROY_BEGIN")', 'MPV destroy telemetry');
 requireText(mpvModKt, '"onDiagnostic"', 'Expo MPV diagnostic bridge');
@@ -121,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.1.0') problem(`app version ${app?.expo?.version} (15.1.0 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150100) problem(`versionCode ${app?.expo?.android?.versionCode} (150100 bekleniyor)`);
+if (app?.expo?.version !== '15.1.1') problem(`app version ${app?.expo?.version} (15.1.1 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150101) problem(`versionCode ${app?.expo?.android?.versionCode} (150101 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -151,7 +154,7 @@ if (!fs.existsSync(handoffPath)) {
 } else {
   const handoff = fs.readFileSync(handoffPath, 'utf8');
   const requiredHandoffTokens = [
-    'v15.1.0-RC1',
+    'v15.1.1-RC1',
     'Media3 → MPV/FFmpeg → VLC',
     'ANDROID_CERT_SHA256',
     'KALAN / SONRAKI ISLER',

@@ -382,23 +382,38 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     if (width > 0 && height > 0) {
       if (lastPosition > 0.0) playbackStarted = true
       emitDiagnostic("VIDEO_READY", mapOf("width" to width, "height" to height, "codec" to (videoCodec ?: ""), "format" to (videoFormat ?: ""), "hwdec" to (hwdecCurrent ?: "")))
-      post { onVideoReady(mapOf("width" to width, "height" to height, "codec" to videoCodec, "format" to videoFormat, "hwdec" to hwdecCurrent)) }
+      post {
+        onVideoReady(
+          mapOf<String, Any>(
+            "width" to width,
+            "height" to height,
+            "codec" to (videoCodec ?: ""),
+            "format" to (videoFormat ?: ""),
+            "hwdec" to (hwdecCurrent ?: ""),
+          )
+        )
+      }
     }
   }
 
   private fun emitDiagnostic(event: String, extra: Map<String, Any?> = emptyMap()) {
-    val payload = linkedMapOf<String, Any?>(
+    // Expo EventDispatcher Map<String, Any> bekler. Native telemetry property'leri
+    // libmpv ilk değerini üretmeden önce null olabilir; nullability'yi JS bridge'e
+    // sızdırmak yerine event sınırında deterministik olarak normalize ediyoruz.
+    val payload = linkedMapOf<String, Any>(
       "event" to event,
       "instanceId" to instanceId,
       "surfaceReady" to surfaceReady,
       "initialized" to initialized,
       "width" to width,
       "height" to height,
-      "codec" to videoCodec,
-      "format" to videoFormat,
-      "hwdec" to hwdecCurrent,
+      "codec" to (videoCodec ?: ""),
+      "format" to (videoFormat ?: ""),
+      "hwdec" to (hwdecCurrent ?: ""),
     )
-    payload.putAll(extra)
+    for ((key, value) in extra) {
+      if (value != null) payload[key] = value
+    }
     Log.d(TAG, "#$instanceId $event ${extra.entries.joinToString(" ") { "${it.key}=${it.value}" }}")
     post { onDiagnostic(payload) }
   }
