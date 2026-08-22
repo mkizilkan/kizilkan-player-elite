@@ -28,11 +28,14 @@ import type { Channel } from "@/src/types";
 const MAG_UA =
   "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3";
 
-/** Sağlayıcıya göre değişen portal yolları — sırayla denenir. */
+/** Sağlayıcıya göre değişen yaygın endpoint yolları. */
 const PORTAL_PATHS = [
   "/portal.php",
+  "/load.php",
   "/stalker_portal/server/load.php",
+  "/stalker_portal/server/portal.php",
   "/server/load.php",
+  "/server/portal.php",
   "/c/portal.php",
 ];
 
@@ -68,13 +71,58 @@ function baseOf(portal: string): string {
   }
 }
 
-function headersFor(cred: StalkerCreds, token?: string): Record<string, string> {
+function portalCandidates(portal: string): string[] {
+  let p = String(portal || "").trim();
+  if (!/^https?:\/\//i.test(p)) p = "http://" + p;
+  const out: string[] = [];
+  const push = (v: string) => { const x = v.replace(/\?$/, "").replace(/\/+$/, ""); if (x && !out.includes(x)) out.push(x); };
+  try {
+    const u = new URL(p);
+    const origin = `${u.protocol}//${u.host}`;
+    const path = u.pathname.replace(/\/+$/, "");
+    if (/\.php$/i.test(path)) push(origin + path); // Kullanıcının verdiği gerçek endpoint her zaman ilk aday.
+    if (/\/stalker_portal(?:\/c)?$/i.test(path)) {
+      push(origin + "/stalker_portal/server/load.php");
+      push(origin + "/stalker_portal/server/portal.php");
+    } else if (/\/c$/i.test(path)) {
+      push(origin + "/portal.php");
+      push(origin + "/stalker_portal/server/load.php");
+    } else if (path && path !== "/") {
+      // Özel alt dizine kurulmuş portallar: /foo/c -> /foo/server/load.php vb.
+      const prefix = path.replace(/\/c$/i, "");
+      push(origin + prefix + "/server/load.php");
+      push(origin + prefix + "/server/portal.php");
+      push(origin + prefix + "/portal.php");
+      push(origin + prefix + "/load.php");
+    }
+    PORTAL_PATHS.forEach(x => push(origin + x));
+  } catch {
+    const base = baseOf(p);
+    PORTAL_PATHS.forEach(x => push(base + x));
+  }
+  return out;
+}
+
+function refererFor(cred: StalkerCreds, endpoint?: string): string {
+  const ep = String(endpoint || "");
+  try {
+    const u = new URL(ep || cred.portal);
+    if (u.pathname.includes("/stalker_portal/")) return `${u.protocol}//${u.host}/stalker_portal/c/`;
+    const path = new URL(cred.portal.startsWith("http") ? cred.portal : `http://${cred.portal}`).pathname;
+    if (/\/c\/?$/i.test(path)) return `${u.protocol}//${u.host}${path.replace(/\/?$/, "/")}`;
+    return `${u.protocol}//${u.host}/c/`;
+  } catch { return baseOf(cred.portal) + "/c/"; }
+}
+
+function headersFor(cred: StalkerCreds, token?: string, endpoint?: string): Record<string, string> {
   const mac = normalizeMac(cred.mac);
   const h: Record<string, string> = {
     "User-Agent": MAG_UA,
-    Referer: baseOf(cred.portal) + "/c/",
+    Referer: refererFor(cred, endpoint),
     Accept: "*/*",
-    Cookie: `mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=Europe/Istanbul`,
+    "X-User-Agent": "Model: MAG250; Link: Ethernet",
+    // MAG portalları MAC cookie'sini klasik iki-noktalı biçimde bekler.
+    Cookie: `mac=${mac}; stb_lang=en; timezone=Europe%2FIstanbul`,
   };
   if (token) h.Authorization = `Bearer ${token}`;
   return h;
@@ -92,8 +140,19 @@ async function req(url: string, headers: Record<string, string>, timeoutMs = 200
       throw err;
     }
     try {
-      return JSON.parse(text);
+      return JSON.parse(text.replace(/^\uFEFF/, "").trim());
     } catch {
+      // Bazı eski Stalker load.php kurulumları debug/prefix metni basıp JSON'u
+      // aynı response içinde döndürür. HTML hata sayfasını kabul etmeden yalnız
+      // ilk {...} JSON nesnesini ikinci şans olarak ayrıştır.
+      const trimmed = text.replace(/^\uFEFF/, "").trim();
+      if (!/^</.test(trimmed)) {
+        const first = trimmed.indexOf("{");
+        const last = trimmed.lastIndexOf("}");
+        if (first >= 0 && last > first) {
+          try { return JSON.parse(trimmed.slice(first, last + 1)); } catch {}
+        }
+      }
       const err: any = new Error("Portal geçersiz yanıt verdi (JSON değil)");
       err.raw = text.slice(0, 200);
       throw err;
@@ -110,21 +169,20 @@ function buildUrl(endpoint: string, params: Record<string, string>): string {
 
 /** 1) HANDSHAKE — portal yolu bilinmediği için yollar sırayla denenir. */
 export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSession> {
-  const base = baseOf(cred.portal);
   const errors: string[] = [];
 
-  for (const path of PORTAL_PATHS) {
-    const endpoint = base + path;
+  for (const endpoint of portalCandidates(cred.portal)) {
+    const label = (() => { try { return new URL(endpoint).pathname; } catch { return endpoint; } })();
     try {
       const data = await req(
         buildUrl(endpoint, { type: "stb", action: "handshake", token: "", prehash: "0" }),
-        headersFor(cred)
+        headersFor(cred, undefined, endpoint)
       );
       const token = data?.js?.token;
       if (token) return { token, endpoint };
-      errors.push(`${path}: token yok`);
+      errors.push(`${label}: token yok`);
     } catch (e: any) {
-      errors.push(`${path}: ${e?.message || e}`);
+      errors.push(`${label}: ${e?.message || e}`);
     }
   }
 
@@ -156,7 +214,7 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession): P
       hw_version: "1.7-BD-00",
       not_valid_token: "0",
     }),
-    headersFor(cred, ses.token)
+    headersFor(cred, ses.token, ses.endpoint)
   );
   return data?.js || null;
 }
@@ -165,7 +223,7 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession): P
 export async function stalkerGenres(cred: StalkerCreds, ses: StalkerSession): Promise<Map<string, string>> {
   const data = await req(
     buildUrl(ses.endpoint, { type: "itv", action: "get_genres" }),
-    headersFor(cred, ses.token)
+    headersFor(cred, ses.token, ses.endpoint)
   );
   const map = new Map<string, string>();
   const list = Array.isArray(data?.js) ? data.js : [];
@@ -181,7 +239,7 @@ export async function stalkerChannels(cred: StalkerCreds, ses: StalkerSession): 
 
   const data = await req(
     buildUrl(ses.endpoint, { type: "itv", action: "get_all_channels" }),
-    headersFor(cred, ses.token),
+    headersFor(cred, ses.token, ses.endpoint),
     120000
   );
 
@@ -222,7 +280,7 @@ export async function stalkerCreateLink(
       disable_ad: "0",
       download: "0",
     }),
-    headersFor(cred, ses.token)
+    headersFor(cred, ses.token, ses.endpoint)
   );
 
   const raw = String(data?.js?.cmd || "");

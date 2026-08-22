@@ -18,6 +18,8 @@ export type PlayerSource = {
   id: string;
   ext?: string;
   kind: PlayerSessionKind;
+  /** VOD/series için kullanıcının seçtiği başlangıç konumu (saniye). */
+  resumeAt?: number;
 } | null;
 
 function inferSessionKind(id: string, ext?: string): PlayerSessionKind {
@@ -31,7 +33,7 @@ function inferSessionKind(id: string, ext?: string): PlayerSessionKind {
 type PlayerContextValue = {
   source: PlayerSource;
   visible: boolean;
-  openPlayer: (s: { id: string; ext?: string; kind?: PlayerSessionKind }) => void;
+  openPlayer: (s: { id: string; ext?: string; kind?: PlayerSessionKind; resumeAt?: number }) => void;
   closePlayer: () => void;
   switchChannel: (id: string) => void;
 };
@@ -41,9 +43,10 @@ const PlayerContext = createContext<PlayerContextValue | null>(null);
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [source, setSource] = useState<PlayerSource>(null);
 
-  const openPlayer = useCallback((s: { id: string; ext?: string; kind?: PlayerSessionKind }) => {
+  const openPlayer = useCallback((s: { id: string; ext?: string; kind?: PlayerSessionKind; resumeAt?: number }) => {
     const kind = s.kind ?? inferSessionKind(s.id, s.ext);
-    setSource({ id: s.id, ext: s.ext, kind });
+    const resumeAt = Number.isFinite(Number(s.resumeAt)) ? Math.max(0, Number(s.resumeAt)) : undefined;
+    setSource({ id: s.id, ext: s.ext, kind, ...(resumeAt ? { resumeAt } : {}) });
   }, []);
 
   const closePlayer = useCallback(() => {

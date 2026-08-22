@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.0.4 CERTIFICATE GATE + AI DEVIR CONTRACT)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.0.5 RC1 CERTIFICATE GATE + AI DEVIR CONTRACT)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -107,8 +107,8 @@ requireText(mpvKt, 'MPVLib.MPV_EVENT_FILE_LOADED', 'libmpv 0.5.1 file-loaded eve
 requireText(mpvKt, 'MPVLib.MPV_EVENT_END_FILE', 'libmpv 0.5.1 end-file event sabiti');
 requireText(mpvKt, 'MPVLib.MPV_LOG_LEVEL_ERROR', 'libmpv 0.5.1 log-level sabiti');
 
-if (app?.expo?.version !== '15.0.4') problem(`app version ${app?.expo?.version} (15.0.4 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150004) problem(`versionCode ${app?.expo?.android?.versionCode} (150004 bekleniyor)`);
+if (app?.expo?.version !== '15.0.5') problem(`app version ${app?.expo?.version} (15.0.5 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150005) problem(`versionCode ${app?.expo?.android?.versionCode} (150005 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 

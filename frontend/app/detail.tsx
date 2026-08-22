@@ -98,6 +98,26 @@ export default function DetailScreen() {
     (item as any).backdrop_path ||
     null;
 
+  const chooseResumePosition = async (progress: any): Promise<number> => {
+    const current = Math.max(0, Number(progress?.current || 0));
+    const duration = Math.max(0, Number(progress?.duration || 0));
+    // İlk birkaç saniye anlamlı bir "kaldığın yer" değildir.
+    if (current < 10 || duration <= 0 || current / duration >= 0.95) return 0;
+    const mm = Math.floor(current / 60);
+    const ss = Math.floor(current % 60);
+    return await new Promise<number>((resolve) => {
+      Alert.alert(
+        "İzlemeye nasıl devam edilsin?",
+        `Kayıtlı konum: ${mm}:${String(ss).padStart(2, "0")}`,
+        [
+          { text: "Baştan izle", style: "cancel", onPress: () => resolve(0) },
+          { text: "Kaldığın yerden devam et", onPress: () => resolve(current) },
+        ],
+        { cancelable: true, onDismiss: () => resolve(0) },
+      );
+    });
+  };
+
   const handlePlayVod = async () => {
     if (!("url" in item) || !item.url) return;
     // Store movie URL under a synthetic channel id and navigate to player
@@ -108,8 +128,9 @@ export default function DetailScreen() {
       group: "Film",
       container_ext: (item as any).container_ext || "mp4",
     }));
+    const resumeAt = await chooseResumePosition(watchProgress[item.id]);
     addToRecent(item.id);
-    router.push({ pathname: "/player", params: { id: syntheticId, ext: "true" } });
+    router.push({ pathname: "/player", params: { id: syntheticId, ext: "true", ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}) } });
   };
 
   const handlePlayEpisode = async (ep: any) => {
@@ -120,8 +141,9 @@ export default function DetailScreen() {
       group: "Dizi",
       container_ext: ep.container_ext || "mp4",
     }));
+    const resumeAt = await chooseResumePosition(watchProgress[String(ep.id)]);
     addToRecent(item.id);
-    router.push({ pathname: "/player", params: { id: syntheticId, ext: "true" } });
+    router.push({ pathname: "/player", params: { id: syntheticId, ext: "true", ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}) } });
   };
 
   return (

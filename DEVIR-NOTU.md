@@ -6,7 +6,7 @@
 ## Zorunlu okuma sırası
 1. `AI-PROJE-DEVIR-BAGLAM.md`
 2. `SURUM-NOTU-GPT-ELITE-v15.0.4.md`
-3. `REGRESYON-DENETIM-GPT-ELITE-v15.0.4.md`
+3. `REGRESYON-DENETIM-GPT-ELITE-v15.0.5-RC1.md`
 4. `SURUM-NOTU-GPT-ELITE-v15.0.3.md` (MPV 0.5.1 Kotlin API fix geçmişi)
 5. `SURUM-NOTU-GPT-ELITE-v15.0.0.md` (v15 Playback Core ana mimarisi)
 
@@ -23,3 +23,9 @@
 
 ## Devir sözleşmesi
 Her ZIP güncel `AI-PROJE-DEVIR-BAGLAM.md` içermek zorundadır. Yeni sürümde yapılan/kalan işler bu belgeye işlenmeden paket tamamlanmış sayılmaz. Gizli signing değerleri hiçbir Markdown dosyasına yazılmaz.
+
+
+## Yeni teşhis/çözüm kuralı
+- Körü körüne patch/fallback yapılmaz; önce kök neden kanıtlanır.
+- Yerel kod ve loglar yeterli değilse resmi dokümantasyon, upstream GitHub issue/commit/release notları ve güvenilir implementasyonlar internetten araştırılır.
+- Dış çözüm mevcut sürüm/API ile eşleştirilmeden uygulanmaz; değişiklik cerrahi ve dar tutulur, ardından regresyon testi yapılır.

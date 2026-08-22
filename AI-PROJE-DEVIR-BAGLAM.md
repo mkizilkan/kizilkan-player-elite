@@ -52,6 +52,11 @@ Eski GPT/Claude sürümlerinin aynı çalışma ağacına üst üste açılması
 12. Yapılmayan iş yapıldı diye söylenmez.
 13. Düzeltmeler yorum/sürüm notu ile ZIP'e konur; GitHub/Termux akışı sağlanır.
 14. **Yeni sohbet bağlam sözleşmesi:** Bu belge her ZIP'te güncel tutulur ve yeni yapay zekânın projeyi devralmasına yetecek ayrıntıyı taşır.
+15. **Körü körüne çalışma yasaktır:** Semptoma bakıp rastgele patch/fallback uygulanmaz. Önce gerçek kod yolu, log/çıktı ve mümkünse tekrar üretim ile kök neden kanıtlanır.
+16. **Dış araştırma zorunluluğu:** Teşhis için yerel kaynak yeterli değilse internet kapsamlı biçimde araştırılır; öncelik resmi dokümantasyon, upstream kaynak kodu, GitHub issue/commit/release notları ve güvenilir benzer implementasyonlardır.
+17. **Çapraz doğrulama:** Dış kaynakta bulunan çözüm projeye körlemesine taşınmaz; kullanılan sürüm/API ile mevcut kaynak kod birebir eşleştirilmeden uygulanmaz.
+18. **Cerrahi değişiklik ilkesi:** Kanıtlanan kök nedene mümkün olan en dar müdahale yapılır; çalışan davranışlar, PlayerHost sözleşmesi ve önceki regresyon korumaları gereksiz yere değiştirilmez.
+19. **Düzeltme sonrası kanıt:** Her değişiklikten sonra uygun statik gate/test, mümkünse TypeScript/native build ve ilgili regresyon senaryosu yeniden kontrol edilir. Geçmeyen veya çalıştırılamayan test açıkça belirtilir.
 
 ## 4. v15 PLAYBACK CORE — ANA MİMARİ
 
@@ -204,6 +209,13 @@ Hiçbiri build-fix bahanesiyle kaldırılmayacak.
 4. Mümkün olduğunda TV Box'ta surface/şerit/tint/zap/focus matrisi çalıştır.
 5. Build + temel cihaz testi sonrası ayrı plan/onayla `libmpv 1.0.0` instance API migration'ına geç.
 6. 1.0.0 migration'da multi-instance potansiyeli, lifecycle ve observer/Surface davranışı ayrı regresyon matrisiyle ele alınmalı.
+
+## 11.1 v15.0.5-RC1 GÜNCEL DURUM
+
+- v15.0.4 tabanında bildirilen MAG, MPV/FFmpeg görüntü, MPV/Media3 seek, VOD resume, Çoklu Hesap, Panel/DNS ilerleme ve Hızlı Yapıştırma regresyonları için RC1 çalışma paketi hazırlandı.
+- Player Engine libmpv 1.0.0 migration'ı bilinçli olarak ertelendi; önce mevcut kritik regresyonların gerçek cihazda doğrulanması gerekir.
+- Yeni çalışma sözleşmesine körü körüne patch yasağı, gerektiğinde kapsamlı internet/upstream araştırması, çapraz doğrulama ve cerrahi değişiklik ilkeleri eklendi.
+- v15.0.5-RC1 başarı olarak ilan edilmez; GitHub Actions ve gerçek cihaz testleri beklenmektedir.
 
 ## 12. YENİ SOHBETTE YAPAY ZEKÂNIN İLK YAPACAĞI ŞEYLER
 

@@ -97,6 +97,10 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
       // Donanım uygunsa kullan; MediaCodec başarısızsa mpv/FFmpeg software decode'a düşebilir.
       MPVLib.setOptionString("hwdec", "mediacodec,mediacodec-copy")
       MPVLib.setOptionString("hwdec-codecs", "all")
+      // mpv varsayılanı art arda 3 decode hatasından sonra SW fallback'tir.
+      // IPTV'de ses akıp video decoder'ı hata veren cihazlarda daha erken ve
+      // deterministik fallback için ilk ardışık video decode hatasında düş.
+      MPVLib.setOptionString("hwdec-software-fallback", "1")
       MPVLib.setOptionString("ao", "audiotrack,opensles")
       MPVLib.setOptionString("audio-set-media-role", "yes")
       MPVLib.setOptionString("demuxer-max-bytes", (64L * 1024L * 1024L).toString())
@@ -217,7 +221,16 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
       setSource(mapOf("url" to it, "headers" to currentHeaders, "bufferMs" to currentBufferMs))
     }
   }
-  fun seekTo(seconds: Double) { try { if (initialized) MPVLib.setPropertyDouble("time-pos", max(0.0, seconds)) } catch (_: Throwable) {} }
+  fun seekTo(seconds: Double) {
+    try {
+      if (initialized) {
+        // mpv'nin belgelenmiş seek komutunu kullan. `time-pos` yazmak bazı
+        // demuxer/HLS kaynaklarında sessizce uygulanmayabiliyor. Keyframe seek
+        // özellikle uzun IPTV VOD'larında exact decode zincirine göre daha sağlam.
+        MPVLib.command(arrayOf("seek", max(0.0, seconds).toString(), "absolute+keyframes"))
+      }
+    } catch (_: Throwable) {}
+  }
   fun seekBy(seconds: Double) { try { if (initialized) MPVLib.command(arrayOf("seek", seconds.toString(), "relative+exact")) } catch (_: Throwable) {} }
   fun setVolume(value: Double) { try { if (initialized) MPVLib.setPropertyDouble("volume", value.coerceIn(0.0, 100.0)) } catch (_: Throwable) {} }
   fun setRate(value: Double) { try { if (initialized) MPVLib.setPropertyDouble("speed", value.coerceIn(0.25, 4.0)) } catch (_: Throwable) {} }

@@ -48,6 +48,19 @@ import {
 type Method = "m3u_url" | "m3u_file" | "xtream" | "stalker" | "code" | "bulk";
 type CodeMode = "code" | "directory" | "auto";
 type ScanSpeed = "safe" | "balanced" | "fast";
+type BulkResolvedCandidate = {
+  key: string;
+  sourceRow: number;
+  name: string;
+  username: string;
+  password: string;
+  panelName: string;
+  code: string;
+  server: string;
+  login: any;
+  validatedHosts: string[];
+  direct: boolean;
+};
 
 export default function AddPlaylist() {
   /**
@@ -104,6 +117,11 @@ export default function AddPlaylist() {
   const [discoverySubtitle, setDiscoverySubtitle] = useState("Geçerli hesapları seçin.");
   const [selectedDiscoveryKeys, setSelectedDiscoveryKeys] = useState<string[]>([]);
   const [bulkAdding, setBulkAdding] = useState(false);
+  const [bulkCandidates, setBulkCandidates] = useState<BulkResolvedCandidate[]>([]);
+  const [selectedBulkCandidateKeys, setSelectedBulkCandidateKeys] = useState<string[]>([]);
+  const [showBulkCandidates, setShowBulkCandidates] = useState(false);
+  const [bulkScanFinished, setBulkScanFinished] = useState(false);
+  const [bulkScanFailures, setBulkScanFailures] = useState<string[]>([]);
   const [fileName, setFileName] = useState<string>("");
   const [fileContent, setFileContent] = useState<string>("");
   const [loading, setLoading] = useState(false);
@@ -281,7 +299,7 @@ export default function AddPlaylist() {
     setSelectedDiscoveryKeys(activeKeys.length ? activeKeys : sortedMatches.map(discoveryKey));
     setShowDiscoveryMatches(true);
     setLoading(false);
-    setProgress("");
+    setProgress(`Tarama tamamlandı · ${sortedMatches.length} geçerli DNS bulundu.`);
   };
 
   const scanConfigForSpeed = () => scanSpeed === "safe"
@@ -584,12 +602,26 @@ export default function AddPlaylist() {
 
   const normalizePanelName = (v: string) => v.trim().toLocaleLowerCase("tr");
 
-  const addOneBulkAccount = async (
+  const bulkCandidateKey = (row: number, username: string, code: string, panelName: string, server: string) =>
+    `${row}\u0000${username}\u0000${code}\u0000${panelName}\u0000${String(server).replace(/\/+$/, "").toLowerCase()}`;
+
+  const mergeBulkCandidates = React.useCallback((incoming: BulkResolvedCandidate[]) => {
+    if (!incoming.length) return;
+    setBulkCandidates(prev => {
+      const map = new Map(prev.map(x => [x.key, x]));
+      incoming.forEach(x => map.set(x.key, x));
+      return Array.from(map.values());
+    });
+    // Bilinçli olarak otomatik seçim YAPMA. Kullanıcı bulunanlardan istediğini seçsin.
+    setShowBulkCandidates(true);
+  }, []);
+
+  const resolveOneBulkAccount = async (
     account: BulkAccountInput,
     index: number,
     total: number,
     directoryCache: { value?: PanelDirectoryItem[] },
-  ): Promise<{ ok: boolean; label: string; reason?: string }> => {
+  ): Promise<{ candidates: BulkResolvedCandidate[]; label: string; reason?: string }> => {
     const label = account.name.trim() || `Hesap ${index + 1}`;
     const cfg = scanConfigForSpeed();
     const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
@@ -599,14 +631,16 @@ export default function AddPlaylist() {
       setError(null);
       if (account.server) {
         setProgress(`${progressPrefix}\nDoğrudan Xtream sunucusu doğrulanıyor…`);
-        const ok = await submitXtreamDirect(
-          { server: account.server, username: account.username, password: account.password },
-          account.name.trim() || label,
-          undefined,
-          false,
-          false,
-        );
-        return ok ? { ok: true, label } : { ok: false, label, reason: "Sunucu/hesap doğrulanamadı." };
+        const login = await xtLoginLocal({ server: account.server, username: account.username, password: account.password });
+        const panelName = account.name.trim() || hostName(account.server);
+        const c: BulkResolvedCandidate = {
+          key: bulkCandidateKey(account.row, account.username, "", panelName, account.server),
+          sourceRow: account.row, name: account.name.trim() || panelName,
+          username: account.username, password: account.password, panelName, code: "",
+          server: account.server, login, validatedHosts: [account.server], direct: true,
+        };
+        mergeBulkCandidates([c]);
+        return { candidates: [c], label };
       }
 
       let matches: PanelCredentialMatch[] = [];
@@ -614,7 +648,7 @@ export default function AddPlaylist() {
         setProgress(`${progressPrefix}\nSunucu kodu ${account.serverCode} için tüm DNS adresleri deneniyor…`);
         matches = await discoverServerCodeHosts(
           src, account.serverCode, account.username, account.password,
-          (pr) => setProgress(`${progressPrefix}\nDNS ${pr.tested}/${pr.total} · Bulunan ${pr.found}`),
+          (pr) => setProgress(`${progressPrefix}\nDNS ${pr.tested}/${pr.total} · Kalan ${Math.max(0, pr.total-pr.tested)} · Bulunan ${pr.found}${pr.server ? `\nŞu an: ${pr.server}` : ""}`),
           cfg.concurrency, cfg.timeoutMs,
         );
       } else if (account.panelName) {
@@ -631,7 +665,7 @@ export default function AddPlaylist() {
         setProgress(`${progressPrefix}\n${panel.panelName} panelinin ${panel.hosts.length} DNS adresi deneniyor…`);
         matches = await discoverServerCodeHosts(
           src, panel.code, account.username, account.password,
-          (pr) => setProgress(`${progressPrefix}\nDNS ${pr.tested}/${pr.total} · Bulunan ${pr.found}`),
+          (pr) => setProgress(`${progressPrefix}\nDNS ${pr.tested}/${pr.total} · Kalan ${Math.max(0, pr.total-pr.tested)} · Bulunan ${pr.found}${pr.server ? `\nŞu an: ${pr.server}` : ""}`),
           cfg.concurrency, cfg.timeoutMs,
         );
       } else {
@@ -639,36 +673,33 @@ export default function AddPlaylist() {
         setProgress(`${progressPrefix}\nPanel bilinmiyor; tüm panel rehberi taranıyor…`);
         matches = await discoverPanelsByCredentials(
           src, account.username, account.password,
-          (pr) => setProgress(`${progressPrefix}\nPanel ${pr.panelTested}/${pr.panelTotal} · Adres ${pr.tested}/${pr.total} · Bulunan ${pr.found}`),
+          (pr) => {
+            const pct = pr.total ? Math.round((pr.tested / pr.total) * 100) : 0;
+            setProgress(`${progressPrefix} · %${pct}\nPanel ${pr.panelTested}/${pr.panelTotal} · Adres ${pr.tested}/${pr.total} · Kalan ${Math.max(0,pr.total-pr.tested)} · Bulunan ${pr.found}${pr.panelName ? `\nŞu an: ${pr.panelName}` : ""}`);
+          },
           cfg.concurrency, cfg.timeoutMs, directoryCache.value,
         );
       }
 
       if (!matches.length) throw new Error("Geçerli panel/DNS hesabı bulunamadı.");
-      const panelIds = Array.from(new Set(matches.map(m => `${m.code}\u0000${m.panelName}`)));
-      if (panelIds.length > 1) {
-        throw new Error(`Aynı kullanıcı/şifre ${panelIds.length} farklı panelde bulundu. Güvenlik için otomatik seçim yapılmadı; dosyada sunucu kodu veya panel adı belirtin.`);
+      const hostsByPanel = new Map<string, string[]>();
+      for (const m of matches) {
+        const pk = `${m.code}\u0000${m.panelName}`;
+        hostsByPanel.set(pk, Array.from(new Set([...(hostsByPanel.get(pk) || []), m.server])));
       }
-
-      const sorted = [...matches].sort((a, b) => {
-        const aa = String(a.login?.user_info?.status || "").toLowerCase() === "active" ? 0 : 1;
-        const bb = String(b.login?.user_info?.status || "").toLowerCase() === "active" ? 0 : 1;
-        return aa - bb;
+      const candidates = matches.map((m): BulkResolvedCandidate => {
+        const pk = `${m.code}\u0000${m.panelName}`;
+        return {
+          key: bulkCandidateKey(account.row, account.username, m.code, m.panelName, m.server),
+          sourceRow: account.row, name: account.name.trim() || m.panelName,
+          username: account.username, password: account.password, panelName: m.panelName, code: m.code,
+          server: m.server, login: m.login, validatedHosts: hostsByPanel.get(pk) || [m.server], direct: false,
+        };
       });
-      const chosen = sorted[0];
-      const validatedHosts = Array.from(new Set(matches.map(m => m.server)));
-      const displayName = account.name.trim() || chosen.panelName;
-      setProgress(`${progressPrefix}\n${chosen.panelName} bulundu; içerikler yükleniyor…`);
-      const ok = await submitXtreamDirect(
-        { server: chosen.server, username: account.username, password: account.password },
-        displayName,
-        makeBinding(chosen.code, chosen.panelName, chosen.server, validatedHosts),
-        false,
-        false,
-      );
-      return ok ? { ok: true, label: displayName } : { ok: false, label: displayName, reason: "Playlist kaydedilemedi." };
+      mergeBulkCandidates(candidates);
+      return { candidates, label };
     } catch (e: any) {
-      return { ok: false, label, reason: String(e?.message || e) };
+      return { candidates: [], label, reason: String(e?.message || e) };
     }
   };
 
@@ -678,25 +709,56 @@ export default function AddPlaylist() {
 
     setLoading(true);
     setError(null);
-    const results: Array<{ ok: boolean; label: string; reason?: string }> = [];
+    setBulkCandidates([]);
+    setSelectedBulkCandidateKeys([]);
+    setBulkScanFailures([]);
+    setBulkScanFinished(false);
     const directoryCache: { value?: PanelDirectoryItem[] } = {};
+    const failures: string[] = [];
+    let found = 0;
     try {
-      // Tek tuşla toplu ekleme; sunucuları gereksiz yüklememek için hesaplar seri işlenir.
       for (let i = 0; i < parsed.accounts.length; i++) {
-        results.push(await addOneBulkAccount(parsed.accounts[i], i, parsed.accounts.length, directoryCache));
+        const r = await resolveOneBulkAccount(parsed.accounts[i], i, parsed.accounts.length, directoryCache);
+        found += r.candidates.length;
+        if (!r.candidates.length) failures.push(`${r.label}: ${r.reason || "Eşleşme bulunamadı."}`);
       }
-      const ok = results.filter(r => r.ok);
-      const failed = results.filter(r => !r.ok);
-      const warningText = parsed.warnings.length ? `\n\nDosya uyarıları:\n${parsed.warnings.slice(0, 5).join("\n")}` : "";
-      const failedText = failed.length ? `\n\nEklenemeyenler:\n${failed.slice(0, 8).map(r => `• ${r.label}: ${r.reason}`).join("\n")}` : "";
-      Alert.alert(
-        "Toplu Hesap Ekleme",
-        `${ok.length}/${results.length} hesap playlist olarak eklendi.${failedText}${warningText}`,
-        [{ text: "Tamam", onPress: () => { if (ok.length) router.replace("/(tabs)"); } }],
-      );
+      setBulkScanFailures(failures);
+      setBulkScanFinished(true);
+      setShowBulkCandidates(true);
+      setProgress(`Tarama tamamlandı · ${parsed.accounts.length}/${parsed.accounts.length} hesap işlendi · ${found} geçerli panel/DNS hesabı bulundu${failures.length ? ` · ${failures.length} hesapta sonuç yok` : ""}`);
+      if (!found) setError(failures.join("\n") || "Hiç geçerli hesap bulunamadı.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const addSelectedBulkCandidates = async () => {
+    const chosen = bulkCandidates.filter(c => selectedBulkCandidateKeys.includes(c.key));
+    if (!chosen.length) return;
+    setBulkAdding(true);
+    setLoading(true);
+    let ok = 0;
+    const failed: string[] = [];
+    try {
+      for (let i = 0; i < chosen.length; i++) {
+        const c = chosen[i];
+        const displayName = chosen.length === 1 ? c.name : `${c.name} · ${hostName(c.server)}`;
+        setProgress(`${i + 1}/${chosen.length} · ${displayName} yeniden doğrulanıyor ve ekleniyor…`);
+        const added = await submitXtreamDirect(
+          { server: c.server, username: c.username, password: c.password },
+          displayName,
+          c.direct ? undefined : makeBinding(c.code, c.panelName, c.server, c.validatedHosts),
+          false, false,
+        );
+        if (added) ok++; else failed.push(displayName);
+      }
+      Alert.alert("Toplu Hesap Ekleme", `${ok}/${chosen.length} seçili hesap eklendi.${failed.length ? `\nEklenemeyen: ${failed.join(", ")}` : ""}`);
+      if (ok > 0) router.replace("/(tabs)");
+    } finally {
+      setBulkAdding(false);
+      setLoading(false);
       setProgress("");
+      if (ok > 0) { setShowBulkCandidates(false); setBulkCandidates([]); setSelectedBulkCandidateKeys([]); }
     }
   };
 
@@ -1377,7 +1439,7 @@ export default function AddPlaylist() {
                 style={[styles.bulkTextInput, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
               />
               <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, lineHeight: 17, marginTop: 6 }}>
-                Çok sayıda hesap için CSV/TXT satırlarını yapıştırabilirsiniz. Form, hızlı yapıştırma ve dosya aynı işlemde birlikte kullanılabilir.
+                CSV/TXT yanında her satıra kullanıcı:şifre biçimini de yapıştırabilirsiniz. Sunucu bilgisi yoksa panel otomatik aranır. Form, hızlı yapıştırma ve dosya aynı işlemde birlikte kullanılabilir.
               </Text>
               <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>DOSYADAN EKLE (İSTEĞE BAĞLI)</Text>
               <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, lineHeight: 17, marginBottom: 7 }}>
@@ -1514,13 +1576,89 @@ export default function AddPlaylist() {
         </ScrollView>
 
         <Modal
+          visible={showBulkCandidates}
+          transparent
+          animationType="fade"
+          onRequestClose={() => { if (!bulkAdding) setShowBulkCandidates(false); }}
+        >
+          <View style={styles.matchModalBackdrop}>
+            <View style={[styles.matchModalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <View style={styles.matchModalHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.matchModalTitle, { color: colors.onSurface }]}>Bulunan Çoklu Hesaplar</Text>
+                  <Text style={{ color: colors.onSurfaceSecondary, marginTop: 4, lineHeight: 18 }}>
+                    {bulkScanFinished
+                      ? `${bulkCandidates.length} geçerli panel/DNS hesabı bulundu. Eklemek istediklerinizi seçin.`
+                      : `Tarama sürüyor. Bulunan sonuçlar canlı ekleniyor; seçimleriniz korunur.`}
+                  </Text>
+                </View>
+                <FocusButton focusable disabled={bulkAdding} onPress={() => setShowBulkCandidates(false)} style={styles.matchCloseBtn}>
+                  <Ionicons name="close" size={24} color={colors.onSurface} />
+                </FocusButton>
+              </View>
+
+              {!!progress && (loading || bulkAdding || !bulkScanFinished) && (
+                <View style={[styles.progressBox, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginBottom: SPACING.sm }]}>
+                  <ActivityIndicator size="small" color={colors.brandPrimary} />
+                  <Text style={{ color: colors.onSurfaceSecondary, flex: 1, fontSize: FONT.size.sm, lineHeight: 19 }}>{progress}</Text>
+                </View>
+              )}
+
+              <ScrollView style={{ maxHeight: 430 }} contentContainerStyle={{ gap: SPACING.sm, paddingBottom: SPACING.sm }}>
+                {bulkCandidates.length === 0 ? (
+                  <View style={[styles.infoBanner,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
+                    <ActivityIndicator size="small" color={colors.brandPrimary} />
+                    <Text style={{ color: colors.onSurface, flex: 1 }}>Henüz geçerli hesap bulunmadı.</Text>
+                  </View>
+                ) : bulkCandidates.map((c,index) => {
+                  const selected = selectedBulkCandidateKeys.includes(c.key);
+                  const ui = c.login?.user_info || {};
+                  const status = String(ui.status || (ui.auth === 1 || ui.auth === "1" ? "Aktif" : "Bilinmiyor"));
+                  return (
+                    <FocusButton key={c.key} focusable autoFocus={index===0}
+                      onPress={() => setSelectedBulkCandidateKeys(prev => selected ? prev.filter(k=>k!==c.key) : [...prev,c.key])}
+                      style={[styles.matchRow,{ backgroundColor:selected?colors.brandPrimary+"14":colors.surfaceSecondary,borderColor:selected?colors.brandPrimary:colors.border }]}>
+                      <View style={{flex:1}}>
+                        <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{c.name || c.panelName}</Text>
+                        <Text style={{color:colors.onSurfaceSecondary,marginTop:2}}>Kullanıcı: {c.username} · Durum: {status}</Text>
+                        <Text style={{color:colors.onSurfaceSecondary,marginTop:2}}>Panel: {c.panelName}{c.code ? ` · Kod: ${c.code}` : ""}</Text>
+                        <Text style={{color:colors.onSurfaceTertiary,marginTop:2,fontSize:FONT.size.xs}}>{c.server}</Text>
+                      </View>
+                      <Ionicons name={selected?"checkbox":"square-outline"} size={26} color={selected?colors.brandPrimary:colors.onSurfaceTertiary}/>
+                    </FocusButton>
+                  );
+                })}
+                {bulkScanFailures.length > 0 && (
+                  <View style={[styles.infoBanner,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
+                    <Ionicons name="warning-outline" size={18} color={colors.error}/>
+                    <Text style={{color:colors.onSurfaceSecondary,flex:1,fontSize:FONT.size.sm}}>
+                      Sonuç bulunamayanlar: {bulkScanFailures.slice(0,4).join(" · ")}{bulkScanFailures.length>4?` · +${bulkScanFailures.length-4} kayıt`:""}
+                    </Text>
+                  </View>
+                )}
+              </ScrollView>
+
+              <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
+                <FocusButton focusable disabled={bulkAdding || bulkCandidates.length===0}
+                  onPress={() => setSelectedBulkCandidateKeys(selectedBulkCandidateKeys.length===bulkCandidates.length?[]:bulkCandidates.map(c=>c.key))}
+                  style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
+                  <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{selectedBulkCandidateKeys.length===bulkCandidates.length && bulkCandidates.length?"Seçimi Kaldır":"Tümünü Seç"}</Text>
+                </FocusButton>
+                <FocusButton focusable disabled={bulkAdding || selectedBulkCandidateKeys.length===0} onPress={addSelectedBulkCandidates}
+                  style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedBulkCandidateKeys.length?1:0.5}]}>
+                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{selectedBulkCandidateKeys.length} Seçileni Doğrula ve Ekle</Text>}
+                </FocusButton>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
           visible={showDiscoveryMatches}
           transparent
           animationType="fade"
           onRequestClose={() => {
             setShowDiscoveryMatches(false);
-            setDiscoveryMatches([]);
-            setSelectedDiscoveryKeys([]);
           }}
         >
           <View style={styles.matchModalBackdrop}>
@@ -1539,13 +1677,27 @@ export default function AddPlaylist() {
                   focusable
                   onPress={() => {
                     setShowDiscoveryMatches(false);
-                    setDiscoveryMatches([]);
                   }}
                   style={styles.matchCloseBtn}
                 >
                   <Ionicons name="close" size={24} color={colors.onSurface} />
                 </FocusButton>
               </View>
+
+              {!!progress && (nativeScanRunning || loading || bulkAdding) && (
+                <View style={[styles.progressBox, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginBottom: SPACING.sm }]}>
+                  <ActivityIndicator size="small" color={colors.brandPrimary} />
+                  <Text style={{ color: colors.onSurfaceSecondary, flex: 1, fontSize: FONT.size.sm, lineHeight: 19 }}>{progress}</Text>
+                  {nativeScanRunning && (
+                    <FocusButton focusable onPress={async () => {
+                      await PanelScan.cancelScan();
+                      setProgress(prev => prev ? `${prev}\nDurdurma isteği gönderildi…` : "Durdurma isteği gönderildi…");
+                    }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surface}]}>
+                      <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>Durdur</Text>
+                    </FocusButton>
+                  )}
+                </View>
+              )}
 
               <ScrollView
                 style={{ maxHeight: 480 }}
@@ -1631,13 +1783,6 @@ export default function AddPlaylist() {
                   {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{selectedDiscoveryKeys.length} Seçileni Ekle</Text>}
                 </FocusButton>
               </View>
-
-              {bulkAdding && !!progress && (
-                <View style={[styles.progressBox, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginTop: SPACING.sm }]}>
-                  <ActivityIndicator size="small" color={colors.brandPrimary} />
-                  <Text style={{ color: colors.onSurfaceSecondary, flex: 1, fontSize: FONT.size.sm, lineHeight: 19 }}>{progress}</Text>
-                </View>
-              )}
 
               <View style={[styles.infoBanner, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginTop: SPACING.md }]}>
                 <Ionicons name="shield-checkmark" size={18} color={colors.brandPrimary} />

@@ -189,6 +189,7 @@ export default function PlayerHost() {
     id: string;
     ext?: string;
     kind?: "live" | "vod" | "series" | "catchup" | "external";
+    resumeAt?: number;
   };
   const sessionKind = params.kind ?? (params.ext === "true" ? "external" : "live");
   const isSynthetic = sessionKind !== "live";
@@ -405,6 +406,10 @@ export default function PlayerHost() {
   showControlsRef.current = showControls;
   sheetRef.current = sheet;
   const stallRecoveryRef = useRef<{ sid: number; profileKey: string; softDone: boolean; hardDone: boolean; softAt?: number }>({ sid: 0, profileKey: "", softDone: false, hardDone: false });
+  // Kullanıcı seek'i / resume seek'i sonrası watchdog'a kısa bir bağışıklık penceresi.
+  // Seek sırasında clock'un doğal olarak durması "stall" sayılmamalı.
+  const userSeekGraceUntilRef = useRef(0);
+  const appliedResumeKeyRef = useRef("");
   // GPT ELITE v14.0.0 — Player V2 session/controller state.
   const sessionGateRef = useRef(new PlaybackSessionGate());
   const sessionStartedAtRef = useRef(Date.now());
@@ -973,9 +978,31 @@ export default function PlayerHost() {
     } else {
       try { (player as any).currentTime = target; } catch {}
     }
+    const now = Date.now();
+    userSeekGraceUntilRef.current = now + (isSynthetic ? 8000 : 5000);
+    const resetClock = (clock: any) => ({ ...clock, positionSeconds: target, lastEventAt: now, lastAdvanceAt: now });
+    if (v2Profile.engine === "vlc") vlcClockRef.current = resetClock(vlcClockRef.current);
+    else if (v2Profile.engine === "mpv") mpvClockRef.current = resetClock(mpvClockRef.current);
+    else media3ClockRef.current = resetClock(media3ClockRef.current);
+    stallRecoveryRef.current = { sid: activeSessionId, profileKey: v2ProfileKey, softDone: false, hardDone: false };
     setVideoStats(prev => ({ ...prev, position: target }));
     revealControls();
   };
+
+  // Kullanıcının "kaldığın yerden devam et" seçimini player gerçekten PLAYING
+  // olduktan sonra, oturum başına yalnız bir kez uygula. Erken mount anında seek
+  // bazı motorlarda source hazır olmadığı için sessizce 0'a düşebiliyordu.
+  useEffect(() => {
+    const resumeAt = Math.max(0, Number(params.resumeAt || 0));
+    if (!visible || !isSynthetic || !channel || resumeAt < 10 || v2Phase !== "playing") return;
+    const key = `${activeSessionId}:${String(channel.id)}:${Math.floor(resumeAt)}`;
+    if (appliedResumeKeyRef.current === key) return;
+    appliedResumeKeyRef.current = key;
+    const t = setTimeout(() => seekTo(resumeAt), 120);
+    return () => clearTimeout(t);
+    // seekTo bilinçli olarak bağımlılığa alınmadı; aktif profile/state bu effect'i zaten tetikler.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, isSynthetic, channel?.id, params.resumeAt, v2Phase, activeSessionId, v2ProfileKey]);
 
   const lastExoUrlRef = useRef<string | null>(null);
 
@@ -1970,6 +1997,7 @@ export default function PlayerHost() {
           : v2Profile.engine === "mpv" ? mpvClockRef.current
           : media3ClockRef.current;
       const now = Date.now();
+      if (now < userSeekGraceUntilRef.current) return;
       const stalledFor = now - clock.lastAdvanceAt;
       const softMs = sessionKind === "live" ? LIVE_SOFT_STALL_MS : VOD_SOFT_STALL_MS;
       const hardMs = sessionKind === "live" ? LIVE_HARD_STALL_MS : VOD_HARD_STALL_MS;

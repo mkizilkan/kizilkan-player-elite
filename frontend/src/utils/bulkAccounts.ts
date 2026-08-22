@@ -12,6 +12,7 @@
  *     ad|kullanici|sifre|sunucu-veya-kod-veya-panel
  *     kullanici|sifre|sunucu-veya-kod-veya-panel
  *     kullanici|sifre   -> panel bilinmiyor / otomatik arama
+ *     kullanici:sifre   -> panel bilinmiyor / otomatik arama
  */
 
 export type BulkAccountInput = {
@@ -130,6 +131,25 @@ function headerLooksValid(headers: string[]): boolean {
   return keys.some(k => USER_KEYS.includes(k)) && keys.some(k => PASS_KEYS.includes(k));
 }
 
+/**
+ * Tek satırlık `kullanici:sifre` hızlı girişini güvenli biçimde ayırır.
+ * URL (`http://...`) ve alan etiketi (`username: foo`) satırlarını bu biçim
+ * sanmamak için sol tarafı daraltıyoruz. Şifrede ek `:` karakterleri olabilir;
+ * yalnız ilk iki nokta ayırıcı kabul edilir.
+ */
+function fromUserPasswordLine(line: string, row: number): BulkAccountInput | null {
+  const raw = String(line || "").trim();
+  if (!raw || raw.includes("://") || /[|;\t,]/.test(raw)) return null;
+  const idx = raw.indexOf(":");
+  if (idx <= 0 || idx >= raw.length - 1) return null;
+  const username = raw.slice(0, idx).trim();
+  const password = raw.slice(idx + 1).trim();
+  if (!username || !password || /\s/.test(username)) return null;
+  const key = normKey(username);
+  if ([...USER_KEYS, ...PASS_KEYS, ...SERVER_KEYS, ...CODE_KEYS, ...PANEL_KEYS].includes(key)) return null;
+  return { row, name: "", username, password };
+}
+
 function fromHeaderless(values: string[], row: number): BulkAccountInput | null {
   const vals = values.map(v => v.trim()).filter((v, i, a) => !(i === a.length - 1 && !v));
   if (vals.length < 2) return null;
@@ -186,10 +206,11 @@ export function parseBulkAccounts(text: string): BulkAccountParseResult {
   const accounts: BulkAccountInput[] = [];
 
   for (let i = start; i < lines.length; i++) {
+    const quickPair = !hasHeader ? fromUserPasswordLine(lines[i], i + 1) : null;
     const values = parseDelimitedLine(lines[i], delimiter);
-    const account = hasHeader
+    const account = quickPair || (hasHeader
       ? fromObject(rowObject(headers, values), i + 1)
-      : fromHeaderless(values, i + 1);
+      : fromHeaderless(values, i + 1));
     if (account) accounts.push(account);
     else warnings.push(`Satır ${i + 1}: kullanıcı adı/şifre bulunamadı, atlandı.`);
   }
@@ -227,4 +248,4 @@ export function bulkAccountLocatorLabel(a: BulkAccountInput): string {
   return "Panel bilinmiyor — otomatik aranacak";
 }
 
-export const BULK_ACCOUNT_EXAMPLE = `ad,kullanici,sifre,sunucu_kodu\nAnnem,ali123,abc987,22722\nBabam,mehmet55,xyz456,7765`;
+export const BULK_ACCOUNT_EXAMPLE = `ad,kullanici,sifre,sunucu_kodu\nAnnem,ali123,abc987,22722\nBabam,mehmet55,xyz456,7765\n\n# Hızlı biçim (panel otomatik aranır)\nali123:abc987`;

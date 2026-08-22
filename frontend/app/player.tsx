@@ -13,13 +13,13 @@ import { usePlayer } from "@/src/player/PlayerContext";
 
 export default function PlayerRedirect() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ id: string; ext?: string }>();
+  const params = useLocalSearchParams<{ id: string; ext?: string; resumeAt?: string }>();
   const { openPlayer } = usePlayer();
 
   useEffect(() => {
     const id = params.id ? String(params.id) : "";
     if (id) {
-      openPlayer({ id, ext: params.ext ? String(params.ext) : undefined });
+      openPlayer({ id, ext: params.ext ? String(params.ext) : undefined, resumeAt: params.resumeAt ? Number(params.resumeAt) : undefined });
     }
     // Kendini yığından düşür — kalıcı katman zaten üstte gösterecek.
     try { if ((router as any).canGoBack?.()) router.back(); } catch {}

@@ -1,4 +1,4 @@
-# KIZILKAN PLAYER ELITE — GitHub / Termux / APK Akışı (v15.0.4)
+# KIZILKAN PLAYER ELITE — GitHub / Termux / APK Akışı (v15.0.5-RC1)
 
 ## Güncel kimlik
 - Repo: `mkizilkan/kizilkan-player-elite`
@@ -31,7 +31,7 @@ cd /sdcard/Download/gpt-kizilkan-player-elite
 git status --short
 git diff --check
 git add .
-git commit -m "fix: GPT KIZILKAN PLAYER ELITE v15.0.4 certificate gate"
+git commit -m "fix: KIZILKAN PLAYER ELITE v15.0.5 RC1 regression fixes"
 git push origin main
 ```
 
