@@ -36,7 +36,7 @@ class KizilkanMpvModule : Module() {
         view.destroyPlayer()
       }
 
-      Events("onLoad", "onPlayingChange", "onBufferingChange", "onProgress", "onVideoReady", "onTracks", "onError")
+      Events("onLoad", "onPlayingChange", "onBufferingChange", "onProgress", "onVideoReady", "onTracks", "onError", "onDiagnostic")
     }
   }
 }

@@ -1,31 +1,37 @@
-# KIZILKAN PLAYER ELITE — DEVİR NOTU (GÜNCEL)
+# KIZILKAN PLAYER ELITE — DEVİR NOTU
 
-> **Güncel sürüm: v15.0.4**
-> Bu dosya kısa giriş noktasıdır. Yeni sohbette / yeni yapay zekâda **önce `AI-PROJE-DEVIR-BAGLAM.md` dosyasını tamamen oku.** O dosya ayrıntılı mimariyi, gerçek build tarihçesini, sorun/kök neden/çözüm zincirini, kalan işleri ve çalışma sözleşmesini taşır.
+**Güncel çalışma:** v15.1.0-RC1
 
-## Zorunlu okuma sırası
-1. `AI-PROJE-DEVIR-BAGLAM.md`
-2. `SURUM-NOTU-GPT-ELITE-v15.0.4.md`
-3. `REGRESYON-DENETIM-GPT-ELITE-v15.0.5-RC1.md`
-4. `SURUM-NOTU-GPT-ELITE-v15.0.3.md` (MPV 0.5.1 Kotlin API fix geçmişi)
-5. `SURUM-NOTU-GPT-ELITE-v15.0.0.md` (v15 Playback Core ana mimarisi)
+Bu kısa dosya yalnız yönlendirmedir. Yeni sohbet/model önce **`AI-PROJE-DEVIR-BAGLAM.md`** dosyasını tamamen okumalıdır; ayrıntılı mimari, gerçek cihaz bulguları, libmpv 1.0.0 migration, Scan Engine v2, Settings UI düzeltmesi, CI/signing ve kalan işler oradadır.
 
-## Güncel durum
+## Güncel teknik kimlik
+
+- Uygulama: `15.1.0`
+- Android versionCode: `150100`
+- Player Engine: `1.0.0-RC`
+- Native MPV: `dev.jdtech.mpv:libmpv:1.0.0`
+- Motor zinciri: **Media3 → MPV/FFmpeg → VLC**
 - Temiz repo: `mkizilkan/kizilkan-player-elite`
-- Telefon klasörü: `/sdcard/Download/gpt-kizilkan-player-elite`
-- Package: `com.gpt.kizilkan.player`
-- Playback: **Media3 → MPV/FFmpeg → VLC**
-- libmpv: `dev.jdtech.mpv:libmpv:0.5.1`
-- v15.0.3: APK Gradle tarafından gerçekten üretildi; MPV Kotlin compile geçti.
-- v15.0.3 son failure: eski hard-coded certificate SHA gate.
-- v15.0.4: fingerprint doğrulamasını `ANDROID_CERT_SHA256` GitHub Secret'a taşıyor.
-- Sonraki büyük plan: v15.0.4 build + cihaz testi sonrası ayrı onayla libmpv 1.0.0 instance API migration.
+- Telefon: `/sdcard/Download/gpt-kizilkan-player-elite`
 
-## Devir sözleşmesi
-Her ZIP güncel `AI-PROJE-DEVIR-BAGLAM.md` içermek zorundadır. Yeni sürümde yapılan/kalan işler bu belgeye işlenmeden paket tamamlanmış sayılmaz. Gizli signing değerleri hiçbir Markdown dosyasına yazılmaz.
+## Son kanıtlı APK
 
+**APK v15.0.4 DERLENDI**, imza/SHA gate geçti ve gerçek telefona kuruldu. v15.1.0-RC1 henüz GitHub full build + gerçek cihaz kabul testinden geçmedi; başarılı gibi sunulmayacaktır.
 
-## Yeni teşhis/çözüm kuralı
-- Körü körüne patch/fallback yapılmaz; önce kök neden kanıtlanır.
-- Yerel kod ve loglar yeterli değilse resmi dokümantasyon, upstream GitHub issue/commit/release notları ve güvenilir implementasyonlar internetten araştırılır.
-- Dış çözüm mevcut sürüm/API ile eşleştirilmeden uygulanmaz; değişiklik cerrahi ve dar tutulur, ardından regresyon testi yapılır.
+## Bu RC'de ana değişiklikler
+
+- libmpv 0.5.1 → 1.0.0 multiple-instance migration
+- MPV session/surface/codec diagnostics
+- Session-isolated MPV view lifecycle
+- Resume seek actual-position confirmation
+- Scan Engine v2: 5 hız profili + account worker pool + Pause/Resume/Stop
+- Native panel scan pause/resume
+- Settings telefon overlap kök düzeltmesi
+- v15.0.5 RC1 Çoklu Hesap / Hızlı Yapıştırma / MAG / seek geliştirmeleri korunuyor
+
+## İlk yapılacak
+
+1. `cd frontend && node ../tools/denetle.js`
+2. Uygun dependency ortamında `npx tsc --noEmit`
+3. GitHub Actions ile libmpv 1.0.0 Kotlin/release build
+4. 4K MPV + 20 ZAP + resume + VLC VOD + scan + UI gerçek cihaz matrisi

@@ -33,6 +33,7 @@ export type KizilkanMpvProps = ViewProps & {
   onVideoReady?: (event: any) => void;
   onTracks?: (event: any) => void;
   onError?: (event: any) => void;
+  onDiagnostic?: (event: any) => void;
 };
 
 let NativeMpvView: any = null;

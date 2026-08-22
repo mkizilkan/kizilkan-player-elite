@@ -3,6 +3,7 @@ import { requireNativeModule } from "expo-modules-core";
 type NativeSnapshot = {
   running?: boolean;
   cancelled?: boolean;
+  paused?: boolean;
   tested?: number;
   total?: number;
   panelTested?: number;
@@ -23,6 +24,8 @@ export const PanelScan = {
     return native.startScan(JSON.stringify(candidates), username, password, concurrency, timeoutMs);
   },
   cancelScan: async () => native ? native.cancelScan() : false,
+  pauseScan: async () => native ? native.pauseScan() : false,
+  resumeScan: async () => native ? native.resumeScan() : false,
   getSnapshot: (): NativeSnapshot => {
     if (!native) return {};
     try { return JSON.parse(native.getSnapshot() || "{}"); } catch { return {}; }

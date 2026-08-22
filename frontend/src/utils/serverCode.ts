@@ -189,6 +189,11 @@ export type PanelCredentialMatch = {
 
 export type HostDiscoveryProgress = { tested: number; total: number; found: number; server?: string };
 
+export type ScanExecutionControl = {
+  isCancelled?: () => boolean;
+  waitIfPaused?: () => Promise<void>;
+};
+
 /**
  * GPT ELITE v12.5.0 — belirli bir panel/kod için TÜM DNS adreslerini sınar.
  * İlk başarılı hostta durmaz. Kullanıcı adı/şifre yalnız IPTV hostlarına gider.
@@ -201,6 +206,7 @@ export async function discoverServerCodeHosts(
   onProgress?: (p: HostDiscoveryProgress) => void,
   concurrency = 6,
   timeoutMs = 8000,
+  control?: ScanExecutionControl,
 ): Promise<PanelCredentialMatch[]> {
   const panelName = await resolvePanelName(baseUrl, code);
   const hosts = await resolveHosts(baseUrl, panelName);
@@ -211,9 +217,12 @@ export async function discoverServerCodeHosts(
   let cursor = 0;
   let tested = 0;
   const matches: PanelCredentialMatch[] = [];
-  const workers = Math.max(1, Math.min(Number(concurrency) || 1, 12, hosts.length));
+  const workers = Math.max(1, Math.min(Number(concurrency) || 1, 20, hosts.length));
   const runWorker = async () => {
     while (true) {
+      if (control?.isCancelled?.()) return;
+      if (control?.waitIfPaused) await control.waitIfPaused();
+      if (control?.isCancelled?.()) return;
       const i = cursor++;
       if (i >= hosts.length) return;
       const server = hosts[i];
@@ -225,7 +234,7 @@ export async function discoverServerCodeHosts(
     }
   };
   await Promise.all(Array.from({ length: workers }, () => runWorker()));
-  if (!matches.length) throw new Error("Bu panelin DNS adreslerinde kullanıcı adı/şifre doğrulanamadı.");
+  if (!matches.length && !control?.isCancelled?.()) throw new Error("Bu panelin DNS adreslerinde kullanıcı adı/şifre doğrulanamadı.");
   matches.sort((a,b) => a.server.localeCompare(b.server));
   return matches;
 }
@@ -254,6 +263,7 @@ export async function discoverPanelsByCredentials(
   concurrency = 5,
   timeoutMs = 12000,
   directoryOverride?: PanelDirectoryItem[],
+  control?: ScanExecutionControl,
 ): Promise<PanelCredentialMatch[]> {
   const user = String(username || "").trim();
   const pass = String(password || "").trim();
@@ -285,10 +295,13 @@ export async function discoverPanelsByCredentials(
     remainingByPanel.set(k, (remainingByPanel.get(k) || 0) + 1);
   }
   let panelTested = 0;
-  const workers = Math.max(1, Math.min(Number(concurrency) || 1, 12, candidates.length));
+  const workers = Math.max(1, Math.min(Number(concurrency) || 1, 20, candidates.length));
 
   const runWorker = async () => {
     while (true) {
+      if (control?.isCancelled?.()) return;
+      if (control?.waitIfPaused) await control.waitIfPaused();
+      if (control?.isCancelled?.()) return;
       const i = cursor++;
       if (i >= candidates.length) return;
       const c = candidates[i];
@@ -315,7 +328,7 @@ export async function discoverPanelsByCredentials(
 
   await Promise.all(Array.from({ length: workers }, () => runWorker()));
 
-  if (matches.length === 0) {
+  if (matches.length === 0 && !control?.isCancelled?.()) {
     throw new Error("Bu kullanıcı adı ve şifre panel rehberindeki sunucularda bulunamadı.");
   }
 

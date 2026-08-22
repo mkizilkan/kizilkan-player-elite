@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.0.5 RC1 CERTIFICATE GATE + AI DEVIR CONTRACT)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.1.0 RC1 PLAYER/SCAN/RESPONSIVE MIGRATION)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -73,7 +73,7 @@ requireText(hlth, 'LIVE_SOFT_STALL_MS', 'runtime stall health eşikleri');
 
 // v15 MPV/FFmpeg native engine sözleşmesi.
 requireText(src, 'KizilkanMpvView', 'PlayerHost MPV native view');
-requireText(src, 'key="kizilkan-mpv-core"', 'MPV singleton için stabil native view key');
+requireText(src, 'key={`kizilkan-mpv-core-${activeSessionId}-${mpvRecoveryGeneration}`}', 'MPV session-isolated native view key');
 requireText(src, 'nextSessionProfileRef', 'alternatif URL motor profili koruması');
 requireText(src, 'v2Profile.engine === "mpv" ? mpvClockRef.current', 'stall monitor MPV clock');
 requireText(src, 'testID="engine-mpv-btn"', 'kullanıcı MPV motor seçimi');
@@ -85,7 +85,7 @@ requireText(mpvJs, 'nativeRef.current?.play?.()', 'Expo View ref play bridge');
 requireText(mpvJs, 'nativeRef.current?.seekTo?.(seconds)', 'Expo View ref seek bridge');
 forbidText(mpvJs, 'NativeModule.play(', 'yanlış module-level MPV View çağrısı');
 
-requireText(mpvKt, 'MPVLib.observeProperty("time-pos"', 'MPV playback progress property');
+requireText(mpvKt, 'player.observeProperty("time-pos", MpvFormat.MPV_FORMAT_DOUBLE)', 'MPV 1.0 instance playback progress property');
 forbidText(mpvKt, '"time-pos/full"', 'MPV yanlış observed time-pos/full');
 requireText(mpvKt, 'fun destroyPlayer()', 'MPV explicit destroy lifecycle');
 requireText(mpvKt, 'PixelFormat.OPAQUE', 'MPV TV opaque SurfaceView');
@@ -94,21 +94,35 @@ requireText(mpvKt, 'SURFACE_LIFECYCLE_FOLLOWS_ATTACHMENT', 'Android 14 MPV attac
 forbidText(mpvKt, 'override fun onDetachedFromWindow()', 'geçici detach sırasında MPV destroy');
 requireText(mpvKt, 'playbackStarted', 'MPV stale END_FILE error koruması');
 requireText(mpvModKt, 'OnViewDestroys', 'Expo MPV gerçek view destroy lifecycle');
-requireText(mpvGradleSrc, "dev.jdtech.mpv:libmpv:0.5.1", 'MPV/FFmpeg AAR dependency');
-// v15.0.3: libmpv 0.5.1 Java API exposes format/event/log constants directly on MPVLib.
-forbidText(mpvKt, 'MPVLib.MpvFormat', 'libmpv 0.5.1 nested MpvFormat regresyonu');
-forbidText(mpvKt, 'MPVLib.MpvEvent', 'libmpv 0.5.1 nested MpvEvent regresyonu');
-forbidText(mpvKt, 'MPVLib.MpvLogLevel', 'libmpv 0.5.1 nested MpvLogLevel regresyonu');
-forbidText(mpvKt, 'import dev.jdtech.mpv.MPVLib.Mpv', 'libmpv 0.5.1 nested constant import regresyonu');
-requireText(mpvKt, 'MPVLib.MPV_FORMAT_DOUBLE', 'libmpv 0.5.1 format sabiti');
-requireText(mpvKt, 'MPVLib.MPV_FORMAT_FLAG', 'libmpv 0.5.1 flag sabiti');
-requireText(mpvKt, 'MPVLib.MPV_FORMAT_INT64', 'libmpv 0.5.1 int64 sabiti');
-requireText(mpvKt, 'MPVLib.MPV_EVENT_FILE_LOADED', 'libmpv 0.5.1 file-loaded event sabiti');
-requireText(mpvKt, 'MPVLib.MPV_EVENT_END_FILE', 'libmpv 0.5.1 end-file event sabiti');
-requireText(mpvKt, 'MPVLib.MPV_LOG_LEVEL_ERROR', 'libmpv 0.5.1 log-level sabiti');
+requireText(mpvGradleSrc, "dev.jdtech.mpv:libmpv:1.0.0", 'MPV/FFmpeg 1.0.0 AAR dependency');
+// v15.1.0-RC1: libmpv-android 1.0.0 multiple-instance API sözleşmesi.
+requireText(mpvKt, 'private var mpv: MPVLib? = null', 'libmpv 1.0 instance ownership');
+requireText(mpvKt, 'val player = MPVLib.create(context)', 'libmpv 1.0 instance create');
+requireText(mpvKt, 'player.init()', 'libmpv 1.0 instance init');
+requireText(mpvKt, 'player.addObserver(this)', 'libmpv 1.0 instance observer');
+requireText(mpvKt, 'player.addLogObserver(this)', 'libmpv 1.0 instance log observer');
+requireText(mpvKt, 'MpvFormat.MPV_FORMAT_DOUBLE', 'libmpv 1.0 nested format constant');
+requireText(mpvKt, 'MpvEvent.MPV_EVENT_FILE_LOADED', 'libmpv 1.0 nested event constant');
+requireText(mpvKt, 'MpvLogLevel.MPV_LOG_LEVEL_ERROR', 'libmpv 1.0 nested log constant');
+requireText(mpvKt, 'emitDiagnostic("SURFACE_ATTACH")', 'MPV surface telemetry');
+requireText(mpvKt, 'emitDiagnostic("NATIVE_DESTROY_BEGIN")', 'MPV destroy telemetry');
+requireText(mpvModKt, '"onDiagnostic"', 'Expo MPV diagnostic bridge');
+requireText(mpvKt, 'source["softwareDecode"]', 'MPV source-controlled software decode recovery');
+requireText(mpvKt, 'if (softwareDecode) "no" else "mediacodec,mediacodec-copy"', 'MPV fresh HW→SW decode selection');
+requireText(src, 'mpvForceSoftware', 'PlayerHost MPV software recovery state');
+requireText(src, 'MPV FIRST-FRAME / 4K RECOVERY', 'MPV verified first-frame watchdog');
+requireText(src, 'MPV HW+SW first-frame timeout', 'MPV HW→SW→VLC controlled fallback telemetry');
+forbidText(mpvKt, 'MPVLib.setProperty', 'libmpv 1.0 static property call');
+forbidText(mpvKt, 'MPVLib.command(', 'libmpv 1.0 static command call');
+forbidText(mpvKt, 'MPVLib.destroy()', 'libmpv 1.0 static destroy call');
 
-if (app?.expo?.version !== '15.0.5') problem(`app version ${app?.expo?.version} (15.0.5 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150005) problem(`versionCode ${app?.expo?.android?.versionCode} (150005 bekleniyor)`);
+// Resume artık sadece komut göndermekle başarılı sayılmaz.
+requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
+requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
+requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
+
+if (app?.expo?.version !== '15.1.0') problem(`app version ${app?.expo?.version} (15.1.0 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150100) problem(`versionCode ${app?.expo?.android?.versionCode} (150100 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -137,16 +151,42 @@ if (!fs.existsSync(handoffPath)) {
 } else {
   const handoff = fs.readFileSync(handoffPath, 'utf8');
   const requiredHandoffTokens = [
-    'v15.0.4',
+    'v15.1.0-RC1',
     'Media3 → MPV/FFmpeg → VLC',
     'ANDROID_CERT_SHA256',
     'KALAN / SONRAKI ISLER',
     'SOHBET DEVİR SÖZLEŞMESİ',
-    'APK v15.0.3 DERLENDI',
+    'APK v15.0.4 DERLENDI',
   ];
   for (const token of requiredHandoffTokens) {
     if (!handoff.includes(token)) problem(`AI devir belgesi guncel/eksiksiz degil: ${token}`);
   }
+}
+
+
+// v15.1.0-RC1 Scan Engine / responsive UI hard gates.
+const addPlaylistPath = path.join(root, 'app/add-playlist.tsx');
+const panelScanServicePath = path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt');
+const settingsPath = path.join(root, 'app/(tabs)/settings.tsx');
+for (const f of [addPlaylistPath, panelScanServicePath, settingsPath]) { if (!fs.existsSync(f)) problem(`dosya yok: ${path.relative(root, f)}`); }
+if (fs.existsSync(addPlaylistPath)) {
+  const addPlaylist = fs.readFileSync(addPlaylistPath, 'utf8');
+  for (const token of ['"very_safe"', '"turbo"', 'accountConcurrency', 'bulkScanPausedRef', 'bulkScanCancelledRef', 'PanelScan.pauseScan()', 'PanelScan.resumeScan()']) {
+    requireText(addPlaylist, token, `Scan Engine v2: ${token}`);
+  }
+  requireText(addPlaylist, 'flexWrap: "wrap"', '5 scan profile phone responsive wrap');
+  requireText(addPlaylist, 'directoryCache.promise ??=', 'parallel account directory fetch deduplication');
+}
+if (fs.existsSync(panelScanServicePath)) {
+  const panelSvc = fs.readFileSync(panelScanServicePath, 'utf8');
+  requireText(panelSvc, 'ACTION_PAUSE', 'native scan pause action');
+  requireText(panelSvc, 'ACTION_RESUME', 'native scan resume action');
+  requireText(panelSvc, 'while (paused.get()', 'native scan cooperative pause');
+}
+if (fs.existsSync(settingsPath)) {
+  const settings = fs.readFileSync(settingsPath, 'utf8');
+  requireText(settings, 'settingsPanelCard', 'telefon ayarlar dinamik panel kartı');
+  forbidText(settings, 'height: 52, borderRadius: RADIUS.md, borderWidth: 1, paddingHorizontal: SPACING.lg', 'sabit 52px link kartı overlap regresyonu');
 }
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.

@@ -33,7 +33,7 @@ import {
   DEFAULT_CODE_SOURCE, CODE_SOURCE_KEY,
   fetchPanelDirectory, discoverPanelsByCredentials, discoverServerCodeHosts,
   resolvePanelName, resolveHosts,
-  type PanelDirectoryItem, type PanelCredentialMatch,
+  type PanelDirectoryItem, type PanelCredentialMatch, type ScanExecutionControl,
 } from "@/src/utils/serverCode";
 import { PanelScan } from "@/modules/panel-scan";
 import { storage } from "@/src/utils/storage";
@@ -47,7 +47,7 @@ import {
 
 type Method = "m3u_url" | "m3u_file" | "xtream" | "stalker" | "code" | "bulk";
 type CodeMode = "code" | "directory" | "auto";
-type ScanSpeed = "safe" | "balanced" | "fast";
+type ScanSpeed = "very_safe" | "safe" | "balanced" | "fast" | "turbo";
 type BulkResolvedCandidate = {
   key: string;
   sourceRow: number;
@@ -131,6 +131,10 @@ export default function AddPlaylist() {
   const nativeScanTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const nativeScanSeenRef = React.useRef<Set<string>>(new Set());
   const [nativeScanRunning, setNativeScanRunning] = useState(false);
+  const [nativeScanPaused, setNativeScanPaused] = useState(false);
+  const [bulkScanPaused, setBulkScanPaused] = useState(false);
+  const bulkScanPausedRef = React.useRef(false);
+  const bulkScanCancelledRef = React.useRef(false);
   // GPT ELITE v14.2.0 — çoklu hesap: manuel ve dosya birlikte kullanılabilir.
   // Ham dosya içeriği ayrı state'te tutulur; farklı CSV/TXT/JSON biçimleri
   // birbirine metin olarak yapıştırılıp parser'ı bozmaz.
@@ -302,11 +306,15 @@ export default function AddPlaylist() {
     setProgress(`Tarama tamamlandı · ${sortedMatches.length} geçerli DNS bulundu.`);
   };
 
-  const scanConfigForSpeed = () => scanSpeed === "safe"
-    ? { concurrency: 3, timeoutMs: 12000, label: "Güvenli" }
-    : scanSpeed === "fast"
-      ? { concurrency: 10, timeoutMs: 5000, label: "Hızlı" }
-      : { concurrency: 6, timeoutMs: 8000, label: "Dengeli" };
+  const scanConfigForSpeed = () => {
+    switch (scanSpeed) {
+      case "very_safe": return { concurrency: 2, timeoutMs: 16000, accountConcurrency: 1, label: "Çok Güvenli" };
+      case "safe": return { concurrency: 3, timeoutMs: 12000, accountConcurrency: 2, label: "Güvenli" };
+      case "fast": return { concurrency: 10, timeoutMs: 5000, accountConcurrency: 4, label: "Hızlı" };
+      case "turbo": return { concurrency: 16, timeoutMs: 3500, accountConcurrency: 6, label: "Turbo" };
+      default: return { concurrency: 6, timeoutMs: 8000, accountConcurrency: 3, label: "Dengeli" };
+    }
+  };
 
   const mergeStreamingMatches = React.useCallback((incoming: PanelCredentialMatch[], title: string, subtitle: string) => {
     if (!incoming.length) return;
@@ -338,7 +346,7 @@ export default function AddPlaylist() {
     candidates: Array<{panelName:string; code:string; server:string}>,
     title: string,
     subtitle: string,
-    cfg: { concurrency:number; timeoutMs:number; label:string },
+    cfg: { concurrency:number; timeoutMs:number; accountConcurrency?:number; label:string },
   ): Promise<PanelCredentialMatch[]> => {
     if (!PanelScan.available || Platform.OS !== "android") {
       throw new Error("__NATIVE_SCAN_UNAVAILABLE__");
@@ -358,11 +366,12 @@ export default function AddPlaylist() {
         if (snap.error) {
           if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
           nativeScanTimerRef.current = null;
-          setNativeScanRunning(false); setLoading(false);
+          setNativeScanRunning(false); setNativeScanPaused(false); setLoading(false);
           if (!settled) { settled = true; reject(new Error(snap.error)); }
           return;
         }
         const matches = Array.isArray(snap.matches) ? snap.matches as PanelCredentialMatch[] : [];
+        setNativeScanPaused(!!snap.paused);
         mergeStreamingMatches(matches, title, subtitle);
         const pct = snap.total ? Math.round(((snap.tested || 0) / snap.total) * 100) : 0;
         setProgress(
@@ -374,7 +383,7 @@ export default function AddPlaylist() {
         if (snap.running === false && (snap.total || 0) > 0) {
           if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
           nativeScanTimerRef.current = null;
-          setNativeScanRunning(false); setLoading(false);
+          setNativeScanRunning(false); setNativeScanPaused(false); setLoading(false);
           if (!settled) {
             settled = true;
             if (matches.length) resolve(matches);
@@ -620,7 +629,8 @@ export default function AddPlaylist() {
     account: BulkAccountInput,
     index: number,
     total: number,
-    directoryCache: { value?: PanelDirectoryItem[] },
+    directoryCache: { value?: PanelDirectoryItem[]; promise?: Promise<PanelDirectoryItem[]> },
+    control?: ScanExecutionControl,
   ): Promise<{ candidates: BulkResolvedCandidate[]; label: string; reason?: string }> => {
     const label = account.name.trim() || `Hesap ${index + 1}`;
     const cfg = scanConfigForSpeed();
@@ -649,10 +659,13 @@ export default function AddPlaylist() {
         matches = await discoverServerCodeHosts(
           src, account.serverCode, account.username, account.password,
           (pr) => setProgress(`${progressPrefix}\nDNS ${pr.tested}/${pr.total} · Kalan ${Math.max(0, pr.total-pr.tested)} · Bulunan ${pr.found}${pr.server ? `\nŞu an: ${pr.server}` : ""}`),
-          cfg.concurrency, cfg.timeoutMs,
+          cfg.concurrency, cfg.timeoutMs, control,
         );
       } else if (account.panelName) {
-        if (!directoryCache.value) directoryCache.value = await fetchPanelDirectory(src);
+        if (!directoryCache.value) {
+          directoryCache.promise ??= fetchPanelDirectory(src);
+          directoryCache.value = await directoryCache.promise;
+        }
         const wanted = normalizePanelName(account.panelName);
         const rawPanel = account.panelName.trim();
         const exactCode = directoryCache.value.find(x => x.code === rawPanel);
@@ -666,10 +679,13 @@ export default function AddPlaylist() {
         matches = await discoverServerCodeHosts(
           src, panel.code, account.username, account.password,
           (pr) => setProgress(`${progressPrefix}\nDNS ${pr.tested}/${pr.total} · Kalan ${Math.max(0, pr.total-pr.tested)} · Bulunan ${pr.found}${pr.server ? `\nŞu an: ${pr.server}` : ""}`),
-          cfg.concurrency, cfg.timeoutMs,
+          cfg.concurrency, cfg.timeoutMs, control,
         );
       } else {
-        if (!directoryCache.value) directoryCache.value = await fetchPanelDirectory(src);
+        if (!directoryCache.value) {
+          directoryCache.promise ??= fetchPanelDirectory(src);
+          directoryCache.value = await directoryCache.promise;
+        }
         setProgress(`${progressPrefix}\nPanel bilinmiyor; tüm panel rehberi taranıyor…`);
         matches = await discoverPanelsByCredentials(
           src, account.username, account.password,
@@ -677,7 +693,7 @@ export default function AddPlaylist() {
             const pct = pr.total ? Math.round((pr.tested / pr.total) * 100) : 0;
             setProgress(`${progressPrefix} · %${pct}\nPanel ${pr.panelTested}/${pr.panelTotal} · Adres ${pr.tested}/${pr.total} · Kalan ${Math.max(0,pr.total-pr.tested)} · Bulunan ${pr.found}${pr.panelName ? `\nŞu an: ${pr.panelName}` : ""}`);
           },
-          cfg.concurrency, cfg.timeoutMs, directoryCache.value,
+          cfg.concurrency, cfg.timeoutMs, directoryCache.value, control,
         );
       }
 
@@ -713,22 +729,54 @@ export default function AddPlaylist() {
     setSelectedBulkCandidateKeys([]);
     setBulkScanFailures([]);
     setBulkScanFinished(false);
-    const directoryCache: { value?: PanelDirectoryItem[] } = {};
+    setBulkScanPaused(false);
+    bulkScanPausedRef.current = false;
+    bulkScanCancelledRef.current = false;
+    const directoryCache: { value?: PanelDirectoryItem[]; promise?: Promise<PanelDirectoryItem[]> } = {};
     const failures: string[] = [];
+    const cfg = scanConfigForSpeed();
     let found = 0;
+    let completed = 0;
+    let cursor = 0;
+
+    const control: ScanExecutionControl = {
+      isCancelled: () => bulkScanCancelledRef.current,
+      waitIfPaused: async () => {
+        while (bulkScanPausedRef.current && !bulkScanCancelledRef.current) {
+          await new Promise(resolve => setTimeout(resolve, 120));
+        }
+      },
+    };
+
     try {
-      for (let i = 0; i < parsed.accounts.length; i++) {
-        const r = await resolveOneBulkAccount(parsed.accounts[i], i, parsed.accounts.length, directoryCache);
-        found += r.candidates.length;
-        if (!r.candidates.length) failures.push(`${r.label}: ${r.reason || "Eşleşme bulunamadı."}`);
-      }
+      const workerCount = Math.max(1, Math.min(cfg.accountConcurrency, parsed.accounts.length));
+      const runAccountWorker = async () => {
+        while (!bulkScanCancelledRef.current) {
+          await control.waitIfPaused?.();
+          if (bulkScanCancelledRef.current) return;
+          const i = cursor++;
+          if (i >= parsed.accounts.length) return;
+          const r = await resolveOneBulkAccount(parsed.accounts[i], i, parsed.accounts.length, directoryCache, control);
+          found += r.candidates.length;
+          completed += 1;
+          if (!r.candidates.length && !bulkScanCancelledRef.current) failures.push(`${r.label}: ${r.reason || "Eşleşme bulunamadı."}`);
+          setProgress(`${cfg.label} · ${completed}/${parsed.accounts.length} hesap tamamlandı · ${found} geçerli panel/DNS hesabı bulundu` + (bulkScanPausedRef.current ? " · DURAKLATILDI" : ""));
+        }
+      };
+      await Promise.all(Array.from({ length: workerCount }, () => runAccountWorker()));
       setBulkScanFailures(failures);
       setBulkScanFinished(true);
       setShowBulkCandidates(true);
-      setProgress(`Tarama tamamlandı · ${parsed.accounts.length}/${parsed.accounts.length} hesap işlendi · ${found} geçerli panel/DNS hesabı bulundu${failures.length ? ` · ${failures.length} hesapta sonuç yok` : ""}`);
-      if (!found) setError(failures.join("\n") || "Hiç geçerli hesap bulunamadı.");
+      if (bulkScanCancelledRef.current) {
+        setProgress(`Tarama durduruldu · ${completed}/${parsed.accounts.length} hesap işlendi · ${found} sonuç korunuyor.`);
+      } else {
+        setProgress(`Tarama tamamlandı · ${completed}/${parsed.accounts.length} hesap işlendi · ${found} geçerli panel/DNS hesabı bulundu${failures.length ? ` · ${failures.length} hesapta sonuç yok` : ""}`);
+      }
+      if (!found && !bulkScanCancelledRef.current) setError(failures.join("\n") || "Hiç geçerli hesap bulunamadı.");
     } finally {
       setLoading(false);
+      setBulkScanPaused(false);
+      bulkScanPausedRef.current = false;
     }
   };
 
@@ -1277,11 +1325,13 @@ export default function AddPlaylist() {
                     style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
                   />
                   <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.md }]}>TARAMA HIZI</Text>
-                  <View style={{ flexDirection: "row", gap: SPACING.sm }}>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm }}>
                     {([
+                      ["very_safe", "Çok Güvenli", "En uzun timeout"],
                       ["safe", "Güvenli", "Yavaş sunucuları kaçırmaz"],
                       ["balanced", "Dengeli", "Önerilen"],
-                      ["fast", "Hızlı", "Yavaş paneller atlanabilir"],
+                      ["fast", "Hızlı", "Yüksek paralellik"],
+                      ["turbo", "Turbo", "En hızlı kontrollü tarama"],
                     ] as const).map(([key, label, hint]) => {
                       const active = scanSpeed === key;
                       return (
@@ -1638,6 +1688,27 @@ export default function AddPlaylist() {
                 )}
               </ScrollView>
 
+              {!bulkScanFinished && (loading || bulkScanPaused) && (
+                <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
+                  <FocusButton focusable disabled={bulkAdding} onPress={() => {
+                    const next = !bulkScanPausedRef.current;
+                    bulkScanPausedRef.current = next;
+                    setBulkScanPaused(next);
+                    setProgress(prev => `${prev || "Çoklu hesap taraması"}\n${next ? "DURAKLATILDI — aktif istekler tamamlanır, yeni iş başlatılmaz." : "Tarama devam ediyor…"}`);
+                  }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
+                    <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{bulkScanPaused ? "Devam Et" : "Duraklat"}</Text>
+                  </FocusButton>
+                  <FocusButton focusable disabled={bulkAdding} onPress={() => {
+                    bulkScanCancelledRef.current = true;
+                    bulkScanPausedRef.current = false;
+                    setBulkScanPaused(false);
+                    setProgress(prev => `${prev || "Çoklu hesap taraması"}\nDurdurma isteği gönderildi; bulunan sonuçlar korunacak.`);
+                  }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surfaceSecondary}]}>
+                    <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>Durdur</Text>
+                  </FocusButton>
+                </View>
+              )}
+
               <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
                 <FocusButton focusable disabled={bulkAdding || bulkCandidates.length===0}
                   onPress={() => setSelectedBulkCandidateKeys(selectedBulkCandidateKeys.length===bulkCandidates.length?[]:bulkCandidates.map(c=>c.key))}
@@ -1689,12 +1760,20 @@ export default function AddPlaylist() {
                   <ActivityIndicator size="small" color={colors.brandPrimary} />
                   <Text style={{ color: colors.onSurfaceSecondary, flex: 1, fontSize: FONT.size.sm, lineHeight: 19 }}>{progress}</Text>
                   {nativeScanRunning && (
-                    <FocusButton focusable onPress={async () => {
-                      await PanelScan.cancelScan();
-                      setProgress(prev => prev ? `${prev}\nDurdurma isteği gönderildi…` : "Durdurma isteği gönderildi…");
-                    }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surface}]}>
-                      <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>Durdur</Text>
-                    </FocusButton>
+                    <View style={{ gap: 6 }}>
+                      <FocusButton focusable onPress={async () => {
+                        if (nativeScanPaused) await PanelScan.resumeScan(); else await PanelScan.pauseScan();
+                        setNativeScanPaused(!nativeScanPaused);
+                      }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surface}]}>
+                        <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{nativeScanPaused ? "Devam" : "Duraklat"}</Text>
+                      </FocusButton>
+                      <FocusButton focusable onPress={async () => {
+                        await PanelScan.cancelScan();
+                        setProgress(prev => prev ? `${prev}\nDurdurma isteği gönderildi…` : "Durdurma isteği gönderildi…");
+                      }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surface}]}>
+                        <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>Durdur</Text>
+                      </FocusButton>
+                    </View>
                   )}
                 </View>
               )}
@@ -1945,7 +2024,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: SPACING.md,
   },
-  scanSpeedBtn: { flex: 1, minHeight: 68, borderWidth: 1, borderRadius: RADIUS.md, alignItems: "center", justifyContent: "center", paddingHorizontal: 6, paddingVertical: 8, gap: 3 },
+  scanSpeedBtn: { flexGrow: 1, flexBasis: "30%", minWidth: 96, minHeight: 68, borderWidth: 1, borderRadius: RADIUS.md, alignItems: "center", justifyContent: "center", paddingHorizontal: 6, paddingVertical: 8, gap: 3 },
   bulkBtn: { flex: 1, minHeight: 46, borderRadius: RADIUS.pill, borderWidth: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: SPACING.sm },
   matchSelectBadge: {
     minWidth: 54,

@@ -1,23 +1,20 @@
-# BAŞLARKEN OKU — KIZILKAN PLAYER ELITE v15.0.4
+# BAŞLARKEN OKU — KIZILKAN PLAYER ELITE
 
-Yeni sohbet / yeni yapay zekâ / yeni geliştirme oturumunda önce şu sırayla oku:
+**Güncel çalışma: v15.1.0-RC1**
 
-1. `AI-PROJE-DEVIR-BAGLAM.md` — ana ve en ayrıntılı proje bağlamı
-2. `DEVIR-NOTU.md` — kısa güncel durum
-3. `SURUM-NOTU-GPT-ELITE-v15.0.4.md`
-4. `REGRESYON-DENETIM-GPT-ELITE-v15.0.4.md`
-5. `SURUM-NOTU-GPT-ELITE-v15.0.0.md` — v15 Playback Core ana mimarisi
+Yeni sohbet/model için ilk ve zorunlu belge: **`AI-PROJE-DEVIR-BAGLAM.md`**.
 
-## Değişmez çalışma ilkesi
-- Özellik/regresyon kaybı yok.
-- Yapılmayan test yapılmış gibi söylenmez.
-- Büyük geliştirme öncesi plan/onay.
-- Her paket sürüm yükseltir.
-- Her paket `AI-PROJE-DEVIR-BAGLAM.md` belgesini günceller.
-- Signing secret/private key repo ve dokümanlara yazılmaz.
+Kritik gerçekler:
 
-## Güncel kritik hedef
-v15.0.4 ile v15.0.3'te gerçekten üretilmiş APK'nın son certificate fingerprint gate'i düzeltilmektedir. `ANDROID_CERT_SHA256` GitHub Secret eklenip CI tamamen yeşil olana kadar build tamamlandı sayılmaz.
+- Motor zinciri: **Media3 → MPV/FFmpeg → VLC**.
+- Native MPV artık `libmpv 1.0.0` multiple-instance API migration hattındadır.
+- Son kanıtlı/kurulmuş APK: v15.0.4.
+- v15.1.0-RC1 henüz GitHub full build ve cihaz kabul testi geçmedi.
+- Kör patch/fallback yasaktır; önce kök neden kanıtlanır.
+- Çalışan özellik silinmez/azaltılmaz.
+- Her ZIP `gpt-kizilkan-player-elite/` kökü ve güncel AI devir belgesi ile çıkar.
 
-## Sonraki plan
-v15.0.4 build + temel cihaz testi tamamlandıktan sonra ayrı plan/onay ile libmpv `1.0.0` instance API migration değerlendirilecektir.
+Detay için sırasıyla:
+1. `AI-PROJE-DEVIR-BAGLAM.md`
+2. `SURUM-NOTU-GPT-ELITE-v15.1.0-RC1.md`
+3. `REGRESYON-DENETIM-GPT-ELITE-v15.1.0-RC1.md`

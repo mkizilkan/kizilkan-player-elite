@@ -16,7 +16,7 @@ android {
 }
 
 dependencies {
-  // GPT ELITE v15: Expo SDK 54 ile Streamyfin'in Android MPV entegrasyonunda
-  // kullanılan, Maven Central'da yayınlanmış libmpv/FFmpeg AAR.
-  implementation 'dev.jdtech.mpv:libmpv:0.5.1'
+  // GPT ELITE v15.1: libmpv-android 1.0.0 multiple-instance API.
+  // Her KizilkanMpvView kendi MPVLib instance'ını yönetir; ZAP/session izolasyonu native seviyede korunur.
+  implementation 'dev.jdtech.mpv:libmpv:1.0.0'
 }

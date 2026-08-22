@@ -9,6 +9,9 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.FrameLayout
 import dev.jdtech.mpv.MPVLib
+import dev.jdtech.mpv.MPVLib.MpvEvent
+import dev.jdtech.mpv.MPVLib.MpvFormat
+import dev.jdtech.mpv.MPVLib.MpvLogLevel
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
@@ -29,6 +32,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   companion object {
     private const val TAG = "KizilkanMpv"
     private const val PROGRESS_INTERVAL_MS = 1000L
+    private val NEXT_INSTANCE_ID = java.util.concurrent.atomic.AtomicLong(0)
   }
 
   val onLoad by EventDispatcher()
@@ -38,8 +42,11 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   val onVideoReady by EventDispatcher()
   val onTracks by EventDispatcher()
   val onError by EventDispatcher()
+  val onDiagnostic by EventDispatcher()
 
   private val surfaceView = SurfaceView(context)
+  private val instanceId = NEXT_INSTANCE_ID.incrementAndGet()
+  private var mpv: MPVLib? = null
   private var initialized = false
   private var surfaceReady = false
   private var pendingSource: Map<String, Any?>? = null
@@ -53,6 +60,9 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   private var width = 0
   private var height = 0
   private var lastError: String? = null
+  private var videoCodec: String? = null
+  private var videoFormat: String? = null
+  private var hwdecCurrent: String? = null
   private val destroyed = AtomicBoolean(false)
 
   init {
@@ -85,44 +95,44 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
       val configDir = File(context.filesDir, "kizilkan-mpv").apply { mkdirs() }
       val cacheDir = File(context.cacheDir, "kizilkan-mpv").apply { mkdirs() }
 
-      MPVLib.create(context)
-      MPVLib.setOptionString("config", "no")
-      MPVLib.setOptionString("config-dir", configDir.absolutePath)
-      MPVLib.setOptionString("gpu-shader-cache-dir", cacheDir.absolutePath)
-      MPVLib.setOptionString("icc-cache-dir", cacheDir.absolutePath)
-      MPVLib.setOptionString("profile", "fast")
-      MPVLib.setOptionString("vo", "gpu")
-      MPVLib.setOptionString("gpu-context", "android")
-      MPVLib.setOptionString("opengl-es", "yes")
-      // Donanım uygunsa kullan; MediaCodec başarısızsa mpv/FFmpeg software decode'a düşebilir.
-      MPVLib.setOptionString("hwdec", "mediacodec,mediacodec-copy")
-      MPVLib.setOptionString("hwdec-codecs", "all")
-      // mpv varsayılanı art arda 3 decode hatasından sonra SW fallback'tir.
-      // IPTV'de ses akıp video decoder'ı hata veren cihazlarda daha erken ve
-      // deterministik fallback için ilk ardışık video decode hatasında düş.
-      MPVLib.setOptionString("hwdec-software-fallback", "1")
-      MPVLib.setOptionString("ao", "audiotrack,opensles")
-      MPVLib.setOptionString("audio-set-media-role", "yes")
-      MPVLib.setOptionString("demuxer-max-bytes", (64L * 1024L * 1024L).toString())
-      MPVLib.setOptionString("demuxer-max-back-bytes", (32L * 1024L * 1024L).toString())
-      MPVLib.setOptionString("cache", "yes")
-      MPVLib.setOptionString("cache-pause", "yes")
+      // libmpv-android 1.0.0 breaking change: her native view kendi MPVLib
+      // instance'ına sahiptir. Global/static player state artık kullanılmaz.
+      val player = MPVLib.create(context) ?: throw IllegalStateException("MPVLib.create null döndürdü")
+      mpv = player
+      player.setOptionString("config", "no")
+      player.setOptionString("config-dir", configDir.absolutePath)
+      player.setOptionString("gpu-shader-cache-dir", cacheDir.absolutePath)
+      player.setOptionString("icc-cache-dir", cacheDir.absolutePath)
+      player.setOptionString("profile", "fast")
+      player.setOptionString("vo", "gpu")
+      player.setOptionString("gpu-context", "android")
+      player.setOptionString("opengl-es", "yes")
+      player.setOptionString("hwdec", "mediacodec,mediacodec-copy")
+      player.setOptionString("hwdec-codecs", "all")
+      player.setOptionString("hwdec-software-fallback", "1")
+      player.setOptionString("ao", "audiotrack,opensles")
+      player.setOptionString("audio-set-media-role", "yes")
+      player.setOptionString("demuxer-max-bytes", (64L * 1024L * 1024L).toString())
+      player.setOptionString("demuxer-max-back-bytes", (32L * 1024L * 1024L).toString())
+      player.setOptionString("cache", "yes")
+      player.setOptionString("cache-pause", "yes")
 
-      // mpv-android BaseMPVView ile aynı lifecycle sırası:
-      // normal options -> init -> force-window/idle -> observer/surface.
-      MPVLib.init()
-      MPVLib.setOptionString("force-window", "no")
-      MPVLib.setOptionString("idle", "yes")
-
-      MPVLib.addObserver(this)
-      MPVLib.addLogObserver(this)
-      MPVLib.observeProperty("time-pos", MPVLib.MPV_FORMAT_DOUBLE)
-      MPVLib.observeProperty("duration/full", MPVLib.MPV_FORMAT_DOUBLE)
-      MPVLib.observeProperty("pause", MPVLib.MPV_FORMAT_FLAG)
-      MPVLib.observeProperty("paused-for-cache", MPVLib.MPV_FORMAT_FLAG)
-      MPVLib.observeProperty("video-params/w", MPVLib.MPV_FORMAT_INT64)
-      MPVLib.observeProperty("video-params/h", MPVLib.MPV_FORMAT_INT64)
+      player.init()
+      player.setOptionString("force-window", "no")
+      player.setOptionString("idle", "yes")
+      player.addObserver(this)
+      player.addLogObserver(this)
+      player.observeProperty("time-pos", MpvFormat.MPV_FORMAT_DOUBLE)
+      player.observeProperty("duration/full", MpvFormat.MPV_FORMAT_DOUBLE)
+      player.observeProperty("pause", MpvFormat.MPV_FORMAT_FLAG)
+      player.observeProperty("paused-for-cache", MpvFormat.MPV_FORMAT_FLAG)
+      player.observeProperty("video-params/w", MpvFormat.MPV_FORMAT_INT64)
+      player.observeProperty("video-params/h", MpvFormat.MPV_FORMAT_INT64)
+      player.observeProperty("video-codec", MpvFormat.MPV_FORMAT_STRING)
+      player.observeProperty("video-params/format", MpvFormat.MPV_FORMAT_STRING)
+      player.observeProperty("hwdec-current", MpvFormat.MPV_FORMAT_STRING)
       initialized = true
+      emitDiagnostic("NATIVE_CREATE", mapOf("libmpv" to "1.0.0"))
     } catch (e: Throwable) {
       emitError("MPV başlatılamadı: ${e.message ?: e.javaClass.simpleName}")
     }
@@ -130,12 +140,14 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
 
   override fun surfaceCreated(holder: SurfaceHolder) {
     surfaceReady = true
+    emitDiagnostic("SURFACE_CREATE")
     if (!initialized) initializeMpv()
     try {
       if (initialized) {
-        MPVLib.attachSurface(holder.surface)
-        MPVLib.setOptionString("force-window", "yes")
-        MPVLib.setPropertyString("vo", "gpu")
+        mpv?.attachSurface(holder.surface)
+        emitDiagnostic("SURFACE_ATTACH")
+        mpv?.setOptionString("force-window", "yes")
+        mpv?.setPropertyString("vo", "gpu")
         pendingSource?.let {
           pendingSource = null
           loadSource(it)
@@ -147,16 +159,18 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   }
 
   override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-    try { if (initialized) MPVLib.setPropertyString("android-surface-size", "${width}x$height") } catch (_: Throwable) {}
+    try { if (initialized) mpv?.setPropertyString("android-surface-size", "${width}x$height") } catch (_: Throwable) {}
   }
 
   override fun surfaceDestroyed(holder: SurfaceHolder) {
     surfaceReady = false
+    emitDiagnostic("SURFACE_DESTROY")
     try {
       if (initialized) {
-        MPVLib.setPropertyString("vo", "null")
-        MPVLib.setPropertyString("force-window", "no")
-        MPVLib.detachSurface()
+        mpv?.setPropertyString("vo", "null")
+        mpv?.setPropertyString("force-window", "no")
+        mpv?.detachSurface()
+        emitDiagnostic("SURFACE_DETACH")
       }
     } catch (_: Throwable) {}
   }
@@ -190,32 +204,41 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     width = 0
     height = 0
     lastError = null
+    videoCodec = null
+    videoFormat = null
+    hwdecCurrent = null
+    val softwareDecode = source["softwareDecode"] as? Boolean ?: false
+    emitDiagnostic("SOURCE_LOAD", mapOf("bufferMs" to currentBufferMs, "decodeMode" to if (softwareDecode) "software" else "hardware-auto"))
 
     try {
+      // v15.1 RC: first-frame watchdog software recovery always runs on a FRESH
+      // MPV instance (React key remount). Set hwdec before loadfile so a failed
+      // MediaCodec instance is never reused for the software retry.
+      mpv?.setPropertyString("hwdec", if (softwareDecode) "no" else "mediacodec,mediacodec-copy")
       val ua = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
       val referer = headers.entries.firstOrNull { it.key.equals("Referer", true) || it.key.equals("Referrer", true) }?.value
-      if (!ua.isNullOrBlank()) MPVLib.setPropertyString("user-agent", ua)
-      if (!referer.isNullOrBlank()) MPVLib.setPropertyString("referrer", referer)
+      if (!ua.isNullOrBlank()) mpv?.setPropertyString("user-agent", ua)
+      if (!referer.isNullOrBlank()) mpv?.setPropertyString("referrer", referer)
 
       val otherHeaders = headers.entries
         .filterNot { it.key.equals("User-Agent", true) || it.key.equals("Referer", true) || it.key.equals("Referrer", true) }
         .joinToString(",") { "${it.key}: ${it.value}" }
-      if (otherHeaders.isNotBlank()) MPVLib.setPropertyString("http-header-fields", otherHeaders)
-      else MPVLib.setPropertyString("http-header-fields", "")
+      if (otherHeaders.isNotBlank()) mpv?.setPropertyString("http-header-fields", otherHeaders)
+      else mpv?.setPropertyString("http-header-fields", "")
 
       val readahead = max(0.35, currentBufferMs / 1000.0)
-      MPVLib.setPropertyDouble("demuxer-readahead-secs", readahead)
-      MPVLib.command(arrayOf("loadfile", url, "replace"))
-      MPVLib.setPropertyBoolean("pause", false)
+      mpv?.setPropertyDouble("demuxer-readahead-secs", readahead)
+      mpv?.command(arrayOf("loadfile", url, "replace"))
+      mpv?.setPropertyBoolean("pause", false)
       post { onLoad(mapOf("url" to url)) }
     } catch (e: Throwable) {
       emitError("MPV kaynak yüklenemedi: ${e.message ?: e.javaClass.simpleName}")
     }
   }
 
-  fun play() { try { if (initialized) MPVLib.setPropertyBoolean("pause", false) } catch (e: Throwable) { emitError(e.message ?: "MPV play hatası") } }
-  fun pause() { try { if (initialized) MPVLib.setPropertyBoolean("pause", true) } catch (e: Throwable) { emitError(e.message ?: "MPV pause hatası") } }
-  fun stop() { try { if (initialized) MPVLib.command(arrayOf("stop")) } catch (_: Throwable) {} }
+  fun play() { try { if (initialized) mpv?.setPropertyBoolean("pause", false) } catch (e: Throwable) { emitError(e.message ?: "MPV play hatası") } }
+  fun pause() { try { if (initialized) mpv?.setPropertyBoolean("pause", true) } catch (e: Throwable) { emitError(e.message ?: "MPV pause hatası") } }
+  fun stop() { try { if (initialized) mpv?.command(arrayOf("stop")) } catch (_: Throwable) {} }
   fun reload() {
     currentUrl?.let {
       setSource(mapOf("url" to it, "headers" to currentHeaders, "bufferMs" to currentBufferMs))
@@ -227,32 +250,32 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
         // mpv'nin belgelenmiş seek komutunu kullan. `time-pos` yazmak bazı
         // demuxer/HLS kaynaklarında sessizce uygulanmayabiliyor. Keyframe seek
         // özellikle uzun IPTV VOD'larında exact decode zincirine göre daha sağlam.
-        MPVLib.command(arrayOf("seek", max(0.0, seconds).toString(), "absolute+keyframes"))
+        mpv?.command(arrayOf("seek", max(0.0, seconds).toString(), "absolute+keyframes"))
       }
     } catch (_: Throwable) {}
   }
-  fun seekBy(seconds: Double) { try { if (initialized) MPVLib.command(arrayOf("seek", seconds.toString(), "relative+exact")) } catch (_: Throwable) {} }
-  fun setVolume(value: Double) { try { if (initialized) MPVLib.setPropertyDouble("volume", value.coerceIn(0.0, 100.0)) } catch (_: Throwable) {} }
-  fun setRate(value: Double) { try { if (initialized) MPVLib.setPropertyDouble("speed", value.coerceIn(0.25, 4.0)) } catch (_: Throwable) {} }
-  fun setAudioDelay(ms: Int) { try { if (initialized) MPVLib.setPropertyDouble("audio-delay", ms / 1000.0) } catch (_: Throwable) {} }
-  fun setAudioTrack(id: Int) { try { if (initialized) if (id < 0) MPVLib.setPropertyString("aid", "no") else MPVLib.setPropertyInt("aid", id) } catch (_: Throwable) {} }
-  fun setSubtitleTrack(id: Int) { try { if (initialized) if (id < 0) MPVLib.setPropertyString("sid", "no") else MPVLib.setPropertyInt("sid", id) } catch (_: Throwable) {} }
+  fun seekBy(seconds: Double) { try { if (initialized) mpv?.command(arrayOf("seek", seconds.toString(), "relative+exact")) } catch (_: Throwable) {} }
+  fun setVolume(value: Double) { try { if (initialized) mpv?.setPropertyDouble("volume", value.coerceIn(0.0, 100.0)) } catch (_: Throwable) {} }
+  fun setRate(value: Double) { try { if (initialized) mpv?.setPropertyDouble("speed", value.coerceIn(0.25, 4.0)) } catch (_: Throwable) {} }
+  fun setAudioDelay(ms: Int) { try { if (initialized) mpv?.setPropertyDouble("audio-delay", ms / 1000.0) } catch (_: Throwable) {} }
+  fun setAudioTrack(id: Int) { try { if (initialized) if (id < 0) mpv?.setPropertyString("aid", "no") else mpv?.setPropertyInt("aid", id) } catch (_: Throwable) {} }
+  fun setSubtitleTrack(id: Int) { try { if (initialized) if (id < 0) mpv?.setPropertyString("sid", "no") else mpv?.setPropertyInt("sid", id) } catch (_: Throwable) {} }
 
   fun setFit(mode: String) {
     try {
       if (!initialized) return
       when (mode) {
         "cover" -> {
-          MPVLib.setPropertyDouble("panscan", 1.0)
-          MPVLib.setPropertyString("video-aspect-override", "-1")
+          mpv?.setPropertyDouble("panscan", 1.0)
+          mpv?.setPropertyString("video-aspect-override", "-1")
         }
         "fill" -> {
-          MPVLib.setPropertyDouble("panscan", 0.0)
-          MPVLib.setPropertyString("video-aspect-override", "0")
+          mpv?.setPropertyDouble("panscan", 0.0)
+          mpv?.setPropertyString("video-aspect-override", "0")
         }
         else -> {
-          MPVLib.setPropertyDouble("panscan", 0.0)
-          MPVLib.setPropertyString("video-aspect-override", "-1")
+          mpv?.setPropertyDouble("panscan", 0.0)
+          mpv?.setPropertyString("video-aspect-override", "-1")
         }
       }
     } catch (_: Throwable) {}
@@ -262,13 +285,13 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     val audio = mutableListOf<Map<String, Any?>>()
     val subtitle = mutableListOf<Map<String, Any?>>()
     try {
-      val count = MPVLib.getPropertyInt("track-list/count") ?: 0
+      val count = mpv?.getPropertyInt("track-list/count") ?: 0
       for (i in 0 until count) {
-        val type = MPVLib.getPropertyString("track-list/$i/type") ?: continue
-        val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
-        val title = MPVLib.getPropertyString("track-list/$i/title")
-        val lang = MPVLib.getPropertyString("track-list/$i/lang")
-        val selected = MPVLib.getPropertyBoolean("track-list/$i/selected") == true
+        val type = mpv?.getPropertyString("track-list/$i/type") ?: continue
+        val id = mpv?.getPropertyInt("track-list/$i/id") ?: continue
+        val title = mpv?.getPropertyString("track-list/$i/title")
+        val lang = mpv?.getPropertyString("track-list/$i/lang")
+        val selected = mpv?.getPropertyBoolean("track-list/$i/selected") == true
         val item = mapOf<String, Any?>(
           "id" to id,
           "name" to (title ?: lang ?: "$type $id"),
@@ -309,18 +332,30 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
       "paused-for-cache" -> post { onBufferingChange(mapOf("isBuffering" to value)) }
     }
   }
-  override fun eventProperty(property: String, value: String) {}
+  override fun eventProperty(property: String, value: String) {
+    when (property) {
+      "video-codec" -> videoCodec = value
+      "video-params/format" -> videoFormat = value
+      "hwdec-current" -> hwdecCurrent = value
+    }
+    if (property == "video-codec" || property == "video-params/format" || property == "hwdec-current") {
+      emitDiagnostic("VIDEO_PROPERTY", mapOf("property" to property, "value" to value))
+    }
+  }
 
   override fun event(eventId: Int) {
     when (eventId) {
-      MPVLib.MPV_EVENT_FILE_LOADED -> {
+      MpvEvent.MPV_EVENT_FILE_LOADED -> {
+        emitDiagnostic("FILE_LOADED")
         post {
           onLoad(mapOf("url" to (currentUrl ?: "")))
           onTracks(getTracks())
         }
       }
-      MPVLib.MPV_EVENT_VIDEO_RECONFIG, MPVLib.MPV_EVENT_PLAYBACK_RESTART -> emitVideoReadyIfPossible()
-      MPVLib.MPV_EVENT_END_FILE -> {
+      MpvEvent.MPV_EVENT_VIDEO_RECONFIG -> { emitDiagnostic("VIDEO_RECONFIG"); emitVideoReadyIfPossible() }
+      MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> { emitDiagnostic("PLAYBACK_RESTART"); emitVideoReadyIfPossible() }
+      MpvEvent.MPV_EVENT_END_FILE -> {
+        emitDiagnostic("END_FILE")
         post { onPlayingChange(mapOf("isPlaying" to false)) }
         val err = lastError
 
@@ -337,7 +372,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   override fun logMessage(prefix: String, level: Int, text: String) {
     // Yalnız gerçek error/fatal logu son hata adayı olarak sakla. Log tek başına
     // çalışan playback'i kesmez; END_FILE/onError akışında kullanılır.
-    if (level <= MPVLib.MPV_LOG_LEVEL_ERROR) {
+    if (level <= MpvLogLevel.MPV_LOG_LEVEL_ERROR) {
       lastError = "$prefix: ${text.trim()}"
       Log.w(TAG, lastError ?: "MPV error")
     }
@@ -346,11 +381,30 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   private fun emitVideoReadyIfPossible() {
     if (width > 0 && height > 0) {
       if (lastPosition > 0.0) playbackStarted = true
-      post { onVideoReady(mapOf("width" to width, "height" to height)) }
+      emitDiagnostic("VIDEO_READY", mapOf("width" to width, "height" to height, "codec" to (videoCodec ?: ""), "format" to (videoFormat ?: ""), "hwdec" to (hwdecCurrent ?: "")))
+      post { onVideoReady(mapOf("width" to width, "height" to height, "codec" to videoCodec, "format" to videoFormat, "hwdec" to hwdecCurrent)) }
     }
   }
 
+  private fun emitDiagnostic(event: String, extra: Map<String, Any?> = emptyMap()) {
+    val payload = linkedMapOf<String, Any?>(
+      "event" to event,
+      "instanceId" to instanceId,
+      "surfaceReady" to surfaceReady,
+      "initialized" to initialized,
+      "width" to width,
+      "height" to height,
+      "codec" to videoCodec,
+      "format" to videoFormat,
+      "hwdec" to hwdecCurrent,
+    )
+    payload.putAll(extra)
+    Log.d(TAG, "#$instanceId $event ${extra.entries.joinToString(" ") { "${it.key}=${it.value}" }}")
+    post { onDiagnostic(payload) }
+  }
+
   private fun emitError(message: String) {
+    emitDiagnostic("ERROR", mapOf("message" to message))
     post { onError(mapOf("message" to message)) }
   }
 
@@ -360,12 +414,18 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
 
   private fun cleanup() {
     if (!destroyed.compareAndSet(false, true)) return
+    emitDiagnostic("NATIVE_DESTROY_BEGIN")
     try { surfaceView.holder.removeCallback(this) } catch (_: Throwable) {}
-    try { if (initialized) MPVLib.removeObserver(this) } catch (_: Throwable) {}
-    try { if (initialized) MPVLib.removeLogObserver(this) } catch (_: Throwable) {}
-    try { if (initialized) MPVLib.command(arrayOf("stop")) } catch (_: Throwable) {}
-    try { if (initialized) MPVLib.destroy() } catch (_: Throwable) {}
+    val player = mpv
+    try { if (initialized) player?.command(arrayOf("stop")) } catch (_: Throwable) {}
+    try { if (initialized && surfaceReady) player?.detachSurface() } catch (_: Throwable) {}
+    try { if (initialized) player?.removeObserver(this) } catch (_: Throwable) {}
+    try { if (initialized) player?.removeLogObserver(this) } catch (_: Throwable) {}
+    try { player?.destroy() } catch (_: Throwable) {}
+    mpv = null
+    surfaceReady = false
     initialized = false
+    Log.d(TAG, "#$instanceId NATIVE_DESTROY_DONE")
   }
 
 }

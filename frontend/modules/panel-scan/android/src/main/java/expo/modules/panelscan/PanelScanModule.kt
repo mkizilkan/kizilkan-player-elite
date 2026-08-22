@@ -17,7 +17,7 @@ class PanelScanModule : Module() {
         putExtra("candidatesJson", candidatesJson)
         putExtra("username", username)
         putExtra("password", password)
-        putExtra("concurrency", concurrency.coerceIn(1, 12))
+        putExtra("concurrency", concurrency.coerceIn(1, 20))
         putExtra("timeoutMs", timeoutMs.coerceIn(2000, 20000))
       }
       ContextCompat.startForegroundService(context, intent)
@@ -27,6 +27,18 @@ class PanelScanModule : Module() {
     AsyncFunction("cancelScan") {
       val context = appContext.reactContext ?: return@AsyncFunction false
       context.startService(Intent(context, PanelScanService::class.java).apply { action = PanelScanService.ACTION_CANCEL })
+      true
+    }
+
+    AsyncFunction("pauseScan") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      context.startService(Intent(context, PanelScanService::class.java).apply { action = PanelScanService.ACTION_PAUSE })
+      true
+    }
+
+    AsyncFunction("resumeScan") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      context.startService(Intent(context, PanelScanService::class.java).apply { action = PanelScanService.ACTION_RESUME })
       true
     }
 

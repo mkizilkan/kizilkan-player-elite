@@ -836,7 +836,7 @@ export default function SettingsTab() {
         {/* Player V2 — genel canlı tampon ayarı */}
         <SectionTitle text="OYNATICI" />
         <View style={{ paddingHorizontal: SPACING.lg }}>
-          <View style={[styles.linkBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, alignItems: "flex-start", flexDirection: "column" }]}>
+          <View style={[styles.settingsPanelCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm }}>
               <Ionicons name="speedometer-outline" size={20} color={colors.brandPrimary} />
               <View style={{ flex: 1 }}>
@@ -1853,7 +1853,12 @@ const styles = StyleSheet.create({
   pAction: { padding: SPACING.xs },
   linkBtn: {
     flexDirection: "row", alignItems: "center", gap: SPACING.md,
-    height: 52, borderRadius: RADIUS.md, borderWidth: 1, paddingHorizontal: SPACING.lg,
+    minHeight: 56, borderRadius: RADIUS.md, borderWidth: 1, paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
+  },
+  settingsPanelCard: {
+    width: "100%", borderRadius: RADIUS.md, borderWidth: 1,
+    paddingHorizontal: SPACING.lg, paddingVertical: SPACING.lg,
+    alignItems: "stretch", marginBottom: SPACING.sm,
   },
   linkText: { flex: 1, fontSize: FONT.size.base, fontWeight: FONT.weight.semibold },
   rowCard: {
@@ -1864,7 +1869,7 @@ const styles = StyleSheet.create({
   rowSub: { fontSize: FONT.size.sm, marginTop: 2 },
   smallBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingHorizontal: SPACING.sm, paddingVertical: SPACING.xs },
   smallBtnText: { fontSize: FONT.size.sm, fontWeight: FONT.weight.bold },
-  plCard: { flexDirection: "row", alignItems: "center", padding: SPACING.md, borderRadius: RADIUS.md, borderWidth: 1.5, marginBottom: SPACING.sm },
+  plCard: { flexDirection: "row", alignItems: "center", minHeight: 88, padding: SPACING.md, borderRadius: RADIUS.md, borderWidth: 1.5, marginBottom: SPACING.sm },
   plName: { fontSize: FONT.size.lg, fontWeight: FONT.weight.bold },
   plMeta: { fontSize: FONT.size.sm, marginTop: 2 },
   addBtn: {

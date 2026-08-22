@@ -1,42 +1,46 @@
 # KIZILKAN PLAYER ELITE — AI PROJE DEVİR / TAM BAĞLAM BELGESİ
 
-> **Güncel paket:** v15.0.4 — CERTIFICATE GATE FIX
-> **Bu belge zorunludur.** Sohbet mesaj sınırı nedeniyle yeni sohbete geçildiğinde yeni yapay zekâ önce bu dosyayı, sonra güncel `SURUM-NOTU-*` ve `REGRESYON-DENETIM-*` dosyalarını okumalıdır.
-> Amaç, önceki sohbet erişilemese dahi projeye eksiksiz hâkim olunması ve özellik/karar kaybı yaşanmamasıdır.
+> **Güncel çalışma paketi:** **v15.1.0-RC1 — Player Core 1.0 RC / libmpv 1.0.0 / Scan Engine v2 / Telefon UI düzeltme hattı**
+> **Son doğrulanmış kurulabilir APK:** **v15.0.4**
+> **Durum:** v15.1.0-RC1 kaynak geliştirmesi yapıldı; bu paket henüz GitHub Actions full native/release build ve gerçek cihaz kabul testinden geçmedi. Başarılı build varmış gibi kabul edilmemelidir.
+> **Bu belge zorunludur.** Sohbet mesaj sınırı nedeniyle yeni sohbete geçildiğinde yeni yapay zekâ önce bu dosyayı, sonra en güncel sürüm notu ve regresyon belgesini okumalıdır.
 
 ## 1. SOHBET DEVİR SÖZLEŞMESİ
 
 Kullanıcı talimatı: Sohbet mesaj sınırı nedeniyle yeni sohbete geçildiğinde bağlam kaybı yaşanmaması için **HER ZIP** bu belgeyi içerecek ve her sürümde güncellenecek. Belge en az şunları açıklayacak:
 
 - Projenin amacı, mimarisi ve kritik tasarım kararları.
-- Son sürümde ne yapıldı, neden yapıldı, hangi kök neden çözüldü.
-- Hangi testlerin gerçekten çalıştırıldığı; hangilerinin çalıştırılmadığı.
-- GitHub Actions / native / TypeScript / Gradle / signing durumları.
+- Son sürümde ne yapıldı, neden yapıldı, hangi gerçek cihaz semptomunu hedefledi.
+- Yapılan teşhis, kullanılan dış kaynaklar ve çözümün neden seçildiği.
+- Hangi testlerin gerçekten çalıştırıldığı; hangilerinin çalıştırılamadığı.
+- GitHub Actions / native / TypeScript / Gradle / signing durumu.
 - Bilinen sorunlar, çözülen sorunlar, kalan işler ve sonraki plan.
 - Korunması gereken özellikler ve regresyon yasakları.
 - Dosya/sürüm/branch/repo/telefon klasörü bilgileri.
 - Yeni yapay zekânın ilk yapacağı kontroller.
 - Gizli değerler (keystore şifresi, private key, Base64 secret) **asla** belgeye yazılmayacak.
 
-Bu dosya eski bir snapshot gibi bırakılmayacak; yeni ZIP üretilmeden önce güncellenecek. `tools/checkplayercore.js` bu zorunluluğu HARD gate olarak kontrol eder.
+Bu dosya eski snapshot gibi bırakılmayacak. `tools/checkplayercore.js`, sürüm ve kritik devir anahtarlarının güncel olmasını HARD gate ile denetler.
 
 ## 2. PROJE KİMLİĞİ
 
 - Proje: **KIZILKAN PLAYER ELITE**
-- Platform: Android telefon + Android TV / TV Box
+- Hedef platform: Android telefon + Android TV / TV Box
 - Teknoloji: Expo / React Native / react-native-tvos tabanlı Android uygulaması
 - Kaynak kökü: `frontend/`
 - Package ID: `com.gpt.kizilkan.player`
-- GitHub temiz GPT repo: `mkizilkan/kizilkan-player-elite`
+- Temiz GPT GitHub repo: `mkizilkan/kizilkan-player-elite`
 - Telefon çalışma klasörü: `/sdcard/Download/gpt-kizilkan-player-elite`
 - ZIP iç kökü: `gpt-kizilkan-player-elite/`
-- Güncel sürüm: **15.0.4**
-- Android versionCode: **150004**
-- iOS buildNumber (metadata): **15.0.4**
+- Güncel uygulama sürümü: **15.1.0**
+- Android versionCode: **150100**
+- iOS buildNumber metadata: **15.1.0**
+- Player Engine hedef etiketi: **1.0.0-RC** — gerçek cihaz kabul matrisi bitmeden Stable denmez.
+- Native MPV dependency: **`dev.jdtech.mpv:libmpv:1.0.0`**
 
 Eski GPT/Claude sürümlerinin aynı çalışma ağacına üst üste açılması daha önce build'e artık dosyalar karıştırdı (`device-mode.tsx`, eski `kizilkan-media3` vb.). Bu yüzden temiz GPT repo oluşturuldu. Bundan sonra ZIP senkronlarında `.git` ve yerel signing materyali korunmalı; başka modelin ZIP'i bu klasörün üstüne açılmamalı.
 
-## 3. KULLANICI ÇALIŞMA SÖZLEŞMESİ — KORUNACAK
+## 3. KULLANICI ÇALIŞMA SÖZLEŞMESİ — BAĞLAYICI
 
 1. Kodda gerileme/çıkarma/azaltma yok; her sürüm öncekinin işlevlerini korur ve geliştirir.
 2. Simülasyon/hayali başarı yok; yapılmayan test yapılmış gibi söylenmez.
@@ -45,7 +49,7 @@ Eski GPT/Claude sürümlerinin aynı çalışma ağacına üst üste açılması
 5. Her kod/paket öncesi çoklu kontrol; dosya adı ve sürüm yükseltilir.
 6. Özenseme/baştan savma yok.
 7. Acele edilmez; kod sıkıştırılıp eksiltilmez.
-8. Büyük geliştirme/entegrasyon öncesi plan sunulur, kullanıcı onayından sonra kodlanır.
+8. Büyük geliştirme/entegrasyon öncesi plan sunulur, kullanıcı onayından sonra kodlanır. **v15.1.0-RC1 için ayrıntılı plan kullanıcı tarafından onaylandı.**
 9. Bahane üretilmez.
 10. Özellikler mümkün olan en yüksek kaliteyle planlanır/kodlanır.
 11. “İncele” talebinde gerçek kaynak satır satır incelenir ve bulgular açıkça anlatılır.
@@ -53,188 +57,289 @@ Eski GPT/Claude sürümlerinin aynı çalışma ağacına üst üste açılması
 13. Düzeltmeler yorum/sürüm notu ile ZIP'e konur; GitHub/Termux akışı sağlanır.
 14. **Yeni sohbet bağlam sözleşmesi:** Bu belge her ZIP'te güncel tutulur ve yeni yapay zekânın projeyi devralmasına yetecek ayrıntıyı taşır.
 15. **Körü körüne çalışma yasaktır:** Semptoma bakıp rastgele patch/fallback uygulanmaz. Önce gerçek kod yolu, log/çıktı ve mümkünse tekrar üretim ile kök neden kanıtlanır.
-16. **Dış araştırma zorunluluğu:** Teşhis için yerel kaynak yeterli değilse internet kapsamlı biçimde araştırılır; öncelik resmi dokümantasyon, upstream kaynak kodu, GitHub issue/commit/release notları ve güvenilir benzer implementasyonlardır.
+16. **Dış araştırma zorunluluğu:** Teşhis için yerel kaynak yeterli değilse internet kapsamlı araştırılır; öncelik resmi dokümantasyon, upstream kaynak kodu, GitHub issue/commit/release notları ve güvenilir benzer implementasyonlardır.
 17. **Çapraz doğrulama:** Dış kaynakta bulunan çözüm projeye körlemesine taşınmaz; kullanılan sürüm/API ile mevcut kaynak kod birebir eşleştirilmeden uygulanmaz.
-18. **Cerrahi değişiklik ilkesi:** Kanıtlanan kök nedene mümkün olan en dar müdahale yapılır; çalışan davranışlar, PlayerHost sözleşmesi ve önceki regresyon korumaları gereksiz yere değiştirilmez.
-19. **Düzeltme sonrası kanıt:** Her değişiklikten sonra uygun statik gate/test, mümkünse TypeScript/native build ve ilgili regresyon senaryosu yeniden kontrol edilir. Geçmeyen veya çalıştırılamayan test açıkça belirtilir.
+18. **Cerrahi değişiklik ilkesi:** Kanıtlanan kök nedene mümkün olan en dar müdahale yapılır; çalışan davranışlar ve önceki regresyon korumaları gereksiz yere değiştirilmez.
+19. **Düzeltme sonrası kanıt:** Her değişiklikten sonra uygun statik gate/test, mümkünse TypeScript/native build ve ilgili gerçek cihaz regresyon senaryosu yeniden kontrol edilir.
 
-## 4. v15 PLAYBACK CORE — ANA MİMARİ
+## 4. PLAYBACK CORE — KORUNAN MOTOR ZİNCİRİ
 
-Tek orkestratör `frontend/src/player/PlayerHost.tsx` korunur. Motorlar birbirinden bağımsız profillerdir:
+Tek orkestratör `frontend/src/player/PlayerHost.tsx` korunur. Ana fallback sırası:
 
 **Media3 → MPV/FFmpeg → VLC**
 
-AUTO karar mantığının ana sözleşmesi:
+Ana prensipler:
 
 - Media3 normal/hızlı ana motor.
-- Media3 unsupported codec / extractor / decoder fatal → MPV/FFmpeg.
-- Media3 HTTP/auth/network davranışı → VLC transport yolu.
-- Media3 ready ama first-frame yok → kontrollü Surface recovery; gerekiyorsa MPV.
-- MPV gerçek fatal → VLC HW.
-- VLC HW gerçek native fatal → VLC SW.
-- VLC SW gerçek fatal → final error.
-- Playback clock stall **tek başına motor değiştirmez**; önce aynı motor soft-resync, sonra aynı motor temiz session restart.
+- Media3 unsupported codec/extractor/decoder fatal → MPV/FFmpeg.
+- HTTP/auth/transport davranışında kontrollü VLC yolu korunur.
+- MPV gerçek fatal → VLC.
+- Stall tek başına motor değiştirme nedeni değildir; önce aynı motorda kontrollü recovery.
+- Eski session callback'lerinin yeni session'ı bozması yasaktır.
+- VOD/Series progress motorlardan bağımsız ortak playback state'te tutulur.
 
-Session ID + profile-generation gate + transition lock eski callback'in yeni oturumu bozmasını önler. Aynı kanal kapatılıp açıldığında yeni session üretilir. VOD/Series progress üç motorda ortak playback clock'tan yazılır.
+## 5. v15.0.4 — SON DOĞRULANMIŞ APK
 
-## 5. MPV NATIVE MOTORU
-
-- Local Expo module: `frontend/modules/mpv-player/`
-- Güncel dependency: `dev.jdtech.mpv:libmpv:0.5.1`
-- v15.0.3'te gerçek 0.5.1 Java API yüzeyine göre Kotlin adapter düzeltildi.
-- 0.5.1'de `MPV_FORMAT_*`, `MPV_EVENT_*`, `MPV_LOG_LEVEL_*` sabitleri doğrudan `MPVLib` üzerindedir. Yanlış nested `MpvFormat/MpvEvent/MpvLogLevel` kullanımı HARD gate ile yasaktır.
-- SurfaceView, header/User-Agent/Referer, buffer, volume, speed, fit, A/V delay, seek, audio/subtitle track desteği bulunur.
-- Geçici view detach libmpv destroy etmez; gerçek cleanup Expo view destruction lifecycle'ında yapılır.
-
-**Planlanan sonraki büyük migration:** APK build zinciri tamamen yeşil ve cihaz testi alınır alınmaz `libmpv 1.0.0` instance API migration'ı ayrı sürümde planlanacak. 1.0.0 breaking API değişimi olduğu için v15.0.x build-fix içine karıştırılmadı.
-
-## 6. TV BOX SURFACE / RENK ŞERİDİ SÖZLEŞMESİ
-
-Kullanıcının kritik gerçek cihaz problemi: TV Box'ta mavi/tema renkli şerit, ekran boyanması/tint, ses var görüntü yok, eski frame/surface kalması. v15 uygulama tarafında şu kökleri kapatır:
-
-- Hidden player `opacity:0 + zIndex:-1` kullanmaz.
-- Surface detach/GONE edilmek yerine gerektiğinde ekran dışına taşınır.
-- Player root opak siyah + `overflow:hidden`.
-- MPV SurfaceView opak, `PixelFormat.OPAQUE`, normal Z-order.
-- Android 14+ attachment lifecycle yaklaşımı.
-- Media3 TV ana yolu SurfaceView; TextureView yalnız recovery seçeneğidir.
-
-Fiziksel TV Box testi yapılmadan vendor compositor/codec bug'ına yüzde 100 garanti verilmez. Kod tarafında bu sözleşme geriye götürülmeyecek.
-
-## 7. v15.0.0 → v15.0.4 GERÇEK BUILD TARİHÇESİ
-
-### v15.0.0
-İlk GitHub build `npx tsc --noEmit` HARD gate'te kırıldı; **APK oluşmadı**. Gerçek v15 hataları ile eski ortak repo artıkları birbirine karışmıştı.
-
-### v15.0.1
-Gerçek TypeScript semantik hata temizliği yapıldı; temiz repo ihtiyacı kesinleşti. Eski ortak repo yerine yeni `kizilkan-player-elite` repo oluşturuldu.
-
-### v15.0.2
-Temiz repo CI, `@/src/native/vlc` ve `@/src/native/cast` TypeScript çözümleme sorunlarını ortaya çıkardı. Suffix'siz type facade'lar ve gerçek VLC callback tipi eklendi. Sonraki CI'da:
-
-- `denetle.js` geçti.
-- `tsc --noEmit` geçti.
-- Expo prebuild geçti.
-- İlk signing denemesi secret eksikleri nedeniyle durdu.
-- Kalıcı keystore oluşturuldu ve GitHub Secrets tanımlandı.
-
-### v15.0.3
-MPV Kotlin compile'da `MpvEvent`, `MpvFormat`, `MpvLogLevel` unresolved çıktı. 0.5.1 API'sine doğru şekilde geçirildi. Son GitHub build sonucunda:
+**APK v15.0.4 DERLENDI**, GitHub Actions release zinciri tamamlandı ve APK gerçek Android telefona kuruldu. Artifact ZIP'i açılarak elde edilen gerçek APK yaklaşık 376 MB idi. CI'da:
 
 - `denetle.js` ✅
 - `tsc --noEmit` ✅
 - Expo prebuild ✅
-- Kalıcı release signing kurulumu ✅
+- Kalıcı signing ✅
 - Gradle/native compile ✅
-- `:mpv-player:compileReleaseKotlin` ✅
-- **APK v15.0.3 DERLENDI** ✅ (`app-release.apk` fiziksel olarak oluştu)
-- Package ID `com.gpt.kizilkan.player` ✅
-- versionCode `150003` ✅
+- APK üretimi ✅
+- Package ID/versionCode ✅
 - `apksigner verify` ✅
-- Son gate ❌: workflow eski hard-coded sertifika SHA-256 beklediği için doğru yeni kalıcı keystore sertifikasını reddetti. Artifact/release aşamasına geçemedi.
+- `ANDROID_CERT_SHA256` fingerprint gate ✅
+- artifact/release ✅
 
-Yerel keystore `keytool -list -v` ile doğrulandı ve GitHub APK'dan okunan sertifika SHA-256 ile birebir eşleşti. Fingerprint paylaşılabilir metadata olsa da bu belgede gereksiz sabit sertifika değeri tutulmaz; CI kaynağı GitHub Secret olacaktır.
-
-### v15.0.4 — BU PAKET
-Kök çözüm: sertifika doğrulaması kaynak koduna gömülü eski SHA yerine `ANDROID_CERT_SHA256` Repository Secret ile yapılır. Secret ve APK fingerprint'i colon/space/case farklarından arındırılarak 64 hex karaktere normalize edilir. Secret biçimi geçersizse veya fingerprint uyuşmazsa build yine HARD FAIL olur. Beklenen fingerprint log'a yazılmaz.
-
-## 8. GITHUB ACTIONS / SIGNING DURUMU
-
-Release build için Repository → Settings → Secrets and variables → Actions altında şunlar gerekir:
+GitHub Secrets gerekli alanlar:
 
 - `ANDROID_KEYSTORE_BASE64`
 - `ANDROID_KEYSTORE_PASSWORD`
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
-- **`ANDROID_CERT_SHA256`** (v15.0.4 ile yeni)
+- `ANDROID_CERT_SHA256`
 
-Gizli değerleri bu belgeye veya repo kaynaklarına yazma. `.jks`, `.keystore`, `.base64` signing materyalleri `.gitignore` ile korunmalıdır. Keystore kaybedilirse aynı imza zinciriyle normal Android update üretme yeteneği kaybedilebilir.
+Gizli değerler repo veya bu belgeye yazılmaz.
 
-CI sırası:
+## 6. v15.0.5-RC1 — ÖNCEKİ SOHBETTE YAPILANLAR
 
-1. yarn install
+v15.0.4 üzerinde gerçek cihaz bulgularına karşı ilk regresyon paketi oluşturuldu. Korunacak RC1 geliştirmeleri:
+
+- Çoklu Hesap: otomatik ekleme yerine adayları biriktirme, seçim ve “Seçileni Doğrula ve Ekle” akışı.
+- Panel/DNS bilmiyorum: sonuç modalında tarama ilerlemesinin kaybolmaması ve native stop kontrolü.
+- Hızlı Yapıştırma: `kullanici:sifre` ve şifrede `:` desteği; URL'lerin yanlış kullanıcı/şifre sanılmaması.
+- Resume: kayıtlı anlamlı pozisyonda “Baştan izle / Kaldığın yerden devam et” sorusu.
+- Seek: kullanıcı seek sonrası watchdog grace.
+- MPV seek: `time-pos` property yazımı yerine `seek absolute+keyframes`.
+- MPV hwdecode: daha erken software fallback.
+- MAG/Stalker: endpoint havuzu, X-User-Agent, Referer, klasik MAC cookie, JSON öncesi debug/prefix temizleme.
+
+Bu değişiklikler v15.1.0-RC1'de korunmuştur; geri alınmamalıdır.
+
+## 7. v15.0.5 RC1 GERÇEK CİHAZ TEST BULGULARI — YENİ ÇALIŞMANIN SEBEBİ
+
+### P0 Player
+
+1. **4K/UHD MPV:** ses var, görüntü yok. Bazen görüntü kısa süre geliyor sonra kayboluyor.
+2. **ZAP/session sızıntısı:** kanallar arasında geçişte yeni görüntü gelmezken önceki kanalın sesi kalabiliyor.
+3. **UI/player donması:** birkaç ZAP/playlist geçişi sonrası bazı ekranlar dokunmaya/haptic'e yanıt vermiyor; liste kısmen kayabiliyor, sonra uygulama ağırlaşıyor/donuyor.
+4. **VOD resume:** Media3 ve MPV “Kaldığın yerden devam et” seçilse de kayıtlı pozisyondan başlamıyor.
+5. **VLC VOD:** film/dizi bazı örneklerde hiç açılmıyor.
+6. **Seek:** bazı MPV/Media3 VOD içeriklerinde ileri sarma güvenilir değil.
+7. Önceki örneklerde VLC'nin açtığı canlı kanalın MPV/FFmpeg'de açılmaması ve ses-var-görüntü-yok davranışı gözlendi.
+
+### P1 Scan / Account Discovery
+
+1. Çoklu hesap taraması kullanıcı açısından çok yavaş.
+2. RC1 içinde request concurrency vardır fakat üst seviye hesap traversal'ı yeterince paralel değildir.
+3. “Bulunan 9” gibi sayaç artarken bulunan playlist/hesaplar kullanıcıya anında görünmüyordu.
+4. Çoklu hesap ekranında Pause/Resume/Stop isteniyor.
+5. Arka plan davranışı güvenilir/kanıtlı değil; Android background'da JS loop'a güvenilmeyecek.
+6. Tüm sunucu keşif ekranlarında ortak **5 hız profili** isteniyor: Çok Güvenli, Güvenli, Dengeli, Hızlı, Turbo.
+
+### P1 Telefon UI
+
+Settings ekranında “Canlı Yayın Tamponu”, Hızlı/Dengeli/Stabil, “Tümünü Güncelle” ve playlist kartları birbirinin üzerine taşıyordu. Ekran görüntüsü gerçek cihazda dokunma alanlarını da bozabilecek kadar ciddi overlap gösterdi.
+
+## 8. v15.1.0-RC1 — ONAYLI PLAN VE UYGULANAN KOD
+
+Bu çalışma kullanıcı tarafından açıkça onaylandı. Hedef yalnız sürüm yükseltmek değil; Player Core session isolation, libmpv 1.0.0, scan engine ve UI regresyonlarını birlikte ama kontrollü fazlarla düzeltmektir.
+
+### 8.1 libmpv 1.0.0 migration
+
+Dosyalar:
+- `frontend/modules/mpv-player/android/build.gradle`
+- `frontend/modules/mpv-player/android/src/main/java/expo/modules/kizilkanmpv/KizilkanMpvView.kt`
+- `KizilkanMpvModule.kt`
+- `frontend/modules/mpv-player/index.tsx`
+
+Yapılan:
+
+- Dependency `dev.jdtech.mpv:libmpv:1.0.0` oldu.
+- Upstream 1.0.0 breaking API'ye göre global/singleton çağrılar bırakıldı.
+- Her `KizilkanMpvView` kendi `MPVLib` instance'ını `MPVLib.create(context)` ile oluşturur.
+- `init`, `setOption`, `observeProperty`, `attachSurface`, `command`, `removeObserver`, `destroy` aynı instance üzerinden yürür.
+- View cleanup'ta stop → surface detach → observers remove → native destroy → instance null sırası uygulanır.
+- 1.0.0 nested `MpvFormat`, `MpvEvent`, `MpvLogLevel` API'si kullanılır.
+- `video-codec`, `video-params/format`, `hwdec-current` gözlenir.
+- Native diagnostic eventleri: surface create/attach/destroy/detach, file loaded, video reconfig, playback restart, end file ve video-ready codec/format/hwdec bilgisi.
+
+Amaç: ZAP sırasında eski global MPV state'in yeni oynatıcı session'ına sızmasını önlemek ve 4K/Surface/decoder problemini ölçülebilir hale getirmek.
+
+### 8.2 PlayerHost session/resume güçlendirmesi
+
+Dosya: `frontend/src/player/PlayerHost.tsx`
+
+- MPV React key artık session + recovery generation içerir; yeni session gerçek native view/MPV instance oluşturur.
+- Resume tek 120 ms timer ile “başarılı” sayılmaz.
+- Resume denemeleri kontrollü zamanlarda yapılır ve gerçek playback position ile doğrulanır.
+- Media3 Expo Video public API'de doğrudan Media3 `availableCommands` exposed olmadığı için sahte capability kontrolü eklenmedi; Media3 resume uygulaması gerçek pozisyon geri bildirimiyle doğrulanır.
+- MPV/VLC/Media3 için motor-specific seek uygulanır; gerçekleşmeyen resume teknik hata olarak kaydedilir.
+- MPV diagnostic eventleri teknik stats state'e bağlanır.
+
+### 8.3 Scan Engine v2 temeli
+
+Dosyalar:
+- `frontend/app/add-playlist.tsx`
+- `frontend/src/utils/serverCode.ts`
+- `frontend/modules/panel-scan/android/.../PanelScanService.kt`
+- `PanelScanModule.kt`
+- `frontend/modules/panel-scan/index.ts`
+
+Yeni 5 profil:
+
+- Çok Güvenli: concurrency 2, timeout 16000 ms, accountConcurrency 1
+- Güvenli: concurrency 3, timeout 12000 ms, accountConcurrency 2
+- Dengeli: concurrency 6, timeout 8000 ms, accountConcurrency 3
+- Hızlı: concurrency 10, timeout 5000 ms, accountConcurrency 4
+- Turbo: concurrency 16, timeout 3500 ms, accountConcurrency 6
+
+Bu değerler RC başlangıç profilleridir; gerçek cihaz/ağ başarı oranı ve süre ile optimize edilebilir.
+
+Eklenenler:
+
+- Çoklu hesaplar artık bounded account worker pool ile üst seviyede paralel işlenebilir.
+- `ScanExecutionControl`: cooperative pause/cancel.
+- Çoklu hesap Pause/Resume/Stop.
+- Bulunan adaylar tarama devam ederken canlı candidate state'e aktarılır ve korunur.
+- Native panel scan'de `ACTION_PAUSE` / `ACTION_RESUME`, paused snapshot ve worker pause loop.
+- Native worker ceiling 20; sınırsız Promise/thread üretimi yok.
+- Cancel durumunda “sonuç yok” hatası yanlışlıkla üretilmez.
+
+### 8.4 Telefon settings UI overlap düzeltmesi
+
+Dosya: `frontend/app/(tabs)/settings.tsx`
+
+Gerçek kök nedenlerden biri: sabit `height:52` olan `linkBtn` stilinin çok satırlı buffer/settings panel kartı için de kullanılmasıydı. İç içerik sabit yüksekliğe sığmayıp aşağıdaki section/card'ların üstüne taşıyordu.
+
+Düzeltme:
+
+- Buffer paneli `settingsPanelCard` dinamik içerik kartına taşındı.
+- `linkBtn` fixed height yerine `minHeight` + vertical padding kullanır.
+- Playlist kartları minimum yükseklik ve içerik tabanlı büyüme kullanır.
+- Amaç: telefon ekranında overlap ve touch-target çakışması olmaması.
+
+## 9. 4K / ZAP / SURFACE TEŞHİS PRENSİBİ
+
+“libmpv 1.0.0'a geçtik, sorun çözülmüştür” denmeyecek. 4K ses-var-görüntü-yok için aşağıdakiler ayrılmalıdır:
+
+- codec (özellikle HEVC/Main10 olasılığı),
+- pixel format,
+- MediaCodec hwdec,
+- software decoder fallback,
+- Surface create/attach/detach,
+- video reconfigure,
+- first frame,
+- eski session ownership/callback sızıntısı.
+
+Diagnostic eventler bu ayrımı yapmak için eklenmiştir. Gerçek 4K cihaz testi şarttır.
+
+## 10. VLC VOD DURUMU
+
+VLC VOD açılmama sorunu bu paketle “kesin çözüldü” diye iddia edilmez. Mevcut `expo-libvlc-player` bağımlılığı korunmuştur. Sonraki teşhiste aynı VOD için Media3/MPV/VLC URL/header/redirect/container davranışı karşılaştırılmalıdır. Dependency downgrade/upgrade kanıt olmadan yapılmamalıdır.
+
+## 11. MAG / STALKER
+
+v15.0.5 RC1'deki geliştirmeler korunur. Eğer eski çalışan hesap yeni sürümde hâlâ açılmazsa v14.x çalışan request ile v15.x request handshake/token/profile/create_link seviyesinde karşılaştırılmalıdır. Sunucu otomatik suçlanmamalıdır.
+
+## 12. GITHUB ACTIONS / SIGNING
+
+CI sırası korunur:
+
+1. bağımlılık kurulumu
 2. `node ../tools/denetle.js` HARD gate
 3. `npx tsc --noEmit` HARD gate
 4. Expo clean prebuild
-5. Kalıcı release signing
+5. kalıcı release signing
 6. Gradle/manifest/TV/HTTP kontrolleri
-7. Gradle assembleRelease
-8. APK package/version/apksigner/fingerprint HARD gate
+7. assembleRelease
+8. package/version/apksigner/fingerprint gate
 9. APK adlandırma
-10. Artifact upload
+10. artifact upload
 11. GitHub Release
 
-## 9. v15.0.4 BAŞARI KRİTERİ
+Signing secret isimleri: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`, `ANDROID_CERT_SHA256`.
 
-Bu sürüm ancak temiz GitHub Actions'ta şu zincir tamamen yeşil olursa başarılı kabul edilir:
+## 13. v15.1.0-RC1 TEST / DOĞRULAMA DURUMU
 
-- TypeScript 0 hata
-- MPV Kotlin compile
-- Full Gradle release APK
-- Package/version doğrulaması
-- apksigner verify
-- `ANDROID_CERT_SHA256` fingerprint eşleşmesi
-- artifact upload
-- GitHub Release
+Bu kaynak çalışma ortamında yapılabilen doğrulamalar ile GitHub native build birbirinden ayrılmalıdır.
 
-Bunlardan biri başarısızsa “build tamamlandı” denmez.
+**Paketlenmeden önce zorunlu yerel kontroller:**
+- `node ../tools/denetle.js`
+- JSON/YAML/syntax kontrolleri
+- MPV 1.0.0 API referans statik kontrolleri
+- ZIP bütünlük testi
 
-## 10. KORUNACAK v14/v15 ÖZELLİKLERİ
+**Bu ortamda bağımlılıklar/node_modules yoksa gerçek `npx tsc --noEmit` başarılı sayılmaz.** GitHub Actions çalıştırılmadan Kotlin/libmpv 1.0.0 compile başarılı sayılmaz.
 
-- Çoklu IPTV hesap ekleme (manuel/CSV/TXT/JSON).
-- Sunucu ile üç giriş yöntemi.
-- Native background panel/DNS scan ve streaming results.
+**Gerçek cihaz kabul matrisi:**
+- 4K MPV görüntü + ses stabil
+- en az 20 hızlı ZAP; eski ses kalmıyor, yeni görüntü geliyor, UI donmuyor
+- Media3 resume gerçek pozisyon
+- MPV resume gerçek pozisyon
+- VLC VOD teşhisi/çalışması
+- MPV/Media3 seek
+- Çoklu hesap live result + Pause/Resume/Stop
+- 5 scan speed profili
+- background/native scan davranışı
+- Settings UI overlap 0
+- TV Box Surface/focus regresyon yok
+
+## 14. KORUNACAK ÖZELLİKLER
+
+- Çoklu IPTV hesap ekleme, CSV/TXT/JSON ve `kullanici:sifre`.
+- Sunucu ile giriş yöntemleri.
+- Native panel/DNS scan ve streaming results.
 - DNS self-heal.
-- Playlist tür renkleri / server code / özel playlist adı.
+- Playlist tür renkleri/server code/özel ad.
 - Tümünü Güncelle worker akışı.
 - +18 cache/switch/PIN.
 - Backup/restore.
 - Zap, kayıt, screenshot, cast, sleep, track, subtitle, A/V sync, speed, fit.
-- Telefon touch + TV focus/kumanda altyapısı.
-- VLC non-destructive health.
+- Telefon touch + TV focus/kumanda.
+- VLC fallback.
 - Runtime stall recovery.
 - VOD/Series progress.
 - `.ts/.m3u8` alternatif URL.
-- Hızlı/Dengeli/Stabil + gelişmiş buffer seçenekleri.
+- Hızlı/Dengeli/Stabil playback buffer seçenekleri.
+- MAG/Stalker RC1 compatibility geliştirmeleri.
 
-Hiçbiri build-fix bahanesiyle kaldırılmayacak.
+Hiçbiri yeni player/scan migration bahanesiyle kaldırılmayacak.
 
-## 11. BİLİNEN / KALAN / SONRAKI ISLER
+## 15. KALAN / SONRAKI ISLER
 
 **KALAN / SONRAKI ISLER:**
 
-1. GitHub'a `ANDROID_CERT_SHA256` secret ekle ve v15.0.4 CI çalıştır.
-2. Artifact + GitHub Release gerçekten oluştuğunu doğrula.
-3. APK'yı telefon üzerinde kur ve başlangıç/same-channel/VLC/Media3/MPV playback testleri yap.
-4. Mümkün olduğunda TV Box'ta surface/şerit/tint/zap/focus matrisi çalıştır.
-5. Build + temel cihaz testi sonrası ayrı plan/onayla `libmpv 1.0.0` instance API migration'ına geç.
-6. 1.0.0 migration'da multi-instance potansiyeli, lifecycle ve observer/Surface davranışı ayrı regresyon matrisiyle ele alınmalı.
+1. v15.1.0-RC1 kaynak paketinin tüm yerel HARD gate'lerini çalıştır ve sonucu kaydet.
+2. Temiz repo üzerinde GitHub Actions çalıştır; `tsc --noEmit`, Expo prebuild ve özellikle `:mpv-player:compileReleaseKotlin` libmpv 1.0.0 migration'ını doğrulasın.
+3. Kotlin/API build hatası varsa upstream 1.0.0 API ile birebir doğrula; 0.5.1 API'ye geri dönme veya `any`/sahte stub ile susturma yok.
+4. Build başarılı olursa aynı gerçek cihazda 4K kanal + ZAP + resume + seek + VLC VOD matrisi çalıştır.
+5. MPV diagnostics ile ses-var-görüntü-yok vakasında codec/hwdec/surface/first-frame ayrımını kanıtla.
+6. Scan Engine v2 gerçek süre/başarı oranlarını 5 profil için ölç; timeout/concurrency değerlerini veriye göre revize et.
+7. Background scan'i gerçek Android lifecycle ile test et; JS background davranışını native service varmış gibi göstermeme.
+8. Settings UI'yi küçük telefon ekranı, font scaling ve TV ekranında test et.
+9. VLC VOD devam ediyorsa request/header/container karşılaştırması yap; dependency değişikliğini kanıt olmadan yapma.
+10. MAG hesabı hâlâ regresyon gösteriyorsa eski çalışan sürümle HTTP seviyesinde karşılaştır.
+11. Bütün kritik gerçek cihaz senaryoları geçmeden Player Engine “1.0.0 Stable” ilan edilmez.
 
-## 11.1 v15.0.5-RC1 GÜNCEL DURUM
-
-- v15.0.4 tabanında bildirilen MAG, MPV/FFmpeg görüntü, MPV/Media3 seek, VOD resume, Çoklu Hesap, Panel/DNS ilerleme ve Hızlı Yapıştırma regresyonları için RC1 çalışma paketi hazırlandı.
-- Player Engine libmpv 1.0.0 migration'ı bilinçli olarak ertelendi; önce mevcut kritik regresyonların gerçek cihazda doğrulanması gerekir.
-- Yeni çalışma sözleşmesine körü körüne patch yasağı, gerektiğinde kapsamlı internet/upstream araştırması, çapraz doğrulama ve cerrahi değişiklik ilkeleri eklendi.
-- v15.0.5-RC1 başarı olarak ilan edilmez; GitHub Actions ve gerçek cihaz testleri beklenmektedir.
-
-## 12. YENİ SOHBETTE YAPAY ZEKÂNIN İLK YAPACAĞI ŞEYLER
+## 16. YENİ SOHBETTE YAPAY ZEKÂNIN İLK YAPACAĞI ŞEYLER
 
 1. Bu dosyayı tamamen oku.
-2. En yüksek sürümlü `SURUM-NOTU-GPT-ELITE-*` ve `REGRESYON-DENETIM-GPT-ELITE-*` dosyalarını oku.
-3. `frontend/app.json`, `frontend/package.json`, `.github/workflows/build-apk.yml`, `tools/checkplayercore.js` sürüm değerlerini karşılaştır.
-4. Kullanıcının gönderdiği en son GitHub Actions logunu “gerçek durum” kabul et; yapılmamış test varsayma.
-5. Kod değişikliğinden önce planı sun ve onay gerektiren kapsamda onay al.
-6. `node ../tools/denetle.js` ve mümkünse gerçek `npx tsc --noEmit` sonuçlarını raporla.
-7. Yeni paket üretirken sürümü yükselt, yeni sürüm notu/regresyon belgesi yaz ve **bu AI devir belgesini de mutlaka güncelle**.
+2. `SURUM-NOTU-GPT-ELITE-v15.1.0-RC1.md` ve `REGRESYON-DENETIM-GPT-ELITE-v15.1.0-RC1.md` dosyalarını oku.
+3. `frontend/app.json`, `frontend/package.json`, MPV `android/build.gradle`, `.github/workflows/build-apk.yml`, `tools/checkplayercore.js` sürüm/dependency değerlerini karşılaştır.
+4. Kullanıcının en son GitHub Actions veya cihaz test çıktısını gerçek durum kabul et; yapılmamış testi varsayma.
+5. `libmpv:1.0.0` ve MPV instance API'nin gerçekten source'ta kaldığını kontrol et.
+6. Scan speed profilleri ve pause/resume/cancel kodunu doğrula.
+7. `node ../tools/denetle.js` ve mümkünse gerçek `npx tsc --noEmit` çalıştır.
+8. Yeni paket üretirken sürümü yükselt, sürüm/regresyon notlarını ve **bu belgeyi mutlaka güncelle**.
 
-## 13. GÜVENLİK / GİZLİLİK
+## 17. GÜVENLİK / GERÇEKLİK
 
-- Keystore private key veya password paylaşılmaz.
-- `ANDROID_KEYSTORE_BASE64` değeri belgeye yazılmaz.
-- GitHub Secrets değerleri loglanmaz.
-- `ANDROID_CERT_SHA256` fingerprint private key değildir; yine de CI kaynağı olarak Secret kullanılır ve workflow beklenen değeri loglamaz.
+- Keystore private key/password paylaşılmaz.
 - Signing dosyaları Git'e commit edilmez.
-
-## 14. GERÇEKLİK NOTU
-
-Bu belge başarıyı simüle etmez. v15.0.3'te APK üretimi ve imza doğrulaması gerçekten GitHub CI logunda görüldü; artifact/release ise sertifika gate nedeniyle oluşmadı. v15.0.4'ün başarısı henüz GitHub CI çalıştırılmadan iddia edilemez.
+- Credential/token logları maskelenir.
+- Bu belge başarıyı simüle etmez.
+- **APK v15.0.4 DERLENDI** ve gerçek telefona kuruldu; bu kanıtlı son referanstır.
+- v15.1.0-RC1 henüz GitHub full build + gerçek cihaz testinden geçmeden “çalışıyor” veya “sorun çözüldü” denmeyecektir.

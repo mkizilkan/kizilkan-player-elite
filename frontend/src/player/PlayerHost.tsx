@@ -288,7 +288,7 @@ export default function PlayerHost() {
   const [recordFlash, setRecordFlash] = useState<string | null>(null);
   const [speed, setSpeed] = useState<number>(1.0);
   const [gestureFlash, setGestureFlash] = useState<string | null>(null);
-  const [videoStats, setVideoStats] = useState<{ width?: number; height?: number; duration?: number; currentTime?: number; position?: number }>({});
+  const [videoStats, setVideoStats] = useState<{ width?: number; height?: number; duration?: number; currentTime?: number; position?: number; mpvCodec?: string; mpvFormat?: string; mpvHwdec?: string; mpvEvent?: string }>({});
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sleepTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -311,6 +311,10 @@ export default function PlayerHost() {
   const [mpvVideoReady, setMpvVideoReady] = useState(false);
   const [mpvVideoMetaReady, setMpvVideoMetaReady] = useState(false);
   const [mpvRecoveryGeneration, setMpvRecoveryGeneration] = useState(0);
+  // v15.1 RC — 4K/HEVC first-frame recovery. MPV once hardware path
+  // produces audio/clock but no verified video, a FRESH native instance is
+  // remounted with software decoding. We never mutate a broken decoder in place.
+  const [mpvForceSoftware, setMpvForceSoftware] = useState(false);
   const [memoSurfaceOverride, setMemoSurfaceOverride] = useState<"surfaceView" | "textureView" | null>(null);
   /**
    * KANAL BAŞINA AYARLAR (v7.3.0)
@@ -410,6 +414,7 @@ export default function PlayerHost() {
   // Seek sırasında clock'un doğal olarak durması "stall" sayılmamalı.
   const userSeekGraceUntilRef = useRef(0);
   const appliedResumeKeyRef = useRef("");
+  const resumeAttemptRef = useRef<{ key: string; target: number; attempts: number; confirmed: boolean }>({ key: "", target: 0, attempts: 0, confirmed: false });
   // GPT ELITE v14.0.0 — Player V2 session/controller state.
   const sessionGateRef = useRef(new PlaybackSessionGate());
   const sessionStartedAtRef = useRef(Date.now());
@@ -568,6 +573,7 @@ export default function PlayerHost() {
     setProfileReadySessionId(0);
     transitioningSessionRef.current = null;
     successfulSessionRef.current = null;
+    resumeAttemptRef.current = { key: "", target: 0, attempts: 0, confirmed: false };
     vlcPlayingRef.current = false;
     mpvPlayingRef.current = false;
     sessionStartedAtRef.current = Date.now();
@@ -588,6 +594,7 @@ export default function PlayerHost() {
     setVlcVideoMetaReady(false);
     setMpvVideoReady(false);
     setMpvVideoMetaReady(false);
+    setMpvForceSoftware(false);
 
     let alive = true;
     (async () => {
@@ -989,20 +996,58 @@ export default function PlayerHost() {
     revealControls();
   };
 
-  // Kullanıcının "kaldığın yerden devam et" seçimini player gerçekten PLAYING
-  // olduktan sonra, oturum başına yalnız bir kez uygula. Erken mount anında seek
-  // bazı motorlarda source hazır olmadığı için sessizce 0'a düşebiliyordu.
+  // v15.1.0-RC1 — Resume artık "seek komutunu gönderdim = başarı" saymaz.
+  // Hedef pozisyon playback clock üzerinden doğrulanır; source/player geç hazırlandıysa
+  // aynı session içinde kontrollü olarak yeniden denenir.
   useEffect(() => {
     const resumeAt = Math.max(0, Number(params.resumeAt || 0));
-    if (!visible || !isSynthetic || !channel || resumeAt < 10 || v2Phase !== "playing") return;
+    if (!visible || !isSynthetic || !channel || resumeAt < 10 || v2Phase !== "playing" || activeSessionId <= 0) return;
     const key = `${activeSessionId}:${String(channel.id)}:${Math.floor(resumeAt)}`;
     if (appliedResumeKeyRef.current === key) return;
-    appliedResumeKeyRef.current = key;
-    const t = setTimeout(() => seekTo(resumeAt), 120);
-    return () => clearTimeout(t);
-    // seekTo bilinçli olarak bağımlılığa alınmadı; aktif profile/state bu effect'i zaten tetikler.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, isSynthetic, channel?.id, params.resumeAt, v2Phase, activeSessionId, v2ProfileKey]);
+
+    const readPosition = () => {
+      if (v2Profile.engine === "vlc") return Number(vlcClockRef.current.positionSeconds || 0);
+      if (v2Profile.engine === "mpv") return Number(mpvClockRef.current.positionSeconds || 0);
+      return Number(media3ClockRef.current.positionSeconds || (player as any)?.currentTime || 0);
+    };
+    const sendResumeSeek = () => {
+      if (!sessionGateRef.current.isActive(activeSessionId)) return;
+      if (v2Profile.engine === "mpv") void mpvRef.current?.seekTo(resumeAt);
+      else if (v2Profile.engine === "vlc") {
+        try { vlcRef.current?.seek(resumeAt * 1000, "time"); } catch {}
+      } else {
+        // expo-video public API currentTime setter Android'de Media3 seek'e gider.
+        // Public JS API Media3 availableCommands'ı expose etmediği için başarı
+        // aşağıdaki gerçek position callback'i ile doğrulanır; sessiz başarı varsayılmaz.
+        try { (player as any).currentTime = resumeAt; } catch {}
+      }
+      const now = Date.now();
+      userSeekGraceUntilRef.current = now + 10000;
+      resumeAttemptRef.current = { key, target: resumeAt, attempts: resumeAttemptRef.current.attempts + 1, confirmed: false };
+    };
+
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const checkpoints = [120, 900, 1900, 3300];
+    checkpoints.forEach((delay, index) => {
+      timers.push(setTimeout(() => {
+        if (!sessionGateRef.current.isActive(activeSessionId) || appliedResumeKeyRef.current === key) return;
+        const pos = readPosition();
+        const tolerance = Math.max(4, Math.min(12, resumeAt * 0.02));
+        if (Math.abs(pos - resumeAt) <= tolerance || pos >= resumeAt - tolerance) {
+          appliedResumeKeyRef.current = key;
+          resumeAttemptRef.current = { key, target: resumeAt, attempts: resumeAttemptRef.current.attempts, confirmed: true };
+          return;
+        }
+        if (index < 3) sendResumeSeek();
+        else {
+          setTechnicalError(`Resume seek doğrulanamadı · motor=${v2Profile.engine} · hedef=${Math.floor(resumeAt)}s · gerçek=${Math.floor(pos)}s`);
+        }
+      }, delay));
+    });
+    // İlk komutu source PLAYING olduktan hemen sonra gönder.
+    sendResumeSeek();
+    return () => timers.forEach(clearTimeout);
+  }, [visible, isSynthetic, channel?.id, params.resumeAt, v2Phase, activeSessionId, v2ProfileKey, v2Profile.engine, player]);
 
   const lastExoUrlRef = useRef<string | null>(null);
 
@@ -1835,7 +1880,8 @@ export default function PlayerHost() {
     url: playbackRequest.url,
     headers: playbackRequest.headers,
     bufferMs,
-  } : null, [playbackRequest, bufferMs, mpvRecoveryGeneration]);
+    softwareDecode: mpvForceSoftware,
+  } : null, [playbackRequest, bufferMs, mpvRecoveryGeneration, mpvForceSoftware]);
 
   const activeEngineLabel =
     v2Profile.engine === "media3" ? "Media3"
@@ -1936,6 +1982,7 @@ export default function PlayerHost() {
         setUseVLC(false);
         setMpvVideoMetaReady(false);
         setMpvVideoReady(false);
+        setMpvForceSoftware(false);
         setMpvRecoveryGeneration(g => g + 1);
       } else if (engine === "auto" && VLC_AVAILABLE && Platform.OS !== "web") {
         setRecoveryMessage("Media3 görüntü üretmedi; VLC donanım motoru deneniyor…");
@@ -1957,6 +2004,85 @@ export default function PlayerHost() {
     }, timeoutMs);
     return () => clearTimeout(t);
   }, [visible, channel?.id, activeSessionId, sessionKind, playbackRequest?.expectsVideo, useVLC, v2Profile, exoReady, exoFirstFrame, exoRecoveryStep, engine, surfaceMode, player]);
+
+  /**
+   * v15.1 RC — MPV FIRST-FRAME / 4K RECOVERY
+   *
+   * Gerçek cihazda 4K yayında ses/clock ilerlerken görüntünün hiç gelmediği veya
+   * kısa süre sonra kaybolduğu görüldü. mpv-android tarafında MediaCodec geçiş ve
+   * cihaz-spesifik hwdec sorunları bilinen bir sınıftır. İlk frame doğrulanmazsa
+   * aynı bozuk decoder üzerinde option değiştirmek yerine yeni native MPV instance
+   * software decode ile remount edilir. Software denemesi de frame üretmezse AUTO
+   * zinciri VLC'ye devam eder.
+   */
+  useEffect(() => {
+    if (
+      !visible || !channel || playbackRequest?.expectsVideo === false ||
+      v2Profile.engine !== "mpv" || !useMPV || mpvVideoReady ||
+      v2Phase !== "waiting_first_frame"
+    ) return;
+
+    const sid = activeSessionId;
+    const timeoutMs = (sessionKind === "live" ? FIRST_FRAME_TIMEOUT_LIVE_MS : FIRST_FRAME_TIMEOUT_VOD_MS) + 1800;
+    const t = setTimeout(() => {
+      if (
+        !sessionGateRef.current.isActive(sid) ||
+        activeProfileKeyRef.current !== v2ProfileKey ||
+        v2Profile.engine !== "mpv" || mpvVideoReady
+      ) return;
+      if (transitioningSessionRef.current === sid) return;
+      transitioningSessionRef.current = sid;
+
+      if (!mpvForceSoftware) {
+        recordEngineFailure(
+          String(channel.id), v2Profile, "decoder",
+          "MPV hardware decode profili doğrulanmış first-frame üretmedi; temiz software instance deneniyor",
+        ).catch(() => {});
+        try { void mpvRef.current?.stop?.(); } catch {}
+        setRecoveryMessage("MPV donanım decode görüntü üretmedi; temiz FFmpeg yazılım decoder deneniyor…");
+        setTechnicalError("MPV HW first-frame timeout → fresh software instance");
+        setMpvForceSoftware(true);
+        setMpvVideoMetaReady(false);
+        setMpvVideoReady(false);
+        setV2Phase("preparing");
+        setIsBuffering(true);
+        setMpvRecoveryGeneration(g => g + 1);
+        setTimeout(() => { if (sessionGateRef.current.isActive(sid)) transitioningSessionRef.current = null; }, 100);
+        return;
+      }
+
+      recordEngineFailure(
+        String(channel.id), v2Profile, "decoder",
+        "MPV software decode profili de doğrulanmış first-frame üretmedi",
+      ).catch(() => {});
+      try { void mpvRef.current?.stop?.(); } catch {}
+
+      if (engine === "auto" && VLC_AVAILABLE && Platform.OS !== "web") {
+        setRecoveryMessage("MPV donanım ve yazılım görüntü üretmedi; VLC motoru deneniyor…");
+        setTechnicalError("MPV HW+SW first-frame timeout");
+        setV2Phase("switch_engine");
+        setV2Profile({ engine: "vlc", decoder: "hw" });
+        setUseVLC(true);
+        setVlcAutoSoftware(false);
+        setVlcVideoMetaReady(false);
+        setVlcVideoReady(false);
+        setVlcRecoveryGeneration(g => g + 1);
+        setIsBuffering(true);
+      } else {
+        setRecoveryMessage(null);
+        setTechnicalError("MPV HW ve software decoder first-frame üretmedi.");
+        setError("MPV görüntü oluşturamadı.");
+        setV2Phase("final_error");
+        setIsBuffering(false);
+      }
+      setTimeout(() => { if (sessionGateRef.current.isActive(sid)) transitioningSessionRef.current = null; }, 100);
+    }, timeoutMs);
+
+    return () => clearTimeout(t);
+  }, [
+    visible, channel?.id, activeSessionId, sessionKind, playbackRequest?.expectsVideo,
+    v2Profile, v2ProfileKey, useMPV, mpvVideoReady, mpvForceSoftware, v2Phase, engine,
+  ]);
 
   /**
    * v15: VLC için süreye bağlı otomatik "görüntü yok" watchdog'u kaldırıldı.
@@ -2404,7 +2530,7 @@ export default function PlayerHost() {
 
           {v2ProfileReady && useMPV && KIZILKAN_MPV_AVAILABLE && channel && mpvSource && (
             <KizilkanMpvView
-              key="kizilkan-mpv-core"
+              key={`kizilkan-mpv-core-${activeSessionId}-${mpvRecoveryGeneration}`}
               ref={mpvRef}
               style={StyleSheet.absoluteFill}
               source={mpvSource}
@@ -2431,6 +2557,10 @@ export default function PlayerHost() {
                 mpvPlayingRef.current = playing;
                 isPlayingRef.current = playing;
                 setIsPlaying(prev => prev === playing ? prev : playing);
+
+                if (playing && playbackRequest?.expectsVideo !== false && !mpvVideoReady) {
+                  setV2Phase("waiting_first_frame");
+                }
 
                 if (playing && playbackRequest && !playbackRequest.expectsVideo) {
                   const firstFrameMs = Math.max(0, Date.now() - sessionStartedAtRef.current);
@@ -2533,6 +2663,21 @@ export default function PlayerHost() {
                 if (selectedS) {
                   setSelectedSubtitle(selectedS);
                   setSelectedSubtitleTrack(selectedS.id);
+                }
+              }}
+              onDiagnostic={(e: any) => {
+                if (!sessionGateRef.current.isActive(activeSessionId) || v2Profile.engine !== "mpv") return;
+                const ev = e?.nativeEvent || e || {};
+                if (sheetRef.current === "stats" && ev?.event) {
+                  setVideoStats(prev => ({
+                    ...prev,
+                    width: Number(ev.width || 0) || prev.width,
+                    height: Number(ev.height || 0) || prev.height,
+                    mpvCodec: ev.codec || (prev as any).mpvCodec,
+                    mpvFormat: ev.format || (prev as any).mpvFormat,
+                    mpvHwdec: ev.hwdec || (prev as any).mpvHwdec,
+                    mpvEvent: ev.event,
+                  }));
                 }
               }}
               onError={(e: any) => {
