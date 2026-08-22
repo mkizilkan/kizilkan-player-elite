@@ -85,7 +85,7 @@ function ClassicLiveTvScreen() {
   const { listRef, onItemFocus, onScrollToIndexFailed } = useFocusScroll<any>();
   const router = useRouter();
   const { colors } = useTheme();
-  const { activePlaylist, playlists, toggleFavorite, isFavorite, addToRecent, updatePlaylist } = usePlaylists();
+  const { activePlaylist, playlists, toggleFavorite, isFavorite, addToRecent, updatePlaylist, ensureHeavyLoaded, nativeSummary } = usePlaylists();
   const { activeProfile } = useProfiles();
   const { settings: parental, isCategoryLocked, isUnlockedInSession, toggleCategoryLock } = useParental();
   const { isItemHidden, isGroupHidden, hiddenModeUnlocked, toggleHiddenItem, toggleHiddenGroup, toggleWatchlist, inWatchlist } = useLibrary();
@@ -133,6 +133,16 @@ function ClassicLiveTvScreen() {
       setRefreshing(false);
     }
   };
+  // v15.2 Native Core: parse native worker'da; ekran mount edilirken JS
+  // thread büyük JSON.parse ile kilitlenmez.
+  useEffect(() => {
+    if (!activePlaylist?.id) return;
+    const total = (activePlaylist.channels?.length || 0) + (activePlaylist.vod?.length || 0) + (activePlaylist.series?.length || 0);
+    const expected = Number(nativeSummary?.channels || activePlaylist.channelsCount || 0) + Number(nativeSummary?.vod || activePlaylist.vodCount || 0) + Number(nativeSummary?.series || activePlaylist.seriesCount || 0);
+    if (total > 0 || expected === 0) return;
+    void ensureHeavyLoaded(activePlaylist.id);
+  }, [activePlaylist?.id, nativeSummary?.channels, nativeSummary?.vod, nativeSummary?.series, ensureHeavyLoaded]);
+
   const [selectedCat, setSelectedCat] = useState<string>(ALL);
   const [epgMap, setEpgMap] = useState<Record<string, NowNext>>({});
   const [epgLoading, setEpgLoading] = useState(false);
@@ -636,8 +646,11 @@ function ClassicLiveTvScreen() {
     );
   }
 
-  const hasVod = (activePlaylist.vod?.length || 0) > 0;
-  const hasSeries = (activePlaylist.series?.length || 0) > 0;
+  const liveCount = activePlaylist.channels?.length || nativeSummary?.channels || activePlaylist.channelsCount || 0;
+  const vodCount = activePlaylist.vod?.length || nativeSummary?.vod || activePlaylist.vodCount || 0;
+  const seriesCount = activePlaylist.series?.length || nativeSummary?.series || activePlaylist.seriesCount || 0;
+  const hasVod = vodCount > 0;
+  const hasSeries = seriesCount > 0;
 
   const StickyHeader = (
     <>
@@ -652,7 +665,7 @@ function ClassicLiveTvScreen() {
           >
             <Ionicons name="tv" size={18} color={tab === "live" ? colors.onBrandPrimary : colors.onSurfaceSecondary} />
             <Text style={[styles.segmentText, { color: tab === "live" ? colors.onBrandPrimary : colors.onSurfaceSecondary }]}>
-              Canlı ({activePlaylist.channels.length})
+              Canlı ({liveCount})
             </Text>
           </FocusButton>
           <FocusButton
@@ -665,7 +678,7 @@ function ClassicLiveTvScreen() {
           >
             <Ionicons name="film" size={18} color={!hasVod ? colors.onSurfaceTertiary : tab === "vod" ? colors.onBrandPrimary : colors.onSurfaceSecondary} />
             <Text style={[styles.segmentText, { color: !hasVod ? colors.onSurfaceTertiary : tab === "vod" ? colors.onBrandPrimary : colors.onSurfaceSecondary }]}>
-              Filmler{hasVod ? ` (${activePlaylist.vod!.length})` : ""}
+              Filmler{hasVod ? ` (${vodCount})` : ""}
             </Text>
           </FocusButton>
           <FocusButton
@@ -678,7 +691,7 @@ function ClassicLiveTvScreen() {
           >
             <Ionicons name="albums" size={18} color={!hasSeries ? colors.onSurfaceTertiary : tab === "series" ? colors.onBrandPrimary : colors.onSurfaceSecondary} />
             <Text style={[styles.segmentText, { color: !hasSeries ? colors.onSurfaceTertiary : tab === "series" ? colors.onBrandPrimary : colors.onSurfaceSecondary }]}>
-              Diziler{hasSeries ? ` (${activePlaylist.series!.length})` : ""}
+              Diziler{hasSeries ? ` (${seriesCount})` : ""}
             </Text>
           </FocusButton>
         </View>
@@ -754,9 +767,9 @@ function ClassicLiveTvScreen() {
         <View style={{ flex: 1 }}>
           <KizilkanLogo size="md" showSubtitle={false} showIcon align="left" />
           <Text style={[styles.subtitle, { color: colors.onSurfaceSecondary }]} numberOfLines={1}>
-            {activePlaylist.name} • {activePlaylist.channels.length} kanal
-            {hasVod ? ` • ${activePlaylist.vod!.length} film` : ""}
-            {hasSeries ? ` • ${activePlaylist.series!.length} dizi` : ""}
+            {activePlaylist.name} • {liveCount} kanal
+            {hasVod ? ` • ${vodCount} film` : ""}
+            {hasSeries ? ` • ${seriesCount} dizi` : ""}
           </Text>
         </View>
         {epgLoading && <ActivityIndicator size="small" color={colors.brandPrimary} />}
@@ -933,9 +946,9 @@ function ClassicLiveTvScreen() {
         visible={catPanel}
         section={tab as any}
         sectionCounts={{
-          live: activePlaylist?.channels?.length || 0,
-          vod: activePlaylist?.vod?.length || 0,
-          series: activePlaylist?.series?.length || 0,
+          live: liveCount,
+          vod: vodCount,
+          series: seriesCount,
         }}
         categories={panelCategories}
         selected={selectedCat === ALL ? "TÜMÜ" : selectedCat}

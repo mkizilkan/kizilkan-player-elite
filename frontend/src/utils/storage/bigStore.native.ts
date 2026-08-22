@@ -37,6 +37,7 @@
  */
 
 import type { BigStore } from "./bigStore.types";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 // Legacy API — dinamik require ile: modül yoksa uygulama açılışta çökmesin,
 // sadece bu depo kullanılmaya çalışılınca anlaşılır hata versin.
@@ -105,6 +106,7 @@ export const bigStore: BigStore = {
       await f.writeAsStringAsync(fileFor(id), json, {
         encoding: f.EncodingType?.UTF8 ?? "utf8",
       });
+      KizilkanNativeCore.invalidatePlaylist(id);
       return true;
     } catch (e) {
       console.warn("[bigStore.write] başarısız:", id, e);
@@ -121,6 +123,15 @@ export const bigStore: BigStore = {
       const path = fileFor(id);
       const info = await f.getInfoAsync(path);
       if (!info.exists) return fallback;
+      // v15.2 Native Core: ağır JSON parse işini JS/Hermes thread'de yapma.
+      if (KizilkanNativeCore.available) {
+        try {
+          const nativeValue = await KizilkanNativeCore.readPlaylistHeavy<T>(id);
+          if (nativeValue !== null && nativeValue !== undefined) return nativeValue as T;
+        } catch (nativeError) {
+          console.warn("[bigStore.read] Native Core fallback:", id, nativeError);
+        }
+      }
       const raw = await f.readAsStringAsync(path, {
         encoding: f.EncodingType?.UTF8 ?? "utf8",
       });
@@ -141,6 +152,7 @@ export const bigStore: BigStore = {
       if (info.exists) {
         await f.deleteAsync(path, { idempotent: true });
       }
+      KizilkanNativeCore.invalidatePlaylist(id);
       return true;
     } catch (e) {
       console.warn("[bigStore.remove] başarısız:", id, e);

@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -13,7 +13,12 @@ import { FocusButton } from "@/src/components/FocusButton";
 export default function StatsScreen() {
   const router = useRouter();
   const { colors } = useTheme();
-  const { activePlaylist, favorites, recent, clearRecent } = usePlaylists();
+  const { activePlaylist, favorites, recent, clearRecent, ensureHeavyLoaded } = usePlaylists();
+
+  // v15.2 Native Core: legacy ekran tam koleksiyon ister.
+  useEffect(() => {
+    if (activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
+  }, [activePlaylist?.id, ensureHeavyLoaded]);
   const { watchProgress, watchlist, clearAllProgress } = useLibrary();
   const { activeProfile } = useProfiles();
 

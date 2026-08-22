@@ -193,7 +193,12 @@ export default function PlayerHost() {
   };
   const sessionKind = params.kind ?? (params.ext === "true" ? "external" : "live");
   const isSynthetic = sessionKind !== "live";
-  const { activePlaylist, toggleFavorite, isFavorite } = usePlaylists();
+  const { activePlaylist, toggleFavorite, isFavorite, ensureHeavyLoaded } = usePlaylists();
+
+  // v15.2 Native Core: legacy ekran tam koleksiyon ister.
+  useEffect(() => {
+    if (activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
+  }, [activePlaylist?.id, ensureHeavyLoaded]);
   const { setProgress: setLibProgress } = useLibrary();
 
   const [externalStream, setExternalStream] = useState<{ url: string; name: string; group: string; container_ext: string; poster?: string | null } | null>(null);

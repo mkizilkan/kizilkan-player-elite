@@ -31,7 +31,12 @@ export default function DetailScreen() {
   const router = useRouter();
   const { colors } = useTheme();
   const params = useLocalSearchParams<{ type: string; id: string }>();
-  const { activePlaylist, addToRecent } = usePlaylists();
+  const { activePlaylist, addToRecent, ensureHeavyLoaded } = usePlaylists();
+
+  // v15.2 Native Core: legacy ekran tam koleksiyon ister.
+  useEffect(() => {
+    if (activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
+  }, [activePlaylist?.id, ensureHeavyLoaded]);
   const { toggleWatchlist, inWatchlist, watchProgress, toggleHiddenItem, isItemHidden } = useLibrary();
   const { add: addDownload, isDownloaded, getLocalUri } = useDownloads();
 

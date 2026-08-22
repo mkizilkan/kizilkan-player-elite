@@ -22,7 +22,12 @@ type Tab = "continue" | "favorites" | "groups" | "watchlist" | "recent";
 export default function LibraryTab() {
   const router = useRouter();
   const { colors } = useTheme();
-  const { activePlaylist, favorites, recent, toggleFavorite, isFavorite, addToRecent, clearRecent } = usePlaylists();
+  const { activePlaylist, favorites, recent, toggleFavorite, isFavorite, addToRecent, clearRecent, ensureHeavyLoaded } = usePlaylists();
+
+  // v15.2 Native Core: legacy ekran tam koleksiyon ister.
+  useEffect(() => {
+    if (activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
+  }, [activePlaylist?.id, ensureHeavyLoaded]);
   const { settings: parental } = useParental();
   const { watchProgress, watchlist, toggleWatchlist, clearProgress, clearAllProgress } = useLibrary();
   const [tab, setTab] = useState<Tab>("favorites");

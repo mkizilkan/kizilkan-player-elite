@@ -47,6 +47,7 @@ import { bigStore } from '@/src/utils/storage/bigStore';
 import { Playlist } from '@/src/types';
 import { useProfiles } from './ProfileContext';
 import { scheduleAdultFlags } from '@/src/utils/adult';
+import { KizilkanNativeCore, type NativePlaylistSummary } from '@/modules/kizilkan-native-core';
 
 /**
  * v5.7.0 — LİSTELER ARTIK PROFİLE ÖZEL
@@ -93,6 +94,9 @@ function fromMeta(meta: PlaylistMeta, heavy?: { channels?: any[]; vod?: any[]; s
     channels: heavy?.channels || [],
     vod: heavy?.vod || [],
     series: heavy?.series || [],
+    channelsCount: channelsCount ?? heavy?.channels?.length ?? 0,
+    vodCount: vodCount ?? heavy?.vod?.length ?? 0,
+    seriesCount: seriesCount ?? heavy?.series?.length ?? 0,
   };
 }
 
@@ -104,6 +108,8 @@ interface PlaylistContextValue {
   isLoading: boolean;
   /** Hangi profilin playlist metadata'sı gerçekten yüklenmiş durumda. */
   loadedProfileId: string | null;
+  nativeSummary: NativePlaylistSummary | null;
+  ensureHeavyLoaded: (id?: string) => Promise<Playlist | null>;
   addPlaylist: (p: Playlist) => Promise<void>;
   removePlaylist: (id: string) => Promise<void>;
   updatePlaylist: (id: string, patch: Partial<Playlist>) => Promise<void>;
@@ -143,6 +149,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   const [favorites, setFavorites] = useState<string[]>([]);
   const [recent, setRecent] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [nativeSummary, setNativeSummary] = useState<NativePlaylistSummary | null>(null);
   // v11.5.0: Bellekteki playlist state'inin hangi profile ait olduğunu işaretler.
   // activeProfile değiştiği anda effect henüz başlamamış olsa bile tüketiciler
   // eski profil listesini "hazır" sanmasın.
@@ -263,26 +270,57 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProfile?.id]);
 
-  // --- Aktif liste değişince ağır verisini tembel yükle ---------------------
+  // --- Aktif liste: v15.2 Native Core warm-up -------------------------------
+  const ensureHeavyLoadedRef = useRef<(id?: string) => Promise<Playlist | null>>(async () => null);
+
   useEffect(() => {
-    if (!activeId) return;
-    if (loadedHeavy.current.has(activeId)) return;
+    if (!activeId) { setNativeSummary(null); return; }
+    let cancelled = false;
     (async () => {
-      const heavy = await bigStore.read(activeId, { channels: [], vod: [], series: [] });
-      // GPT ELITE v12.6.0: ağır +18 taraması açılışı BLOKE ETMEZ.
-      loadedHeavy.current.add(activeId);
-      setPlaylists(prev => {
-        const next = prev.map(p =>
-          p.id === activeId
-            ? { ...p, channels: heavy.channels || [], vod: heavy.vod || [], series: heavy.series || [] }
-            : p
-        );
-        playlistsRef.current = next;
-        return next;
-      });
-      scheduleAdultFlags(heavy.channels, heavy.vod, heavy.series);
+      if (KizilkanNativeCore.available) {
+        try {
+          const summary = await KizilkanNativeCore.warmPlaylist(activeId);
+          if (!cancelled) setNativeSummary(summary);
+          return;
+        } catch (e) {
+          console.warn('[Playlist] Native Core warm-up başarısız; legacy hydrate kullanılacak', e);
+        }
+      }
+      await ensureHeavyLoadedRef.current(activeId);
     })();
+    return () => { cancelled = true; };
   }, [activeId]);
+
+  const ensureHeavyLoaded = useCallback(async (requestedId?: string): Promise<Playlist | null> => {
+    const id = requestedId || activeId;
+    if (!id) return null;
+    const already = playlistsRef.current.find(p => p.id === id);
+    if (already && loadedHeavy.current.has(id)) return already;
+    const started = Date.now();
+    const heavy = await bigStore.read(id, { channels: [], vod: [], series: [] });
+    loadedHeavy.current.add(id);
+    let hydrated: Playlist | null = null;
+    setPlaylists(prev => {
+      const next = prev.map(p => {
+        if (p.id !== id) return p;
+        hydrated = {
+          ...p,
+          channels: heavy.channels || [], vod: heavy.vod || [], series: heavy.series || [],
+          channelsCount: heavy.channels?.length || p.channelsCount || 0,
+          vodCount: heavy.vod?.length || p.vodCount || 0,
+          seriesCount: heavy.series?.length || p.seriesCount || 0,
+        };
+        return hydrated;
+      });
+      playlistsRef.current = next;
+      return next;
+    });
+    scheduleAdultFlags(heavy.channels, heavy.vod, heavy.series);
+    const nativeT = KizilkanNativeCore.available ? KizilkanNativeCore.getTelemetry(id) : {};
+    console.info('[KIZILKAN PERF] playlist hydrate', { id, jsElapsedMs: Date.now() - started, native: nativeT });
+    return hydrated || playlistsRef.current.find(p => p.id === id) || null;
+  }, [activeId]);
+  ensureHeavyLoadedRef.current = ensureHeavyLoaded;
 
   // --- Favoriler + son izlenenler (profile göre) ----------------------------
   useEffect(() => {
@@ -331,8 +369,11 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     }
 
     // 2) Belleği güncelle (ağır dizilerle — aktif liste hemen kullanılabilir).
+    const normalizedP: Playlist = {
+      ...p, channelsCount: p.channels?.length || 0, vodCount: p.vod?.length || 0, seriesCount: p.series?.length || 0,
+    };
     const current = playlistsRef.current;
-    const next = [...current.filter(pl => pl.id !== p.id), p];
+    const next = [...current.filter(pl => pl.id !== p.id), normalizedP];
     playlistsRef.current = next;
     setPlaylists(next);
     loadedHeavy.current.add(p.id);
@@ -377,6 +418,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     const heavyTouched = 'channels' in patch || 'vod' in patch || 'series' in patch;
     if (heavyTouched && target) {
       const merged = { ...target, ...patch };
+      merged.channelsCount = merged.channels?.length || 0;
+      merged.vodCount = merged.vod?.length || 0;
+      merged.seriesCount = merged.series?.length || 0;
       const ok = await bigStore.write(id, {
         channels: merged.channels || [],
         vod: merged.vod || [],
@@ -428,7 +472,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       value={{
         playlists, activePlaylist, favorites, recent,
         isLoading: isLoading || loadedProfileId !== profileId,
-        loadedProfileId,
+        loadedProfileId, nativeSummary, ensureHeavyLoaded,
         addPlaylist, removePlaylist, updatePlaylist, setActivePlaylist,
         toggleFavorite, isFavorite, addToRecent, clearRecent,
       }}

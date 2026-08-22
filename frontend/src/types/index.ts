@@ -166,6 +166,10 @@ export interface Playlist {
   channels: Channel[];
   vod?: VodItem[];
   series?: SeriesItem[];
+  /** v15.2 Native Core: tam dizi JS'e alınmadan metadata sayaçları. */
+  channelsCount?: number;
+  vodCount?: number;
+  seriesCount?: number;
   epgUrl?: string;
   createdAt: string;
 }

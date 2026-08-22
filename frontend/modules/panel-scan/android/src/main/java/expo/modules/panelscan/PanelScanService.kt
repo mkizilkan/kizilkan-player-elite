@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class PanelScanService : Service() {
   companion object {
     const val ACTION_START = "expo.modules.panelscan.START"
+    const val ACTION_BULK_START = "expo.modules.panelscan.BULK_START"
     const val ACTION_CANCEL = "expo.modules.panelscan.CANCEL"
     const val ACTION_PAUSE = "expo.modules.panelscan.PAUSE"
     const val ACTION_RESUME = "expo.modules.panelscan.RESUME"
@@ -66,6 +67,23 @@ class PanelScanService : Service() {
         paused.set(false)
         patchSnapshot { it.put("paused", false).put("running", true) }
         getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("Panel taraması devam ediyor", 0, 0))
+      }
+      ACTION_BULK_START -> if (!running) {
+        running = true
+        cancelled.set(false)
+        paused.set(false)
+        val candidatesJson = intent.getStringExtra("candidatesJson") ?: "[]"
+        val accountsJson = intent.getStringExtra("accountsJson") ?: "[]"
+        val concurrency = intent.getIntExtra("concurrency", 8).coerceIn(1,32)
+        val timeoutMs = intent.getIntExtra("timeoutMs", 8000).coerceIn(2000,20000)
+        val candidateCount = try { JSONArray(candidatesJson).length() } catch (_: Throwable) { 0 }
+        val accountCount = try { JSONArray(accountsJson).length() } catch (_: Throwable) { 0 }
+        val initialTotal = candidateCount * accountCount
+        writeSnapshot(JSONObject().put("mode", "bulk").put("running", true).put("paused", false)
+          .put("tested", 0).put("total", initialTotal).put("accountTested", 0).put("accountTotal", accountCount)
+          .put("found", 0).put("matches", JSONArray()))
+        startForeground(NOTIF_ID, notification("Çoklu hesap taraması başlıyor…", 0, initialTotal))
+        Thread { runBulkScan(candidatesJson, accountsJson, concurrency, timeoutMs) }.start()
       }
       ACTION_START -> if (!running) {
         running = true
@@ -120,6 +138,74 @@ class PanelScanService : Service() {
     } catch (_: Throwable) { null } finally { conn?.disconnect() }
   }
 
+  /** Snapshot diskte kalıcıdır; parola/token gibi hassas alanları yazma. */
+  private fun sanitizeLogin(input: JSONObject): JSONObject {
+    val deny = setOf("password", "pass", "token", "authorization", "auth_token", "access_token")
+    fun clean(src: JSONObject): JSONObject {
+      val out = JSONObject(); val keys = src.keys()
+      while (keys.hasNext()) {
+        val key = keys.next(); if (deny.contains(key.lowercase())) continue
+        val value = src.opt(key)
+        when (value) {
+          is JSONObject -> out.put(key, clean(value))
+          is JSONArray -> {
+            val arr = JSONArray(); for (i in 0 until value.length()) {
+              val v = value.opt(i); arr.put(if (v is JSONObject) clean(v) else v)
+            }; out.put(key, arr)
+          }
+          else -> out.put(key, value)
+        }
+      }
+      return out
+    }
+    return clean(input)
+  }
+
+  private fun runBulkScan(candidatesRaw: String, accountsRaw: String, concurrency: Int, timeoutMs: Int) {
+    try {
+      val candidates = JSONArray(candidatesRaw); val accounts = JSONArray(accountsRaw)
+      val candidateCount = candidates.length(); val accountCount = accounts.length(); val total = candidateCount * accountCount
+      if (candidateCount == 0 || accountCount == 0) throw IllegalArgumentException("Tarama için hesap veya aday sunucu yok")
+      val cursor = AtomicInteger(0); val tested = AtomicInteger(0)
+      val matches = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+      val completedByAccount = Array(accountCount) { AtomicInteger(0) }; val accountDone = AtomicInteger(0)
+      val panelSet = linkedSetOf<String>()
+      for (i in 0 until candidateCount) { val c = candidates.getJSONObject(i); panelSet.add("${c.optString("code")}\u0000${c.optString("panelName")}") }
+      val workerCount = concurrency.coerceIn(1, minOf(32, total)); val pool = Executors.newFixedThreadPool(workerCount)
+      repeat(workerCount) {
+        pool.submit {
+          while (!cancelled.get()) {
+            while (paused.get() && !cancelled.get()) Thread.sleep(100)
+            if (cancelled.get()) break
+            val flat = cursor.getAndIncrement(); if (flat >= total) break
+            val ai = flat / candidateCount; val ci = flat % candidateCount
+            val account = accounts.getJSONObject(ai); val candidate = candidates.getJSONObject(ci)
+            val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
+            if (login != null) matches.add(JSONObject()
+              .put("accountIndex", ai).put("sourceRow", account.optInt("row", ai + 1)).put("username", account.optString("username"))
+              .put("name", account.optString("name")).put("panelName", candidate.optString("panelName")).put("code", candidate.optString("code"))
+              .put("server", candidate.optString("server")).put("login", sanitizeLogin(login)))
+            if (completedByAccount[ai].incrementAndGet() == candidateCount) accountDone.incrementAndGet()
+            val done = tested.incrementAndGet()
+            if (done == total || done % 16 == 0 || login != null) writeBulkSnapshot(done,total,accountDone.get(),accountCount,panelSet.size,matches,candidate.optString("panelName"),ai)
+            if (done % 16 == 0 || login != null) getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", done, total))
+          }
+        }
+      }
+      pool.shutdown(); while (!pool.isTerminated) Thread.sleep(100)
+      writeBulkSnapshot(tested.get(),total,accountDone.get(),accountCount,panelSet.size,matches,"",-1,false)
+    } catch (e: Throwable) {
+      writeSnapshot(JSONObject().put("mode","bulk").put("running",false).put("error",e.message ?: "Native çoklu hesap tarama hatası"))
+    } finally { running=false; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
+  }
+
+  private fun writeBulkSnapshot(tested:Int,total:Int,accountTested:Int,accountTotal:Int,panelTotal:Int,matches:MutableList<JSONObject>,panelName:String,accountIndex:Int,runningValue:Boolean = tested < total && !cancelled.get()) {
+    val resultArray=JSONArray(); synchronized(matches){ matches.forEach{ resultArray.put(it) } }
+    writeSnapshot(JSONObject().put("mode","bulk").put("running",runningValue).put("paused",paused.get()).put("cancelled",cancelled.get())
+      .put("tested",tested).put("total",total).put("accountTested",accountTested).put("accountTotal",accountTotal).put("panelTotal",panelTotal)
+      .put("found",matches.size).put("panelName",panelName).put("accountIndex",accountIndex).put("matches",resultArray))
+  }
+
   private fun runScan(raw: String, user: String, pass: String, concurrency: Int, timeoutMs: Int) {
     try {
       val arr = JSONArray(raw)
@@ -152,7 +238,7 @@ class PanelScanService : Service() {
                 .put("panelName", panelName)
                 .put("code", c.optString("code"))
                 .put("server", server)
-                .put("login", data))
+                .put("login", sanitizeLogin(data)))
             }
             val done = tested.incrementAndGet()
             val pk = "${c.optString("code")}\u0000$panelName"

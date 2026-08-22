@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.1.1 RC1 MPV EVENT BRIDGE TYPE FIX)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.0 RC1 NATIVE CORE PHASE 1)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -124,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.1.1') problem(`app version ${app?.expo?.version} (15.1.1 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150101) problem(`versionCode ${app?.expo?.android?.versionCode} (150101 bekleniyor)`);
+if (app?.expo?.version !== '15.2.0') problem(`app version ${app?.expo?.version} (15.2.0 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150200) problem(`versionCode ${app?.expo?.android?.versionCode} (150200 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -154,7 +154,7 @@ if (!fs.existsSync(handoffPath)) {
 } else {
   const handoff = fs.readFileSync(handoffPath, 'utf8');
   const requiredHandoffTokens = [
-    'v15.1.1-RC1',
+    'v15.2.0-RC1',
     'Media3 → MPV/FFmpeg → VLC',
     'ANDROID_CERT_SHA256',
     'KALAN / SONRAKI ISLER',
@@ -201,3 +201,14 @@ if (parseErrors.length) {
 
 console.log(problems === 0 ? '\nTEMIZ — Player Core v15 sozlesmesi saglam' : `\n${problems} SORUN`);
 process.exit(problems === 0 ? 0 : 1);
+
+// v15.2 Native Core Phase 1 sözleşmesi
+const nativeCoreTs = read('frontend/modules/kizilkan-native-core/index.ts');
+const nativeCoreKt = read('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeCoreModule.kt');
+const bigStoreNative = read('frontend/src/utils/storage/bigStore.native.ts');
+const panelScanModule = read('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanModule.kt');
+requireText(nativeCoreTs, 'KizilkanNativeCore', 'Native Core JS adapter');
+requireText(nativeCoreKt, 'AsyncFunction("warmPlaylist")', 'Native playlist warm-up');
+requireText(nativeCoreKt, 'AsyncFunction("readPlaylistHeavy")', 'Native playlist JSON parse');
+requireText(bigStoreNative, 'KizilkanNativeCore.readPlaylistHeavy', 'bigStore Native Core parse path');
+requireText(panelScanModule, 'AsyncFunction("startBulkScan")', 'Native background bulk scan');

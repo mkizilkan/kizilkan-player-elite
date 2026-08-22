@@ -105,9 +105,14 @@ export function TvHomeContent() {
    * çökertiyordu. Bu yüzden sütunlu arayüz hiç açılamıyordu.
    */
   const {
-    playlists, activePlaylist, setActivePlaylist, isLoading,
+    playlists, activePlaylist, setActivePlaylist, isLoading, ensureHeavyLoaded,
     favorites, toggleFavorite, isFavorite, addToRecent,
   } = usePlaylists();
+
+  // v15.2 Native Core: TV sütunlu ekran tam koleksiyon ister.
+  useEffect(() => {
+    if (activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
+  }, [activePlaylist?.id, ensureHeavyLoaded]);
 
   const [tab, setTab] = useState<Tab>("live");
   const [selectedCat, setSelectedCat] = useState<string>(ALL);

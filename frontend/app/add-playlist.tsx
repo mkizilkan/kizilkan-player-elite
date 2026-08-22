@@ -135,6 +135,7 @@ export default function AddPlaylist() {
   const [bulkScanPaused, setBulkScanPaused] = useState(false);
   const bulkScanPausedRef = React.useRef(false);
   const bulkScanCancelledRef = React.useRef(false);
+  const bulkNativeScanRef = React.useRef(false);
   // GPT ELITE v14.2.0 — çoklu hesap: manuel ve dosya birlikte kullanılabilir.
   // Ham dosya içeriği ayrı state'te tutulur; farklı CSV/TXT/JSON biçimleri
   // birbirine metin olarak yapıştırılıp parser'ı bozmaz.
@@ -719,6 +720,42 @@ export default function AddPlaylist() {
     }
   };
 
+  const runNativeBulkAccounts = async (accounts: BulkAccountInput[], cfg: { concurrency:number; timeoutMs:number; accountConcurrency:number; label:string }): Promise<{ found:number; completed:number; cancelled:boolean }> => {
+    if (!PanelScan.available || Platform.OS !== "android") throw new Error("__NATIVE_SCAN_UNAVAILABLE__");
+    const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
+    setProgress(`${cfg.label} · Native panel rehberi hazırlanıyor…`);
+    const directory = await fetchPanelDirectory(src);
+    const candidates: Array<{panelName:string; code:string; server:string}> = [];
+    const seen = new Set<string>();
+    for (const item of directory) for (const server of item.hosts) {
+      const key = `${item.code}\u0000${item.panelName}\u0000${server.toLocaleLowerCase("tr")}`;
+      if (!seen.has(key)) { seen.add(key); candidates.push({ panelName:item.panelName, code:item.code, server }); }
+    }
+    if (!candidates.length) throw new Error("Panel rehberinde taranacak DNS bulunamadı.");
+    const nativeConcurrency = Math.max(1, Math.min(32, cfg.concurrency * Math.max(1, cfg.accountConcurrency)));
+    bulkNativeScanRef.current = true;
+    await PanelScan.startBulkScan(candidates, accounts.map(a => ({ row:a.row, name:a.name, username:a.username, password:a.password })), nativeConcurrency, cfg.timeoutMs);
+    let lastFound=-1, completed=0;
+    while (true) {
+      const snap=PanelScan.getSnapshot(); if (snap.error) throw new Error(snap.error);
+      const raw=Array.isArray(snap.matches)?snap.matches:[];
+      if (raw.length !== lastFound) {
+        const resolved: BulkResolvedCandidate[]=[];
+        for (const m of raw) {
+          const ai=Number(m.accountIndex); const account=Number.isInteger(ai)?accounts[ai]:accounts.find(a=>a.row===Number(m.sourceRow)); if(!account) continue;
+          const panelName=String(m.panelName||"").trim(), code=String(m.code||"").trim(), server=String(m.server||"").trim(); if(!server) continue;
+          resolved.push({ key:bulkCandidateKey(account.row,account.username,code,panelName,server), sourceRow:account.row, name:account.name.trim()||panelName||hostName(server), username:account.username, password:account.password, panelName:panelName||hostName(server), code, server, login:m.login, validatedHosts:[server], direct:false });
+        }
+        mergeBulkCandidates(resolved); lastFound=raw.length;
+      }
+      completed=Number(snap.accountTested||0); const tested=Number(snap.tested||0), total=Number(snap.total||0), pct=total?Math.round(tested/total*100):0;
+      setBulkScanPaused(!!snap.paused);
+      setProgress(`${cfg.label} · NATIVE · %${pct}\nHesap ${completed}/${accounts.length} · Adres ${tested}/${total} · Kalan ${Math.max(0,total-tested)} · Bulunan ${raw.length}${snap.paused?" · DURAKLATILDI":""}${snap.panelName?`\nŞu an: ${snap.panelName}`:""}`);
+      if (!snap.running) return { found:raw.length, completed, cancelled:!!snap.cancelled };
+      await new Promise(resolve=>setTimeout(resolve,350));
+    }
+  };
+
   const submitBulkAccounts = async () => {
     const parsed = bulkParsed;
     if (!parsed.accounts.length) throw new Error(parsed.warnings[0] || "Geçerli toplu hesap bulunamadı.");
@@ -749,6 +786,14 @@ export default function AddPlaylist() {
     };
 
     try {
+      const allAuto = parsed.accounts.every(a => !a.server && !a.serverCode && !a.panelName);
+      if (allAuto && PanelScan.available && Platform.OS === "android") {
+        const nr = await runNativeBulkAccounts(parsed.accounts, cfg); found=nr.found; completed=nr.completed;
+        setBulkScanFailures([]); setBulkScanFinished(true); setShowBulkCandidates(true);
+        setProgress(nr.cancelled ? `Tarama durduruldu · ${completed}/${parsed.accounts.length} hesap · ${found} sonuç korunuyor.` : `Native tarama tamamlandı · ${completed}/${parsed.accounts.length} hesap · ${found} geçerli panel/DNS hesabı bulundu.`);
+        if (!found && !nr.cancelled) setError("Hiç geçerli hesap bulunamadı.");
+        return;
+      }
       const workerCount = Math.max(1, Math.min(cfg.accountConcurrency, parsed.accounts.length));
       const runAccountWorker = async () => {
         while (!bulkScanCancelledRef.current) {
@@ -777,6 +822,7 @@ export default function AddPlaylist() {
       setLoading(false);
       setBulkScanPaused(false);
       bulkScanPausedRef.current = false;
+      bulkNativeScanRef.current = false;
     }
   };
 
@@ -1690,18 +1736,20 @@ export default function AddPlaylist() {
 
               {!bulkScanFinished && (loading || bulkScanPaused) && (
                 <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
-                  <FocusButton focusable disabled={bulkAdding} onPress={() => {
+                  <FocusButton focusable disabled={bulkAdding} onPress={async () => {
                     const next = !bulkScanPausedRef.current;
                     bulkScanPausedRef.current = next;
                     setBulkScanPaused(next);
+                    if (bulkNativeScanRef.current) { if (next) await PanelScan.pauseScan(); else await PanelScan.resumeScan(); }
                     setProgress(prev => `${prev || "Çoklu hesap taraması"}\n${next ? "DURAKLATILDI — aktif istekler tamamlanır, yeni iş başlatılmaz." : "Tarama devam ediyor…"}`);
                   }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
                     <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{bulkScanPaused ? "Devam Et" : "Duraklat"}</Text>
                   </FocusButton>
-                  <FocusButton focusable disabled={bulkAdding} onPress={() => {
+                  <FocusButton focusable disabled={bulkAdding} onPress={async () => {
                     bulkScanCancelledRef.current = true;
                     bulkScanPausedRef.current = false;
                     setBulkScanPaused(false);
+                    if (bulkNativeScanRef.current) await PanelScan.cancelScan();
                     setProgress(prev => `${prev || "Çoklu hesap taraması"}\nDurdurma isteği gönderildi; bulunan sonuçlar korunacak.`);
                   }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surfaceSecondary}]}>
                     <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>Durdur</Text>

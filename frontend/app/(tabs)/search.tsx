@@ -23,7 +23,12 @@ type Scope = "all" | "live" | "vod" | "series";
 export default function SearchTab() {
   const router = useRouter();
   const { colors } = useTheme();
-  const { activePlaylist, toggleFavorite, isFavorite, addToRecent, favorites, recent } = usePlaylists();
+  const { activePlaylist, toggleFavorite, isFavorite, addToRecent, favorites, recent, ensureHeavyLoaded } = usePlaylists();
+
+  // v15.2 Native Core: legacy ekran tam koleksiyon ister.
+  useEffect(() => {
+    if (activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
+  }, [activePlaylist?.id, ensureHeavyLoaded]);
   const { searchHistory, pushSearch, clearSearchHistory, isItemHidden, isGroupHidden, hiddenModeUnlocked } = useLibrary();
   const { settings: parental, isCategoryLocked, isUnlockedInSession } = useParental();
   const { activeProfile } = useProfiles();

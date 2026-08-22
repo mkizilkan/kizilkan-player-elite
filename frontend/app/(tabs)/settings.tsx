@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import Constants from "expo-constants";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { THEMES, THEME_LABELS, ThemeName, SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { useProfiles } from "@/src/store/ProfileContext";
 import { useParental } from "@/src/store/ParentalContext";
 import { useLibrary } from "@/src/store/LibraryContext";
@@ -42,6 +43,7 @@ export default function SettingsTab() {
   const router = useRouter();
   const { colors, themeName, setTheme } = useTheme();
   const { playlists, activePlaylist, setActivePlaylist, removePlaylist, updatePlaylist } = usePlaylists();
+  const [nativeGroups, setNativeGroups] = useState<string[]>([]);
   const { profiles, activeProfile, switchProfile, removeProfile, setPin: setProfPin, verifyAdminPin, adminHasPin } = useProfiles();
   const { settings: parental, setPin, clearPin, toggleCategoryLock, setAdultHidden, verifyPinAsync, isCategoryLocked } = useParental();
   const [epgInput, setEpgInput] = useState<string>(activePlaylist?.epgUrl || "");
@@ -224,14 +226,32 @@ export default function SettingsTab() {
     );
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!activePlaylist?.id || !KizilkanNativeCore.available) { setNativeGroups([]); return; }
+    (async () => {
+      try {
+        const [live, vod, series] = await Promise.all([
+          KizilkanNativeCore.getCategories(activePlaylist.id, "live"),
+          KizilkanNativeCore.getCategories(activePlaylist.id, "vod"),
+          KizilkanNativeCore.getCategories(activePlaylist.id, "series"),
+        ]);
+        if (cancelled) return;
+        setNativeGroups(Array.from(new Set([...live, ...vod, ...series].map((x:any) => String(x?.name || "")).filter(Boolean))).sort());
+      } catch { if (!cancelled) setNativeGroups([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [activePlaylist?.id]);
+
   const uniqueGroups = React.useMemo(() => {
     if (!activePlaylist) return [] as string[];
+    if (nativeGroups.length) return nativeGroups;
     const s = new Set<string>();
     activePlaylist.channels.forEach(c => { if (c.group) s.add(c.group); });
     (activePlaylist.vod || []).forEach(c => { if (c.group) s.add(c.group); });
     (activePlaylist.series || []).forEach(c => { if (c.group) s.add(c.group); });
     return Array.from(s).sort();
-  }, [activePlaylist]);
+  }, [activePlaylist, nativeGroups]);
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top"]} testID="settings-screen">
@@ -945,7 +965,7 @@ export default function SettingsTab() {
                       <Text style={{ color: typeColor, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>{playlistTypeLabel(pl)}</Text>
                     </View>
                     <Text style={[styles.plMeta, { color: colors.onSurfaceSecondary, flex: 1 }]} numberOfLines={1}>
-                      {pl.channels.length} kanal{pl.vod?.length ? ` • ${pl.vod.length} film` : ""}{pl.series?.length ? ` • ${pl.series.length} dizi` : ""}
+                      {pl.channelsCount ?? pl.channels.length} kanal{(pl.vodCount ?? pl.vod?.length ?? 0) ? ` • ${pl.vodCount ?? pl.vod?.length ?? 0} film` : ""}{(pl.seriesCount ?? pl.series?.length ?? 0) ? ` • ${pl.seriesCount ?? pl.series?.length ?? 0} dizi` : ""}
                     </Text>
                   </View>
                   {pl.serverCodeBinding && (
