@@ -1,6 +1,6 @@
-# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.1-RC1
+# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.2-RC1
 
-**Native Data Core / Room + SQLite Phase 1 başladı.** v15.2.0-RC1'de Kotlin'e alınan playlist parse katmanı artık yalnız geçici JSONObject cache değildir: playlist verisi Room/SQLite'a atomik batch import edilir, kategori/sayfalama/öğe sorguları DB indekslerinden yapılır. Ana Canlı ekran Android'de dev kanal dizisini otomatik olarak JS/Hermes belleğine hydrate etmek yerine ilk 80 kaydı ister ve aşağı indikçe yeni sayfayı alır.
+**Native Data Core / Room + SQLite Phase 1 sürüyor.** v15.2.2-RC1, v15.2.1 Room store/paging temelini korurken iki P0 düzeltme ekler: GitHub build'i durduran Groovy/KSP kaçış hatası düzeltilmiştir ve seçili çoklu Xtream hesaplarının katalog indirme/normalize/kaydetme işi gerçek Android foreground native service'e taşınmıştır. Başarılı hesaplar bağımsız kalıcılaştırılır; tek sorunlu hesap diğerlerini bloke etmez; Pause/Resume/Stop ve background devamlılığı native job durumuyla yönetilir.
 
 Room sürümü bilinçli olarak **androidx.room 2.8.3** seçildi. Android-only Expo SDK 54 modülü için olgun 2.x hattı tercih edildi; 2.8.3 Cursor/JNI performans düzeltmesini içerir. Room 3.x KMP odaklı breaking yüzeyi bu faza gereksiz risk olarak eklenmedi.
 
@@ -10,9 +10,9 @@ Kritik amaç: playlist seçimi sonrası ScrollView çalışırken Pressable/navi
 
 # KIZILKAN PLAYER ELITE — AI PROJE DEVİR / TAM BAĞLAM BELGESİ
 
-> **Güncel çalışma paketi:** **v15.2.1-RC1 — Room/SQLite Native Data Core Phase 1 / Player Core 1.0 RC / libmpv 1.0.0 / Native Scan**
-> **Son doğrulanmış kurulabilir APK:** **v15.0.4**
-> **Durum:** v15.1.1-RC1 APK derlendi ve gerçek telefona kuruldu. Gerçek cihazda playlist seçimi sonrası bazı ekranlarda native scroll çalışırken buton/navigation 5–10 dakika tepkisiz kalabildi; bu JS thread ağır veri/hydrate iş yükünü hedeflemek için v15.2 Native Core başlatıldı. v15.2.1-RC1 Room/SQLite indexed store ve Canlı ekran paging katmanını ekler; henüz GitHub full build ve cihaz kabul testi geçmedi.
+> **Güncel çalışma paketi:** **v15.2.2-RC1 — Room/SQLite Native Data Core + Native Foreground Bulk Playlist Import / Player Core 1.0 RC / libmpv 1.0.0 / Native Scan**
+> **Son doğrulanmış kurulabilir APK:** **v15.1.1-RC1**
+> **Durum:** v15.2.1-RC1 GitHub build, `kizilkan-native-core/android/build.gradle` satır 4 içindeki literal `\\"` Groovy escape hatası nedeniyle Room/KSP derlemesine ulaşmadan kırıldı. v15.2.2-RC1 bu syntax hatasını düzeltir. Ayrıca gerçek cihazda 8 seçili hesabın 7-8 saat `Cihaza kaydediliyor...` aşamasında kalması P0 kabul edildi ve ekleme işi JS seri pipeline yerine native foreground service + Room pipeline'ına taşındı. Bu RC henüz GitHub full build ve cihaz kabul testi geçmedi.
 > **Bu belge zorunludur.** Sohbet mesaj sınırı nedeniyle yeni sohbete geçildiğinde yeni yapay zekâ önce bu dosyayı, sonra en güncel sürüm notu ve regresyon belgesini okumalıdır.
 
 ## 1. SOHBET DEVİR SÖZLEŞMESİ
@@ -42,9 +42,9 @@ Bu dosya eski snapshot gibi bırakılmayacak. `tools/checkplayercore.js`, sürü
 - Temiz GPT GitHub repo: `mkizilkan/kizilkan-player-elite`
 - Telefon çalışma klasörü: `/sdcard/Download/gpt-kizilkan-player-elite`
 - ZIP iç kökü: `gpt-kizilkan-player-elite/`
-- Güncel uygulama sürümü: **15.2.1**
-- Android versionCode: **150201**
-- iOS buildNumber metadata: **15.2.1**
+- Güncel uygulama sürümü: **15.2.2**
+- Android versionCode: **150202**
+- iOS buildNumber metadata: **15.2.2**
 - Player Engine hedef etiketi: **1.0.0-RC** — gerçek cihaz kabul matrisi bitmeden Stable denmez.
 - Native MPV dependency: **`dev.jdtech.mpv:libmpv:1.0.0`**
 
@@ -389,3 +389,25 @@ Hiçbiri yeni player/scan migration bahanesiyle kaldırılmayacak.
 - Bu belge başarıyı simüle etmez.
 - **APK v15.0.4 DERLENDI** ve gerçek telefona kuruldu; bu kanıtlı son referanstır.
 - v15.2.1-RC1 henüz GitHub Room/KSP full build + gerçek cihaz testinden geçmeden “çalışıyor” veya “touch lock çözüldü” denmeyecektir.
+
+---
+## v15.2.2-RC1 — 2026-08-23 — KSP BUILD FIX + NATIVE BULK PLAYLIST IMPORT
+
+### Gerçek GitHub hatası
+v15.2.1-RC1 build yaklaşık 1 dakika içinde `kizilkan-native-core/android/build.gradle` satır 4'te `Unexpected character: '\\'` ile kırıldı. Kök neden KSP classpath içindeki `rootProject[\"kspVersion\"]` ifadesinin dosyaya literal ters eğik çizgilerle yazılmış olmasıydı. v15.2.2-RC1 Expo'nun kendi modüllerindeki gerçek Groovy biçimini kullanır: `rootProject["kspVersion"]`.
+
+### Gerçek cihaz P0 — seçili panel hesapları saatlerce kaydedilemiyor
+Kullanıcı 8 seçili hesabın 7-8 saat boyunca `Cihaza kaydediliyor...` aşamasında kaldığını bildirdi. Eski `addSelectedBulkCandidates` hesapları seri dolaşıyor; her hesap Live/VOD/Series kataloglarını JS'e alıyor ve `addPlaylist` bunları tekrar büyük JSON olarak dosyaya yazıyordu.
+
+### Yeni çözüm
+Android'de seçili hesap ekleme `BulkPlaylistImportService` adlı foreground native job pipeline'ına taşındı. Hesaplar bounded paralel işlenir; katalog indirme/normalize Kotlin'de yapılır; veri doğrudan heavy dosya + Room/SQLite indeksine yazılır. JS yalnız hesap bazlı durum ve metadata alır. `PlaylistContext.addPreparedPlaylist` hazır native dosyayı tekrar serialize etmeden metadata'yı kalıcılaştırır. Pause/Resume/Cancel native job durumları mevcuttur. Başarılı hesaplar diğerlerinin bitmesini beklemez. Snapshot hassas parola/token içermez.
+
+### Sonraki zorunlu doğrulamalar
+1. GitHub KSP/Room compile.
+2. 8+ seçili hesabın gerçek ekleme süresi.
+3. Ekleme sırasında başka uygulamaya geçip 2-5 dakika sonra geri dönüldüğünde native job'ın ilerlediğinin doğrulanması.
+4. Başarısız tek hesabın diğer başarılı hesapları engellemediğinin testi.
+5. Native Room verisinin Live/VOD/Series ekranlarında tam uyumluluğu.
+
+Güncel paket: v15.2.2-RC1
+Güncel sürüm: 15.2.2 / versionCode 150202

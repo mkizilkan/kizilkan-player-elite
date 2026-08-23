@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.1 RC1 ROOM NATIVE DATA CORE)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.2 RC1 ROOM NATIVE DATA CORE + BULK IMPORT FIX)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -124,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.2.1') problem(`app version ${app?.expo?.version} (15.2.1 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150201) problem(`versionCode ${app?.expo?.android?.versionCode} (150201 bekleniyor)`);
+if (app?.expo?.version !== '15.2.2') problem(`app version ${app?.expo?.version} (15.2.2 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150202) problem(`versionCode ${app?.expo?.android?.versionCode} (150202 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -154,7 +154,7 @@ if (!fs.existsSync(handoffPath)) {
 } else {
   const handoff = fs.readFileSync(handoffPath, 'utf8');
   const requiredHandoffTokens = [
-    'v15.2.1-RC1',
+    'v15.2.2-RC1',
     'Media3 → MPV/FFmpeg → VLC',
     'ANDROID_CERT_SHA256',
     'KALAN / SONRAKI ISLER',
@@ -192,7 +192,7 @@ if (fs.existsSync(settingsPath)) {
   forbidText(settings, 'height: 52, borderRadius: RADIUS.md, borderWidth: 1, paddingHorizontal: SPACING.lg', 'sabit 52px link kartı overlap regresyonu');
 }
 
-// v15.2.1-RC1 Room/SQLite Native Data Core hard gates.
+// v15.2.2-RC1 Room/SQLite Native Data Core hard gates.
 const nativeCoreDir = path.join(root, 'modules/kizilkan-native-core');
 const nativeCoreGradlePath = path.join(nativeCoreDir, 'android/build.gradle');
 const nativeCoreTsPath = path.join(nativeCoreDir, 'index.ts');
@@ -200,9 +200,10 @@ const nativeCoreKtPath = path.join(nativeCoreDir, 'android/src/main/java/expo/mo
 const nativeDbPath = path.join(nativeCoreDir, 'android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeDatabase.kt');
 const nativeDaoPath = path.join(nativeCoreDir, 'android/src/main/java/expo/modules/kizilkannativecore/NativeDataDao.kt');
 const nativeEntityPath = path.join(nativeCoreDir, 'android/src/main/java/expo/modules/kizilkannativecore/NativeDataEntities.kt');
+const nativeBulkImportPath = path.join(nativeCoreDir, 'android/src/main/java/expo/modules/kizilkannativecore/BulkPlaylistImportService.kt');
 const bigStoreNativePath = path.join(root, 'src/utils/storage/bigStore.native.ts');
 const liveScreenPath = path.join(root, 'app/(tabs)/index.tsx');
-for (const f of [nativeCoreGradlePath,nativeCoreTsPath,nativeCoreKtPath,nativeDbPath,nativeDaoPath,nativeEntityPath,bigStoreNativePath,liveScreenPath]) {
+for (const f of [nativeCoreGradlePath,nativeCoreTsPath,nativeCoreKtPath,nativeDbPath,nativeDaoPath,nativeEntityPath,nativeBulkImportPath,bigStoreNativePath,liveScreenPath]) {
   if (!fs.existsSync(f)) problem(`Room Native Core dosya yok: ${path.relative(root, f)}`);
 }
 if (fs.existsSync(nativeCoreGradlePath)) {
@@ -211,6 +212,8 @@ if (fs.existsSync(nativeCoreGradlePath)) {
   requireText(roomGradle, 'androidx.room:room-compiler:${roomVersion}', 'Room KSP compiler');
   requireText(roomGradle, 'def roomVersion = "2.8.3"', 'Room 2.8.3 pinned version');
   requireText(roomGradle, "apply plugin: 'com.google.devtools.ksp'", 'Room KSP plugin');
+  forbidText(roomGradle, 'rootProject[\\"kspVersion\\"]', 'Groovy KSP version escape regression');
+  requireText(roomGradle, '${rootProject["kspVersion"]}', 'Expo KSP root version syntax');
 }
 if (fs.existsSync(nativeDbPath)) {
   const dbSrc = fs.readFileSync(nativeDbPath, 'utf8');
@@ -248,6 +251,24 @@ if (fs.existsSync(liveScreenPath)) {
   requireText(live, 'KizilkanNativeCore.queryItems<any>', 'Live native page query');
   requireText(live, 'onEndReachedThreshold={0.55}', 'Live incremental page loading');
   requireText(live, 'KizilkanNativeCore.getCategories', 'Live native category query');
+}
+
+if (fs.existsSync(nativeBulkImportPath)) {
+  const bulkImport = fs.readFileSync(nativeBulkImportPath, 'utf8');
+  requireText(bulkImport, 'class BulkPlaylistImportService : Service()', 'native foreground bulk playlist importer');
+  requireText(bulkImport, 'Executors.newFixedThreadPool', 'bounded native bulk account workers');
+  requireText(bulkImport, 'Room/SQLite indeksleniyor', 'native Room import stage');
+  requireText(bulkImport, 'ACTION_PAUSE', 'native bulk import pause');
+  requireText(bulkImport, 'ACTION_RESUME', 'native bulk import resume');
+  requireText(bulkImport, 'ACTION_CANCEL', 'native bulk import cancel');
+  forbidText(bulkImport, '.put("password"', 'bulk import snapshot password leak');
+}
+if (fs.existsSync(addPlaylistPath)) {
+  const addPlaylist = fs.readFileSync(addPlaylistPath, 'utf8');
+  requireText(addPlaylist, 'KizilkanNativeCore.startBulkImport', 'selected account native import pipeline');
+  requireText(addPlaylist, 'addPreparedPlaylist(playlist)', 'native prepared playlist metadata adoption');
+  requireText(addPlaylist, 'KizilkanNativeCore.pauseBulkImport()', 'bulk import pause UI');
+  requireText(addPlaylist, 'KizilkanNativeCore.cancelBulkImport()', 'bulk import stop UI');
 }
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.

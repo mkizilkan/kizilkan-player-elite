@@ -1,5 +1,7 @@
 package expo.modules.kizilkannativecore
 
+import android.content.Intent
+import android.os.Build
 import android.os.SystemClock
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -129,6 +131,37 @@ class KizilkanNativeCoreModule : Module() {
       telemetry.clear()
       indexLocks.clear()
       true
+    }
+
+    AsyncFunction("startBulkImport") { jobsJson: String, concurrency: Int ->
+      val ctx = context()
+      val intent = Intent(ctx, BulkPlaylistImportService::class.java).apply {
+        action = BulkPlaylistImportService.ACTION_START
+        putExtra("jobsJson", jobsJson)
+        putExtra("concurrency", concurrency.coerceIn(1, 4))
+      }
+      if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(intent) else ctx.startService(intent)
+      true
+    }
+
+    AsyncFunction("pauseBulkImport") {
+      context().startService(Intent(context(), BulkPlaylistImportService::class.java).apply { action = BulkPlaylistImportService.ACTION_PAUSE })
+      true
+    }
+
+    AsyncFunction("resumeBulkImport") {
+      context().startService(Intent(context(), BulkPlaylistImportService::class.java).apply { action = BulkPlaylistImportService.ACTION_RESUME })
+      true
+    }
+
+    AsyncFunction("cancelBulkImport") {
+      context().startService(Intent(context(), BulkPlaylistImportService::class.java).apply { action = BulkPlaylistImportService.ACTION_CANCEL })
+      true
+    }
+
+    Function("getBulkImportSnapshot") {
+      context().getSharedPreferences(BulkPlaylistImportService.PREFS, 0)
+        .getString(BulkPlaylistImportService.KEY_SNAPSHOT, "{}") ?: "{}"
     }
 
     Function("getTelemetry") { id: String -> telemetry[id] ?: emptyMap<String, Any>() }

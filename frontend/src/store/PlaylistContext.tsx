@@ -111,6 +111,7 @@ interface PlaylistContextValue {
   nativeSummary: NativePlaylistSummary | null;
   ensureHeavyLoaded: (id?: string) => Promise<Playlist | null>;
   addPlaylist: (p: Playlist) => Promise<void>;
+  addPreparedPlaylist: (p: Playlist) => Promise<void>;
   removePlaylist: (id: string) => Promise<void>;
   updatePlaylist: (id: string, patch: Partial<Playlist>) => Promise<void>;
   setActivePlaylist: (id: string) => Promise<void>;
@@ -390,6 +391,32 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     scheduleAdultFlags(p.channels, p.vod, p.series);
   }, [persistMeta]);
 
+  /**
+   * v15.2.2-RC1: Native foreground importer ağır dosyayı + Room indeksini zaten
+   * yazdıysa aynı 50-100 bin kaydı JS'e geri taşıyıp tekrar serialize ETME.
+   * Yalnız metadata/state kaydedilir; legacy ekran tam veriyi isterse
+   * ensureHeavyLoaded -> Native Core/Room üzerinden hydrate eder.
+   */
+  const addPreparedPlaylist = useCallback(async (p: Playlist) => {
+    const summary = KizilkanNativeCore.available ? await KizilkanNativeCore.getPlaylistSummary(p.id) : null;
+    if (!summary?.roomIndexed) throw new Error('Native playlist indeksi doğrulanamadı.');
+    const normalizedP: Playlist = {
+      ...p,
+      channels: [], vod: [], series: [],
+      channelsCount: Number(summary.channels || p.channelsCount || 0),
+      vodCount: Number(summary.vod || p.vodCount || 0),
+      seriesCount: Number(summary.series || p.seriesCount || 0),
+    };
+    const current = playlistsRef.current;
+    const next = [...current.filter(pl => pl.id !== p.id), normalizedP];
+    playlistsRef.current = next;
+    setPlaylists(next);
+    loadedHeavy.current.delete(p.id);
+    await persistMeta(next);
+    await storage.setItem(activeKey(currentPid()), p.id);
+    setActiveId(p.id);
+  }, [persistMeta]);
+
   const removePlaylist = useCallback(async (id: string) => {
     const current = playlistsRef.current;
     const next = current.filter(pl => pl.id !== id);
@@ -473,7 +500,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         playlists, activePlaylist, favorites, recent,
         isLoading: isLoading || loadedProfileId !== profileId,
         loadedProfileId, nativeSummary, ensureHeavyLoaded,
-        addPlaylist, removePlaylist, updatePlaylist, setActivePlaylist,
+        addPlaylist, addPreparedPlaylist, removePlaylist, updatePlaylist, setActivePlaylist,
         toggleFavorite, isFavorite, addToRecent, clearRecent,
       }}
     >

@@ -41,5 +41,13 @@ export const KizilkanNativeCore = {
   invalidatePlaylist: (id: string) => native ? native.invalidatePlaylist(id) : false,
   removePlaylistIndex: async (id: string) => native ? native.removePlaylistIndex(id) : false,
   clearCache: async () => native ? native.clearCache() : false,
+  startBulkImport: async (jobs: Array<{ jobKey: string; playlistId: string; displayName: string; server: string; username: string; password: string }>, concurrency = 2) => native ? native.startBulkImport(JSON.stringify(jobs), concurrency) : false,
+  pauseBulkImport: async () => native ? native.pauseBulkImport() : false,
+  resumeBulkImport: async () => native ? native.resumeBulkImport() : false,
+  cancelBulkImport: async () => native ? native.cancelBulkImport() : false,
+  getBulkImportSnapshot: (): any => {
+    if (!native) return {};
+    try { return JSON.parse(native.getBulkImportSnapshot() || "{}"); } catch { return {}; }
+  },
   getTelemetry: (id: string) => native ? native.getTelemetry(id) : {},
 };

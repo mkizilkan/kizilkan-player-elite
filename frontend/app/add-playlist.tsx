@@ -36,6 +36,7 @@ import {
   type PanelDirectoryItem, type PanelCredentialMatch, type ScanExecutionControl,
 } from "@/src/utils/serverCode";
 import { PanelScan } from "@/modules/panel-scan";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { storage } from "@/src/utils/storage";
 import {
   BULK_ACCOUNT_EXAMPLE,
@@ -80,7 +81,7 @@ export default function AddPlaylist() {
 
   const router = useRouter();
   const { colors } = useTheme();
-  const { playlists, addPlaylist } = usePlaylists();
+  const { playlists, addPlaylist, addPreparedPlaylist } = usePlaylists();
   const playlistServerKeysRef = React.useRef<Set<string>>(new Set());
   React.useEffect(() => {
     playlistServerKeysRef.current = new Set(
@@ -117,6 +118,8 @@ export default function AddPlaylist() {
   const [discoverySubtitle, setDiscoverySubtitle] = useState("Geçerli hesapları seçin.");
   const [selectedDiscoveryKeys, setSelectedDiscoveryKeys] = useState<string[]>([]);
   const [bulkAdding, setBulkAdding] = useState(false);
+  const [bulkImportPaused, setBulkImportPaused] = useState(false);
+  const [bulkImportStatuses, setBulkImportStatuses] = useState<Record<string, { state: string; message: string; channels?: number; vod?: number; series?: number }>>({});
   const [bulkCandidates, setBulkCandidates] = useState<BulkResolvedCandidate[]>([]);
   const [selectedBulkCandidateKeys, setSelectedBulkCandidateKeys] = useState<string[]>([]);
   const [showBulkCandidates, setShowBulkCandidates] = useState(false);
@@ -831,6 +834,79 @@ export default function AddPlaylist() {
     if (!chosen.length) return;
     setBulkAdding(true);
     setLoading(true);
+    setBulkImportPaused(false);
+    setBulkImportStatuses({});
+
+    // v15.2.2-RC1: Android'de katalog indirme + normalize + dosya + Room index
+    // tamamen foreground native service'te çalışır. JS arka plana alınsa bile iş
+    // devam eder; UI geri geldiğinde kalıcı snapshot'tan kaldığı durumu okur.
+    if (Platform.OS === "android" && KizilkanNativeCore.available) {
+      const now = Date.now();
+      const jobs = chosen.map((c, i) => ({
+        jobKey: c.key,
+        playlistId: `pl-${now}-${i}-${Math.random().toString(36).slice(2, 8)}`,
+        displayName: chosen.length === 1 ? c.name : `${c.name} · ${hostName(c.server)}`,
+        server: c.server, username: c.username, password: c.password,
+      }));
+      const byKey = new Map(chosen.map(c => [c.key, c]));
+      const adopted = new Set<string>();
+      let ok = 0;
+      const failed: string[] = [];
+      try {
+        const started = await KizilkanNativeCore.startBulkImport(jobs, Math.min(2, jobs.length));
+        if (!started) throw new Error("Native playlist ekleme servisi başlatılamadı.");
+        while (true) {
+          const snap = KizilkanNativeCore.getBulkImportSnapshot() || {};
+          const rows: any[] = Array.isArray(snap.jobs) ? snap.jobs : [];
+          const statusObj: Record<string, any> = {};
+          for (const row of rows) {
+            const key = String(row.jobKey || "");
+            statusObj[key] = {
+              state: String(row.state || "waiting"), message: String(row.message || ""),
+              channels: Number(row.channels || 0), vod: Number(row.vod || 0), series: Number(row.series || 0),
+            };
+            if (row.state === "completed" && row.playlistId && !adopted.has(row.playlistId)) {
+              const c = byKey.get(key);
+              if (!c) continue;
+              const playlist: Playlist = {
+                id: row.playlistId,
+                name: String(row.displayName || c.name),
+                source: "xtream",
+                xtreamServer: c.server, xtreamUsername: c.username, xtreamPassword: c.password,
+                serverCodeBinding: c.direct ? undefined : makeBinding(c.code, c.panelName, c.server, c.validatedHosts),
+                accountInfo: (row.userInfo || c.login?.user_info || null) as AccountInfo,
+                serverInfo: row.serverInfo || c.login?.server_info || null,
+                channels: [], vod: [], series: [],
+                channelsCount: Number(row.channels || 0), vodCount: Number(row.vod || 0), seriesCount: Number(row.series || 0),
+                createdAt: new Date().toISOString(),
+              };
+              await addPreparedPlaylist(playlist);
+              playlistServerKeysRef.current.add(`${c.username}\u0000${String(c.server).replace(/\/+$/, "").toLowerCase()}`);
+              adopted.add(row.playlistId);
+              ok++;
+            }
+          }
+          setBulkImportStatuses(statusObj);
+          setBulkImportPaused(!!snap.paused);
+          setProgress(`Native ekleme · ${Number(snap.completed || 0)}/${Number(snap.total || jobs.length)} tamamlandı · ${Number(snap.failed || 0)} hata` + (snap.paused ? " · DURAKLATILDI" : ""));
+          if (!snap.running) {
+            for (const row of rows) if (row.state === "failed") failed.push(`${row.displayName || "Hesap"}: ${row.message || "Ekleme hatası"}`);
+            break;
+          }
+          await new Promise(r => setTimeout(r, 700));
+        }
+        Alert.alert("Toplu Hesap Ekleme", `${ok}/${chosen.length} seçili hesap kalıcı olarak eklendi.${failed.length ? `\nEklenemeyenler:\n${failed.slice(0, 6).join("\n")}` : ""}`);
+        if (ok > 0) router.replace("/(tabs)");
+      } catch (e: any) {
+        setError(e?.message || "Native toplu hesap ekleme başarısız.");
+      } finally {
+        setBulkAdding(false); setLoading(false); setProgress(""); setBulkImportPaused(false);
+        if (ok > 0) { setShowBulkCandidates(false); setBulkCandidates([]); setSelectedBulkCandidateKeys([]); }
+      }
+      return;
+    }
+
+    // Web / native modül bulunmayan ortam için eski işlevsel fallback korunur.
     let ok = 0;
     const failed: string[] = [];
     try {
@@ -839,19 +915,15 @@ export default function AddPlaylist() {
         const displayName = chosen.length === 1 ? c.name : `${c.name} · ${hostName(c.server)}`;
         setProgress(`${i + 1}/${chosen.length} · ${displayName} yeniden doğrulanıyor ve ekleniyor…`);
         const added = await submitXtreamDirect(
-          { server: c.server, username: c.username, password: c.password },
-          displayName,
-          c.direct ? undefined : makeBinding(c.code, c.panelName, c.server, c.validatedHosts),
-          false, false,
+          { server: c.server, username: c.username, password: c.password }, displayName,
+          c.direct ? undefined : makeBinding(c.code, c.panelName, c.server, c.validatedHosts), false, false,
         );
         if (added) ok++; else failed.push(displayName);
       }
       Alert.alert("Toplu Hesap Ekleme", `${ok}/${chosen.length} seçili hesap eklendi.${failed.length ? `\nEklenemeyen: ${failed.join(", ")}` : ""}`);
       if (ok > 0) router.replace("/(tabs)");
     } finally {
-      setBulkAdding(false);
-      setLoading(false);
-      setProgress("");
+      setBulkAdding(false); setLoading(false); setProgress("");
       if (ok > 0) { setShowBulkCandidates(false); setBulkCandidates([]); setSelectedBulkCandidateKeys([]); }
     }
   };
@@ -1710,8 +1782,9 @@ export default function AddPlaylist() {
                   const selected = selectedBulkCandidateKeys.includes(c.key);
                   const ui = c.login?.user_info || {};
                   const status = String(ui.status || (ui.auth === 1 || ui.auth === "1" ? "Aktif" : "Bilinmiyor"));
+                  const importState = bulkImportStatuses[c.key];
                   return (
-                    <FocusButton key={c.key} focusable autoFocus={index===0}
+                    <FocusButton key={c.key} focusable autoFocus={index===0} disabled={bulkAdding}
                       onPress={() => setSelectedBulkCandidateKeys(prev => selected ? prev.filter(k=>k!==c.key) : [...prev,c.key])}
                       style={[styles.matchRow,{ backgroundColor:selected?colors.brandPrimary+"14":colors.surfaceSecondary,borderColor:selected?colors.brandPrimary:colors.border }]}>
                       <View style={{flex:1}}>
@@ -1719,6 +1792,12 @@ export default function AddPlaylist() {
                         <Text style={{color:colors.onSurfaceSecondary,marginTop:2}}>Kullanıcı: {c.username} · Durum: {status}</Text>
                         <Text style={{color:colors.onSurfaceSecondary,marginTop:2}}>Panel: {c.panelName}{c.code ? ` · Kod: ${c.code}` : ""}</Text>
                         <Text style={{color:colors.onSurfaceTertiary,marginTop:2,fontSize:FONT.size.xs}}>{c.server}</Text>
+                        {!!importState && (
+                          <Text style={{color: importState.state === "failed" ? colors.error : importState.state === "completed" ? colors.success : colors.brandPrimary, marginTop:6, fontSize:FONT.size.xs, fontWeight:FONT.weight.bold}}>
+                            {importState.state === "completed" ? "✓ " : importState.state === "failed" ? "✕ " : "• "}{importState.message}
+                            {importState.state === "completed" ? ` · ${importState.channels || 0} kanal · ${importState.vod || 0} film · ${importState.series || 0} dizi` : ""}
+                          </Text>
+                        )}
                       </View>
                       <Ionicons name={selected?"checkbox":"square-outline"} size={26} color={selected?colors.brandPrimary:colors.onSurfaceTertiary}/>
                     </FocusButton>
@@ -1733,6 +1812,24 @@ export default function AddPlaylist() {
                   </View>
                 )}
               </ScrollView>
+
+              {bulkAdding && Platform.OS === "android" && KizilkanNativeCore.available && (
+                <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
+                  <FocusButton focusable onPress={async () => {
+                    const next = !bulkImportPaused;
+                    if (next) await KizilkanNativeCore.pauseBulkImport(); else await KizilkanNativeCore.resumeBulkImport();
+                    setBulkImportPaused(next);
+                  }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
+                    <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{bulkImportPaused ? "Eklemeye Devam Et" : "Eklemeyi Duraklat"}</Text>
+                  </FocusButton>
+                  <FocusButton focusable onPress={async () => {
+                    await KizilkanNativeCore.cancelBulkImport();
+                    setProgress(prev => `${prev || "Native ekleme"}\nDurdurma isteği gönderildi. Tamamlanan hesaplar cihazda korunur.`);
+                  }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surfaceSecondary}]}>
+                    <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>Eklemeyi Durdur</Text>
+                  </FocusButton>
+                </View>
+              )}
 
               {!bulkScanFinished && (loading || bulkScanPaused) && (
                 <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
