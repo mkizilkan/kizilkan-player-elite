@@ -12,6 +12,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.File
+import java.util.UUID
 import java.io.BufferedWriter
 import java.io.FileOutputStream
 import java.io.OutputStreamWriter
@@ -150,6 +151,22 @@ class KizilkanNativeCoreModule : Module() {
     // Android Debug.MemoryInfo + Runtime/ActivityManager değerlerinden gelir.
     Function("getRuntimeMemory") {
       runtimeMemory()
+    }
+
+    Function("getLastExitInfo") {
+      if (Build.VERSION.SDK_INT < 30) return@Function emptyMap<String, Any>()
+      val am = context().getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+      val info = am.getHistoricalProcessExitReasons(context().packageName, 0, 5).firstOrNull()
+        ?: return@Function emptyMap<String, Any>()
+      mapOf<String, Any>(
+        "reason" to info.reason,
+        "reasonLabel" to exitReasonLabel(info.reason),
+        "status" to info.status,
+        "importance" to info.importance,
+        "timestamp" to info.timestamp,
+        "processName" to (info.processName ?: ""),
+        "description" to (info.description?.toString() ?: "")
+      )
     }
 
     // v15.2.4 Native Player Session Arbiter Phase 1: player motorlarını henüz
@@ -320,13 +337,16 @@ class KizilkanNativeCoreModule : Module() {
 
     AsyncFunction("startBulkImport") { jobsJson: String, concurrency: Int ->
       val ctx = context()
+      val runId = UUID.randomUUID().toString()
+      BulkPlaylistImportService.seedStartingSnapshot(ctx, runId)
       val intent = Intent(ctx, BulkPlaylistImportService::class.java).apply {
         action = BulkPlaylistImportService.ACTION_START
         putExtra("jobsJson", jobsJson)
         putExtra("concurrency", concurrency.coerceIn(1, 4))
+        putExtra("runId", runId)
       }
       if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(intent) else ctx.startService(intent)
-      true
+      runId
     }
 
     AsyncFunction("pauseBulkImport") {
@@ -846,6 +866,20 @@ class KizilkanNativeCoreModule : Module() {
     }
     return "ch-${h1.toUInt().toString(16).padStart(8,'0')}${h2.toUInt().toString(16).padStart(8,'0')}"
   }
+
+  private fun exitReasonLabel(reason: Int): String = if (Build.VERSION.SDK_INT >= 30) when (reason) {
+    android.app.ApplicationExitInfo.REASON_CRASH -> "CRASH"
+    android.app.ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
+    android.app.ApplicationExitInfo.REASON_ANR -> "ANR"
+    android.app.ApplicationExitInfo.REASON_LOW_MEMORY -> "LOW_MEMORY"
+    android.app.ApplicationExitInfo.REASON_USER_REQUESTED -> "USER_REQUESTED"
+    android.app.ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
+    android.app.ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED"
+    android.app.ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
+    android.app.ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
+    android.app.ApplicationExitInfo.REASON_OTHER -> "OTHER"
+    else -> "REASON_$reason"
+  } else "UNAVAILABLE"
 
   private fun runtimeMemory(): Map<String, Any> {
     val info = Debug.MemoryInfo()

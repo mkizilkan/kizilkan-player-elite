@@ -153,7 +153,12 @@ export const bigStore: BigStore = {
           const hasIndex = await KizilkanNativeCore.hasPlaylistIndex(id);
           if (hasIndex) {
             const nativeValue = await KizilkanNativeCore.readPlaylistHeavy<T>(id);
-            if (nativeValue !== null && nativeValue !== undefined) return nativeValue as T;
+            if (nativeValue !== null && nativeValue !== undefined) {
+              // v15.2.8: Room snapshot gerçekten okunabiliyorsa önceki sürümlerden
+              // kalan duplicate legacy heavy dosyayı güvenle temizle.
+              try { await KizilkanNativeCore.deleteLegacyPlaylistFile(id); } catch {}
+              return nativeValue as T;
+            }
           }
         } catch (nativeError) {
           console.warn("[bigStore.read] Native Core fallback:", id, nativeError);

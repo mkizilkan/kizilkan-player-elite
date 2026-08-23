@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.7 RC1 KOTLIN CHUNKED-WRITER BUILD FIX)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.8 RC1 JOB LIFECYCLE DISCOVERY PLAYER HEALTH HARDENING)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -124,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.2.7') problem(`app version ${app?.expo?.version} (15.2.7 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150207) problem(`versionCode ${app?.expo?.android?.versionCode} (150207 bekleniyor)`);
+if (app?.expo?.version !== '15.2.8') problem(`app version ${app?.expo?.version} (15.2.8 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150208) problem(`versionCode ${app?.expo?.android?.versionCode} (150208 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -463,6 +463,21 @@ if (fs.existsSync(nativeCoreKtPath)) {
   requireText(core, 'BufferedWriter(OutputStreamWriter(FileOutputStream(file, true), Charsets.UTF_8), 64 * 1024)', 'Kotlin chunk staging writer explicit buffer');
   if (/\.bufferedWriter\(Charsets\.UTF_8\s*,/.test(core)) problem('v15.2.7 gecersiz OutputStream.bufferedWriter(charset, bufferSize) geri gelmis');
 }
+
+// v15.2.8 lifecycle / health / duplicate guards
+try {
+  const panelModule = fs.readFileSync(path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanModule.kt'), 'utf8');
+  const panelService = fs.readFileSync(path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt'), 'utf8');
+  const add = fs.readFileSync(path.join(root, 'app/add-playlist.tsx'), 'utf8');
+  const core = fs.readFileSync(path.join(root, 'modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeCoreModule.kt'), 'utf8');
+  const bulk = fs.readFileSync(path.join(root, 'modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/BulkPlaylistImportService.kt'), 'utf8');
+  if (!panelModule.includes('seedStartingSnapshot') || !panelModule.includes('runId')) problem('v15.2.8 panel scan runId lifecycle eksik');
+  if (!panelService.includes('STARTING') || !panelService.includes('currentRunId')) problem('v15.2.8 panel snapshot lifecycle eksik');
+  if (!core.includes('BulkPlaylistImportService.seedStartingSnapshot') || !bulk.includes('currentRunId')) problem('v15.2.8 bulk import runId lifecycle eksik');
+  if (bulk.includes('fetchArraySafe(')) problem('v15.2.8 endpoint hatalarini yutan fetchArraySafe geri gelmis');
+  if (!add.includes('canonicalUrlIdentity') || !add.includes('Bu M3U kaynağı zaten ekli.')) problem('v15.2.8 canonical M3U duplicate guard eksik');
+  if (src.includes('Yayın kısa süre ilerlemedi; aynı motor yeniden senkronlanıyor')) problem('v15.2.8 eski false-stall soft recovery geri gelmis');
+} catch (e) { problem(`v15.2.8 guard okunamadi: ${e.message}`); }
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.
 const sf = ts.createSourceFile(player, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TSX);

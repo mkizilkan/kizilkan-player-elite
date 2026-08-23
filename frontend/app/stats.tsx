@@ -20,6 +20,7 @@ export default function StatsScreen() {
   const [nativeRecent, setNativeRecent] = useState<any[]>([]);
   const [storageFootprint, setStorageFootprint] = useState<Record<string, any>>({});
   const [runtimeMemory, setRuntimeMemory] = useState<Record<string, any>>({});
+  const [lastExitInfo, setLastExitInfo] = useState<Record<string, any>>({});
 
   // v15.2.4: İstatistik ekranı yalnız birkaç favori/son kanal için artık
   // on binlerce kanalı hydrate etmez. Native Core varsa ID bazlı Room sorgusu.
@@ -42,6 +43,7 @@ export default function StatsScreen() {
       setNativeRecent(orderBy(recent.slice(0, 5), recentRows));
       setStorageFootprint(footprint || {});
       setRuntimeMemory(KizilkanNativeCore.getRuntimeMemory());
+      setLastExitInfo(KizilkanNativeCore.getLastExitInfo());
     })();
     return () => { cancelled = true; };
   }, [activePlaylist?.id, ensureHeavyLoaded, favorites, nativeData, recent]);
@@ -192,6 +194,9 @@ export default function StatsScreen() {
               <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>Native: {formatKb(runtimeMemory.nativePssKb)} · ART/Java: {formatKb(runtimeMemory.dalvikPssKb)}</Text>
               <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>Room DB: {formatBytes(storageFootprint.databaseBytes)} · WAL: {formatBytes(storageFootprint.walBytes)}</Text>
               <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>Legacy playlist: {formatBytes(storageFootprint.legacyPlaylistBytes)} ({storageFootprint.legacyPlaylistFiles || 0} dosya)</Text>
+              {lastExitInfo.reasonLabel ? (
+                <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>Son süreç çıkışı: {String(lastExitInfo.reasonLabel)} · {lastExitInfo.description ? String(lastExitInfo.description) : `kod ${String(lastExitInfo.reason)}`}</Text>
+              ) : null}
             </View>
           </>
         )}

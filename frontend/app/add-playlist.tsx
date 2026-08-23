@@ -77,6 +77,23 @@ function stableXtreamPlaylistId(server: string, username: string): string {
   return stablePlaylistId("xt", `${String(server).replace(/\/+$/, "").toLowerCase()}\u0000${username}`);
 }
 
+function canonicalUrlIdentity(value: string): string {
+  const raw = String(value || "").trim();
+  const m = raw.match(/^(https?):\/\/([^/]+)(.*)$/i);
+  if (!m) return raw.replace(/\/+$/, "").toLowerCase();
+  const protocol = m[1].toLowerCase();
+  let authority = m[2].toLowerCase();
+  if ((protocol === "http" && authority.endsWith(":80")) || (protocol === "https" && authority.endsWith(":443"))) {
+    authority = authority.replace(/:(80|443)$/, "");
+  }
+  const suffix = (m[3] || "").replace(/\/+$/, "");
+  return `${protocol}://${authority}${suffix}`;
+}
+
+function canonicalMagIdentity(portal: string, mac: string): string {
+  return `${canonicalUrlIdentity(portal)}\u0000${String(mac || "").trim().replace(/-/g, ":").toUpperCase()}`;
+}
+
 export default function AddPlaylist() {
   /**
    * ALAN ARASI GEÇİŞ (v9.3.0 — kullanıcı isteği)
@@ -380,12 +397,14 @@ export default function AddPlaylist() {
     setSelectedDiscoveryKeys([]);
     setNativeScanRunning(true);
     setLoading(true);
-    await PanelScan.startScan(candidates, xtUser.trim(), xtPass.trim(), cfg.concurrency, cfg.timeoutMs);
+    const runId = await PanelScan.startScan(candidates, xtUser.trim(), xtPass.trim(), cfg.concurrency, cfg.timeoutMs);
+    if (!runId) throw new Error("Native tarama başlatılamadı.");
 
     return await new Promise<PanelCredentialMatch[]>((resolve, reject) => {
       let settled = false;
       nativeScanTimerRef.current = setInterval(() => {
         const snap = PanelScan.getSnapshot();
+        if (snap.runId !== runId) return; // eski/stale snapshot yeni işi tamamlayamaz
         if (snap.error) {
           if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
           nativeScanTimerRef.current = null;
@@ -438,7 +457,7 @@ export default function AddPlaylist() {
         cfg,
       );
       mergeStreamingMatches(matches, `${panelName} · DNS Hesapları`,
-        `${matches.length} geçerli DNS hesabı bulundu. Eklemek istediklerinizi seçin.`);
+        `${matches.length} kimlik doğrulaması başarılı DNS adayı bulundu. Eklemek istediklerinizi seçin.`);
     } catch (e:any) {
       if (e?.message !== "__NATIVE_SCAN_UNAVAILABLE__") throw e;
       const matches = await discoverServerCodeHosts(
@@ -450,7 +469,7 @@ export default function AddPlaylist() {
         cfg.concurrency, cfg.timeoutMs,
       );
       presentMatches(matches, `${panelName} · DNS Hesapları`,
-        `${matches.length} geçerli DNS hesabı bulundu. Eklemek istediklerinizi seçin.`);
+        `${matches.length} kimlik doğrulaması başarılı DNS adayı bulundu. Eklemek istediklerinizi seçin.`);
     }
   };
 
@@ -594,12 +613,14 @@ export default function AddPlaylist() {
         };
         await storage.secureSet(PENDING_BULK_IMPORT_KEY, JSON.stringify([candidate]));
         bulkImportOwnedByScreenRef.current = true;
-        await KizilkanNativeCore.startBulkImport([{
+        const importRunId = await KizilkanNativeCore.startBulkImport([{
           jobKey, playlistId: id, displayName: candidate.name, server: cred.server, username: cred.username, password: cred.password,
         }], 1);
+        if (!importRunId) throw new Error("Native Xtream işi başlatılamadı.");
         let completedRow: any = null;
         while (true) {
           const snap = KizilkanNativeCore.getBulkImportSnapshot();
+          if (snap.runId !== importRunId) { await new Promise(resolve => setTimeout(resolve, 120)); continue; }
           if (snap.error) throw new Error(String(snap.error));
           const row = (Array.isArray(snap.jobs) ? snap.jobs : []).find((r:any) => String(r.jobKey) === jobKey);
           if (row) {
@@ -886,10 +907,13 @@ export default function AddPlaylist() {
     await storage.secureSet(PENDING_BULK_SCAN_KEY, JSON.stringify(accounts));
     const nativeConcurrency = Math.max(1, Math.min(32, cfg.concurrency * Math.max(1, cfg.accountConcurrency)));
     bulkNativeScanRef.current = true;
-    await PanelScan.startUnifiedScan(jobs, nativeConcurrency, cfg.timeoutMs);
+    const runId = await PanelScan.startUnifiedScan(jobs, nativeConcurrency, cfg.timeoutMs);
+    if (!runId) throw new Error("Birleşik native tarama başlatılamadı.");
     let lastFound=-1, completed=0;
     while (true) {
-      const snap=PanelScan.getSnapshot(); if (snap.error) throw new Error(snap.error);
+      const snap=PanelScan.getSnapshot();
+      if (snap.runId !== runId) { await new Promise(resolve=>setTimeout(resolve,120)); continue; }
+      if (snap.error) throw new Error(snap.error);
       if (Array.isArray(snap.accountStatuses)) setBulkAccountProgress(snap.accountStatuses);
       const raw=Array.isArray(snap.matches)?snap.matches:[];
       if (raw.length !== lastFound) {
@@ -947,8 +971,8 @@ export default function AddPlaylist() {
       if (PanelScan.available && Platform.OS === "android") {
         const nr = await runNativeBulkAccounts(parsed.accounts, cfg); found=nr.found; completed=nr.completed;
         setBulkScanFailures([]); setBulkScanFinished(true); setShowBulkCandidates(true);
-        setProgress(nr.cancelled ? `Tarama durduruldu · ${completed}/${parsed.accounts.length} hesap · ${found} sonuç korunuyor.` : `Native tarama tamamlandı · ${completed}/${parsed.accounts.length} hesap · ${found} geçerli panel/DNS hesabı bulundu.`);
-        if (!found && !nr.cancelled) setError("Hiç geçerli hesap bulunamadı.");
+        setProgress(nr.cancelled ? `Tarama durduruldu · ${completed}/${parsed.accounts.length} hesap · ${found} sonuç korunuyor.` : `Native tarama tamamlandı · ${completed}/${parsed.accounts.length} hesap · ${found} kimlik doğrulaması başarılı panel/DNS adayı bulundu.`);
+        if (!found && !nr.cancelled) setError("Kimlik doğrulaması başarılı aday bulunamadı.");
         return;
       }
       const workerCount = Math.max(1, Math.min(cfg.accountConcurrency, parsed.accounts.length));
@@ -962,7 +986,7 @@ export default function AddPlaylist() {
           found += r.candidates.length;
           completed += 1;
           if (!r.candidates.length && !bulkScanCancelledRef.current) failures.push(`${r.label}: ${r.reason || "Eşleşme bulunamadı."}`);
-          setProgress(`${cfg.label} · ${completed}/${parsed.accounts.length} hesap tamamlandı · ${found} geçerli panel/DNS hesabı bulundu` + (bulkScanPausedRef.current ? " · DURAKLATILDI" : ""));
+          setProgress(`${cfg.label} · ${completed}/${parsed.accounts.length} hesap tamamlandı · ${found} kimlik doğrulaması başarılı panel/DNS adayı bulundu` + (bulkScanPausedRef.current ? " · DURAKLATILDI" : ""));
         }
       };
       await Promise.all(Array.from({ length: workerCount }, () => runAccountWorker()));
@@ -972,9 +996,9 @@ export default function AddPlaylist() {
       if (bulkScanCancelledRef.current) {
         setProgress(`Tarama durduruldu · ${completed}/${parsed.accounts.length} hesap işlendi · ${found} sonuç korunuyor.`);
       } else {
-        setProgress(`Tarama tamamlandı · ${completed}/${parsed.accounts.length} hesap işlendi · ${found} geçerli panel/DNS hesabı bulundu${failures.length ? ` · ${failures.length} hesapta sonuç yok` : ""}`);
+        setProgress(`Tarama tamamlandı · ${completed}/${parsed.accounts.length} hesap işlendi · ${found} kimlik doğrulaması başarılı panel/DNS adayı bulundu${failures.length ? ` · ${failures.length} hesapta sonuç yok` : ""}`);
       }
-      if (!found && !bulkScanCancelledRef.current) setError(failures.join("\n") || "Hiç geçerli hesap bulunamadı.");
+      if (!found && !bulkScanCancelledRef.current) setError(failures.join("\n") || "Kimlik doğrulaması başarılı aday bulunamadı.");
     } finally {
       setLoading(false);
       setBulkScanPaused(false);
@@ -1008,10 +1032,11 @@ export default function AddPlaylist() {
       let ok = 0;
       const failed: string[] = [];
       try {
-        const started = await KizilkanNativeCore.startBulkImport(jobs, Math.min(2, jobs.length));
-        if (!started) throw new Error("Native playlist ekleme servisi başlatılamadı.");
+        const importRunId = await KizilkanNativeCore.startBulkImport(jobs, Math.min(2, jobs.length));
+        if (!importRunId) throw new Error("Native playlist ekleme servisi başlatılamadı.");
         while (true) {
           const snap = KizilkanNativeCore.getBulkImportSnapshot() || {};
+          if (snap.runId !== importRunId) { await new Promise(resolve => setTimeout(resolve, 120)); continue; }
           const rows: any[] = Array.isArray(snap.jobs) ? snap.jobs : [];
           const statusObj: Record<string, any> = {};
           for (const row of rows) {
@@ -1159,8 +1184,11 @@ export default function AddPlaylist() {
 
       if (method === "m3u_url") {
         if (!m3uUrl.trim()) throw new Error("M3U URL boş olamaz");
-        id = stablePlaylistId("m3u", m3uUrl.trim().replace(/\/+$/, ""));
-        if (playlists.some(pl => pl.id === id)) throw new Error("Bu M3U listesi zaten ekli.");
+        const canonicalM3u = canonicalUrlIdentity(m3uUrl);
+        id = stablePlaylistId("m3u", canonicalM3u);
+        if (playlists.some(pl => pl.id === id || (pl.m3uUrl && canonicalUrlIdentity(pl.m3uUrl) === canonicalM3u))) {
+          throw new Error("Bu M3U kaynağı zaten ekli.");
+        }
         if (Platform.OS === "android" && KizilkanNativeCore.available) {
           setProgress("M3U Native Core ile indiriliyor ve Room'a indeksleniyor...");
           const summary = await KizilkanNativeCore.fetchAndImportM3u(id, m3uUrl.trim());
@@ -1223,8 +1251,11 @@ export default function AddPlaylist() {
          */
         if (!stPortal.trim() || !stMac.trim())
           throw new Error("Portal adresi ve MAC adresi gereklidir");
-        id = stablePlaylistId("mag", `${stPortal.trim().replace(/\/+$/, "")}\u0000${stMac.trim().toUpperCase()}`);
-        if (playlists.some(pl => pl.id === id)) throw new Error("Bu MAG/Portal hesabı zaten ekli.");
+        const canonicalMag = canonicalMagIdentity(stPortal, stMac);
+        id = stablePlaylistId("mag", canonicalMag);
+        if (playlists.some(pl => pl.id === id || (pl.stalkerPortal && pl.stalkerMac && canonicalMagIdentity(pl.stalkerPortal, pl.stalkerMac) === canonicalMag))) {
+          throw new Error("Bu MAG/Portal hesabı zaten ekli.");
+        }
 
         const { stalkerLogin: stLogin, stalkerChannels, normalizeMac } = await import("@/src/utils/stalker");
         const cred = {
@@ -1945,7 +1976,7 @@ export default function AddPlaylist() {
                   <Text style={[styles.matchModalTitle, { color: colors.onSurface }]}>Bulunan Çoklu Hesaplar</Text>
                   <Text style={{ color: colors.onSurfaceSecondary, marginTop: 4, lineHeight: 18 }}>
                     {bulkScanFinished
-                      ? `${bulkCandidates.length} geçerli panel/DNS hesabı bulundu. Eklemek istediklerinizi seçin.`
+                      ? `${bulkCandidates.length} kimlik doğrulaması başarılı panel/DNS adayı bulundu. Eklemek istediklerinizi seçin.`
                       : `Tarama sürüyor. Bulunan sonuçlar canlı ekleniyor; seçimleriniz korunur.`}
                   </Text>
                 </View>
@@ -1985,7 +2016,7 @@ export default function AddPlaylist() {
                 {bulkCandidates.length === 0 ? (
                   <View style={[styles.infoBanner,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
                     <ActivityIndicator size="small" color={colors.brandPrimary} />
-                    <Text style={{ color: colors.onSurface, flex: 1 }}>Henüz geçerli hesap bulunmadı.</Text>
+                    <Text style={{ color: colors.onSurface, flex: 1 }}>Henüz kimlik doğrulaması başarılı aday bulunmadı.</Text>
                   </View>
                 ) : bulkCandidates.map((c,index) => {
                   const selected = selectedBulkCandidateKeys.includes(c.key);

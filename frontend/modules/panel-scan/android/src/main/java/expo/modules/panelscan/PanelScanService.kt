@@ -2,6 +2,7 @@ package expo.modules.panelscan
 
 import android.app.*
 import android.content.Intent
+import android.content.Context
 import android.os.Build
 import android.os.IBinder
 import org.json.JSONArray
@@ -24,11 +25,30 @@ class PanelScanService : Service() {
     const val KEY_SNAPSHOT = "snapshot"
     const val CHANNEL_ID = "panel_scan"
     const val NOTIF_ID = 13001
+
+    fun seedStartingSnapshot(context: Context, mode: String, runId: String) {
+      val now = System.currentTimeMillis()
+      val obj = JSONObject()
+        .put("mode", mode)
+        .put("runId", runId)
+        .put("state", "STARTING")
+        .put("running", true)
+        .put("paused", false)
+        .put("cancelled", false)
+        .put("tested", 0)
+        .put("total", 0)
+        .put("found", 0)
+        .put("matches", JSONArray())
+        .put("createdAt", now)
+        .put("updatedAt", now)
+      context.getSharedPreferences(PREFS, 0).edit().putString(KEY_SNAPSHOT, obj.toString()).commit()
+    }
   }
 
   private val cancelled = AtomicBoolean(false)
   private val paused = AtomicBoolean(false)
   @Volatile private var running = false
+  @Volatile private var currentRunId = ""
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -70,6 +90,7 @@ class PanelScanService : Service() {
         getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("Panel taraması devam ediyor", 0, 0))
       }
       ACTION_BULK_START -> if (!running) {
+        currentRunId = intent.getStringExtra("runId") ?: java.util.UUID.randomUUID().toString()
         running = true
         cancelled.set(false)
         paused.set(false)
@@ -87,6 +108,7 @@ class PanelScanService : Service() {
         Thread { runBulkScan(candidatesJson, accountsJson, concurrency, timeoutMs) }.start()
       }
       ACTION_UNIFIED_START -> if (!running) {
+        currentRunId = intent.getStringExtra("runId") ?: java.util.UUID.randomUUID().toString()
         running = true
         cancelled.set(false)
         paused.set(false)
@@ -103,6 +125,7 @@ class PanelScanService : Service() {
         Thread { runUnifiedScan(jobsJson, concurrency, timeoutMs) }.start()
       }
       ACTION_START -> if (!running) {
+        currentRunId = intent.getStringExtra("runId") ?: java.util.UUID.randomUUID().toString()
         running = true
         cancelled.set(false)
         paused.set(false)
@@ -124,6 +147,18 @@ class PanelScanService : Service() {
   }
 
   @Synchronized private fun writeSnapshot(obj: JSONObject) {
+    if (currentRunId.isNotBlank() && !obj.has("runId")) obj.put("runId", currentRunId)
+    if (!obj.has("state")) {
+      val state = when {
+        obj.optBoolean("cancelled", false) -> "CANCELLED"
+        obj.optBoolean("running", false) && obj.optBoolean("paused", false) -> "PAUSED"
+        obj.optBoolean("running", false) -> "RUNNING"
+        obj.has("error") -> "FAILED"
+        else -> "COMPLETED"
+      }
+      obj.put("state", state)
+    }
+    obj.put("updatedAt", System.currentTimeMillis())
     getSharedPreferences(PREFS, 0).edit().putString(KEY_SNAPSHOT, obj.toString()).apply()
   }
 

@@ -2178,7 +2178,14 @@ export default function PlayerHost() {
           : media3ClockRef.current;
       const now = Date.now();
       if (now < userSeekGraceUntilRef.current) return;
-      const stalledFor = now - clock.lastAdvanceAt;
+      // v15.2.8: canlı VLC'de media-time her streamde düzenli ilerlemez.
+      // Native time eventleri gelmeye devam ediyorsa yayın sağlığı var kabul edilir;
+      // yalnız playback position'a bakmak false-stall üretip sağlıklı yayını
+      // pause/play ile bizzat bozuyordu. VOD ve diğer motorlarda advance esas kalır.
+      const healthAt = sessionKind === "live" && v2Profile.engine === "vlc"
+        ? Math.max(clock.lastAdvanceAt, clock.lastEventAt)
+        : clock.lastAdvanceAt;
+      const stalledFor = now - healthAt;
       const softMs = sessionKind === "live" ? LIVE_SOFT_STALL_MS : VOD_SOFT_STALL_MS;
       const hardMs = sessionKind === "live" ? LIVE_HARD_STALL_MS : VOD_HARD_STALL_MS;
 
@@ -2186,35 +2193,8 @@ export default function PlayerHost() {
         rec.softDone = true;
         rec.softAt = now;
         stallRecoveryRef.current = rec;
-        setRecoveryMessage("Yayın kısa süre ilerlemedi; aynı motor yeniden senkronlanıyor…");
-
-        try {
-          if (v2Profile.engine === "vlc") {
-            void vlcRef.current?.pause?.();
-            setTimeout(() => {
-              if (sessionGateRef.current.isActive(sid) && activeProfileKeyRef.current === profileKey) {
-                void vlcRef.current?.play?.();
-              }
-            }, 180);
-          } else if (v2Profile.engine === "mpv") {
-            void mpvRef.current?.pause?.();
-            setTimeout(() => {
-              if (sessionGateRef.current.isActive(sid) && activeProfileKeyRef.current === profileKey) {
-                void mpvRef.current?.play?.();
-              }
-            }, 180);
-          } else {
-            player?.pause?.();
-            setTimeout(() => {
-              if (sessionGateRef.current.isActive(sid) && activeProfileKeyRef.current === profileKey) player?.play?.();
-            }, 180);
-          }
-        } catch {}
-
-        const reset = { ...clock, lastEventAt: now, lastAdvanceAt: now };
-        if (v2Profile.engine === "vlc") vlcClockRef.current = reset;
-        else if (v2Profile.engine === "mpv") mpvClockRef.current = reset;
-        else media3ClockRef.current = reset;
+        // Soft eşik artık gözlem-only. Decoder'a pause/play enjekte edilmez.
+        // Kullanıcıya da false-positive recovery mesajı gösterilmez.
         return;
       }
 

@@ -142,14 +142,16 @@ export default function EditPlaylist() {
             if (existingJob?.running) throw new Error("Başka bir native playlist ekleme/yenileme işi çalışıyor. Bitmesini bekleyin veya durdurun.");
             const jobKey = `edit-${pl.id}-${Date.now()}`;
             setProgress("Xtream Native Core ile doğrulanıyor ve Room'a yenileniyor...");
-            await KizilkanNativeCore.startBulkImport([{
+            const importRunId = await KizilkanNativeCore.startBulkImport([{
               jobKey, playlistId: pl.id, displayName: patch.name || pl.name,
               server: cred.server, username: cred.username, password: cred.password,
             }], 1);
+            if (!importRunId) throw new Error("Native Xtream yenileme işi başlatılamadı.");
             let finalRow: any = null;
             const deadline = Date.now() + 12 * 60 * 1000;
             while (Date.now() < deadline) {
               const snap = KizilkanNativeCore.getBulkImportSnapshot();
+              if (snap?.runId !== importRunId) { await new Promise(resolve => setTimeout(resolve, 120)); continue; }
               const row = Array.isArray(snap?.jobs) ? snap.jobs.find((j:any) => String(j.jobKey) === jobKey) : null;
               if (row) {
                 setProgress(String(row.message || "Xtream yenileniyor..."));

@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.Context
 import android.os.Build
 import android.os.IBinder
 import org.json.JSONArray
@@ -41,11 +42,29 @@ class BulkPlaylistImportService : Service() {
     const val CHANNEL_ID = "kizilkan_bulk_import"
     const val NOTIF_ID = 15022
     private const val BATCH_SIZE = 750
+
+    fun seedStartingSnapshot(context: Context, runId: String) {
+      val now = System.currentTimeMillis()
+      val obj = JSONObject()
+        .put("runId", runId)
+        .put("state", "STARTING")
+        .put("running", true)
+        .put("paused", false)
+        .put("cancelled", false)
+        .put("completed", 0)
+        .put("failed", 0)
+        .put("total", 0)
+        .put("jobs", JSONArray())
+        .put("createdAt", now)
+        .put("updatedAt", now)
+      context.getSharedPreferences(PREFS, 0).edit().putString(KEY_SNAPSHOT, obj.toString()).commit()
+    }
   }
 
   private val cancelled = AtomicBoolean(false)
   private val paused = AtomicBoolean(false)
   @Volatile private var running = false
+  @Volatile private var currentRunId = ""
   private val statusMap = ConcurrentHashMap<String, JSONObject>()
 
   override fun onBind(intent: Intent?): IBinder? = null
@@ -87,6 +106,7 @@ class BulkPlaylistImportService : Service() {
         publishSnapshot(cancelledValue = true)
       }
       ACTION_START -> if (!running) {
+        currentRunId = intent.getStringExtra("runId") ?: java.util.UUID.randomUUID().toString()
         val jobsJson = intent.getStringExtra("jobsJson") ?: "[]"
         val concurrency = intent.getIntExtra("concurrency", 2).coerceIn(1, 4)
         running = true
@@ -135,7 +155,9 @@ class BulkPlaylistImportService : Service() {
               statusMap[key] = result.put("state", "completed").put("message", "Kaydedildi")
               completed.incrementAndGet()
             } catch (e: Throwable) {
-              statusMap[key] = status(key, name, "failed", e.message ?: "Ekleme hatası")
+              val existing = statusMap[key] ?: status(key, name, "failed", e.message ?: "Ekleme hatası")
+              existing.put("state", "failed").put("message", e.message ?: "Ekleme hatası")
+              statusMap[key] = existing
               failed.incrementAndGet()
             }
             val done = completed.get() + failed.get()
@@ -156,6 +178,25 @@ class BulkPlaylistImportService : Service() {
     }
   }
 
+  private data class EndpointResult(val name: String, val data: JSONArray, val error: String? = null)
+
+  private fun fetchArrayDetailed(name: String, url: String, timeout: Int): EndpointResult = try {
+    EndpointResult(name, fetchArray(url, timeout), null)
+  } catch (e: Throwable) {
+    EndpointResult(name, JSONArray(), e.message ?: e.javaClass.simpleName)
+  }
+
+  private fun diagnosticsJson(results: List<EndpointResult>): JSONObject {
+    val out = JSONObject()
+    for (r in results) {
+      out.put(r.name, JSONObject()
+        .put("ok", r.error == null)
+        .put("count", r.data.length())
+        .put("error", r.error ?: JSONObject.NULL))
+    }
+    return out
+  }
+
   private fun importOne(job: JSONObject, key: String, displayName: String): JSONObject {
     val playlistId = job.getString("playlistId")
     val server = job.getString("server").trim().trimEnd('/')
@@ -171,23 +212,33 @@ class BulkPlaylistImportService : Service() {
     updateStatus(key, displayName, "downloading", "Kataloglar paralel indiriliyor")
     val ioPool = Executors.newFixedThreadPool(6)
     try {
-      val liveF = ioPool.submit<JSONArray> { fetchArraySafe(apiUrl(server, username, password, "get_live_streams"), 120_000) }
-      val liveCatsF = ioPool.submit<JSONArray> { fetchArraySafe(apiUrl(server, username, password, "get_live_categories"), 60_000) }
-      val vodF = ioPool.submit<JSONArray> { fetchArraySafe(apiUrl(server, username, password, "get_vod_streams"), 120_000) }
-      val vodCatsF = ioPool.submit<JSONArray> { fetchArraySafe(apiUrl(server, username, password, "get_vod_categories"), 60_000) }
-      val seriesF = ioPool.submit<JSONArray> { fetchArraySafe(apiUrl(server, username, password, "get_series"), 120_000) }
-      val seriesCatsF = ioPool.submit<JSONArray> { fetchArraySafe(apiUrl(server, username, password, "get_series_categories"), 60_000) }
+      val liveF = ioPool.submit<EndpointResult> { fetchArrayDetailed("live", apiUrl(server, username, password, "get_live_streams"), 120_000) }
+      val liveCatsF = ioPool.submit<EndpointResult> { fetchArrayDetailed("liveCategories", apiUrl(server, username, password, "get_live_categories"), 60_000) }
+      val vodF = ioPool.submit<EndpointResult> { fetchArrayDetailed("vod", apiUrl(server, username, password, "get_vod_streams"), 120_000) }
+      val vodCatsF = ioPool.submit<EndpointResult> { fetchArrayDetailed("vodCategories", apiUrl(server, username, password, "get_vod_categories"), 60_000) }
+      val seriesF = ioPool.submit<EndpointResult> { fetchArrayDetailed("series", apiUrl(server, username, password, "get_series"), 120_000) }
+      val seriesCatsF = ioPool.submit<EndpointResult> { fetchArrayDetailed("seriesCategories", apiUrl(server, username, password, "get_series_categories"), 60_000) }
 
-      val liveRaw = liveF.get(); val liveCats = categoryMap(liveCatsF.get())
+      val liveR = liveF.get(); val liveCatsR = liveCatsF.get()
+      val liveRaw = liveR.data; val liveCats = categoryMap(liveCatsR.data)
       updateStatus(key, displayName, "normalizing", "Canlı ${liveRaw.length()} · Film/Dizi bekleniyor")
       awaitIfPaused()
-      val vodRaw = vodF.get(); val vodCats = categoryMap(vodCatsF.get())
-      val seriesRaw = seriesF.get(); val seriesCats = categoryMap(seriesCatsF.get())
+      val vodR = vodF.get(); val vodCatsR = vodCatsF.get()
+      val seriesR = seriesF.get(); val seriesCatsR = seriesCatsF.get()
+      val vodRaw = vodR.data; val vodCats = categoryMap(vodCatsR.data)
+      val seriesRaw = seriesR.data; val seriesCats = categoryMap(seriesCatsR.data)
+      val endpointResults = listOf(liveR, liveCatsR, vodR, vodCatsR, seriesR, seriesCatsR)
+      val diagnostics = diagnosticsJson(endpointResults)
+      statusMap[key]?.put("endpointDiagnostics", diagnostics)
+      publishSnapshot()
 
       val channels = normalizeLive(liveRaw, liveCats, server, username, password)
       val vod = normalizeVod(vodRaw, vodCats, server, username, password)
       val series = normalizeSeries(seriesRaw, seriesCats)
-      if (channels.length() + vod.length() + series.length() == 0) throw IllegalStateException("Hiç içerik bulunamadı")
+      if (channels.length() + vod.length() + series.length() == 0) {
+        val failures = endpointResults.filter { it.error != null }.joinToString("; ") { "${it.name}: ${it.error}" }
+        throw IllegalStateException(if (failures.isNotBlank()) "İçerik endpointleri başarısız: $failures" else "Hiç içerik bulunamadı")
+      }
 
       updateStatus(key, displayName, "persisting", "Room/SQLite indeksleniyor")
       awaitIfPaused()
@@ -198,6 +249,7 @@ class BulkPlaylistImportService : Service() {
         .put("channels", channels.length())
         .put("vod", vod.length())
         .put("series", series.length())
+        .put("endpointDiagnostics", diagnostics)
         .put("userInfo", sanitizeUserInfo(ui))
         .put("serverInfo", sanitizeJson(login.optJSONObject("server_info") ?: JSONObject()))
     } finally {
@@ -318,7 +370,6 @@ class BulkPlaylistImportService : Service() {
     ?: throw IllegalStateException("JSON nesnesi bekleniyordu")
   private fun fetchArray(url: String, timeout: Int): JSONArray = JSONTokener(fetchText(url, timeout)).nextValue() as? JSONArray
     ?: throw IllegalStateException("JSON dizi bekleniyordu")
-  private fun fetchArraySafe(url: String, timeout: Int): JSONArray = try { fetchArray(url, timeout) } catch (_: Throwable) { JSONArray() }
 
   private fun fetchText(url: String, timeout: Int): String {
     awaitIfPaused()
@@ -376,6 +427,18 @@ class BulkPlaylistImportService : Service() {
   }
 
   @Synchronized private fun writeSnapshot(obj: JSONObject) {
+    if (currentRunId.isNotBlank() && !obj.has("runId")) obj.put("runId", currentRunId)
+    if (!obj.has("state")) {
+      val state = when {
+        obj.optBoolean("cancelled", false) -> "CANCELLED"
+        obj.optBoolean("running", false) && obj.optBoolean("paused", false) -> "PAUSED"
+        obj.optBoolean("running", false) -> "RUNNING"
+        obj.has("error") -> "FAILED"
+        else -> "COMPLETED"
+      }
+      obj.put("state", state)
+    }
+    obj.put("updatedAt", System.currentTimeMillis())
     getSharedPreferences(PREFS, 0).edit().putString(KEY_SNAPSHOT, obj.toString()).apply()
   }
 
