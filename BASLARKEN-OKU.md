@@ -36,3 +36,7 @@ Güncel aktif sürüm: v15.2.5-RC1. Native Core Phase 2 korunur; son audit ile c
 
 ## v15.2.6-RC1 NOTU
 Güncel aktif sürüm v15.2.6-RC1'dir. v15.2.5 GitHub `tsc --noEmit` gate'inde yakalanan Search Room/Fuzzy result shape çakışması ve erişilemez duplicate Xtream/Code control-flow branch'leri gerçek tip modelinden düzeltilmiştir; HARD gate bypass edilmemiştir. Ayrıntı `AI-PROJE-DEVIR-BAGLAM.md` ve `SURUM-NOTU-GPT-ELITE-v15.2.6-RC1.md` içindedir.
+
+
+## v15.2.7-RC1
+GitHub Kotlin chunked staging writer API-signature düzeltmesi; ayrıntı için `AI-PROJE-DEVIR-BAGLAM.md` ve `SURUM-NOTU-GPT-ELITE-v15.2.7-RC1.md` okunmalıdır.

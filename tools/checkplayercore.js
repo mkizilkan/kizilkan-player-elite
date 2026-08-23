@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.6 RC1 TYPESCRIPT HARD-GATE REGRESSION FIX)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.7 RC1 KOTLIN CHUNKED-WRITER BUILD FIX)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -124,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.2.6') problem(`app version ${app?.expo?.version} (15.2.6 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150206) problem(`versionCode ${app?.expo?.android?.versionCode} (150206 bekleniyor)`);
+if (app?.expo?.version !== '15.2.7') problem(`app version ${app?.expo?.version} (15.2.7 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150207) problem(`versionCode ${app?.expo?.android?.versionCode} (150207 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -154,7 +154,7 @@ if (!fs.existsSync(handoffPath)) {
 } else {
   const handoff = fs.readFileSync(handoffPath, 'utf8');
   const requiredHandoffTokens = [
-    'v15.2.6-RC1',
+    'v15.2.7-RC1',
     'Media3 → MPV/FFmpeg → VLC',
     'ANDROID_CERT_SHA256',
     'KALAN / SONRAKI ISLER',
@@ -455,6 +455,13 @@ if (fs.existsSync(addPlaylistPath)) {
   const add = fs.readFileSync(addPlaylistPath, 'utf8');
   if (add.includes('else if (method === "xtream")')) problem('v15.2.6 duplicate/erisilemez ikinci Xtream branch geri gelmis');
   requireText(add, 'await submitXtreamDirect({ server: xtServer.trim(), username: xtUser.trim(), password: xtPass.trim() });', 'Xtream tek submitXtreamDirect girisi');
+}
+
+// v15.2.7 Kotlin HARD-gate regression guard: OutputStream.bufferedWriter only accepts charset.
+if (fs.existsSync(nativeCoreKtPath)) {
+  const core = fs.readFileSync(nativeCoreKtPath, 'utf8');
+  requireText(core, 'BufferedWriter(OutputStreamWriter(FileOutputStream(file, true), Charsets.UTF_8), 64 * 1024)', 'Kotlin chunk staging writer explicit buffer');
+  if (/\.bufferedWriter\(Charsets\.UTF_8\s*,/.test(core)) problem('v15.2.7 gecersiz OutputStream.bufferedWriter(charset, bufferSize) geri gelmis');
 }
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.

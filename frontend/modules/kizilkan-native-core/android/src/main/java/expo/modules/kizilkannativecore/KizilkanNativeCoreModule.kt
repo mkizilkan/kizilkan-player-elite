@@ -12,7 +12,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.File
+import java.io.BufferedWriter
 import java.io.FileOutputStream
+import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.zip.GZIPInputStream
@@ -93,7 +95,7 @@ class KizilkanNativeCoreModule : Module() {
       val k = normalizeKind(kind)
       val arr = JSONTokener(jsonArray).nextValue() as? JSONArray
         ?: throw IllegalStateException("Chunk JSON array değil")
-      FileOutputStream(file, true).bufferedWriter(Charsets.UTF_8, 64 * 1024).use { out ->
+      BufferedWriter(OutputStreamWriter(FileOutputStream(file, true), Charsets.UTF_8), 64 * 1024).use { out ->
         for (i in 0 until arr.length()) {
           val obj = arr.optJSONObject(i) ?: continue
           out.append(k).append('\t').append(obj.toString()).append('\n')

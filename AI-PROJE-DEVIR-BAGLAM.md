@@ -562,3 +562,8 @@ GitHub Actions v15.2.5-RC1'i `npx tsc --noEmit` HARD gate aşamasında durdurdu.
 
 ## DOĞRULAMA SINIRI
 Bu çalışma ortamında bağımlılık kurulumu ağ/DNS erişimi olmadığı için tamamlanamamıştır; bu nedenle tam proje `npx tsc --noEmit`, Expo prebuild, Room/KSP/Kotlin ve Gradle build burada başarılıymış gibi gösterilmez. Kaynak düzeltmeleri GitHub Actions gerçek HARD gate ile yeniden kanıtlanacaktır.
+
+
+# v15.2.7-RC1 — KOTLIN CHUNKED WRITER BUILD FIX DEVİR EKİ (2026-08-23)
+
+GitHub Actions v15.2.6-RC1 TypeScript HARD gate'i ve `:kizilkan-native-core:kspReleaseKotlin` aşamasını geçti. Gerçek kırılma `KizilkanNativeCoreModule.kt:96` satırında `Too many arguments for OutputStream.bufferedWriter` olarak kanıtlandı. Chunked staging append kodu `bufferedWriter(Charsets.UTF_8, 64 * 1024)` çağırıyordu; bu extension yalnız charset kabul eder. v15.2.7-RC1'de 64 KiB buffer semantiği korunarak `BufferedWriter(OutputStreamWriter(FileOutputStream(...), UTF_8), 64 KiB)` kullanıldı. Aynı native-core kaynak ağacındaki buffered reader/writer çağrıları tarandı; aynı writer overload hatası başka yerde yok. v15.2.6 ve önceki Native Core/Room/Cast/Discovery/EPG/Player geliştirmeleri geri alınmadı. Gerçek Kotlin/Gradle sonucu CI ile doğrulanacaktır.

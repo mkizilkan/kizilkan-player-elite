@@ -2,7 +2,7 @@
   "expo": {
     "name": "KIZILKAN PLAYER ELITE",
     "slug": "frontend",
-    "version": "15.2.6",
+    "version": "15.2.7",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "kizilkan-gpt",
@@ -37,7 +37,7 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.gpt.kizilkan.player",
-      "versionCode": 150206,
+      "versionCode": 150207,
       "usesCleartextTraffic": true,
       "permissions": [
         "android.permission.INTERNET",

@@ -74,3 +74,7 @@ GitHub Actions bu sürüm için `15.2.5 / versionCode 150205` görmelidir. Gerç
 
 ## v15.2.6-RC1
 GitHub Actions `15.2.6 / versionCode 150206` görmelidir. Özellikle `npx tsc --noEmit` gate'in Search TS2339 ve add-playlist TS2367 hatalarını artık üretmemesi ilk kabul kapısıdır; ardından Expo/Room-KSP/Kotlin/Gradle doğrulanır.
+
+
+## v15.2.7-RC1
+GitHub Kotlin chunked staging writer API-signature düzeltmesi; ayrıntı için `AI-PROJE-DEVIR-BAGLAM.md` ve `SURUM-NOTU-GPT-ELITE-v15.2.7-RC1.md` okunmalıdır.

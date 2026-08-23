@@ -63,3 +63,7 @@ v15.2.4 üzerine onaylı son audit uygulanmıştır. Büyük compatibility playl
 
 ## v15.2.6-RC1 DEVİR
 GitHub TypeScript HARD gate v15.2.5'i Search `T | FuzzyResult<T>` model çakışması ve duplicate erişilemez Xtream branch nedeniyle durdurdu. v15.2.6 bu iki kökü type-safe normalize + tek Xtream giriş yolu ile düzeltir. v15.2.5 özellikleri korunur.
+
+
+## v15.2.7-RC1
+GitHub Kotlin chunked staging writer API-signature düzeltmesi; ayrıntı için `AI-PROJE-DEVIR-BAGLAM.md` ve `SURUM-NOTU-GPT-ELITE-v15.2.7-RC1.md` okunmalıdır.
