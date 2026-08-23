@@ -64,3 +64,9 @@ git push origin main
 ```
 
 GitHub Actions sonucu olmadan `tsc`, Kotlin, Gradle veya APK başarılı sayılmaz. Özellikle `:mpv-player:compileReleaseKotlin` libmpv 1.0.0 migration'ın ilk native kapısıdır.
+
+## v15.2.4-RC1
+Sürüm 15.2.4 / versionCode 150204. GitHub Actions build sonunda APK yanında `APK-BOYUT-RAPORU-v15.2.4.txt` artifact'i de üretilir. Signing dosyaları ve secret metinleri commit edilmez.
+
+## v15.2.5-RC1
+GitHub Actions bu sürüm için `15.2.5 / versionCode 150205` görmelidir. Gerçek `tsc --noEmit`, Expo prebuild, Room/KSP/Kotlin ve Gradle release sonucu CI tarafından kanıtlanmadan sürüm stabil kabul edilmez.

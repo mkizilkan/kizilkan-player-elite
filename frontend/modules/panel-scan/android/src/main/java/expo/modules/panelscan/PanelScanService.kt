@@ -216,11 +216,17 @@ class PanelScanService : Service() {
     } finally { running=false; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
   }
 
-  private fun writeBulkSnapshot(tested:Int,total:Int,accountTested:Int,accountTotal:Int,panelTotal:Int,matches:MutableList<JSONObject>,panelName:String,accountIndex:Int,runningValue:Boolean = tested < total && !cancelled.get()) {
+  private fun writeBulkSnapshot(
+    tested:Int,total:Int,accountTested:Int,accountTotal:Int,panelTotal:Int,matches:MutableList<JSONObject>,
+    panelName:String,accountIndex:Int,runningValue:Boolean = tested < total && !cancelled.get(),
+    currentServer:String = "", accountStatuses:JSONArray? = null, mode:String = "bulk"
+  ) {
     val resultArray=JSONArray(); synchronized(matches){ matches.forEach{ resultArray.put(it) } }
-    writeSnapshot(JSONObject().put("mode","bulk").put("running",runningValue).put("paused",paused.get()).put("cancelled",cancelled.get())
+    val snap = JSONObject().put("mode",mode).put("running",runningValue).put("paused",paused.get()).put("cancelled",cancelled.get())
       .put("tested",tested).put("total",total).put("accountTested",accountTested).put("accountTotal",accountTotal).put("panelTotal",panelTotal)
-      .put("found",matches.size).put("panelName",panelName).put("accountIndex",accountIndex).put("matches",resultArray))
+      .put("found",matches.size).put("panelName",panelName).put("currentServer",currentServer).put("accountIndex",accountIndex).put("matches",resultArray)
+    if (accountStatuses != null) snap.put("accountStatuses", accountStatuses)
+    writeSnapshot(snap)
   }
 
   private fun runUnifiedScan(jobsRaw: String, concurrency: Int, timeoutMs: Int) {
@@ -251,6 +257,36 @@ class PanelScanService : Service() {
       val tested = AtomicInteger(0)
       val accountDone = AtomicInteger(expectedByAccount.count { it == 0 })
       val matches = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+      fun accountStatuses(currentIndex: Int): JSONArray {
+        val foundCounts = IntArray(accountCount)
+        synchronized(matches) {
+          for (m in matches) {
+            val idx = m.optInt("accountIndex", -1)
+            if (idx in 0 until accountCount) foundCounts[idx]++
+          }
+        }
+        val arr = JSONArray()
+        for (ai in 0 until accountCount) {
+          val job = jobs.optJSONObject(ai) ?: JSONObject()
+          val done = completedByAccount[ai].get()
+          val expected = expectedByAccount[ai]
+          val state = when {
+            done >= expected && expected > 0 -> "completed"
+            done > 0 || ai == currentIndex -> "running"
+            else -> "queued"
+          }
+          arr.put(JSONObject()
+            .put("accountIndex", ai)
+            .put("sourceRow", job.optInt("row", ai + 1))
+            .put("name", job.optString("name"))
+            .put("state", state)
+            .put("tested", done)
+            .put("total", expected)
+            .put("remaining", (expected - done).coerceAtLeast(0))
+            .put("found", foundCounts[ai]))
+        }
+        return arr
+      }
       val pool = Executors.newFixedThreadPool(concurrency.coerceIn(1, minOf(32, total)))
       repeat(concurrency.coerceIn(1, minOf(32, total))) {
         pool.submit {
@@ -276,7 +312,13 @@ class PanelScanService : Service() {
             if (completedByAccount[unit.accountIndex].incrementAndGet() == expectedByAccount[unit.accountIndex]) accountDone.incrementAndGet()
             val done = tested.incrementAndGet()
             if (done == total || done % 12 == 0 || login != null) {
-              writeBulkSnapshot(done, total, accountDone.get(), accountCount, panelSet.size, matches, candidate.optString("panelName"), unit.accountIndex)
+              writeBulkSnapshot(
+                done, total, accountDone.get(), accountCount, panelSet.size, matches,
+                candidate.optString("panelName"), unit.accountIndex,
+                currentServer = candidate.optString("server"),
+                accountStatuses = accountStatuses(unit.accountIndex),
+                mode = "unified",
+              )
             }
             if (done % 12 == 0 || login != null) getSystemService(NotificationManager::class.java)
               .notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", done, total))
@@ -285,8 +327,10 @@ class PanelScanService : Service() {
       }
       pool.shutdown()
       while (!pool.isTerminated) Thread.sleep(100)
-      writeBulkSnapshot(tested.get(), total, accountDone.get(), accountCount, panelSet.size, matches, "", -1, false)
-      patchSnapshot { it.put("mode", "unified") }
+      writeBulkSnapshot(
+        tested.get(), total, accountDone.get(), accountCount, panelSet.size, matches, "", -1, false,
+        currentServer = "", accountStatuses = accountStatuses(-1), mode = "unified"
+      )
     } catch (e: Throwable) {
       writeSnapshot(JSONObject().put("mode","unified").put("running",false).put("error",e.message ?: "Birleşik native panel tarama hatası"))
     } finally { running=false; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }

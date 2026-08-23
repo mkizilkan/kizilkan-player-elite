@@ -1,0 +1,40 @@
+KIZILKAN PLAYER ELITE v15.2.4-RC1 PAKET DOGRULAMA
+=================================================
+Sürüm: 15.2.4
+Android versionCode: 150204
+Hedef ZIP kökü: gpt-kizilkan-player-elite/
+Room: 2.8.3
+libmpv-android: 1.0.0
+
+GERÇEKTEN ÇALIŞTIRILAN KONTROLLER
+---------------------------------
+[OK] tools/denetle.js — 3 ayrı tur, tüm denetimler temiz
+[OK] tools/checkplayercore.js — Player Core v15 sözleşmesi temiz
+[OK] frontend/package.json JSON parse
+[OK] frontend/app.json JSON parse
+[OK] .github/workflows/build-apk.yml YAML parse
+[OK] ZIP öncesi signing/private materyal adı taraması
+[OK] ZIP bütünlük testi
+
+KRİTİK v15.2.4 KAPILARI
+-----------------------
+- Room canonical source / legacy fallback
+- Native M3U URL + file import
+- Native EPG Room
+- Search/Favorites/Detail/VOD/Series paging
+- Unified discovery progress + stale snapshot cleanup
+- editable server code + DNS self-heal
+- native player session arbiter Phase 1
+- RAM/storage telemetry
+- APK ABI/native footprint analyzer
+
+KANITLANMAYAN / GITHUB ACTIONS BEKLEYENLER
+-------------------------------------------
+[BEKLIYOR] npx tsc --noEmit
+[BEKLIYOR] Expo prebuild
+[BEKLIYOR] Room/KSP code generation
+[BEKLIYOR] Kotlin compile
+[BEKLIYOR] Gradle release
+[BEKLIYOR] APK kurulumu / gerçek cihaz testleri
+
+Not: GitHub/Kotlin/Gradle/APK başarı iddiası GitHub Actions sonucu olmadan yapılmaz.

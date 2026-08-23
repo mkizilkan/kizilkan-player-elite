@@ -16,6 +16,7 @@ import {
 import { ChannelRow } from "@/src/components/ChannelRow";
 import { haptic } from "@/src/utils/haptic";
 import { FocusButton } from "@/src/components/FocusButton";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 type Tab = "continue" | "favorites" | "groups" | "watchlist" | "recent";
 
@@ -24,9 +25,10 @@ export default function LibraryTab() {
   const { colors } = useTheme();
   const { activePlaylist, favorites, recent, toggleFavorite, isFavorite, addToRecent, clearRecent, ensureHeavyLoaded } = usePlaylists();
 
-  // v15.2 Native Core: legacy ekran tam koleksiyon ister.
+  // v15.2.4: Library ekranı varsayılan olarak tam katalog hydrate etmez.
+  // Yalnız özel grup düzeni legacy tam koleksiyon gerektirirse lazy hydrate edilir.
   useEffect(() => {
-    if (activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
+    if (!KizilkanNativeCore.available && activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
   }, [activePlaylist?.id, ensureHeavyLoaded]);
   const { settings: parental } = useParental();
   const { watchProgress, watchlist, toggleWatchlist, clearProgress, clearAllProgress } = useLibrary();
@@ -35,6 +37,9 @@ export default function LibraryTab() {
   const [overrides, setOverrides] = useState<OverrideMap>({});
   const [ordering, setOrdering] = useState<Ordering>({ groups: [], items: {} });
   const [openGroup, setOpenGroup] = useState<string | null>(null);
+  const [nativeFavChannels, setNativeFavChannels] = useState<any[]>([]);
+  const [nativeRecentChannels, setNativeRecentChannels] = useState<any[]>([]);
+  const [nativeWatchlist, setNativeWatchlist] = useState<any[]>([]);
 
   useEffect(() => {
     if (!activePlaylist?.id) { setOverrides({}); return; }
@@ -47,6 +52,30 @@ export default function LibraryTab() {
     const unsub = subscribeOverrides(load);
     return () => { alive = false; unsub(); };
   }, [activePlaylist?.id]);
+
+  useEffect(() => {
+    if (!KizilkanNativeCore.available || !activePlaylist?.id) return;
+    let cancelled = false;
+    (async () => {
+      const [fav, rec, vod, series] = await Promise.all([
+        KizilkanNativeCore.getItemsByIds(activePlaylist.id, "live", favorites),
+        KizilkanNativeCore.getItemsByIds(activePlaylist.id, "live", recent),
+        KizilkanNativeCore.getItemsByIds(activePlaylist.id, "vod", watchlist),
+        KizilkanNativeCore.getItemsByIds(activePlaylist.id, "series", watchlist),
+      ]);
+      if (cancelled) return;
+      const order = <T extends {id:string}>(items:T[], ids:string[]) => { const m=new Map(items.map(x=>[x.id,x])); return ids.map(id=>m.get(id)).filter(Boolean) as T[]; };
+      setNativeFavChannels(order(fav as any[], favorites));
+      setNativeRecentChannels(order(rec as any[], recent));
+      const all=[...(vod as any[]).map(x=>({...x,__kind:"vod"})), ...(series as any[]).map(x=>({...x,__kind:"series"}))];
+      setNativeWatchlist(order(all, watchlist));
+    })().catch(e => console.warn("[Library] Room id query failed", e));
+    return () => { cancelled = true; };
+  }, [activePlaylist?.id, favorites, recent, watchlist]);
+
+  useEffect(() => {
+    if (KizilkanNativeCore.available && openGroup && activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
+  }, [openGroup, activePlaylist?.id, ensureHeavyLoaded]);
 
   /** Kullanıcının grupları (kendi sırasıyla). */
   const myGroups = useMemo(() => {
@@ -72,8 +101,8 @@ export default function LibraryTab() {
   // Continue watching (VOD & Series)
   const continueList = useMemo(() => {
     if (!activePlaylist) return [] as { id: string; name: string; poster?: string | null; progress: number; kind: string; group?: string | null; }[];
-    const vodMap = new Map((activePlaylist.vod || []).map(v => [v.id, v]));
-    const seriesMap = new Map((activePlaylist.series || []).map(s => [s.id, s]));
+    const vodMap = KizilkanNativeCore.available ? new Map<string, any>() : new Map((activePlaylist.vod || []).map(v => [v.id, v]));
+    const seriesMap = KizilkanNativeCore.available ? new Map<string, any>() : new Map((activePlaylist.series || []).map(s => [s.id, s]));
     return Object.entries(watchProgress)
       .filter(([, v]) => v.duration > 0 && v.current / v.duration > 0.02 && v.current / v.duration < 0.95)
       .sort((a, b) => b[1].updatedAt - a[1].updatedAt)
@@ -91,23 +120,26 @@ export default function LibraryTab() {
   }, [activePlaylist, watchProgress, parental.adultHidden]);
 
   const favChannels = useMemo(() => {
+    if (KizilkanNativeCore.available) return nativeFavChannels.filter((x:any)=>!parental.adultHidden || !isAdultContent(x));
     if (!activePlaylist) return [] as any[];
     const map = new Map(activePlaylist.channels.map(c => [c.id, c]));
     return favorites.map(id => map.get(id)).filter(Boolean).filter((x:any)=>!parental.adultHidden || !isAdultContent(x)) as any[];
-  }, [activePlaylist, favorites, parental.adultHidden]);
+  }, [activePlaylist, favorites, parental.adultHidden, nativeFavChannels]);
 
   const recentChannels = useMemo(() => {
+    if (KizilkanNativeCore.available) return nativeRecentChannels.filter((x:any)=>!parental.adultHidden || !isAdultContent(x));
     if (!activePlaylist) return [] as any[];
     const map = new Map(activePlaylist.channels.map(c => [c.id, c]));
     return recent.map(id => map.get(id)).filter(Boolean).filter((x:any)=>!parental.adultHidden || !isAdultContent(x)) as any[];
-  }, [activePlaylist, recent, parental.adultHidden]);
+  }, [activePlaylist, recent, parental.adultHidden, nativeRecentChannels]);
 
   const watchlistItems = useMemo(() => {
+    if (KizilkanNativeCore.available) return nativeWatchlist.filter((x:any)=>!parental.adultHidden || !isAdultContent(x));
     if (!activePlaylist) return [] as any[];
     const vMap = new Map((activePlaylist.vod || []).map(v => [v.id, { ...v, __kind: "vod" }]));
     const sMap = new Map((activePlaylist.series || []).map(s => [s.id, { ...s, __kind: "series" }]));
     return watchlist.map(id => vMap.get(id) || sMap.get(id)).filter(Boolean).filter((x:any)=>!parental.adultHidden || !isAdultContent(x)) as any[];
-  }, [activePlaylist, watchlist, parental.adultHidden]);
+  }, [activePlaylist, watchlist, parental.adultHidden, nativeWatchlist]);
 
   const posterW = Math.min(140, (width - SPACING.lg * 2 - SPACING.sm * 2) / 3);
   const posterH = posterW * 1.5;

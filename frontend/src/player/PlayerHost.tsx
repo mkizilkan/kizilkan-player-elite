@@ -369,6 +369,12 @@ export default function PlayerHost() {
    * Bağlıyken bu komutlar artık TV'deki oynatıcıya gönderiliyor.
    */
   const [castSession, setCastSession] = useState<any>(null);
+  // v15.2.5 Cast authority state: remote receiver bağlıyken son gerçek remote
+  // konum/capability burada tutulur. Session kapanınca local player bu konumdan
+  // devralır; React render gecikmesine güvenilmez.
+  const castRemotePositionRef = useRef(0);
+  const castLiveSeekableRangeRef = useRef<{ startTime: number; endTime: number } | null>(null);
+  const castRemotePlayerStateRef = useRef("");
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
@@ -1075,6 +1081,15 @@ export default function PlayerHost() {
    */
   const haltPlaybackForExit = () => {
     try {
+      // Cast bağlıyken Player'daki "geri/çıkış" local stop ile aynı semantiğe
+      // sahip olmalı: remote media durur fakat Cast session zorla kapatılmaz.
+      // Böylece kullanıcı isterse yeni içeriği aynı cihaza gönderebilir.
+      if (castSession) {
+        try {
+          const remote = castSession.client || castSession.getClient?.();
+          remote?.stop?.();
+        } catch {}
+      }
       if (v2Profile.engine === "mpv") {
         void mpvRef.current?.stop?.();
       } else if (v2Profile.engine === "vlc") {
@@ -1172,20 +1187,36 @@ export default function PlayerHost() {
       const client = castSession.client || castSession.getClient?.();
       if (!client?.onMediaStatusUpdated) return;
 
-      sub = client.onMediaStatusUpdated((st: any) => {
+      const applyRemoteStatus = (st: any) => {
         if (!st) return;
-        // playerState: "playing" | "paused" | "buffering" | "idle" | "loading"
+        // Remote receiver playback authority'dir. Telefon UI'sı optimistic toggle
+        // yerine bu doğrulanmış state'i izler.
         const ps = String(st.playerState || "").toLowerCase();
+        castRemotePlayerStateRef.current = ps;
         if (ps === "playing") { setIsPlaying(true); setIsBuffering(false); }
-        else if (ps === "paused") { setIsPlaying(false); setIsBuffering(false); }
+        else if (ps === "paused" || ps === "idle") { setIsPlaying(false); setIsBuffering(false); }
         else if (ps === "buffering" || ps === "loading") { setIsBuffering(true); }
 
-        // Konum (saniye) -> ilerleme çubuğu TV ile aynı yeri göstersin.
-        // videoStats.currentTime saniye cinsindendir (yerel oynatıcıyla aynı ölçek).
         if (typeof st.streamPosition === "number" && st.streamPosition >= 0) {
+          castRemotePositionRef.current = st.streamPosition;
           setVideoStats(prev => ({ ...prev, currentTime: st.streamPosition }));
         }
-      });
+        const range = st.liveSeekableRange;
+        castLiveSeekableRangeRef.current = range && Number.isFinite(range.startTime) && Number.isFinite(range.endTime)
+          ? { startTime: Number(range.startTime), endTime: Number(range.endTime) }
+          : null;
+        if (typeof st.volume === "number" && Number.isFinite(st.volume)) {
+          setVolume(st.isMuted ? 0 : Math.round(Math.max(0, Math.min(1, st.volume)) * 100));
+        }
+      };
+
+      sub = client.onMediaStatusUpdated(applyRemoteStatus);
+      // Rebind edilen mevcut session'da yeni event gelmesini bekleme; mevcut
+      // receiver state'ini hemen çek. API yoksa listener tek başına çalışır.
+      try {
+        const currentStatus = client.getMediaStatus?.();
+        if (currentStatus?.then) currentStatus.then(applyRemoteStatus).catch(() => {});
+      } catch {}
     } catch { /* dinleyici kurulamazsa tek yönlü çalışmaya devam eder */ }
 
     return () => { try { sub?.remove?.(); } catch {} };
@@ -1413,7 +1444,8 @@ export default function PlayerHost() {
         const client = castSession.client || castSession.getClient?.();
         if (client) {
           if (isPlaying) client.pause?.(); else client.play?.();
-          setIsPlaying(!isPlaying);
+          // Cast receiver authoritative: isPlaying yalnız MEDIA_STATUS_UPDATED
+          // ile değişir. Komut reddedilirse telefon sahte state göstermez.
           revealControls();
           return;
         }
@@ -1442,17 +1474,24 @@ export default function PlayerHost() {
      * CANLI yayında sarma yapılamaz (kayıtlı içerik değil) — kullanıcıya
      * sessizce hiçbir şey olmuyormuş gibi görünmesin diye açıkça söylüyoruz.
      */
-    if (castSession && !isSynthetic) {
-      flashMessage("Canlı yayında ileri/geri alınamaz");
-      return;
-    }
     if (castSession) {
       try {
         const client = castSession.client || castSession.getClient?.();
         if (client) {
-          // Paket tipinden doğrulandı: MediaSeekOptions { position, relative }
-          // relative:true -> mevcut konuma GÖRE saniye cinsinden kaydır.
-          client.seek?.({ position: delta, relative: true });
+          if (!isSynthetic) {
+            // Cast live stream DVR destekliyorsa MediaStatus.liveSeekableRange
+            // gerçek capability'dir. Yoksa seek kapalı kalır.
+            const range = castLiveSeekableRangeRef.current;
+            if (!range) {
+              flashMessage("Bu canlı yayında ileri/geri alınamaz");
+              return;
+            }
+            const current = castRemotePositionRef.current || range.endTime;
+            const target = Math.max(range.startTime, Math.min(range.endTime, current + delta));
+            client.seek?.({ position: target, relative: false });
+          } else {
+            client.seek?.({ position: delta, relative: true });
+          }
           revealControls();
           return;
         }
@@ -2956,15 +2995,30 @@ export default function PlayerHost() {
                   setCastSession(conn ? session : null);
                   try {
                     if (conn) {
+                      // REMOTE authority: local decoder yalnız duraklatılır; Cast
+                      // receiver tek playback otoritesi olur.
                       if (v2Profile.engine === "mpv") void mpvRef.current?.pause();
                       else if (v2Profile.engine === "vlc") vlcRef.current?.pause();
                       else player?.pause();
-                      setIsPlaying(false);
                     } else {
-                      if (v2Profile.engine === "mpv") void mpvRef.current?.play();
-                      else if (v2Profile.engine === "vlc") vlcRef.current?.play();
-                      else player?.play();
-                      setIsPlaying(true);
+                      // Player görünür değilse Cast session kapanışı local sesi
+                      // gizlice yeniden başlatmamalı.
+                      if (!visible) {
+                        castLiveSeekableRangeRef.current = null;
+                        return;
+                      }
+                      // REMOTE -> LOCAL handoff: film/dizide TV'nin son gerçek
+                      // konumunu local player'a taşı, sonra oynat. Canlıda seek yok.
+                      const remotePos = castRemotePositionRef.current;
+                      if (isSynthetic && remotePos > 1) seekTo(remotePos);
+                      setTimeout(() => {
+                        try {
+                          if (v2Profile.engine === "mpv") void mpvRef.current?.play();
+                          else if (v2Profile.engine === "vlc") vlcRef.current?.play();
+                          else player?.play();
+                        } catch {}
+                      }, isSynthetic && remotePos > 1 ? 160 : 0);
+                      castLiveSeekableRangeRef.current = null;
                     }
                   } catch { /* oynatıcı hazır değilse sorun değil */ }
                 }}

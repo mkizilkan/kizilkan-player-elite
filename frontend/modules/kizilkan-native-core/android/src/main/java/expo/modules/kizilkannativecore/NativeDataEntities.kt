@@ -51,3 +51,23 @@ data class CategoryCountRow(
   val name: String,
   val count: Int,
 )
+
+
+@Entity(
+  tableName = "epg_programs",
+  indices = [
+    Index(value = ["playlistId", "channelId", "startTimestamp"]),
+    Index(value = ["playlistId", "channelId", "stopTimestamp"]),
+  ],
+)
+data class EpgProgramEntity(
+  @PrimaryKey val rowKey: String,
+  val playlistId: String,
+  val channelId: String,
+  val title: String,
+  val description: String?,
+  val startIso: String,
+  val stopIso: String,
+  val startTimestamp: Long,
+  val stopTimestamp: Long,
+)

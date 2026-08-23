@@ -151,6 +151,11 @@ function ClassicLiveTvScreen() {
   const [nativeLiveHasMore, setNativeLiveHasMore] = useState(false);
   const [nativeLiveTotal, setNativeLiveTotal] = useState(0);
   const [nativeCategoryRows, setNativeCategoryRows] = useState<Array<{ name: string; count: number }>>([]);
+  const nativeLibraryOffsetRef = useRef(0);
+  const [nativeLibraryItems, setNativeLibraryItems] = useState<any[]>([]);
+  const [nativeLibraryHasMore, setNativeLibraryHasMore] = useState(false);
+  const [nativeLibraryTotal, setNativeLibraryTotal] = useState(0);
+  const [nativeLibraryCategoryRows, setNativeLibraryCategoryRows] = useState<Array<{ name: string; count: number }>>([]);
 
   const hasAnyCustomGroups = useMemo(() =>
     Object.values(overrides || {}).some((o: any) => Array.isArray(o?.groups) && o.groups.length > 0),
@@ -162,6 +167,13 @@ function ClassicLiveTvScreen() {
     && !hasAnyCustomGroups
     && (activePlaylist.channels?.length || 0) === 0
     && Number(nativeSummary?.channels || activePlaylist.channelsCount || 0) > 0;
+
+  const nativeLibraryPaged = !!activePlaylist?.id
+    && KizilkanNativeCore.available
+    && (tab === "vod" || tab === "series")
+    && !hasAnyCustomGroups
+    && ((tab === "vod" ? activePlaylist.vod?.length : activePlaylist.series?.length) || 0) === 0
+    && Number(tab === "vod" ? (nativeSummary?.vod || activePlaylist.vodCount || 0) : (nativeSummary?.series || activePlaylist.seriesCount || 0)) > 0;
 
   const selectedIsCustomGroup = useMemo(() => {
     if (selectedCat === ALL) return false;
@@ -194,6 +206,31 @@ function ClassicLiveTvScreen() {
     }
   }, [activePlaylist?.id, nativeLivePaged, selectedIsCustomGroup, selectedCat, ensureHeavyLoaded]);
 
+  const loadNativeLibraryPage = useCallback(async (reset: boolean) => {
+    if (!activePlaylist?.id || !nativeLibraryPaged || selectedIsCustomGroup || (tab !== "vod" && tab !== "series")) return;
+    if (nativePageLoadingRef.current && !reset) return;
+    const generation = reset ? ++nativePageGeneration.current : nativePageGeneration.current;
+    nativePageLoadingRef.current = true;
+    try {
+      const offset = reset ? 0 : nativeLibraryOffsetRef.current;
+      if (reset) nativeLibraryOffsetRef.current = 0;
+      const page = await KizilkanNativeCore.queryItems<any>(activePlaylist.id, tab, {
+        group: selectedCat === ALL ? "__all__" : selectedCat,
+        offset, limit: 72,
+      });
+      if (generation !== nativePageGeneration.current) return;
+      setNativeLibraryItems(prev => reset ? page.items : [...prev, ...page.items]);
+      nativeLibraryOffsetRef.current = offset + page.items.length;
+      setNativeLibraryHasMore(!!page.hasMore);
+      setNativeLibraryTotal(Number(page.total || 0));
+    } catch (e) {
+      console.warn("[NativeDataCore] VOD/Series sayfa sorgusu başarısız; legacy hydrate", e);
+      await ensureHeavyLoaded(activePlaylist.id);
+    } finally {
+      if (generation === nativePageGeneration.current) nativePageLoadingRef.current = false;
+    }
+  }, [activePlaylist?.id, nativeLibraryPaged, selectedIsCustomGroup, selectedCat, tab, ensureHeavyLoaded]);
+
   useEffect(() => {
     if (!activePlaylist?.id) {
       setNativeLiveItems([]); setNativeCategoryRows([]); setNativeLiveTotal(0); setNativeLiveHasMore(false);
@@ -207,13 +244,18 @@ function ClassicLiveTvScreen() {
       void loadNativeLivePage(true);
       return () => { cancelled = true; };
     }
-    // Özel gruplar tam override eşleştirmesi gerektirir; Phase 1'de legacy
-    // hydrate ile mevcut davranış eksiksiz korunur. VOD/Series de Phase 2'ye
-    // kadar aynı güvenli fallback'i kullanır.
-    if (selectedIsCustomGroup || hasAnyCustomGroups || tab !== "live") {
-      void ensureHeavyLoaded(activePlaylist.id);
+    if (nativeLibraryPaged && !selectedIsCustomGroup && (tab === "vod" || tab === "series")) {
+      let cancelled = false;
+      KizilkanNativeCore.getCategories(activePlaylist.id, tab)
+        .then(rows => { if (!cancelled) setNativeLibraryCategoryRows(rows || []); })
+        .catch(e => console.warn("[NativeDataCore] VOD/Series kategori sorgusu", e));
+      void loadNativeLibraryPage(true);
+      return () => { cancelled = true; };
     }
-  }, [activePlaylist?.id, nativeLivePaged, selectedIsCustomGroup, hasAnyCustomGroups, tab, selectedCat, loadNativeLivePage, ensureHeavyLoaded]);
+    // Özel kullanıcı grupları item-level override eşleştirmesi gerektirir.
+    // Yalnız bu özellik kullanıldığında legacy tam hydrate'e geri dön.
+    if (selectedIsCustomGroup || hasAnyCustomGroups) void ensureHeavyLoaded(activePlaylist.id);
+  }, [activePlaylist?.id, nativeLivePaged, nativeLibraryPaged, selectedIsCustomGroup, hasAnyCustomGroups, tab, selectedCat, loadNativeLivePage, loadNativeLibraryPage, ensureHeavyLoaded]);
   const [epgMap, setEpgMap] = useState<Record<string, NowNext>>({});
   const [epgLoading, setEpgLoading] = useState(false);
 
@@ -520,8 +562,8 @@ function ClassicLiveTvScreen() {
     if (!activePlaylist) return [] as any[];
     let list: any[] = [];
     if (tab === "live") list = nativeLivePaged ? nativeLiveItems : activePlaylist.channels;
-    else if (tab === "vod") list = activePlaylist.vod || [];
-    else list = activePlaylist.series || [];
+    else if (tab === "vod") list = nativeLibraryPaged ? nativeLibraryItems : (activePlaylist.vod || []);
+    else list = nativeLibraryPaged ? nativeLibraryItems : (activePlaylist.series || []);
     // KİLİTLİ KATEGORİLER (v5.5.0 düzeltmesi)
     // ESKİ: kilit yalnızca ÇOCUK profilinde listeden gizliyordu; normal
     // profilde kilitli kategoriler listede görünüyordu.
@@ -541,7 +583,7 @@ function ClassicLiveTvScreen() {
       list = list.filter((c: any) => !isItemHidden(c.id) && !(c.group && isGroupHidden(c.group)));
     }
     return list;
-  }, [activePlaylist, tab, nativeLivePaged, nativeLiveItems, activeProfile?.isKids, isCategoryLocked, isUnlockedInSession, hiddenModeUnlocked, isItemHidden, isGroupHidden]);
+  }, [activePlaylist, tab, nativeLivePaged, nativeLiveItems, nativeLibraryPaged, nativeLibraryItems, activeProfile?.isKids, isCategoryLocked, isUnlockedInSession, hiddenModeUnlocked, isItemHidden, isGroupHidden]);
 
   /**
    * Kullanıcı özelleştirmelerini (yeni isim / yeni simge) listeye uygular.
@@ -575,8 +617,9 @@ function ClassicLiveTvScreen() {
   const providerCategories = useMemo(() => {
     // Room sayfalama modunda kategorileri yalnız ilk 80 kanaldan türetmek yanlış
     // olur. SQLite GROUP BY sonucu tüm playlist'i kapsar.
-    if (nativeLivePaged && nativeCategoryRows.length > 0) {
-      let names = nativeCategoryRows.map(x => x.name).filter(Boolean);
+    const nativeRows = nativeLivePaged ? nativeCategoryRows : nativeLibraryPaged ? nativeLibraryCategoryRows : [];
+    if ((nativeLivePaged || nativeLibraryPaged) && nativeRows.length > 0) {
+      let names = nativeRows.map(x => x.name).filter(Boolean);
       if (!hiddenModeUnlocked) names = names.filter(g => !isGroupHidden(g));
       if (activeProfile?.isKids) names = names.filter(g => !isCategoryLocked(g));
       return sortCategories(names, catSort);
@@ -586,7 +629,7 @@ function ClassicLiveTvScreen() {
       if (c.group && !seen.includes(c.group)) seen.push(c.group); // sunucu sırası korunur
     });
     return sortCategories(seen, catSort);
-  }, [displayList, catSort, nativeLivePaged, nativeCategoryRows, hiddenModeUnlocked, isGroupHidden, activeProfile?.isKids, isCategoryLocked]);
+  }, [displayList, catSort, nativeLivePaged, nativeLibraryPaged, nativeCategoryRows, nativeLibraryCategoryRows, hiddenModeUnlocked, isGroupHidden, activeProfile?.isKids, isCategoryLocked]);
 
   /** Gösterilecek tüm kategoriler: önce ÖZEL GRUPLAR, sonra sağlayıcı. */
   const categories = useMemo(
@@ -603,12 +646,16 @@ function ClassicLiveTvScreen() {
    * YENİ: tek geçişte sayaç haritası kuruluyor -> ~23.000 işlem (~100 kat hızlı).
    */
   const panelCategories = useMemo<CategoryEntry[]>(() => {
-    if (nativeLivePaged && nativeCategoryRows.length > 0 && customGroups.length === 0) {
-      const rows = nativeCategoryRows
+    const nativeRows = nativeLivePaged ? nativeCategoryRows : nativeLibraryPaged ? nativeLibraryCategoryRows : [];
+    if ((nativeLivePaged || nativeLibraryPaged) && nativeRows.length > 0 && customGroups.length === 0) {
+      const rows = nativeRows
         .filter(x => hiddenModeUnlocked || !isGroupHidden(x.name))
         .filter(x => !activeProfile?.isKids || !isCategoryLocked(x.name));
+      const total = nativeLivePaged
+        ? Number(nativeSummary?.channels || activePlaylist?.channelsCount || nativeLiveTotal || 0)
+        : Number(tab === "vod" ? (nativeSummary?.vod || activePlaylist?.vodCount || nativeLibraryTotal || 0) : (nativeSummary?.series || activePlaylist?.seriesCount || nativeLibraryTotal || 0));
       return [
-        { name: ALL, count: Number(nativeSummary?.channels || activePlaylist?.channelsCount || nativeLiveTotal || 0) },
+        { name: ALL, count: total },
         ...rows.map(x => ({ name: x.name, count: x.count })),
       ];
     }
@@ -641,7 +688,7 @@ function ClassicLiveTvScreen() {
       list.push({ name: cat, count: counts.get(cat) || 0, custom: customSet.has(cat) });
     }
     return list;
-  }, [categories, displayList, overrides, customGroups, nativeLivePaged, nativeCategoryRows, hiddenModeUnlocked, isGroupHidden, activeProfile?.isKids, isCategoryLocked, nativeSummary?.channels, activePlaylist?.channelsCount, nativeLiveTotal]);
+  }, [categories, displayList, overrides, customGroups, nativeLivePaged, nativeLibraryPaged, nativeCategoryRows, nativeLibraryCategoryRows, hiddenModeUnlocked, isGroupHidden, activeProfile?.isKids, isCategoryLocked, nativeSummary?.channels, nativeSummary?.vod, nativeSummary?.series, activePlaylist?.channelsCount, activePlaylist?.vodCount, activePlaylist?.seriesCount, nativeLiveTotal, nativeLibraryTotal, tab]);
 
   const filtered = useMemo(() => {
     if (selectedCat === ALL) return displayList;
@@ -816,7 +863,7 @@ function ClassicLiveTvScreen() {
           />
         </FocusButton>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-          <CategoryChip label={`Tümü (${nativeLivePaged ? liveCount : currentList.length})`} active={selectedCat === ALL} onPress={() => setSelectedCat(ALL)} testID="chip-all" />
+          <CategoryChip label={`Tümü (${nativeLivePaged ? liveCount : nativeLibraryPaged ? nativeLibraryTotal : currentList.length})`} active={selectedCat === ALL} onPress={() => setSelectedCat(ALL)} testID="chip-all" />
           {categories.map(cat => {
             const cnt = panelCategories.find(entry => entry.name === cat)?.count ?? 0;
             return (
@@ -854,6 +901,7 @@ function ClassicLiveTvScreen() {
             {activePlaylist.name} • {liveCount} kanal
             {hasVod ? ` • ${vodCount} film` : ""}
             {hasSeries ? ` • ${seriesCount} dizi` : ""}
+            {activePlaylist.serverCodeBinding?.code ? ` • Kod ${activePlaylist.serverCodeBinding.code}` : ""}
           </Text>
         </View>
         {epgLoading && <ActivityIndicator size="small" color={colors.brandPrimary} />}
@@ -952,6 +1000,8 @@ function ClassicLiveTvScreen() {
           onLongPressItem={(item) => showChannelActions(item)}
           ListHeaderComponent={StickyHeader as any}
           emptyText={tab === "vod" ? "Bu kategoride film yok" : "Bu kategoride dizi yok"}
+          onEndReached={() => { if (nativeLibraryPaged && nativeLibraryHasMore) void loadNativeLibraryPage(false); }}
+          onEndReachedThreshold={0.55}
         />
       )}
 

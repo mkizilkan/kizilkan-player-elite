@@ -24,6 +24,7 @@ import { xtreamSeriesInfo as xtSeriesInfoLocal, xtreamVodInfo as xtVodInfoLocal 
 import { storage } from "@/src/utils/storage";
 import { haptic } from "@/src/utils/haptic";
 import { FocusButton } from "@/src/components/FocusButton";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 const EPISODE_URL_KEY = "kizilkan.episode.url.";
 
@@ -33,9 +34,10 @@ export default function DetailScreen() {
   const params = useLocalSearchParams<{ type: string; id: string }>();
   const { activePlaylist, addToRecent, ensureHeavyLoaded } = usePlaylists();
 
-  // v15.2 Native Core: legacy ekran tam koleksiyon ister.
+  // v15.2.4: detay ekranı bütün VOD/Series koleksiyonunu hydrate etmez.
+  // Native Core varsa seçili öğeyi doğrudan Room'dan ister.
   useEffect(() => {
-    if (activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
+    if (!KizilkanNativeCore.available && activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
   }, [activePlaylist?.id, ensureHeavyLoaded]);
   const { toggleWatchlist, inWatchlist, watchProgress, toggleHiddenItem, isItemHidden } = useLibrary();
   const { add: addDownload, isDownloaded, getLocalUri } = useDownloads();
@@ -47,6 +49,7 @@ export default function DetailScreen() {
   const [error, setError] = useState<string | null>(null);
   const [dlDialog, setDlDialog] = useState(false);
   const [dlDefaultTarget, setDlDefaultTarget] = useState<SaveTarget>("app");
+  const [nativeItem, setNativeItem] = useState<any>(null);
 
   // Kayıtlı varsayılan indirme hedefini oku.
   useEffect(() => {
@@ -56,11 +59,21 @@ export default function DetailScreen() {
   }, []);
 
   const isSeries = params.type === "series";
+  useEffect(() => {
+    if (!KizilkanNativeCore.available || !activePlaylist?.id || !params.id) { setNativeItem(null); return; }
+    let cancelled = false;
+    KizilkanNativeCore.getItem(activePlaylist.id, isSeries ? "series" : "vod", params.id)
+      .then(value => { if (!cancelled) setNativeItem(value); })
+      .catch(e => console.warn("[Detail] Room getItem failed", e));
+    return () => { cancelled = true; };
+  }, [activePlaylist?.id, params.id, isSeries]);
+
   const item = useMemo(() => {
+    if (KizilkanNativeCore.available) return nativeItem;
     if (!activePlaylist) return null;
     const list = isSeries ? (activePlaylist.series || []) : (activePlaylist.vod || []);
     return list.find(x => x.id === params.id) || null;
-  }, [activePlaylist, params.id, isSeries]);
+  }, [activePlaylist, params.id, isSeries, nativeItem]);
 
   useEffect(() => {
     if (!activePlaylist || !item) { setLoading(false); return; }

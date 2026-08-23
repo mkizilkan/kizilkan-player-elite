@@ -53,3 +53,9 @@ Bu kısa dosya yalnız yönlendirmedir. Yeni sohbet/model önce **`AI-PROJE-DEVI
 - Ana Canlı ekran Android'de Room paging kullanır; ilk 80 kayıt + onEndReached ile devam sayfası.
 - Özel kullanıcı gruplarında mevcut davranışı korumak için legacy hydrate fallback devam eder.
 - Bu RC'nin ilk kritik kapısı GitHub `:kizilkan-native-core:kspReleaseKotlin` / `compileReleaseKotlin` ve `tsc --noEmit` olacaktır.
+
+## v15.2.4-RC1 DEVİR
+Room canonical migration, Native EPG, M3U native import, Search/Favorites/VOD/Series paging, discovery progress/stale snapshot fix, editable server code ve Player Session Arbiter Phase 1 uygulanmıştır. Build sonucu GitHub Actions ile doğrulanmadan başarılı denmez. Tam bağlam AI-PROJE-DEVIR-BAGLAM.md içindedir.
+
+## v15.2.5-RC1 DEVİR
+v15.2.4 üzerine onaylı son audit uygulanmıştır. Büyük compatibility playlist write artık bounded chunk staging -> native Room final transaction kullanır. Chromecast source-change, existing-session rebind, remote status authority, VOD remote->local position handoff, live DVR capability ve player-exit remote stop zinciri güçlendirilmiştir. Tam ayrıntı `AI-PROJE-DEVIR-BAGLAM.md` içindedir.

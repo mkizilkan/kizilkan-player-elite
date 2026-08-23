@@ -78,6 +78,38 @@ interface MediaItemDao {
   """)
   fun getItemRaw(playlistId: String, kind: String, itemId: String): String?
 
+  @Query("SELECT rawJson FROM media_items WHERE playlistId = :playlistId AND kind = :kind AND itemId IN (:itemIds)")
+  fun getItemsRaw(playlistId: String, kind: String, itemIds: List<String>): List<String>
+
   @Query("SELECT rawJson FROM media_items WHERE playlistId = :playlistId AND kind = :kind ORDER BY sortOrder")
   fun allRaw(playlistId: String, kind: String): List<String>
+}
+
+
+@Dao
+interface EpgProgramDao {
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  fun insertAll(items: List<EpgProgramEntity>)
+
+  @Query("DELETE FROM epg_programs WHERE playlistId = :playlistId")
+  fun deletePlaylist(playlistId: String)
+
+  @Query("DELETE FROM epg_programs")
+  fun clear()
+
+  @Query("SELECT COUNT(*) FROM epg_programs WHERE playlistId = :playlistId")
+  fun count(playlistId: String): Int
+
+  @Query("SELECT * FROM epg_programs WHERE playlistId = :playlistId AND channelId = :channelId ORDER BY startTimestamp")
+  fun channelPrograms(playlistId: String, channelId: String): List<EpgProgramEntity>
+
+  @Query("""
+    SELECT * FROM epg_programs
+    WHERE playlistId = :playlistId
+      AND channelId IN (:channelIds)
+      AND stopTimestamp > :nowSec
+      AND startTimestamp < :windowEndSec
+    ORDER BY channelId, startTimestamp
+  """)
+  fun window(playlistId: String, channelIds: List<String>, nowSec: Long, windowEndSec: Long): List<EpgProgramEntity>
 }

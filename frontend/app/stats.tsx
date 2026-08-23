@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, Alert } from "react-native";
+import React, { useEffect, useMemo, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, Image, Alert, Platform } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -9,16 +9,42 @@ import { usePlaylists } from "@/src/store/PlaylistContext";
 import { useLibrary } from "@/src/store/LibraryContext";
 import { useProfiles } from "@/src/store/ProfileContext";
 import { FocusButton } from "@/src/components/FocusButton";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 export default function StatsScreen() {
   const router = useRouter();
   const { colors } = useTheme();
   const { activePlaylist, favorites, recent, clearRecent, ensureHeavyLoaded } = usePlaylists();
+  const nativeData = Platform.OS === "android" && KizilkanNativeCore.available;
+  const [nativeFavs, setNativeFavs] = useState<any[]>([]);
+  const [nativeRecent, setNativeRecent] = useState<any[]>([]);
+  const [storageFootprint, setStorageFootprint] = useState<Record<string, any>>({});
+  const [runtimeMemory, setRuntimeMemory] = useState<Record<string, any>>({});
 
-  // v15.2 Native Core: legacy ekran tam koleksiyon ister.
+  // v15.2.4: İstatistik ekranı yalnız birkaç favori/son kanal için artık
+  // on binlerce kanalı hydrate etmez. Native Core varsa ID bazlı Room sorgusu.
   useEffect(() => {
-    if (activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
-  }, [activePlaylist?.id, ensureHeavyLoaded]);
+    let cancelled = false;
+    if (!activePlaylist?.id) { setNativeFavs([]); setNativeRecent([]); return; }
+    if (!nativeData) { void ensureHeavyLoaded(activePlaylist.id); return; }
+    void (async () => {
+      const [favRows, recentRows, footprint] = await Promise.all([
+        KizilkanNativeCore.getItemsByIds(activePlaylist.id, "live", favorites.slice(0, 5)),
+        KizilkanNativeCore.getItemsByIds(activePlaylist.id, "live", recent.slice(0, 5)),
+        KizilkanNativeCore.getStorageFootprint(),
+      ]);
+      if (cancelled) return;
+      const orderBy = (ids: string[], rows: any[]) => {
+        const map = new Map(rows.map((r: any) => [String(r.id), r]));
+        return ids.map(id => map.get(id)).filter(Boolean);
+      };
+      setNativeFavs(orderBy(favorites.slice(0, 5), favRows));
+      setNativeRecent(orderBy(recent.slice(0, 5), recentRows));
+      setStorageFootprint(footprint || {});
+      setRuntimeMemory(KizilkanNativeCore.getRuntimeMemory());
+    })();
+    return () => { cancelled = true; };
+  }, [activePlaylist?.id, ensureHeavyLoaded, favorites, nativeData, recent]);
   const { watchProgress, watchlist, clearAllProgress } = useLibrary();
   const { activeProfile } = useProfiles();
 
@@ -31,13 +57,14 @@ export default function StatsScreen() {
     // top favorites (by name)
     const topFavs = (() => {
       if (!activePlaylist) return [];
+      if (nativeData) return nativeFavs;
       const map = new Map(activePlaylist.channels.map(c => [c.id, c]));
       return favorites.slice(0, 5).map(id => map.get(id)).filter(Boolean) as any[];
     })();
 
-    // top recent (also viewed count intrinsically)
     const topRecent = (() => {
       if (!activePlaylist) return [];
+      if (nativeData) return nativeRecent;
       const map = new Map(activePlaylist.channels.map(c => [c.id, c]));
       return recent.slice(0, 5).map(id => map.get(id)).filter(Boolean) as any[];
     })();
@@ -53,7 +80,7 @@ export default function StatsScreen() {
       topFavs,
       topRecent,
     };
-  }, [activePlaylist, favorites, recent, watchProgress, watchlist]);
+  }, [activePlaylist, favorites, nativeData, nativeFavs, nativeRecent, recent, watchProgress, watchlist]);
 
   const StatCard = ({ icon, label, value, color }: { icon: any; label: string; value: string | number; color: string }) => (
     <View style={[styles.statCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
@@ -121,9 +148,9 @@ export default function StatsScreen() {
           <StatCard icon="play-circle" label="Devam Eden" value={stats.inProgressCount} color="#7C4DFF" />
           <StatCard icon="heart" label="Favori Kanal" value={stats.favoritesCount} color="#E91E63" />
           <StatCard icon="bookmark" label="İzleyeceğim" value={stats.watchlistCount} color="#00C853" />
-          <StatCard icon="tv" label="Toplam Kanal" value={activePlaylist?.channels.length || 0} color="#2196F3" />
-          <StatCard icon="film" label="Toplam Film" value={activePlaylist?.vod?.length || 0} color="#FF6D00" />
-          <StatCard icon="albums" label="Toplam Dizi" value={activePlaylist?.series?.length || 0} color="#00BCD4" />
+          <StatCard icon="tv" label="Toplam Kanal" value={activePlaylist?.channelsCount ?? activePlaylist?.channels.length ?? 0} color="#2196F3" />
+          <StatCard icon="film" label="Toplam Film" value={activePlaylist?.vodCount ?? activePlaylist?.vod?.length ?? 0} color="#FF6D00" />
+          <StatCard icon="albums" label="Toplam Dizi" value={activePlaylist?.seriesCount ?? activePlaylist?.series?.length ?? 0} color="#00BCD4" />
           <StatCard icon="hourglass" label="Son İzlenen" value={stats.recentCount} color="#9E9E9E" />
         </View>
 
@@ -157,12 +184,36 @@ export default function StatsScreen() {
           </>
         )}
 
+        {nativeData && (Object.keys(storageFootprint).length > 0 || Object.keys(runtimeMemory).length > 0) && (
+          <>
+            <SectionTitle icon="hardware-chip" label="Native Core Telemetri" />
+            <View style={[styles.telemetry, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+              <Text style={[styles.telemetryLine, { color: colors.onSurface }]}>RAM PSS: {formatKb(runtimeMemory.totalPssKb)}</Text>
+              <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>Native: {formatKb(runtimeMemory.nativePssKb)} · ART/Java: {formatKb(runtimeMemory.dalvikPssKb)}</Text>
+              <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>Room DB: {formatBytes(storageFootprint.databaseBytes)} · WAL: {formatBytes(storageFootprint.walBytes)}</Text>
+              <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>Legacy playlist: {formatBytes(storageFootprint.legacyPlaylistBytes)} ({storageFootprint.legacyPlaylistFiles || 0} dosya)</Text>
+            </View>
+          </>
+        )}
+
         <Text style={[styles.footer, { color: colors.onSurfaceTertiary }]}>
           İstatistikler sadece cihazınızda saklanır. Profile göre değişir.
         </Text>
       </ScrollView>
     </SafeAreaView>
   );
+}
+
+function formatBytes(value: any): string {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return "0 MB";
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatKb(value: any): string {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return "0 MB";
+  return `${(n / 1024).toFixed(1)} MB`;
 }
 
 function SectionTitle({ icon, label }: { icon: any; label: string }) {
@@ -205,5 +256,7 @@ const styles = StyleSheet.create({
   rank: { fontSize: FONT.size.lg, fontWeight: FONT.weight.black, width: 40, textAlign: "center" },
   chLogo: { width: 36, height: 36, borderRadius: RADIUS.sm, overflow: "hidden", alignItems: "center", justifyContent: "center" },
   chName: { flex: 1, fontSize: FONT.size.base, fontWeight: FONT.weight.semibold },
+  telemetry: { padding: SPACING.md, borderWidth: 1, borderRadius: RADIUS.md, gap: 5 },
+  telemetryLine: { fontSize: FONT.size.sm },
   footer: { textAlign: "center", fontSize: FONT.size.xs, marginTop: SPACING.lg },
 });

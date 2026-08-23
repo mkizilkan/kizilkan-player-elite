@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.3 RC1 LIFECYCLE + UNIFIED DISCOVERY + ATOMIC IMPORT)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.5 RC1 CAST + CHUNKED NATIVE IMPORT HARDENING)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -124,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.2.3') problem(`app version ${app?.expo?.version} (15.2.3 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150203) problem(`versionCode ${app?.expo?.android?.versionCode} (150203 bekleniyor)`);
+if (app?.expo?.version !== '15.2.5') problem(`app version ${app?.expo?.version} (15.2.5 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150205) problem(`versionCode ${app?.expo?.android?.versionCode} (150205 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -154,7 +154,7 @@ if (!fs.existsSync(handoffPath)) {
 } else {
   const handoff = fs.readFileSync(handoffPath, 'utf8');
   const requiredHandoffTokens = [
-    'v15.2.3-RC1',
+    'v15.2.5-RC1',
     'Media3 → MPV/FFmpeg → VLC',
     'ANDROID_CERT_SHA256',
     'KALAN / SONRAKI ISLER',
@@ -301,7 +301,7 @@ if (fs.existsSync(rootIndexPath)) {
 if (fs.existsSync(playlistContextPath)) {
   const pc = fs.readFileSync(playlistContextPath,'utf8');
   requireText(pc, 'v15.2.3 P0 RAM FIX', 'playlist JS heap compaction');
-  requireText(pc, 'KizilkanNativeCore.reindexPlaylist(p.id)', 'direct playlist Room reindex');
+  requireText(pc, 'KizilkanNativeCore.getPlaylistSummary(p.id)', 'canonical Room snapshot verification');
   requireText(pc, 'fromMeta(toMeta(pl))', 'inactive playlist heavy eviction');
 }
 if (fs.existsSync(panelScanServicePath)) {
@@ -333,6 +333,111 @@ if (fs.existsSync(liveScreenPath)) {
 }
 requireText(src, 'successfulSessionAtRef', 'late playback error success timestamp');
 requireText(src, 'bayat source error', 'stale post-first-frame error guard');
+
+// v15.2.4-RC1 Native Core Phase 2 hard gates.
+const epgPath = path.join(root, 'src/utils/epg.ts');
+const searchPath = path.join(root, 'app/(tabs)/search.tsx');
+const favoritesPath = path.join(root, 'app/(tabs)/favorites.tsx');
+const detailPath = path.join(root, 'app/detail.tsx');
+const statsPath = path.join(root, 'app/stats.tsx');
+const editPlaylistPath = path.join(root, 'app/edit-playlist.tsx');
+const sessionGatePath = path.join(root, 'src/player/v2/session.ts');
+const posterGridPath = path.join(root, 'src/components/PosterGrid.tsx');
+const apkAnalyzerPath = path.join(projectRoot, 'tools/analyze-apk.js');
+for (const f of [epgPath,searchPath,favoritesPath,detailPath,statsPath,editPlaylistPath,sessionGatePath,posterGridPath,apkAnalyzerPath]) {
+  if (!fs.existsSync(f)) problem(`v15.2.4 dosya yok: ${path.relative(root, f)}`);
+}
+if (fs.existsSync(nativeCoreKtPath)) {
+  const core = fs.readFileSync(nativeCoreKtPath,'utf8');
+  requireText(core, 'AsyncFunction("importM3uText")', 'native M3U file parser/import');
+  requireText(core, 'AsyncFunction("fetchAndImportM3u")', 'native M3U URL fetch/import');
+  requireText(core, 'AsyncFunction("fetchAndCacheEpg")', 'native EPG fetch/cache');
+  requireText(core, 'Function("getRuntimeMemory")', 'real Android RAM telemetry');
+  requireText(core, 'Function("beginPlayerSession")', 'native player session generation authority');
+  requireText(core, 'sourceStamp == 0L', 'Room canonical source without legacy file');
+  requireText(core, 'private fun storageFootprint()', 'Room/legacy storage footprint telemetry');
+}
+if (fs.existsSync(nativeEntityPath)) {
+  const ent = fs.readFileSync(nativeEntityPath,'utf8');
+  requireText(ent, 'tableName = "epg_programs"', 'Room native EPG table');
+}
+if (fs.existsSync(nativeDbPath)) {
+  const db = fs.readFileSync(nativeDbPath,'utf8');
+  requireText(db, 'MIGRATION_1_2', 'Room explicit EPG migration');
+}
+if (fs.existsSync(epgPath)) {
+  const epg = fs.readFileSync(epgPath,'utf8');
+  requireText(epg, 'KizilkanNativeCore.fetchAndCacheEpg', 'EPG Android native pipeline');
+  requireText(epg, 'KizilkanNativeCore.getEpgNowNext', 'EPG visible-channel native query');
+}
+if (fs.existsSync(searchPath)) requireText(fs.readFileSync(searchPath,'utf8'), 'KizilkanNativeCore.queryItems', 'Search Room query');
+if (fs.existsSync(favoritesPath)) requireText(fs.readFileSync(favoritesPath,'utf8'), 'KizilkanNativeCore.getItemsByIds', 'Favorites ID-based Room query');
+if (fs.existsSync(detailPath)) requireText(fs.readFileSync(detailPath,'utf8'), 'KizilkanNativeCore.getItem', 'Detail single-item Room query');
+if (fs.existsSync(statsPath)) {
+  const statsSrc = fs.readFileSync(statsPath,'utf8');
+  requireText(statsSrc, 'KizilkanNativeCore.getRuntimeMemory()', 'Stats real RAM telemetry');
+  requireText(statsSrc, 'KizilkanNativeCore.getStorageFootprint()', 'Stats storage telemetry');
+}
+if (fs.existsSync(liveScreenPath)) {
+  const live = fs.readFileSync(liveScreenPath,'utf8');
+  requireText(live, 'nativeLibraryPaged', 'VOD/Series Room paging mode');
+  requireText(live, 'loadNativeLibraryPage', 'VOD/Series incremental native page');
+  requireText(live, 'serverCodeBinding?.code', 'live account header server code');
+}
+if (fs.existsSync(editPlaylistPath)) {
+  const edit = fs.readFileSync(editPlaylistPath,'utf8');
+  requireText(edit, 'resolveServerCode', 'manual server code real validation');
+  requireText(edit, 'DNS otomatik güncelle', 'server code/DNS self-heal visible control');
+}
+if (fs.existsSync(addPlaylistPath)) {
+  const add = fs.readFileSync(addPlaylistPath,'utf8');
+  requireText(add, 'KizilkanNativeCore.fetchAndImportM3u', 'M3U URL native Room import');
+  requireText(add, 'KizilkanNativeCore.importM3uText', 'M3U file native Room import');
+  requireText(add, 'Çok Güvenli', 'five-profile scan UI');
+  requireText(add, 'bulkAccountProgress', 'per-account discovery progress');
+}
+if (fs.existsSync(sessionGatePath)) {
+  const sess = fs.readFileSync(sessionGatePath,'utf8');
+  requireText(sess, 'KizilkanNativeCore.beginPlayerSession()', 'native-backed player session begin');
+  requireText(sess, 'KizilkanNativeCore.isPlayerSessionActive(id)', 'native-backed stale callback gate');
+}
+if (fs.existsSync(workflowPath)) {
+  const wf = fs.readFileSync(workflowPath,'utf8');
+  requireText(wf, 'APK ABI ve native boyut raporu', 'CI APK footprint audit');
+  requireText(wf, 'APK-BOYUT-RAPORU-', 'CI footprint artifact');
+}
+
+
+// v15.2.5-RC1 Cast + chunked import hard gates.
+const castButtonPath = path.join(root, 'src/components/CastButton.tsx');
+for (const f of [castButtonPath, bigStoreNativePath]) {
+  if (!fs.existsSync(f)) problem(`v15.2.5 dosya yok: ${path.relative(root, f)}`);
+}
+if (fs.existsSync(castButtonPath)) {
+  const cast = fs.readFileSync(castButtonPath, 'utf8');
+  requireText(cast, 'onSessionResumed', 'Cast resumed-session rebind');
+  requireText(cast, 'source-change', 'Cast source/channel change remote reload');
+  requireText(cast, 'background/activity recreation', 'Cast remount no forced reload guard');
+  requireText(cast, 'loadGenerationRef', 'Cast stale load generation guard');
+}
+if (fs.existsSync(bigStoreNativePath)) {
+  const bs = fs.readFileSync(bigStoreNativePath, 'utf8');
+  requireText(bs, 'beginChunkedPlaylistImport', 'chunked native playlist staging');
+  requireText(bs, 'chunkSize = 500', 'bounded JS serialization chunk');
+  requireText(bs, 'setTimeout(resolve, 0)', 'event-loop yield between chunks');
+}
+if (fs.existsSync(nativeCoreKtPath)) {
+  const core = fs.readFileSync(nativeCoreKtPath, 'utf8');
+  requireText(core, 'AsyncFunction("beginChunkedPlaylistImport")', 'native chunk staging begin');
+  requireText(core, 'AsyncFunction("appendPlaylistChunk")', 'native chunk staging append');
+  requireText(core, 'AsyncFunction("finishChunkedPlaylistImport")', 'native chunk staging finalize');
+  requireText(core, 'db.runInTransaction', 'canonical Room atomic transaction');
+}
+requireText(src, 'castRemotePositionRef', 'Cast remote position handoff');
+requireText(src, 'client.getMediaStatus?.()', 'Cast initial remote status rebind');
+requireText(src, 'liveSeekableRange', 'Cast live DVR capability');
+requireText(src, 'remote?.stop?.()', 'Cast remote stop on player exit');
+requireText(src, 'Cast receiver authoritative', 'Cast remote authoritative play/pause');
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.
 const sf = ts.createSourceFile(player, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TSX);

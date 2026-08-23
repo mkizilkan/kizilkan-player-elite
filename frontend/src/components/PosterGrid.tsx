@@ -19,9 +19,11 @@ interface Props {
   ListHeaderComponent?: React.ComponentType<any> | React.ReactElement | null;
   emptyText?: string;
   testIDPrefix?: string;
+  onEndReached?: () => void;
+  onEndReachedThreshold?: number;
 }
 
-export function PosterGrid({ items, onPressItem, onLongPressItem, ListHeaderComponent, emptyText, testIDPrefix = "poster" }: Props) {
+export function PosterGrid({ items, onPressItem, onLongPressItem, ListHeaderComponent, emptyText, testIDPrefix = "poster", onEndReached, onEndReachedThreshold = 0.55 }: Props) {
   const { isTv: isTvLayout } = useTv();
   /**
    * GPT v10.2.0:
@@ -46,6 +48,8 @@ export function PosterGrid({ items, onPressItem, onLongPressItem, ListHeaderComp
       ListHeaderComponent={ListHeaderComponent}
       columnWrapperStyle={{ gap: GAP, paddingHorizontal: H_PAD, marginBottom: GAP }}
       contentContainerStyle={{ paddingTop: SPACING.md, paddingBottom: SPACING.xxxl }}
+      onEndReached={onEndReached}
+      onEndReachedThreshold={onEndReachedThreshold}
       /**
        * PERFORMANS (v8.8.0 — kullanıcı bildirimi: "ağır çekim gibi")
        * Aynı anda çizilen afiş sayısı düşürüldü; TV Box'ların GPU'su

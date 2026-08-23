@@ -442,3 +442,104 @@ Bu tarihsel fazın sürümü: 15.2.2 / versionCode 150202
 - Görüntü geldikten sonra stale fallback banner/URL switch olmaması.
 
 **KALAN / SONRAKI ISLER:** Search/Favorites/VOD/Series ve custom-group ağır hydrate yollarını Room paging/index query'ye taşımak; RAM `dumpsys meminfo` matrisi; APK ABI/.so boyut analizi; 4K MPV ve 20 ZAP kabul testleri.
+
+---
+# v15.2.4-RC1 — NATIVE CORE PHASE 2 DEVİR EKİ (2026-08-23)
+
+## NEDEN BAŞLANDI?
+v15.2.3-RC1 gerçek cihaz testinde background→foreground profil reset sorunu kullanıcı tarafından düzelmiş olarak doğrulandı. Buna rağmen:
+- çok playlist olduğunda UI/RAM baskısı,
+- iki liste ile 212 MB uygulama verisi,
+- EPG gecikmesi,
+- çoklu discovery'nin kullanıcı tarafından denetlenemeyen hızlı/erken sonucu,
+- stale scan modal resurrection,
+- duplicate playlist ekleme,
+- görüntü gelmesine rağmen stale fallback overlay,
+devam etti.
+
+## KÖK MİMARİ BULGU
+Room eklenmiş olmasına rağmen `PlaylistContext.ensureHeavyLoaded()` ve `bigStore` legacy heavy JSON yolu hâlâ canlıydı. Yeni yazımda hem Room hem heavy JSON bulunabilmesi storage çiftlemesine ve yeniden hydrate maliyetine yol açabiliyordu. v15.2.4'te Android için Room/SQLite canonical store yapılmıştır. Legacy JSON yalnız migration/fallback'tir.
+
+## KRİTİK KENDİ-REGRESYON DÜZELTMESİ
+v15.2.4 geliştirmesi sırasında önemli bir hata paketlenmeden yakalandı:
+`bigStore.write()` canonical Room importunu tamamlayıp legacy dosyayı temizledikten sonra `PlaylistContext.addPlaylist()` eski mantıkla `reindexPlaylist()` çağırırsa snapshot invalidate olur ve sistem artık silinmiş legacy dosyaya geri düşebilir. Bu çağrı `getPlaylistSummary()` doğrulamasına çevrildi. Bu bulgu mutlaka korunmalıdır.
+
+## ROOM CANONICAL MODEL
+4 playlist varsa 4 playlistin tamamı Room'da indeksli kalır. React Native/Hermes tarafında yalnız aktif/görünen sayfalar bulunur. Aktif olmayan playlistler metadata-only tutulur.
+
+## NATIVE EPG CORE
+`epg_programs` Room tablosu eklendi; DB version 2 ve explicit MIGRATION_1_2 vardır. Android'de XMLTV native indirme/parse ve visible channel now/next sorgusu kullanılır. JS regex parser web/legacy fallback'tir.
+
+## PLAYLIST PIPELINE
+- Xtream direct/native importer → Room.
+- Sunucu kodu/panel discovery sonucu → native importer → Room.
+- Çoklu seçilen hesaplar → native importer → Room.
+- M3U URL → native download + Kotlin parse → Room.
+- M3U Dosya → Kotlin parse → Room.
+- MAG/Stalker: cihaz içi async protocol korunur; deterministic portal+MAC kimliği ve final Room canonical persist vardır. Bu sürümde MAG protokolü foreground service'e tamamen taşınmış DEĞİLDİR.
+
+## DISCOVERY
+Unified native engine tam account×candidate matrisi üzerinde çalışır; kullanıcıya accountStatuses, tested/total/remaining/found, current panel/server gösterilir. Pause/Resume/Stop native service davranışı korunur. Completed eski snapshot yeni Activity'de modalı zorla diriltmez; canlı işlem sonuçları anlık görünür.
+
+## 5 TARAMA HIZI
+Çok Güvenli / Güvenli / Dengeli / Hızlı / Turbo; Sunucu Kodu/Panel/Çoklu UI yüzeylerinde ortak `scanConfigForSpeed()` sözleşmesine bağlanmıştır.
+
+## SUNUCU KODU / DNS
+DNS self-heal mevcut `refreshPlaylist.ts` davranışı korunur. Sunucu kodu canlı üst hesap bilgisinde görünür ve Edit Playlist'te manuel değiştirilebilir. Yeni kod directory + gerçek Xtream auth ile doğrulanmadan binding değiştirilmez. DNS otomatik güncelle açık/kapalı görünür.
+
+## SEARCH/FAVORITES/VOD/SERIES
+Search Room `queryItems`; Favorites/Recent `getItemsByIds`; Detail `getItem`; VOD/Series paged query kullanır. Custom user groups gibi eski işlevler silinmemiştir; gerektiğinde legacy lazy hydrate fallback kullanılır.
+
+## PLAYER
+Media3 → MPV/FFmpeg → VLC motor zinciri korunur. v15.2.4'te tam native player ownership tamamlanmamıştır; Phase 1 olarak Kotlin Native Core `AtomicLong` session generation authority eklenmiştir ve `PlaybackSessionGate` Android'de native begin/isActive/invalidate kullanır. Amaç stale callback/fallback isolation'ı sertleştirmektir.
+
+## TELEMETRİ
+`getRuntimeMemory()` Android Debug.MemoryInfo PSS/native/ART değerlerini; `getStorageFootprint()` Room DB/WAL/SHM ve legacy playlist byte/file count değerlerini verir. Stats ekranında gösterilir. `tools/analyze-apk.js` GitHub APK'sını ABI/native `.so` bazında analiz eder; workflow raporu artifact'e ekler.
+
+## GÜVENLİK / SIGNING
+ANDROID_CERT_SHA256 ve diğer signing secrets GitHub Secrets içinde kalır. `.jks`, `.base64`, release-GITHUB.txt ZIP/Git'e alınmamalıdır.
+
+## KALAN / SONRAKI ISLER
+1. GitHub Actions ile v15.2.4-RC1 gerçek TypeScript/KSP/Kotlin/Gradle build doğrulaması.
+2. Gerçek cihazda 1/3/5 playlist RAM/UI karşılaştırması.
+3. Unified discovery 4 farklı credential ile account/panel/address progress doğrulaması.
+4. EPG büyük XMLTV performans testi.
+5. Native Player Session Arbiter sonrası 4K/ZAP/stale fallback gerçek cihaz testi.
+6. GitHub APK footprint raporundan ABI split/AAB/arm64-only kararının verilmesi.
+7. MAG/Stalker foreground-service migration yalnız gerçek cihaz ölçümü gerek gösterirse ayrı kontrollü faz olarak planlanacak.
+
+## SOHBET DEVİR SÖZLEŞMESİ
+Yeni sohbet bu dosyayı baştan sona okumadan projede kod değişikliği yapmamalıdır. Yapılmış bir özelliği azaltmak/silmek yasaktır. Önce gerçek kaynak ve gerçek cihaz bulgusu incelenmeli; kör patch yapılmamalıdır. Her yeni ZIP bu belgeyi güncel ve ayrıntılı taşır.
+
+# v15.2.5-RC1 — CAST + CHUNKED NATIVE IMPORT HARDENING DEVİR EKİ (2026-08-23)
+
+## NEDEN YENİ REVİZYON
+v15.2.4-RC1 Native Core Phase 2 cihaz/reposuna senkronlanmadan önce yapılan son audit sırasında iki gerçek mimari risk bulundu. Birincisi, `addPlaylist/updatePlaylist` compatibility yolları Android Native Core mevcutken bile tek parça `JSON.stringify({channels,vod,series})` yapabiliyordu; çok büyük MAG/legacy kataloglarında bu JS thread'i tekrar uzun süre bloke edebilirdi. İkincisi Chromecast'te existing-session rebind, kanal/source change ve remote->local position handoff tam değildi. Onaylı kapsam genişlediği için sürüm bilgisi yükseltildi; v15.2.4 özellikleri çıkarılmadı.
+
+## CHUNKED NATIVE PLAYLIST STAGING
+`bigStore.write()` Android Native Core mevcutken artık dev katalogu tek JSON blob'a çevirmez. channels/vod/series 500 kayıtlık bounded chunk'lara ayrılır. Her chunk ayrı JSON stringify edilir, `KizilkanNativeCore.appendPlaylistChunk()` ile native staging dosyasına aktarılır ve her chunk arasında event-loop'a kontrol verilir. `finishChunkedPlaylistImport()` staging dosyasını native worker'da okur ve tek Room transaction içinde canonical `media_items + playlist_snapshot` setini değiştirir. Final transaction başarıya ulaşmadan eski Room snapshot canonical kalır. Başarısız/yamalı staging `cancelChunkedPlaylistImport()` ile temizlenir. Başarılı finalization sonrasında eski duplicate legacy heavy JSON silinir.
+
+Bu mekanizma özellikle MAG/Stalker gibi protokolü halen JS tarafında çalışan compatibility yollarında dev tek-parça serialization riskini azaltır. MAG/Stalker network/protocol katmanının tamamı native'e taşınmış SAYILMAZ; yalnız persistence/serialization zinciri hardened edilmiştir.
+
+## CHROMECAST AUDIT VE DÜZELTMELER
+- Yeni Cast session başladığında mevcut source receiver'a yüklenir.
+- Mevcut Cast session background/activity recreation sonrası bulunduğunda medya zorla yeniden `loadMedia()` edilmez; session yalnız rebind edilir.
+- Cast bağlıyken gerçek channel/source değişimi algılanır ve yeni source receiver'a tek generation ile yüklenir.
+- `loadGenerationRef` eski load completion callback'lerinin yeni kaynağın state'ini bozmasını engeller.
+- PlayerHost `getMediaStatus()` + `onMediaStatusUpdated` ile remote `playerState`, `streamPosition`, volume ve `liveSeekableRange` state'ini izler.
+- Play/Pause UI artık optimistic local toggle'a güvenmez; receiver `MEDIA_STATUS_UPDATED` state'i authoritative kabul edilir.
+- VOD Cast session kapanınca son remote position local MPV/VLC/Media3'e seek edilip playback o noktadan devralınır.
+- Player görünür değilken Cast session kapanması gizli local sesi yeniden başlatmaz.
+- Live Cast seek yalnız receiver `liveSeekableRange` bildiriyorsa açılır ve range'e clamp edilir.
+- Player'dan geri/çıkış local stop semantiğine paralel olarak remote media `stop()` çağırır; Cast session zorla sonlandırılmaz.
+- Telefon -> receiver volume komutu korunur; receiver media status volume değeri telefon UI'ına geri yansıtılır.
+
+## TV BOX KARARI
+v15.2.5'te TV Box arayüzü baştan yazılmamıştır. Native paging/player/cast değişikliklerinin D-pad/focus/TV yüzeylerini bozmadığı statik regresyon audit'i kapsamındadır. Tam 10-foot UI/focus graph/focus restore revizyonu sonraki ayrı sürüme bırakılmıştır.
+
+## KALAN / SONRAKI ISLER
+1. GitHub Actions gerçek `tsc --noEmit`, Expo prebuild, Room/KSP Kotlin ve Gradle release build kanıtı.
+2. Chromecast gerçek cihaz: connect/rebind, channel zap, play-pause, VOD seek, remote->local handoff, live DVR capability ve player-exit remote stop testleri.
+3. MAG/Stalker protokolünü de tamamen native foreground core'a taşıma fizibilitesi; mevcut sürüm bunu yapılmış göstermez.
+4. TV Box 10-foot UI overhaul sonraki sürüm.
+5. Gerçek RAM/storage/APK footprint ölçüm raporlarının cihaz verisiyle karşılaştırılması.

@@ -66,11 +66,15 @@ type BulkResolvedCandidate = {
 const PENDING_BULK_SCAN_KEY = "kizilkan.pendingBulkScan.v15.2.3";
 const PENDING_BULK_IMPORT_KEY = "kizilkan.pendingBulkImport.v15.2.3";
 
-function stableXtreamPlaylistId(server: string, username: string): string {
-  const key = `${String(server).replace(/\/+$/, "").toLowerCase()}\u0000${username}`;
+function stablePlaylistId(prefix: string, identity: string): string {
+  const key = String(identity || "").trim().toLowerCase();
   let h = 0x811c9dc5;
   for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 0x01000193); }
-  return `pl-xt-${(h >>> 0).toString(16).padStart(8, "0")}`;
+  return `pl-${prefix}-${(h >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function stableXtreamPlaylistId(server: string, username: string): string {
+  return stablePlaylistId("xt", `${String(server).replace(/\/+$/, "").toLowerCase()}\u0000${username}`);
 }
 
 export default function AddPlaylist() {
@@ -133,6 +137,7 @@ export default function AddPlaylist() {
   const [bulkAdding, setBulkAdding] = useState(false);
   const [bulkImportPaused, setBulkImportPaused] = useState(false);
   const [bulkImportStatuses, setBulkImportStatuses] = useState<Record<string, { state: string; message: string; channels?: number; vod?: number; series?: number }>>({});
+  const [bulkAccountProgress, setBulkAccountProgress] = useState<Array<{ accountIndex:number; sourceRow?:number; name?:string; state:string; tested:number; total:number; remaining:number; found:number }>>([]);
   const [bulkCandidates, setBulkCandidates] = useState<BulkResolvedCandidate[]>([]);
   const [selectedBulkCandidateKeys, setSelectedBulkCandidateKeys] = useState<string[]>([]);
   const [showBulkCandidates, setShowBulkCandidates] = useState(false);
@@ -575,6 +580,50 @@ export default function AddPlaylist() {
     setProgress("Kimlik doğrulanıyor (Xtream)...");
     try {
       const id = stableXtreamPlaylistId(cred.server, cred.username);
+
+      // v15.2.4 Android: Tek Xtream ekleme de çoklu ekleme ile aynı native
+      // foreground importer'ı kullanır. Böylece 50-100 bin içerik JS'e taşınmaz,
+      // app arka plana geçse de indirme/normalize/Room transaction devam eder.
+      if (KizilkanNativeCore.available && Platform.OS === "android") {
+        const jobKey = `direct-${id}`;
+        const candidate: BulkResolvedCandidate = {
+          key: jobKey, sourceRow: 1, name: displayName?.trim() || name.trim() || "Xtream Codes",
+          username: cred.username, password: cred.password,
+          panelName: serverCodeBinding?.panelName || hostName(cred.server), code: serverCodeBinding?.code || "",
+          server: cred.server, login: {}, validatedHosts: serverCodeBinding?.validatedHosts || [cred.server], direct: !serverCodeBinding,
+        };
+        await storage.secureSet(PENDING_BULK_IMPORT_KEY, JSON.stringify([candidate]));
+        bulkImportOwnedByScreenRef.current = true;
+        await KizilkanNativeCore.startBulkImport([{
+          jobKey, playlistId: id, displayName: candidate.name, server: cred.server, username: cred.username, password: cred.password,
+        }], 1);
+        let completedRow: any = null;
+        while (true) {
+          const snap = KizilkanNativeCore.getBulkImportSnapshot();
+          if (snap.error) throw new Error(String(snap.error));
+          const row = (Array.isArray(snap.jobs) ? snap.jobs : []).find((r:any) => String(r.jobKey) === jobKey);
+          if (row) {
+            setProgress(`${row.message || "Native playlist ekleniyor"}${row.channels ? `\n${row.channels} kanal · ${row.vod || 0} film · ${row.series || 0} dizi` : ""}`);
+            if (row.state === "completed") { completedRow = row; break; }
+            if (row.state === "failed") throw new Error(String(row.message || "Native Xtream ekleme başarısız"));
+          }
+          if (!snap.running && !row) throw new Error("Native Xtream işi beklenmedik biçimde sona erdi.");
+          await new Promise(resolve => setTimeout(resolve, 350));
+        }
+        await addPreparedPlaylist({
+          id, name: candidate.name, source: "xtream",
+          xtreamServer: cred.server, xtreamUsername: cred.username, xtreamPassword: cred.password,
+          serverCodeBinding, accountInfo: (completedRow?.userInfo || null) as AccountInfo, serverInfo: completedRow?.serverInfo || null,
+          channels: [], vod: [], series: [], channelsCount: Number(completedRow?.channels || 0), vodCount: Number(completedRow?.vod || 0), seriesCount: Number(completedRow?.series || 0),
+          createdAt: new Date().toISOString(),
+        });
+        await storage.secureRemove(PENDING_BULK_IMPORT_KEY);
+        playlistServerKeysRef.current.add(accountKey);
+        setProgress("Playlist Room/SQLite üzerinde hazır.");
+        if (navigateAfter) router.replace("/(tabs)");
+        return true;
+      }
+
       const login = await xtLoginLocal(cred);
       const { chRes, vodRes, serRes } = await loadXtreamContentWithProgress(cred);
       const channels = chRes.status === "fulfilled" ? chRes.value : [];
@@ -605,6 +654,7 @@ export default function AddPlaylist() {
       return false;
     } finally {
       directImportLocksRef.current.delete(accountKey);
+      bulkImportOwnedByScreenRef.current = false;
       if (manageLoading) {
         setLoading(false);
         setProgress("");
@@ -638,15 +688,17 @@ export default function AddPlaylist() {
   const bulkCandidateKey = (row: number, username: string, code: string, panelName: string, server: string) =>
     `${row}\u0000${username}\u0000${code}\u0000${panelName}\u0000${String(server).replace(/\/+$/, "").toLowerCase()}`;
 
-  const mergeBulkCandidates = React.useCallback((incoming: BulkResolvedCandidate[]) => {
+  const mergeBulkCandidates = React.useCallback((incoming: BulkResolvedCandidate[], reveal = true) => {
     if (!incoming.length) return;
     setBulkCandidates(prev => {
       const map = new Map(prev.map(x => [x.key, x]));
       incoming.forEach(x => map.set(x.key, x));
       return Array.from(map.values());
     });
-    // Bilinçli olarak otomatik seçim YAPMA. Kullanıcı bulunanlardan istediğini seçsin.
-    setShowBulkCandidates(true);
+    // v15.2.4: tamamlanmış eski snapshot ekran/activity restore olduğunda
+    // modalı zorla diriltmesin. Canlı tarama veya bu ekranın sahip olduğu iş
+    // sonuçları kullanıcıya anlık gösterilir.
+    if (reveal) setShowBulkCandidates(true);
   }, []);
 
   React.useEffect(() => {
@@ -668,8 +720,10 @@ export default function AddPlaylist() {
               const panelName=String(m.panelName||"") || hostName(server), code=String(m.code||"");
               resolved.push({ key:bulkCandidateKey(a.row,a.username,code,panelName,server), sourceRow:a.row, name:a.name||panelName, username:a.username, password:a.password, panelName, code, server, login:m.login, validatedHosts:[server], direct:!!a.server });
             }
-            mergeBulkCandidates(resolved);
+            const shouldReveal = !!scan.running || bulkNativeScanRef.current;
+            mergeBulkCandidates(resolved, shouldReveal);
             setBulkScanPaused(!!scan.paused); setBulkScanFinished(!scan.running); bulkNativeScanRef.current=!!scan.running;
+            if (!scan.running) await storage.secureRemove(PENDING_BULK_SCAN_KEY);
             if (!bulkAdding) setLoading(!!scan.running);
             setProgress(scan.running ? `Native tarama geri yüklendi · ${Number(scan.tested||0)}/${Number(scan.total||0)} · ${Number(scan.found||0)} bulundu` : `Tarama sonucu geri yüklendi · ${Number(scan.found||0)} bulundu`);
           }
@@ -836,6 +890,7 @@ export default function AddPlaylist() {
     let lastFound=-1, completed=0;
     while (true) {
       const snap=PanelScan.getSnapshot(); if (snap.error) throw new Error(snap.error);
+      if (Array.isArray(snap.accountStatuses)) setBulkAccountProgress(snap.accountStatuses);
       const raw=Array.isArray(snap.matches)?snap.matches:[];
       if (raw.length !== lastFound) {
         const resolved: BulkResolvedCandidate[]=[];
@@ -848,8 +903,12 @@ export default function AddPlaylist() {
       }
       completed=Number(snap.accountTested||0); const tested=Number(snap.tested||0), total=Number(snap.total||0), pct=total?Math.round(tested/total*100):0;
       setBulkScanPaused(!!snap.paused);
-      setProgress(`${cfg.label} · NATIVE · %${pct}\nHesap ${completed}/${accounts.length} · Adres ${tested}/${total} · Kalan ${Math.max(0,total-tested)} · Bulunan ${raw.length}${snap.paused?" · DURAKLATILDI":""}${snap.panelName?`\nŞu an: ${snap.panelName}`:""}`);
-      if (!snap.running) return { found:raw.length, completed, cancelled:!!snap.cancelled };
+      setProgress(`${cfg.label} · NATIVE · %${pct}\nHesap ${completed}/${accounts.length} · Adres ${tested}/${total} · Kalan ${Math.max(0,total-tested)} · Bulunan ${raw.length}${snap.paused?" · DURAKLATILDI":""}${snap.panelName?`\nŞu an: ${snap.panelName}${snap.currentServer ? ` · ${snap.currentServer}` : ""}`:""}`);
+      if (!snap.running) {
+        await storage.secureRemove(PENDING_BULK_SCAN_KEY);
+        bulkNativeScanRef.current = false;
+        return { found:raw.length, completed, cancelled:!!snap.cancelled };
+      }
       await new Promise(resolve=>setTimeout(resolve,350));
     }
   };
@@ -863,6 +922,7 @@ export default function AddPlaylist() {
     setBulkCandidates([]);
     setSelectedBulkCandidateKeys([]);
     setBulkScanFailures([]);
+    setBulkAccountProgress([]);
     setBulkScanFinished(false);
     setBulkScanPaused(false);
     bulkScanPausedRef.current = false;
@@ -1088,13 +1148,34 @@ export default function AddPlaylist() {
         await submitKnownPanelDiscovery();
         return;
       }
+      if (method === "xtream") {
+        if (!xtServer.trim() || !xtUser.trim() || !xtPass.trim()) throw new Error("Sunucu, kullanıcı adı ve şifre gereklidir");
+        await submitXtreamDirect({ server: xtServer.trim(), username: xtUser.trim(), password: xtPass.trim() });
+        return;
+      }
 
-      const id = `pl-${Date.now()}`;
+      let id = "";
       let playlist: Playlist;
 
       if (method === "m3u_url") {
         if (!m3uUrl.trim()) throw new Error("M3U URL boş olamaz");
-        setProgress("Kanallar yükleniyor (cihazdan doğrudan)...");
+        id = stablePlaylistId("m3u", m3uUrl.trim().replace(/\/+$/, ""));
+        if (playlists.some(pl => pl.id === id)) throw new Error("Bu M3U listesi zaten ekli.");
+        if (Platform.OS === "android" && KizilkanNativeCore.available) {
+          setProgress("M3U Native Core ile indiriliyor ve Room'a indeksleniyor...");
+          const summary = await KizilkanNativeCore.fetchAndImportM3u(id, m3uUrl.trim());
+          const total = Number(summary?.channels || 0) + Number(summary?.vod || 0) + Number(summary?.series || 0);
+          if (!summary?.roomIndexed || total === 0) throw new Error("M3U kaynağında içerik bulunamadı.");
+          await addPreparedPlaylist({
+            id, name: name.trim() || "M3U Listesi", source: "m3u_url", m3uUrl: m3uUrl.trim(),
+            channels: [], vod: [], series: [], channelsCount: Number(summary.channels || 0),
+            vodCount: Number(summary.vod || 0), seriesCount: Number(summary.series || 0),
+            createdAt: new Date().toISOString(),
+          });
+          router.replace("/(tabs)");
+          return;
+        }
+        setProgress("Kanallar yükleniyor (legacy parser)...");
         const res = await fetchAndParseM3U(m3uUrl.trim());
         playlist = {
           id, name: name.trim() || "M3U Listesi", source: "m3u_url",
@@ -1106,7 +1187,23 @@ export default function AddPlaylist() {
         };
       } else if (method === "m3u_file") {
         if (!fileContent) throw new Error("Lütfen bir M3U dosyası seçin");
-        setProgress("Kanallar ayrıştırılıyor...");
+        id = stablePlaylistId("file", fileContent);
+        if (playlists.some(pl => pl.id === id)) throw new Error("Bu M3U dosyası zaten ekli.");
+        if (Platform.OS === "android" && KizilkanNativeCore.available) {
+          setProgress("M3U dosyası Native Core ile ayrıştırılıyor ve Room'a indeksleniyor...");
+          const summary = await KizilkanNativeCore.importM3uText(id, fileContent);
+          const total = Number(summary?.channels || 0) + Number(summary?.vod || 0) + Number(summary?.series || 0);
+          if (!summary?.roomIndexed || total === 0) throw new Error("M3U dosyasında içerik bulunamadı.");
+          await addPreparedPlaylist({
+            id, name: name.trim() || fileName || "M3U Dosyası", source: "m3u_file",
+            channels: [], vod: [], series: [], channelsCount: Number(summary.channels || 0),
+            vodCount: Number(summary.vod || 0), seriesCount: Number(summary.series || 0),
+            createdAt: new Date().toISOString(),
+          });
+          router.replace("/(tabs)");
+          return;
+        }
+        setProgress("Kanallar ayrıştırılıyor (legacy parser)...");
         const res = parseM3U(fileContent);
         playlist = {
           id, name: name.trim() || fileName || "M3U Dosyası", source: "m3u_file",
@@ -1118,6 +1215,8 @@ export default function AddPlaylist() {
       } else if (method === "xtream") {
         if (!xtServer.trim() || !xtUser.trim() || !xtPass.trim())
           throw new Error("Sunucu, kullanıcı adı ve şifre gereklidir");
+        id = stableXtreamPlaylistId(xtServer.trim(), xtUser.trim());
+        if (playlists.some(pl => pl.id === id)) throw new Error("Bu Xtream hesabı zaten ekli.");
         setProgress("Kimlik doğrulanıyor (cihazdan doğrudan)...");
         const cred = { server: xtServer.trim(), username: xtUser.trim(), password: xtPass.trim() };
         const login = await xtLoginLocal(cred);
@@ -1159,6 +1258,8 @@ export default function AddPlaylist() {
          */
         if (!stPortal.trim() || !stMac.trim())
           throw new Error("Portal adresi ve MAC adresi gereklidir");
+        id = stablePlaylistId("mag", `${stPortal.trim().replace(/\/+$/, "")}\u0000${stMac.trim().toUpperCase()}`);
+        if (playlists.some(pl => pl.id === id)) throw new Error("Bu MAG/Portal hesabı zaten ekli.");
 
         const { stalkerLogin: stLogin, stalkerChannels, normalizeMac } = await import("@/src/utils/stalker");
         const cred = {
@@ -1538,25 +1639,6 @@ export default function AddPlaylist() {
                     returnKeyType="done"
                     style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
                   />
-                  <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.md }]}>TARAMA HIZI</Text>
-                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm }}>
-                    {([
-                      ["very_safe", "Çok Güvenli", "En uzun timeout"],
-                      ["safe", "Güvenli", "Yavaş sunucuları kaçırmaz"],
-                      ["balanced", "Dengeli", "Önerilen"],
-                      ["fast", "Hızlı", "Yüksek paralellik"],
-                      ["turbo", "Turbo", "En hızlı kontrollü tarama"],
-                    ] as const).map(([key, label, hint]) => {
-                      const active = scanSpeed === key;
-                      return (
-                        <FocusButton key={key} focusable onPress={() => setScanSpeed(key)}
-                          style={[styles.scanSpeedBtn, { borderColor: active ? colors.brandPrimary : colors.border, backgroundColor: active ? colors.brandPrimary + "18" : colors.surfaceSecondary }]}>
-                          <Text style={{ color: active ? colors.brandPrimary : colors.onSurface, fontWeight: FONT.weight.bold }}>{label}</Text>
-                          <Text numberOfLines={2} style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, textAlign: "center" }}>{hint}</Text>
-                        </FocusButton>
-                      );
-                    })}
-                  </View>
                   <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: SPACING.sm, lineHeight: 18 }}>
                     Otomatik arama tüm panel rehberini tarar. Tek eşleşme varsa doğrudan ekler; birden fazla panelde aynı kullanıcı adı/şifre geçerliyse doğru aboneliği sizin seçmenizi ister.
                   </Text>
@@ -1631,6 +1713,29 @@ export default function AddPlaylist() {
                 </>
               )}
 
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.md }]}>TARAMA HIZI</Text>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm }}>
+                {([
+                  ["very_safe", "Çok Güvenli", "En uzun timeout"],
+                  ["safe", "Güvenli", "Yavaş sunucuları kaçırmaz"],
+                  ["balanced", "Dengeli", "Önerilen"],
+                  ["fast", "Hızlı", "Yüksek paralellik"],
+                  ["turbo", "Turbo", "En hızlı kontrollü tarama"],
+                ] as const).map(([key, label, hint]) => {
+                  const active = scanSpeed === key;
+                  return (
+                    <FocusButton key={`code-speed-${key}`} focusable onPress={() => setScanSpeed(key)}
+                      style={[styles.scanSpeedBtn, { borderColor: active ? colors.brandPrimary : colors.border, backgroundColor: active ? colors.brandPrimary + "18" : colors.surfaceSecondary }]}>
+                      <Text style={{ color: active ? colors.brandPrimary : colors.onSurface, fontWeight: FONT.weight.bold }}>{label}</Text>
+                      <Text numberOfLines={2} style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, textAlign: "center" }}>{hint}</Text>
+                    </FocusButton>
+                  );
+                })}
+              </View>
+              <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: SPACING.sm, lineHeight: 18 }}>
+                Bu hız profili Kodum var, Paneli biliyorum ve Paneli bilmiyorum taramalarının tamamında aynıdır.
+              </Text>
+
               {/* Kaynak URL — varsayılan uygulama sahibinindir; gelişmiş kullanıcı değiştirebilir. */}
               <FocusButton
                 testID="code-source-toggle"
@@ -1669,6 +1774,29 @@ export default function AddPlaylist() {
                   Birden fazla Xtream hesabını tek işlemde ekleyin. Kullanıcı adı ve şifreler Firebase'e gönderilmez; yalnız cihazınızdan aday IPTV sunucularında doğrulanır.
                 </Text>
               </View>
+              <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>TARAMA HIZI</Text>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm }}>
+                {([
+                  ["very_safe", "Çok Güvenli", "En uzun timeout"],
+                  ["safe", "Güvenli", "Yavaş sunucuları kaçırmaz"],
+                  ["balanced", "Dengeli", "Önerilen"],
+                  ["fast", "Hızlı", "Yüksek paralellik"],
+                  ["turbo", "Turbo", "En hızlı kontrollü tarama"],
+                ] as const).map(([key, label, hint]) => {
+                  const active = scanSpeed === key;
+                  return (
+                    <FocusButton key={`bulk-speed-${key}`} focusable onPress={() => setScanSpeed(key)}
+                      style={[styles.scanSpeedBtn, { borderColor: active ? colors.brandPrimary : colors.border, backgroundColor: active ? colors.brandPrimary + "18" : colors.surfaceSecondary }]}>
+                      <Text style={{ color: active ? colors.brandPrimary : colors.onSurface, fontWeight: FONT.weight.bold }}>{label}</Text>
+                      <Text numberOfLines={2} style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, textAlign: "center" }}>{hint}</Text>
+                    </FocusButton>
+                  );
+                })}
+              </View>
+              <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: SPACING.sm, lineHeight: 18 }}>
+                Aynı profil tüm hesapların panel/DNS worker sayısını ve timeout değerini birlikte yönetir.
+              </Text>
+
               <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>FORM İLE HESAP EKLE</Text>
               {bulkManualRows.map((row, rowIndex) => (
                 <View key={row.id} style={{ backgroundColor: colors.surfaceSecondary, borderColor: colors.border, borderWidth: 1, borderRadius: RADIUS.md, padding: SPACING.md, marginBottom: SPACING.md, gap: 9 }}>
@@ -1865,6 +1993,26 @@ export default function AddPlaylist() {
                 <View style={[styles.progressBox, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginBottom: SPACING.sm }]}>
                   <ActivityIndicator size="small" color={colors.brandPrimary} />
                   <Text style={{ color: colors.onSurfaceSecondary, flex: 1, fontSize: FONT.size.sm, lineHeight: 19 }}>{progress}</Text>
+                </View>
+              )}
+
+              {bulkAccountProgress.length > 0 && !bulkScanFinished && (
+                <View style={{ gap: 6, marginBottom: SPACING.sm }}>
+                  {bulkAccountProgress.map((a) => {
+                    const pct = a.total ? Math.round((a.tested / a.total) * 100) : 0;
+                    const label = a.name || `Hesap ${a.sourceRow || a.accountIndex + 1}`;
+                    return (
+                      <View key={`bulk-progress-${a.accountIndex}`} style={{ borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, borderRadius: RADIUS.md, padding: 9 }}>
+                        <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
+                          <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.semibold, flex: 1 }} numberOfLines={1}>{label}</Text>
+                          <Text style={{ color: a.state === "completed" ? colors.success : colors.brandPrimary, fontWeight: FONT.weight.bold }}>{a.state === "completed" ? "✓" : `${pct}%`}</Text>
+                        </View>
+                        <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, marginTop: 3 }}>
+                          Adres {a.tested}/{a.total} · Kalan {a.remaining} · Bulunan {a.found} · {a.state === "completed" ? "Tamamlandı" : a.state === "running" ? "Analiz ediliyor" : "Bekliyor"}
+                        </Text>
+                      </View>
+                    );
+                  })}
                 </View>
               )}
 

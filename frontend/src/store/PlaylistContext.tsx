@@ -375,7 +375,11 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     // zincirinin ana kaynaklarından biri buydu.
     let normalizedP: Playlist;
     if (KizilkanNativeCore.available) {
-      const summary = await KizilkanNativeCore.reindexPlaylist(p.id);
+      // v15.2.4 canonical Room: bigStore.write Android'de transaction + indexi
+      // zaten tamamlar ve legacy dosyayı temizler. Burada reindex/invalidate
+      // çağırmak canonical snapshot'ı bozup artık var olmayan legacy dosyaya
+      // geri düşürebilirdi. Hazır snapshot yalnız doğrulanır.
+      const summary = await KizilkanNativeCore.getPlaylistSummary(p.id);
       if (!summary?.roomIndexed) throw new Error('Playlist Room/SQLite indeksine alınamadı.');
       normalizedP = {
         ...p, channels: [], vod: [], series: [],
@@ -469,10 +473,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     playlistsRef.current = next;
     setPlaylists(next);
 
-    // Ağır alanlardan biri güncellendiyse dosyayı da yenile.
-
+    // Ağır alanlardan biri güncellendiyse canonical store'u yenile.
     if (heavyTouched && target) {
-      const merged = { ...target, ...patch };
+      const merged = { ...target, ...patch } as Playlist;
       merged.channelsCount = merged.channels?.length || 0;
       merged.vodCount = merged.vod?.length || 0;
       merged.seriesCount = merged.series?.length || 0;
@@ -482,7 +485,18 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         series: merged.series || [],
       });
       if (!ok) throw new Error('Liste içeriği güncellenemedi.');
-      loadedHeavy.current.add(id);
+
+      if (KizilkanNativeCore.available) {
+        // v15.2.4: güncelleme sonrası dev katalogu React state'te bırakma.
+        // Room canonical'dır; metadata sayacı korunur, ağır diziler boşaltılır.
+        const compact = fromMeta(toMeta(merged));
+        const latest = playlistsRef.current.map(pl => pl.id === id ? compact : pl);
+        playlistsRef.current = latest;
+        setPlaylists(latest);
+        loadedHeavy.current.delete(id);
+      } else {
+        loadedHeavy.current.add(id);
+      }
     }
     // İki "Tümünü Güncelle" worker'ı aynı anda farklı playlistleri bitirebilir.
     // Disk yazımı sürerken başka worker ref'i ilerletmişse eski `next` snapshot'ını

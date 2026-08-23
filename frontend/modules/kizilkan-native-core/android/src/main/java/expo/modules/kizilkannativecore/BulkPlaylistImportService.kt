@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * - JS thread uzun Xtream katalog indirme/JSON normalize/yazma işini taşımaz.
  * - Uygulama arka plana alındığında foreground service çalışmaya devam eder.
  * - Her hesap bağımsız job'dur; tek sorunlu hesap diğerlerini bloke etmez.
- * - Başarılı hesaplar Room + legacy heavy dosyaya atomik/kalıcı yazılır.
+ * - Başarılı hesaplar Room/SQLite canonical store'a atomik/kalıcı yazılır; eski legacy heavy kopya doğrulama sonrası temizlenir.
  * - SharedPreferences snapshot'a parola/token yazılmaz.
  */
 class BulkPlaylistImportService : Service() {
@@ -206,17 +206,11 @@ class BulkPlaylistImportService : Service() {
   }
 
   private fun persistPlaylist(id: String, channels: JSONArray, vod: JSONArray, series: JSONArray) {
-    val dir = File(filesDir, "kizilkan/playlists")
-    if (!dir.exists() && !dir.mkdirs()) throw IllegalStateException("Playlist klasörü oluşturulamadı")
-    val safe = id.replace(Regex("[^a-zA-Z0-9_.-]"), "_")
-    val target = File(dir, "$safe.json")
-    val temp = File(dir, "$safe.json.tmp")
-    val root = JSONObject().put("channels", channels).put("vod", vod).put("series", series)
-    temp.bufferedWriter(Charsets.UTF_8).use { it.write(root.toString()) }
-    if (target.exists() && !target.delete()) throw IllegalStateException("Eski playlist dosyası değiştirilemedi")
-    if (!temp.renameTo(target)) throw IllegalStateException("Playlist dosyası atomik taşınamadı")
-
+    // v15.2.4: Room/SQLite canonical store. Bulk import artık aynı katalogu
+    // ikinci kez legacy heavy JSON dosyasına yazmaz. Backup/legacy hydrate
+    // gerektiğinde Native Core Room'dan yeniden oluşturur.
     val db = KizilkanNativeDatabase.get(applicationContext)
+    val started = android.os.SystemClock.elapsedRealtime()
     db.runInTransaction {
       val dao = db.mediaDao()
       dao.deletePlaylist(id)
@@ -226,16 +220,21 @@ class BulkPlaylistImportService : Service() {
       db.snapshotDao().put(
         PlaylistSnapshotEntity(
           playlistId = id,
-          sourceStamp = target.lastModified(),
-          sourceSize = target.length(),
+          sourceStamp = 0L,
+          sourceSize = 0L,
           channelsCount = channels.length(),
           vodCount = vod.length(),
           seriesCount = series.length(),
           importedAtEpochMs = System.currentTimeMillis(),
-          importMs = 0L,
+          importMs = android.os.SystemClock.elapsedRealtime() - started,
         )
       )
     }
+    // Önceki sürümden kalan duplicate heavy dosya varsa yalnız başarılı Room
+    // transaction sonrasında temizle.
+    val safe = id.replace(Regex("[^a-zA-Z0-9_.-]"), "_")
+    val legacy = File(filesDir, "kizilkan/playlists/$safe.json")
+    if (legacy.exists()) legacy.delete()
   }
 
   private fun insertCollection(dao: MediaItemDao, playlistId: String, kind: String, arr: JSONArray) {
@@ -330,7 +329,7 @@ class BulkPlaylistImportService : Service() {
       conn.readTimeout = timeout
       conn.requestMethod = "GET"
       conn.setRequestProperty("Accept", "application/json")
-      conn.setRequestProperty("User-Agent", "KIZILKAN-PLAYER-ELITE/15.2.3")
+      conn.setRequestProperty("User-Agent", "KIZILKAN-PLAYER-ELITE/15.2.4")
       val code = conn.responseCode
       if (code !in 200..299) throw IllegalStateException("HTTP $code")
       return conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }

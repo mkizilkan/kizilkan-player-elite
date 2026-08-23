@@ -3,7 +3,8 @@ import { requireNativeModule } from "expo-modules-core";
 type NativeSnapshot = {
   mode?: "single" | "bulk" | "unified"; running?: boolean; cancelled?: boolean; paused?: boolean;
   tested?: number; total?: number; accountTested?: number; accountTotal?: number; accountIndex?: number;
-  panelTested?: number; panelTotal?: number; found?: number; panelName?: string; error?: string; matches?: any[];
+  panelTested?: number; panelTotal?: number; found?: number; panelName?: string; currentServer?: string; error?: string; matches?: any[];
+  accountStatuses?: Array<{ accountIndex:number; sourceRow?:number; name?:string; state:string; tested:number; total:number; remaining:number; found:number }>;
 };
 
 let native: any = null;

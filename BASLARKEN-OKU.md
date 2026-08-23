@@ -26,3 +26,9 @@ Detay için sırasıyla:
 1. `AI-PROJE-DEVIR-BAGLAM.md`
 2. `SURUM-NOTU-GPT-ELITE-v15.2.3-RC1.md`
 3. `REGRESYON-DENETIM-GPT-ELITE-v15.2.3-RC1.md`
+
+## v15.2.4-RC1 NOTU
+Native Core Phase 2: Android playlist canonical store Room/SQLite'dır; legacy heavy JSON yalnız migration/fallback. Native M3U + Native EPG + Room paging + unified discovery progress + native player session arbiter Phase 1 eklenmiştir. Ayrıntı: AI-PROJE-DEVIR-BAGLAM.md ve SURUM-NOTU-GPT-ELITE-v15.2.4-RC1.md.
+
+## v15.2.5-RC1 NOTU
+Güncel aktif sürüm: v15.2.5-RC1. Native Core Phase 2 korunur; son audit ile chunked native playlist staging ve Chromecast remote authority/rebind/handoff hardening eklendi. Ayrıntı için `AI-PROJE-DEVIR-BAGLAM.md` ve `SURUM-NOTU-GPT-ELITE-v15.2.5-RC1.md` okunmalıdır.
