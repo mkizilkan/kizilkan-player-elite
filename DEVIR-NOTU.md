@@ -1,21 +1,21 @@
-# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.0-RC1
+# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.1-RC1
 
-**Native Core Migration Phase 1 başladı.** Ağır playlist JSON parse Android Kotlin Native Core'a, panel bilinmiyor çoklu hesap taraması foreground native service'e taşındı. React Native UI korunuyor. MPV dependency 1.0.0 olarak korunuyor.
+**Native Data Core / Room + SQLite Phase 1 aktif.** Büyük playlist verisi Room/SQLite indeksine alınır; ana Canlı ekran yalnız görünür sayfayı native sorgular. Native background scan ve MPV 1.0.0 korunur.
 
-Kritik amaç: playlist seçimi sonrası 5–10 dakika Pressable/navigation kilitlenmesini ve uygulama background'a alınınca çoklu hesap taramasının durmasını kökten gidermek. Bu sürüm gerçek cihaz/GitHub build ile doğrulanmadan stabil sayılmaz.
+Kritik amaç: playlist seçimi sonrası 5–10 dakika Pressable/navigation kilitlenmesini dev JS koleksiyonlarını kaldırarak kökten gidermek. Bu RC GitHub Room/KSP build ve gerçek cihaz testi ile doğrulanmadan stabil sayılmaz.
 
 ---
 
 # KIZILKAN PLAYER ELITE — DEVİR NOTU
 
-**Güncel çalışma:** v15.1.1-RC1
+**Güncel çalışma:** v15.2.1-RC1 — Room/SQLite Native Data Core
 
 Bu kısa dosya yalnız yönlendirmedir. Yeni sohbet/model önce **`AI-PROJE-DEVIR-BAGLAM.md`** dosyasını tamamen okumalıdır; ayrıntılı mimari, gerçek cihaz bulguları, libmpv 1.0.0 migration, Scan Engine v2, Settings UI düzeltmesi, CI/signing ve kalan işler oradadır.
 
 ## Güncel teknik kimlik
 
-- Uygulama: `15.1.1`
-- Android versionCode: `150101`
+- Uygulama: `15.2.1`
+- Android versionCode: `150201`
 - Player Engine: `1.0.0-RC`
 - Native MPV: `dev.jdtech.mpv:libmpv:1.0.0`
 - Motor zinciri: **Media3 → MPV/FFmpeg → VLC**
@@ -24,7 +24,7 @@ Bu kısa dosya yalnız yönlendirmedir. Yeni sohbet/model önce **`AI-PROJE-DEVI
 
 ## Son kanıtlı APK
 
-**APK v15.0.4 DERLENDI**, imza/SHA gate geçti ve gerçek telefona kuruldu. v15.1.1-RC1 henüz GitHub full build + gerçek cihaz kabul testinden geçmedi; başarılı gibi sunulmayacaktır.
+**APK v15.0.4 DERLENDI**, imza/SHA gate geçti ve gerçek telefona kuruldu. v15.2.1-RC1 henüz GitHub Room/KSP full build + gerçek cihaz kabul testinden geçmedi; başarılı gibi sunulmayacaktır.
 
 ## Bu RC'de ana değişiklikler
 
@@ -43,3 +43,13 @@ Bu kısa dosya yalnız yönlendirmedir. Yeni sohbet/model önce **`AI-PROJE-DEVI
 2. Uygun dependency ortamında `npx tsc --noEmit`
 3. GitHub Actions ile libmpv 1.0.0 Kotlin/release build
 4. 4K MPV + 20 ZAP + resume + VLC VOD + scan + UI gerçek cihaz matrisi
+
+
+## v15.2.1-RC1 Native Data Core ek not
+
+- Room 2.8.3 + SQLite indexed store eklendi.
+- KSP, Expo root `kspVersion` ile bağlandı.
+- Playlist snapshot + media_items tabloları ve DAO paging/category/item sorguları var.
+- Ana Canlı ekran Android'de Room paging kullanır; ilk 80 kayıt + onEndReached ile devam sayfası.
+- Özel kullanıcı gruplarında mevcut davranışı korumak için legacy hydrate fallback devam eder.
+- Bu RC'nin ilk kritik kapısı GitHub `:kizilkan-native-core:kspReleaseKotlin` / `compileReleaseKotlin` ve `tsc --noEmit` olacaktır.

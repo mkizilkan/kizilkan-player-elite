@@ -7,144 +7,284 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.File
+import java.text.Normalizer
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * KIZILKAN Native Core — Phase 1
+ * KIZILKAN Native Data Core — Room/SQLite Phase 1
  *
- * Büyük playlist JSON parse işini Hermes/JS thread'den çıkarır. Expo
- * AsyncFunction varsayılan olarak JS runtime thread'inden farklı native queue'da
- * çalışır. Böylece native ScrollView akıcıyken Pressable/navigation event'lerinin
- * dakikalarca beklemesine yol açan JSON.parse darboğazı kaldırılır.
+ * Kural: dev playlist koleksiyonlari JS/Hermes belleğine yalnız legacy ekran
+ * gerçekten isterse taşınır. Normal kategori/search/page sorguları Room/SQLite
+ * üzerinde indeksli çalışır ve React'e yalnız görünen sayfa döner.
  */
 class KizilkanNativeCoreModule : Module() {
-  data class CacheEntry(val stamp: Long, val size: Long, val root: JSONObject, val parseMs: Long)
+  data class IndexResult(val snapshot: PlaylistSnapshotEntity, val cacheHit: Boolean)
 
   companion object {
-    private val cache = ConcurrentHashMap<String, CacheEntry>()
-    private val telemetry = ConcurrentHashMap<String, Map<String, Any?>>()
+    private val telemetry = ConcurrentHashMap<String, Map<String, Any>>()
+    private val invalidated = ConcurrentHashMap.newKeySet<String>()
+    private val indexLocks = ConcurrentHashMap<String, Any>()
+    private const val BATCH_SIZE = 750
   }
 
   override fun definition() = ModuleDefinition {
     Name("KizilkanNativeCore")
 
-    AsyncFunction("warmPlaylist") { id: String -> summary(id, loadEntry(id)) }
+    AsyncFunction("warmPlaylist") { id: String ->
+      val result = ensureIndexed(id)
+      summary(result.snapshot, cacheHit = result.cacheHit)
+    }
 
     AsyncFunction("readPlaylistHeavy") { id: String ->
       val started = SystemClock.elapsedRealtime()
-      val entry = loadEntry(id)
-      val converted = jsonObjectToMap(entry.root)
-      telemetry[id] = (telemetry[id] ?: emptyMap()) + mapOf(
-        "nativeReadMs" to (SystemClock.elapsedRealtime() - started),
-        "bytes" to entry.size,
-        "parseMs" to entry.parseMs,
+      val snapshot = ensureIndexed(id).snapshot
+      val db = database()
+      // Legacy ekran sözleşmesi: tüm koleksiyon istenirse bile JSON.parse JS'de
+      // yapılmaz. Room'dan yeniden kurulur. Yeni ekranlar queryItems kullanmalı.
+      val result = mapOf<String, Any>(
+        "channels" to db.mediaDao().allRaw(id, "live").map(::rawToMap),
+        "vod" to db.mediaDao().allRaw(id, "vod").map(::rawToMap),
+        "series" to db.mediaDao().allRaw(id, "series").map(::rawToMap),
       )
-      converted
+      updateTelemetry(id, mapOf(
+        "legacyHydrateMs" to (SystemClock.elapsedRealtime() - started),
+        "legacyHydrate" to true,
+        "channels" to snapshot.channelsCount,
+        "vod" to snapshot.vodCount,
+        "series" to snapshot.seriesCount,
+      ))
+      result
     }
 
-    AsyncFunction("getPlaylistSummary") { id: String -> summary(id, loadEntry(id)) }
+    AsyncFunction("getPlaylistSummary") { id: String ->
+      val result = ensureIndexed(id)
+      summary(result.snapshot, cacheHit = result.cacheHit)
+    }
 
     AsyncFunction("getCategories") { id: String, kind: String ->
-      val arr = collection(loadEntry(id).root, kind)
-      val counts = linkedMapOf<String, Int>()
-      for (i in 0 until arr.length()) {
-        val o = arr.optJSONObject(i) ?: continue
-        val g = o.optString("group", "").trim().ifEmpty { "Diğer" }
-        counts[g] = (counts[g] ?: 0) + 1
+      ensureIndexed(id)
+      database().mediaDao().categories(id, normalizeKind(kind)).map {
+        mapOf<String, Any>("name" to it.name, "count" to it.count)
       }
-      counts.entries.map { mapOf<String, Any>("name" to it.key, "count" to it.value) }
     }
 
     AsyncFunction("queryItems") { id: String, kind: String, group: String, search: String, offset: Int, limit: Int ->
-      val arr = collection(loadEntry(id).root, kind)
-      val wantedGroup = group.trim()
-      val q = search.trim().lowercase()
+      ensureIndexed(id)
+      val dao = database().mediaDao()
+      val k = normalizeKind(kind)
+      val wantedGroup = group.trim().ifEmpty { "__all__" }
+      val q = normalizeSearch(search)
       val start = offset.coerceAtLeast(0)
-      val take = limit.coerceIn(1, 500)
-      val out = ArrayList<Map<String, Any?>>(take)
-      var matched = 0
-      var scanIndex = 0
-      while (scanIndex < arr.length() && out.size < take) {
-        val o = arr.optJSONObject(scanIndex)
-        scanIndex += 1
-        if (o == null) continue
-        val g = o.optString("group", "").trim().ifEmpty { "Diğer" }
-        if (wantedGroup.isNotEmpty() && wantedGroup != "__all__" && g != wantedGroup) continue
-        if (q.isNotEmpty()) {
-          val hay = buildString {
-            append(o.optString("name", "")); append(' ')
-            append(g); append(' ')
-            append(o.optString("tvg_name", "")); append(' ')
-            append(o.optString("genre", "")); append(' ')
-            append(o.optString("cast", "")); append(' ')
-            append(o.optString("director", ""))
-          }.lowercase()
-          if (!hay.contains(q)) continue
-        }
-        if (matched++ < start) continue
-        out.add(jsonObjectToMap(o))
-      }
-      mapOf<String, Any>("items" to out, "offset" to start, "returned" to out.size, "hasMore" to (scanIndex < arr.length()))
+      val take = limit.coerceIn(1, 250)
+      val total = dao.queryCount(id, k, wantedGroup, q)
+      val raw = dao.queryRaw(id, k, wantedGroup, q, start, take)
+      val items = raw.map(::rawToMap)
+      mapOf<String, Any>(
+        "items" to items,
+        "offset" to start,
+        "returned" to items.size,
+        "total" to total,
+        "hasMore" to (start + items.size < total),
+      )
     }
 
     AsyncFunction("getItem") { id: String, kind: String, itemId: String ->
-      val arr = collection(loadEntry(id).root, kind)
-      for (i in 0 until arr.length()) {
-        val o = arr.optJSONObject(i) ?: continue
-        if (o.optString("id") == itemId) return@AsyncFunction jsonObjectToMap(o)
-      }
-      null
+      ensureIndexed(id)
+      database().mediaDao().getItemRaw(id, normalizeKind(kind), itemId)?.let(::rawToMap)
     }
 
-    Function("invalidatePlaylist") { id: String -> cache.remove(id); telemetry.remove(id); true }
-    Function("clearCache") { cache.clear(); telemetry.clear(); true }
-    Function("getTelemetry") { id: String -> telemetry[id] ?: emptyMap<String, Any?>() }
+    AsyncFunction("reindexPlaylist") { id: String ->
+      invalidated.add(id)
+      val result = ensureIndexed(id)
+      summary(result.snapshot, cacheHit = false)
+    }
+
+    Function("invalidatePlaylist") { id: String ->
+      // DB'yi main thread'de silmeyiz. Sonraki AsyncFunction stamp/size kontrolü
+      // yapıp atomik transaction ile yeniden indeksler.
+      invalidated.add(id)
+      true
+    }
+
+    AsyncFunction("removePlaylistIndex") { id: String ->
+      val db = database()
+      db.runInTransaction {
+        db.mediaDao().deletePlaylist(id)
+        db.snapshotDao().delete(id)
+      }
+      invalidated.remove(id)
+      telemetry.remove(id)
+      indexLocks.remove(id)
+      true
+    }
+
+    AsyncFunction("clearCache") {
+      val db = database()
+      db.runInTransaction {
+        db.mediaDao().clear()
+        db.snapshotDao().clear()
+      }
+      invalidated.clear()
+      telemetry.clear()
+      indexLocks.clear()
+      true
+    }
+
+    Function("getTelemetry") { id: String -> telemetry[id] ?: emptyMap<String, Any>() }
   }
+
+  private fun context() = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+  private fun database() = KizilkanNativeDatabase.get(context())
 
   private fun safeId(id: String) = id.replace(Regex("[^a-zA-Z0-9_.-]"), "_")
+  private fun playlistFile(id: String): File = File(context().filesDir, "kizilkan/playlists/${safeId(id)}.json")
 
-  private fun playlistFile(id: String): File {
-    val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
-    return File(context.filesDir, "kizilkan/playlists/${safeId(id)}.json")
+  private fun snapshotMatchesFile(id: String, snapshot: PlaylistSnapshotEntity): Boolean {
+    val file = playlistFile(id)
+    return file.exists() && snapshot.sourceStamp == file.lastModified() && snapshot.sourceSize == file.length() && !invalidated.contains(id)
   }
 
-  private fun loadEntry(id: String): CacheEntry {
+  private fun ensureIndexed(id: String): IndexResult {
+    // warmPlaylist/queryItems/getCategories aynı anda tetiklenebilir. Aynı
+    // playlist için çift parse + iki DELETE/INSERT transaction koşmasın.
+    val lock = indexLocks.getOrPut(id) { Any() }
+    synchronized(lock) {
+      return ensureIndexedLocked(id)
+    }
+  }
+
+  private fun ensureIndexedLocked(id: String): IndexResult {
     val file = playlistFile(id)
     if (!file.exists()) throw IllegalStateException("Playlist veri dosyası bulunamadı: $id")
-    val stamp = file.lastModified()
-    val size = file.length()
-    val cached = cache[id]
-    if (cached != null && cached.stamp == stamp && cached.size == size) {
-      telemetry[id] = mapOf("cacheHit" to true, "bytes" to size, "parseMs" to cached.parseMs)
-      return cached
+    val db = database()
+    val existing = db.snapshotDao().get(id)
+    if (existing != null && snapshotMatchesFile(id, existing)) {
+      updateTelemetry(id, mapOf(
+        "roomCacheHit" to true,
+        "bytes" to existing.sourceSize,
+        "importMs" to existing.importMs,
+        "channels" to existing.channelsCount,
+        "vod" to existing.vodCount,
+        "series" to existing.seriesCount,
+      ))
+      return IndexResult(existing, true)
     }
+
     val started = SystemClock.elapsedRealtime()
     val text = file.bufferedReader(Charsets.UTF_8).use { it.readText() }
     val root = JSONTokener(text).nextValue() as? JSONObject
       ?: throw IllegalStateException("Playlist veri dosyası nesne değil: $id")
-    val parseMs = SystemClock.elapsedRealtime() - started
-    val entry = CacheEntry(stamp, size, root, parseMs)
-    cache[id] = entry
-    telemetry[id] = mapOf(
-      "cacheHit" to false, "bytes" to size, "parseMs" to parseMs,
-      "channels" to (root.optJSONArray("channels")?.length() ?: 0),
-      "vod" to (root.optJSONArray("vod")?.length() ?: 0),
-      "series" to (root.optJSONArray("series")?.length() ?: 0),
-    )
-    return entry
+
+    val channels = root.optJSONArray("channels") ?: JSONArray()
+    val vod = root.optJSONArray("vod") ?: JSONArray()
+    val series = root.optJSONArray("series") ?: JSONArray()
+
+    db.runInTransaction {
+      val dao = db.mediaDao()
+      dao.deletePlaylist(id)
+      insertCollection(dao, id, "live", channels)
+      insertCollection(dao, id, "vod", vod)
+      insertCollection(dao, id, "series", series)
+      val importMs = SystemClock.elapsedRealtime() - started
+      db.snapshotDao().put(
+        PlaylistSnapshotEntity(
+          playlistId = id,
+          sourceStamp = file.lastModified(),
+          sourceSize = file.length(),
+          channelsCount = channels.length(),
+          vodCount = vod.length(),
+          seriesCount = series.length(),
+          importedAtEpochMs = System.currentTimeMillis(),
+          importMs = importMs,
+        )
+      )
+    }
+
+    invalidated.remove(id)
+    val snapshot = db.snapshotDao().get(id) ?: throw IllegalStateException("Room snapshot yazılamadı: $id")
+    updateTelemetry(id, mapOf(
+      "roomCacheHit" to false,
+      "bytes" to snapshot.sourceSize,
+      "importMs" to snapshot.importMs,
+      "channels" to snapshot.channelsCount,
+      "vod" to snapshot.vodCount,
+      "series" to snapshot.seriesCount,
+      "database" to "Room/SQLite",
+      "batchSize" to BATCH_SIZE,
+    ))
+    return IndexResult(snapshot, false)
   }
 
-  private fun summary(id: String, entry: CacheEntry): Map<String, Any?> = mapOf(
-    "id" to id, "bytes" to entry.size, "parseMs" to entry.parseMs,
-    "channels" to (entry.root.optJSONArray("channels")?.length() ?: 0),
-    "vod" to (entry.root.optJSONArray("vod")?.length() ?: 0),
-    "series" to (entry.root.optJSONArray("series")?.length() ?: 0),
+  private fun insertCollection(dao: MediaItemDao, playlistId: String, kind: String, arr: JSONArray) {
+    val batch = ArrayList<MediaItemEntity>(BATCH_SIZE)
+    for (i in 0 until arr.length()) {
+      val obj = arr.optJSONObject(i) ?: continue
+      val itemId = obj.optString("id", "").trim().ifEmpty {
+        obj.optString("stream_id", "").trim().ifEmpty {
+          obj.optString("series_id", "").trim().ifEmpty { "row-$i" }
+        }
+      }
+      val name = obj.optString("name", "")
+      val group = obj.optString("group", "").trim().ifEmpty { "Diğer" }
+      val normalizedName = normalizeSearch(name)
+      val searchText = normalizeSearch(buildString {
+        append(name); append(' ')
+        append(group); append(' ')
+        append(obj.optString("tvg_name", "")); append(' ')
+        append(obj.optString("genre", "")); append(' ')
+        append(obj.optString("cast", "")); append(' ')
+        append(obj.optString("director", ""))
+      })
+      batch.add(
+        MediaItemEntity(
+          rowKey = "$playlistId|$kind|$itemId|$i",
+          playlistId = playlistId,
+          kind = kind,
+          itemId = itemId,
+          name = name,
+          normalizedName = normalizedName,
+          groupName = group,
+          searchText = searchText,
+          sortOrder = i,
+          rawJson = obj.toString(),
+        )
+      )
+      if (batch.size >= BATCH_SIZE) {
+        dao.insertAll(batch.toList())
+        batch.clear()
+      }
+    }
+    if (batch.isNotEmpty()) dao.insertAll(batch)
+  }
+
+  private fun summary(snapshot: PlaylistSnapshotEntity, cacheHit: Boolean): Map<String, Any> = mapOf(
+    "id" to snapshot.playlistId,
+    "bytes" to snapshot.sourceSize,
+    "parseMs" to snapshot.importMs,
+    "importMs" to snapshot.importMs,
+    "channels" to snapshot.channelsCount,
+    "vod" to snapshot.vodCount,
+    "series" to snapshot.seriesCount,
+    "roomIndexed" to true,
+    "cacheHit" to cacheHit,
   )
 
-  private fun collection(root: JSONObject, kind: String): JSONArray = when (kind.lowercase()) {
-    "vod" -> root.optJSONArray("vod") ?: JSONArray()
-    "series" -> root.optJSONArray("series") ?: JSONArray()
-    else -> root.optJSONArray("channels") ?: JSONArray()
+  private fun normalizeKind(kind: String): String = when (kind.lowercase(Locale.ROOT)) {
+    "vod" -> "vod"
+    "series" -> "series"
+    else -> "live"
+  }
+
+  private fun normalizeSearch(value: String): String {
+    val decomposed = Normalizer.normalize(value, Normalizer.Form.NFD)
+      .replace(Regex("\\p{Mn}+"), "")
+    return decomposed.lowercase(Locale.ROOT).replace('ı', 'i').trim()
+  }
+
+  private fun rawToMap(raw: String): Map<String, Any?> {
+    val obj = JSONTokener(raw).nextValue() as? JSONObject ?: return emptyMap()
+    return jsonObjectToMap(obj)
   }
 
   private fun jsonObjectToMap(obj: JSONObject): Map<String, Any?> {
@@ -166,5 +306,9 @@ class KizilkanNativeCoreModule : Module() {
     is JSONArray -> jsonArrayToList(value)
     is Boolean, is Number, is String -> value
     else -> value.toString()
+  }
+
+  private fun updateTelemetry(id: String, patch: Map<String, Any>) {
+    telemetry[id] = (telemetry[id] ?: emptyMap()) + patch
   }
 }

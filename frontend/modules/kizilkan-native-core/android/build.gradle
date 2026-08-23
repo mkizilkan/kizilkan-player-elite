@@ -1,16 +1,38 @@
+buildscript {
+  dependencies {
+    // Expo SDK 54 zaten KSP sürümünü rootProject.kspVersion olarak sağlar.
+    classpath("com.google.devtools.ksp:symbol-processing-gradle-plugin:${rootProject[\"kspVersion\"]}")
+  }
+}
+
 plugins {
   id 'com.android.library'
   id 'expo-module-gradle-plugin'
 }
 
+apply plugin: 'com.google.devtools.ksp'
+
 group = 'expo.modules.kizilkannativecore'
-version = '1.0.0'
+version = '1.1.0'
 
 android {
   namespace "expo.modules.kizilkannativecore"
   defaultConfig {
     minSdkVersion 26
-    versionCode 1
-    versionName "1.0.0"
+    versionCode 2
+    versionName "1.1.0"
   }
+}
+
+dependencies {
+  // v15.2.1-RC1: SQLite motoru + Room type-safe/indexed data layer.
+  // 2.8.3, Room 2.x'in Cursor/JNI performans düzeltmesini içeren olgun hattıdır.
+  def roomVersion = "2.8.3"
+  implementation "androidx.room:room-runtime:${roomVersion}"
+  implementation "androidx.room:room-ktx:${roomVersion}"
+  ksp "androidx.room:room-compiler:${roomVersion}"
+}
+
+ksp {
+  arg("room.generateKotlin", "true")
 }

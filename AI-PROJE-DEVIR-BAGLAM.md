@@ -1,16 +1,18 @@
-# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.0-RC1
+# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.1-RC1
 
-**Native Core Migration Phase 1 başladı.** Ağır playlist JSON parse Android Kotlin Native Core'a, panel bilinmiyor çoklu hesap taraması foreground native service'e taşındı. React Native UI korunuyor. MPV dependency 1.0.0 olarak korunuyor.
+**Native Data Core / Room + SQLite Phase 1 başladı.** v15.2.0-RC1'de Kotlin'e alınan playlist parse katmanı artık yalnız geçici JSONObject cache değildir: playlist verisi Room/SQLite'a atomik batch import edilir, kategori/sayfalama/öğe sorguları DB indekslerinden yapılır. Ana Canlı ekran Android'de dev kanal dizisini otomatik olarak JS/Hermes belleğine hydrate etmek yerine ilk 80 kaydı ister ve aşağı indikçe yeni sayfayı alır.
 
-Kritik amaç: playlist seçimi sonrası 5–10 dakika Pressable/navigation kilitlenmesini ve uygulama background'a alınınca çoklu hesap taramasının durmasını kökten gidermek. Bu sürüm gerçek cihaz/GitHub build ile doğrulanmadan stabil sayılmaz.
+Room sürümü bilinçli olarak **androidx.room 2.8.3** seçildi. Android-only Expo SDK 54 modülü için olgun 2.x hattı tercih edildi; 2.8.3 Cursor/JNI performans düzeltmesini içerir. Room 3.x KMP odaklı breaking yüzeyi bu faza gereksiz risk olarak eklenmedi.
+
+Kritik amaç: playlist seçimi sonrası ScrollView çalışırken Pressable/navigation'ın 5–10 dakika cevap vermemesi semptomunu, dev koleksiyonların JS thread'e taşınmasını azaltarak mimari olarak bitirmek. Bu RC GitHub `tsc --noEmit` + KSP/Room Kotlin compile + Gradle APK ve gerçek cihaz testi geçmeden stabil sayılmaz.
 
 ---
 
 # KIZILKAN PLAYER ELITE — AI PROJE DEVİR / TAM BAĞLAM BELGESİ
 
-> **Güncel çalışma paketi:** **v15.1.1-RC1 — MPV Event Bridge Kotlin type fix / Player Core 1.0 RC / libmpv 1.0.0 / Scan Engine v2**
+> **Güncel çalışma paketi:** **v15.2.1-RC1 — Room/SQLite Native Data Core Phase 1 / Player Core 1.0 RC / libmpv 1.0.0 / Native Scan**
 > **Son doğrulanmış kurulabilir APK:** **v15.0.4**
-> **Durum:** v15.1.0-RC1 GitHub Actions gerçek native buildinde `:mpv-player:compileReleaseKotlin` aşamasına ulaştı ve yalnız iki EventDispatcher payload nullability/type uyuşmazlığında durdu. v15.1.1-RC1 bu kanıtlanmış iki Kotlin hatasını düzeltir; henüz yeniden GitHub full build ve gerçek cihaz kabul testi geçmedi.
+> **Durum:** v15.1.1-RC1 APK derlendi ve gerçek telefona kuruldu. Gerçek cihazda playlist seçimi sonrası bazı ekranlarda native scroll çalışırken buton/navigation 5–10 dakika tepkisiz kalabildi; bu JS thread ağır veri/hydrate iş yükünü hedeflemek için v15.2 Native Core başlatıldı. v15.2.1-RC1 Room/SQLite indexed store ve Canlı ekran paging katmanını ekler; henüz GitHub full build ve cihaz kabul testi geçmedi.
 > **Bu belge zorunludur.** Sohbet mesaj sınırı nedeniyle yeni sohbete geçildiğinde yeni yapay zekâ önce bu dosyayı, sonra en güncel sürüm notu ve regresyon belgesini okumalıdır.
 
 ## 1. SOHBET DEVİR SÖZLEŞMESİ
@@ -40,9 +42,9 @@ Bu dosya eski snapshot gibi bırakılmayacak. `tools/checkplayercore.js`, sürü
 - Temiz GPT GitHub repo: `mkizilkan/kizilkan-player-elite`
 - Telefon çalışma klasörü: `/sdcard/Download/gpt-kizilkan-player-elite`
 - ZIP iç kökü: `gpt-kizilkan-player-elite/`
-- Güncel uygulama sürümü: **15.1.1**
-- Android versionCode: **150101**
-- iOS buildNumber metadata: **15.1.1**
+- Güncel uygulama sürümü: **15.2.1**
+- Android versionCode: **150201**
+- iOS buildNumber metadata: **15.2.1**
 - Player Engine hedef etiketi: **1.0.0-RC** — gerçek cihaz kabul matrisi bitmeden Stable denmez.
 - Native MPV dependency: **`dev.jdtech.mpv:libmpv:1.0.0`**
 
@@ -60,6 +62,30 @@ GitHub Actions v15.1.0-RC1 buildi TypeScript/prebuild katmanlarını geçerek ge
 
 Bu düzeltmenin gerçek başarısı ancak yeni GitHub Kotlin/Gradle buildi ile doğrulanacaktır.
 
+## 2B. v15.2.1-RC1 — ROOM / SQLITE NATIVE DATA CORE
+
+Gerçek cihaz semptomu: playlist seçildikten sonra kanal/ayar listesi native olarak kaydırılabiliyor, fakat Favoriler/Arama/Diziler/Filmler ve ayar butonları 5–10 dakika tıklanamıyordu. Bu semptom React Native'de native scroll'un JS thread kilitliyken hareket edebilmesi, Pressable/navigation handler'larının ise JS event loop beklemesi ile uyumludur. Bu nedenle yalnız React memo/timeout ayarı değil veri mimarisi değiştirildi.
+
+Yeni Android veri yolu:
+
+`bigStore JSON dosyası → Kotlin Native Core → Room/SQLite → indeksli DAO sorguları → yalnız görünür sayfa → React Native UI`
+
+Room şeması:
+- `playlist_snapshots`: playlist dosyasının stamp/size/count/import süresi. Dosya değişmediyse yeniden parse/index yok.
+- `media_items`: live/vod/series öğeleri; kayıpsız `rawJson`, playlist/kind/group/name/search/sort indeksleri.
+- Reindex tek Room transaction içinde yapılır. Eski index silinip yeni index tam yazılamazsa transaction rollback eder.
+- Batch insert 750 kayıtta sınırlandırıldı; tek dev insert listesi oluşturulmaz.
+- `queryItems` LIMIT/OFFSET + toplam sayı döndürür; JS'e varsayılan 80, en fazla 250 kayıt taşınır.
+- `getCategories` SQLite `GROUP BY` ile tüm playlist kategorilerini sayar; ilk sayfadan kategori türetme hatası yok.
+- `getItem` tek öğeyi stream/item id ile getirir.
+- Legacy ekranlar için `readPlaylistHeavy` korunmuştur; özellik kaybı yok. Ancak ana Canlı ekran native paging modunda otomatik heavy hydrate yapmaz.
+- Kullanıcının özel override grupları tam koleksiyon eşleştirmesi istediği için bu ilk fazda güvenli legacy hydrate fallback'i korunur; Phase 2'de native custom-group index'e taşınacaktır.
+- Playlist dosyası silinince Room index'i de `removePlaylistIndex` ile temizlenir.
+
+Build altyapısı: Expo SDK 54'ün root KSP sürümü kullanılır; `androidx.room:room-runtime:2.8.3`, `room-ktx:2.8.3`, `room-compiler:2.8.3` KSP ile eklenmiştir. Room 3.x bu fazda kullanılmaz.
+
+Kabul testi: playlist seçimi sonrası ana Canlı ekran hemen dokunulabilir kalmalı; ilk sayfa görünmeli, aşağı kaydırınca yeni sayfa gelmeli, kategori sayıları tam playlist'i temsil etmeli. GitHub KSP/Kotlin compile ve gerçek cihaz testi yapılmadan çözülmüş sayılmaz.
+
 ## 3. KULLANICI ÇALIŞMA SÖZLEŞMESİ — BAĞLAYICI
 
 1. Kodda gerileme/çıkarma/azaltma yok; her sürüm öncekinin işlevlerini korur ve geliştirir.
@@ -69,7 +95,7 @@ Bu düzeltmenin gerçek başarısı ancak yeni GitHub Kotlin/Gradle buildi ile d
 5. Her kod/paket öncesi çoklu kontrol; dosya adı ve sürüm yükseltilir.
 6. Özenseme/baştan savma yok.
 7. Acele edilmez; kod sıkıştırılıp eksiltilmez.
-8. Büyük geliştirme/entegrasyon öncesi plan sunulur, kullanıcı onayından sonra kodlanır. **v15.1.0-RC1 için ayrıntılı plan kullanıcı tarafından onaylandı.**
+8. Büyük geliştirme/entegrasyon öncesi plan sunulur, kullanıcı onayından sonra kodlanır. **v15.2 Native Core + Room/SQLite migration planı kullanıcı tarafından onaylandı.**
 9. Bahane üretilmez.
 10. Özellikler mümkün olan en yüksek kaliteyle planlanır/kodlanır.
 11. “İncele” talebinde gerçek kaynak satır satır incelenir ve bulgular açıkça anlatılır.
@@ -332,28 +358,28 @@ Hiçbiri yeni player/scan migration bahanesiyle kaldırılmayacak.
 
 **KALAN / SONRAKI ISLER:**
 
-1. v15.1.0-RC1 kaynak paketinin tüm yerel HARD gate'lerini çalıştır ve sonucu kaydet.
-2. Temiz repo üzerinde GitHub Actions çalıştır; `tsc --noEmit`, Expo prebuild ve özellikle `:mpv-player:compileReleaseKotlin` libmpv 1.0.0 migration'ını doğrulasın.
-3. Kotlin/API build hatası varsa upstream 1.0.0 API ile birebir doğrula; 0.5.1 API'ye geri dönme veya `any`/sahte stub ile susturma yok.
-4. Build başarılı olursa aynı gerçek cihazda 4K kanal + ZAP + resume + seek + VLC VOD matrisi çalıştır.
-5. MPV diagnostics ile ses-var-görüntü-yok vakasında codec/hwdec/surface/first-frame ayrımını kanıtla.
-6. Scan Engine v2 gerçek süre/başarı oranlarını 5 profil için ölç; timeout/concurrency değerlerini veriye göre revize et.
-7. Background scan'i gerçek Android lifecycle ile test et; JS background davranışını native service varmış gibi göstermeme.
-8. Settings UI'yi küçük telefon ekranı, font scaling ve TV ekranında test et.
-9. VLC VOD devam ediyorsa request/header/container karşılaştırması yap; dependency değişikliğini kanıt olmadan yapma.
-10. MAG hesabı hâlâ regresyon gösteriyorsa eski çalışan sürümle HTTP seviyesinde karşılaştır.
-11. Bütün kritik gerçek cihaz senaryoları geçmeden Player Engine “1.0.0 Stable” ilan edilmez.
+1. v15.2.1-RC1'i temiz repo üzerinde GitHub Actions'a gönder; `tsc --noEmit`, Expo prebuild, `:kizilkan-native-core:kspReleaseKotlin`, `:kizilkan-native-core:compileReleaseKotlin`, MPV 1.0.0 Kotlin ve Gradle release kapılarını doğrula.
+2. Room/KSP build hatası çıkarsa gerçek compiler satırını upstream Room 2.8.3 / Expo SDK 54 KSP API ile doğrula; Room'u kaldırıp eski dev JSON cache'e geri dönme.
+3. APK başarılı olursa gerçek telefonda playlist seçimi → Canlı ekran testini kronometrele: ilk UI etkileşim süresi, ilk 80 kanal, ilk kategori listesi, 80 sonrası page append ve buton tepki süresi.
+4. 5–10 dakikalık touch lock tekrar ederse `KIZILKAN PERF` telemetry + JS event-loop/render/player event yoğunluğu ölçülerek kalan JS darboğazı bulunacak.
+5. VOD/Series, Search ve Favorites bu Phase 1'de legacy hydrate fallback kullanır. Phase 2'de Room paging/search/favorite ID query'lerine taşınacak; davranış kaybı olmadan geçilecek.
+6. Kullanıcının özel grupları bu Phase 1'de legacy hydrate fallback kullanır. Phase 2'de custom-group üyelik index tablosu eklenecek.
+7. Native Scan foreground/background davranışı gerçek Android lifecycle ile yeniden test edilecek; ekran başka uygulamaya geçince tarama sürmeli, progress/results restore olmalı.
+8. Player testleri ayrıca devam eder: 4K MPV, 20 ZAP, eski ses sızıntısı, Media3/MPV resume, seek, VLC VOD.
+9. RAM ölçümü cold start / playlist indexed / live paging / 1080p / 4K / 20 ZAP için `dumpsys meminfo` ile yapılacak.
+10. APK boyutu için ABI ve `.so` dağılımı çıkarılacak; AAB/ABI split/arm64-only dağıtım ayrı optimizasyon olarak ele alınacak.
+11. Bütün kritik gerçek cihaz senaryoları geçmeden Player Engine “1.0.0 Stable” veya Native Data Core “Stable” ilan edilmez.
 
 ## 16. YENİ SOHBETTE YAPAY ZEKÂNIN İLK YAPACAĞI ŞEYLER
 
 1. Bu dosyayı tamamen oku.
-2. `SURUM-NOTU-GPT-ELITE-v15.1.0-RC1.md` ve `REGRESYON-DENETIM-GPT-ELITE-v15.1.0-RC1.md` dosyalarını oku.
-3. `frontend/app.json`, `frontend/package.json`, MPV `android/build.gradle`, `.github/workflows/build-apk.yml`, `tools/checkplayercore.js` sürüm/dependency değerlerini karşılaştır.
-4. Kullanıcının en son GitHub Actions veya cihaz test çıktısını gerçek durum kabul et; yapılmamış testi varsayma.
-5. `libmpv:1.0.0` ve MPV instance API'nin gerçekten source'ta kaldığını kontrol et.
-6. Scan speed profilleri ve pause/resume/cancel kodunu doğrula.
+2. `SURUM-NOTU-GPT-ELITE-v15.2.1-RC1.md`, `REGRESYON-DENETIM-GPT-ELITE-v15.2.1-RC1.md` ve `PAKET-DOGRULAMA-v15.2.1-RC1.txt` dosyalarını oku.
+3. `frontend/app.json` = 15.2.1 / 150201, `frontend/package.json` = 15.2.1, MPV = libmpv 1.0.0, Room = 2.8.3 olduğunu doğrula.
+4. `frontend/modules/kizilkan-native-core` içinde Room Database/Entity/DAO/KSP build yapısını kontrol et.
+5. Ana Canlı ekranın `nativeLivePaged` + `queryItems` + `getCategories` + `onEndReached` yolunu koruduğunu doğrula.
+6. Kullanıcının en son GitHub Actions veya cihaz test çıktısını gerçek durum kabul et; yapılmamış testi varsayma.
 7. `node ../tools/denetle.js` ve mümkünse gerçek `npx tsc --noEmit` çalıştır.
-8. Yeni paket üretirken sürümü yükselt, sürüm/regresyon notlarını ve **bu belgeyi mutlaka güncelle**.
+8. Yeni paket üretirken sürümü yükselt, sürüm/regresyon/paket doğrulama notlarını ve **bu belgeyi mutlaka güncelle**.
 
 ## 17. GÜVENLİK / GERÇEKLİK
 
@@ -362,4 +388,4 @@ Hiçbiri yeni player/scan migration bahanesiyle kaldırılmayacak.
 - Credential/token logları maskelenir.
 - Bu belge başarıyı simüle etmez.
 - **APK v15.0.4 DERLENDI** ve gerçek telefona kuruldu; bu kanıtlı son referanstır.
-- v15.1.0-RC1 henüz GitHub full build + gerçek cihaz testinden geçmeden “çalışıyor” veya “sorun çözüldü” denmeyecektir.
+- v15.2.1-RC1 henüz GitHub Room/KSP full build + gerçek cihaz testinden geçmeden “çalışıyor” veya “touch lock çözüldü” denmeyecektir.

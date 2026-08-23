@@ -152,7 +152,7 @@ export const bigStore: BigStore = {
       if (info.exists) {
         await f.deleteAsync(path, { idempotent: true });
       }
-      KizilkanNativeCore.invalidatePlaylist(id);
+      try { await KizilkanNativeCore.removePlaylistIndex(id); } catch {}
       return true;
     } catch (e) {
       console.warn("[bigStore.remove] başarısız:", id, e);

@@ -1,4 +1,4 @@
-# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.0-RC1
+# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.1-RC1
 
 **Native Core Migration Phase 1 başladı.** Ağır playlist JSON parse Android Kotlin Native Core'a, panel bilinmiyor çoklu hesap taraması foreground native service'e taşındı. React Native UI korunuyor. MPV dependency 1.0.0 olarak korunuyor.
 
