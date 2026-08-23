@@ -1,4 +1,4 @@
-# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.2-RC1
+# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.3-RC1
 
 **Native Data Core / Room + SQLite Phase 1 aktif.** Büyük playlist verisi Room/SQLite indeksine alınır; ana Canlı ekran yalnız görünür sayfayı native sorgular. Native background scan ve MPV 1.0.0 korunur.
 
@@ -8,14 +8,14 @@ Kritik amaç: playlist seçimi sonrası 5–10 dakika Pressable/navigation kilit
 
 # KIZILKAN PLAYER ELITE — DEVİR NOTU
 
-**Güncel çalışma:** v15.2.2-RC1 — Room/SQLite Native Data Core
+**Güncel çalışma:** v15.2.3-RC1 — Room/SQLite Native Data Core
 
 Bu kısa dosya yalnız yönlendirmedir. Yeni sohbet/model önce **`AI-PROJE-DEVIR-BAGLAM.md`** dosyasını tamamen okumalıdır; ayrıntılı mimari, gerçek cihaz bulguları, libmpv 1.0.0 migration, Scan Engine v2, Settings UI düzeltmesi, CI/signing ve kalan işler oradadır.
 
 ## Güncel teknik kimlik
 
-- Uygulama: `15.2.2`
-- Android versionCode: `150202`
+- Uygulama: `15.2.3`
+- Android versionCode: `150203`
 - Player Engine: `1.0.0-RC`
 - Native MPV: `dev.jdtech.mpv:libmpv:1.0.0`
 - Motor zinciri: **Media3 → MPV/FFmpeg → VLC**
@@ -24,7 +24,7 @@ Bu kısa dosya yalnız yönlendirmedir. Yeni sohbet/model önce **`AI-PROJE-DEVI
 
 ## Son kanıtlı APK
 
-**APK v15.0.4 DERLENDI**, imza/SHA gate geçti ve gerçek telefona kuruldu. v15.2.2-RC1 henüz GitHub Room/KSP full build + gerçek cihaz kabul testinden geçmedi; başarılı gibi sunulmayacaktır.
+**v15.2.2-RC1 APK GitHub Actions ile derlendi ve gerçek telefona kuruldu.** Room/KSP + native bulk import derlenebilirliği kanıtlandı; ancak lifecycle reset, çok-playlist RAM/UI kilidi, discovery ve duplicate import P0 sorunları cihazda devam etti. v15.2.3-RC1 henüz GitHub full build + cihaz kabul testinden geçmedi.
 
 ## Bu RC'de ana değişiklikler
 
@@ -45,7 +45,7 @@ Bu kısa dosya yalnız yönlendirmedir. Yeni sohbet/model önce **`AI-PROJE-DEVI
 4. 4K MPV + 20 ZAP + resume + VLC VOD + scan + UI gerçek cihaz matrisi
 
 
-## v15.2.2-RC1 Native Data Core ek not
+## v15.2.3-RC1 Native Data Core ek not
 
 - Room 2.8.3 + SQLite indexed store eklendi.
 - KSP, Expo root `kspVersion` ile bağlandı.

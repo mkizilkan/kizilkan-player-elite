@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { View, StyleSheet, Platform, useWindowDimensions } from "react-native";
 import { useRouter } from "expo-router";
-import { storage } from "@/src/utils/storage";
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, withSequence, Easing, withDelay,
 } from "react-native-reanimated";
@@ -10,6 +9,7 @@ import { usePlaylists } from "@/src/store/PlaylistContext";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { useProfiles } from "@/src/store/ProfileContext";
 import { KizilkanLogo } from "@/src/components/KizilkanLogo";
+import { getRecentResumePath } from "@/src/utils/appSession";
 
 export default function Index() {
   const router = useRouter();
@@ -45,6 +45,11 @@ export default function Index() {
     if (isLoading || themeLoading || profilesLoading) return;
     const t = setTimeout(async () => {
       /**
+       * v15.2.3 FAST START / SESSION RESTORE
+       * Kısa background/process recreation sonrası kullanıcıyı tekrar profil
+       * seçimine atma. Son güvenli route 15 dakika içinde ise restore edilir.
+       * İlk kurulum ve gerçekten uzun cold-start davranışı eski güvenli akışta.
+       *
        * TEK YÖNLENDİRİCİ (v6.0.0) — akış baştan tutarlı kuruldu.
        *
        * Eski akışta profile-setup / onboarding / add-playlist gevşek bağlıydı
@@ -67,10 +72,15 @@ export default function Index() {
         // Profil var ama hiç liste yok -> liste ekleme adımı.
         router.replace("/onboarding");
       } else {
-        // Her şey hazır -> "Kim izliyor?" ekranı.
-        router.replace("/profile-select");
+        const resume = await getRecentResumePath();
+        if (resume) {
+          router.replace(resume as any);
+        } else {
+          // Uzun cold-start güvenlik davranışı: profil seçimi/PIN korunur.
+          router.replace("/profile-select");
+        }
       }
-    }, 1200);
+    }, 80);
     return () => clearTimeout(t);
   }, [isLoading, themeLoading, profilesLoading, profiles.length, playlists.length, router]);
 

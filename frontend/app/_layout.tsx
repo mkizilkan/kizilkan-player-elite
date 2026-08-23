@@ -26,10 +26,10 @@
  * ---------------------------------------------------------------------------
  */
 
-import { Stack, useRouter } from "expo-router";
+import { Stack, usePathname, useRouter, useSegments } from "expo-router";
 import * as Linking from "expo-linking";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -45,10 +45,11 @@ import { DownloadProvider } from "@/src/store/DownloadContext";
 import { registerQuickActions } from "@/src/utils/quickActions";
 import { requestBaselinePermissions } from "@/src/utils/permissions";
 import { prepareExternalStream } from "@/src/utils/externalOpen";
-import { View } from "react-native";
+import { AppState, View } from "react-native";
 import { PlayerProvider } from "@/src/player/PlayerContext";
 import PlayerHost from "@/src/player/PlayerHost";
 import { TvProvider, useTv } from "@/src/store/TvContext";
+import { markAppBackground, markAppForeground, persistAppPath } from "@/src/utils/appSession";
 
 // Açılış ekranı, fontlar hazır olana kadar ekranda kalsın.
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -61,6 +62,11 @@ const PERMISSION_PROMPT_DELAY_MS = 3000;
 export default function RootLayout() {
   const [loaded, error] = useIconFonts();
   const router = useRouter();
+  const pathname = usePathname();
+  const segments = useSegments();
+  const sessionPath = segments[0] === "(tabs)" && pathname === "/" ? "/(tabs)" : pathname;
+  const pathnameRef = useRef(sessionPath);
+  pathnameRef.current = sessionPath;
 
   /**
    * "ŞUNUNLA AÇ" DESTEĞİ (v4.9.0)
@@ -86,6 +92,23 @@ export default function RootLayout() {
 
     return () => { cancelled = true; try { sub.remove(); } catch {} };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, error]);
+
+  useEffect(() => {
+    if (!loaded && !error) return;
+    void persistAppPath(sessionPath);
+  }, [sessionPath, loaded, error]);
+
+  useEffect(() => {
+    if (!loaded && !error) return;
+    const sub = AppState.addEventListener("change", state => {
+      if (state === "background" || state === "inactive") {
+        void markAppBackground(pathnameRef.current);
+      } else if (state === "active") {
+        void markAppForeground(pathnameRef.current);
+      }
+    });
+    return () => sub.remove();
   }, [loaded, error]);
 
   useEffect(() => {

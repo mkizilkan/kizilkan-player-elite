@@ -11,6 +11,7 @@ import {
   Modal,
   Pressable,
   Image,
+  InteractionManager,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -656,62 +657,59 @@ function ClassicLiveTvScreen() {
     return isCustom ? applyItemOrder(list as any, selectedCat, ordering) : list;
   }, [displayList, selectedCat, overrides, customGroups, ordering]);
 
-  // Fetch EPG for live — supports Xtream (client-side) + XMLTV (backend)
+  // v15.2.3 — EPG ISOLATION: kanal listesi EPG'yi ASLA beklemez. İlk görünür
+  // pencerenin EPG'si etkileşimler bittikten sonra küçük batch ile arkadan gelir.
+  const epgTargets = useMemo(() => (filtered as any[]).slice(0, 16), [filtered]);
+  const epgTargetSignature = useMemo(() => epgTargets.map(c => String(c.stream_id || c.epg_channel_id || c.tvg_id || c.id || "")).join("|"), [epgTargets]);
+
   useEffect(() => {
-    if (tab !== "live" || !activePlaylist) return;
-    const chList = filtered as any[];
-    if (chList.length === 0) return;
+    if (tab !== "live" || !activePlaylist || epgTargets.length === 0) return;
     let cancelled = false;
-    setEpgLoading(true);
-
-    (async () => {
-      try {
-        // Xtream: client-side short_epg per stream
-        if (activePlaylist.source === "xtream" && activePlaylist.xtreamServer && activePlaylist.xtreamUsername && activePlaylist.xtreamPassword) {
-          const cred = {
-            server: activePlaylist.xtreamServer,
-            username: activePlaylist.xtreamUsername,
-            password: activePlaylist.xtreamPassword,
-          };
-          const { xtreamNowNextBatch } = await import("@/src/utils/iptv");
-          const ids = chList.slice(0, 40).map(c => c.stream_id).filter(Boolean) as string[];
-          if (ids.length > 0) {
-            const map = await xtreamNowNextBatch(cred, ids);
-            if (cancelled) return;
-            // Remap keys from stream_id → epg_channel_id (what ChannelRow expects)
-            const out: Record<string, NowNext> = {};
-            for (const ch of chList) {
-              const sid = ch.stream_id;
-              if (sid && map[sid]) {
-                const key = ch.epg_channel_id || ch.tvg_id || sid;
-                const now = map[sid].now;
-                const next = map[sid].next;
-                out[key] = {
-                  now: now ? { title: now.title, description: now.description || undefined, start: now.start_timestamp ? new Date(now.start_timestamp * 1000).toISOString() : now.start, stop: now.stop_timestamp ? new Date(now.stop_timestamp * 1000).toISOString() : now.stop } : null,
-                  next: next ? { title: next.title, description: next.description || undefined, start: next.start_timestamp ? new Date(next.start_timestamp * 1000).toISOString() : next.start, stop: next.stop_timestamp ? new Date(next.stop_timestamp * 1000).toISOString() : next.stop } : null,
-                } as any;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const interaction = InteractionManager.runAfterInteractions(() => {
+      timer = setTimeout(async () => {
+        if (cancelled) return;
+        setEpgLoading(true);
+        try {
+          if (activePlaylist.source === "xtream" && activePlaylist.xtreamServer && activePlaylist.xtreamUsername && activePlaylist.xtreamPassword) {
+            const cred = { server: activePlaylist.xtreamServer, username: activePlaylist.xtreamUsername, password: activePlaylist.xtreamPassword };
+            const { xtreamNowNextBatch } = await import("@/src/utils/iptv");
+            const ids = epgTargets.map(c => c.stream_id).filter(Boolean) as string[];
+            if (ids.length > 0) {
+              const map = await xtreamNowNextBatch(cred, ids);
+              if (cancelled) return;
+              const out: Record<string, NowNext> = {};
+              for (const ch of epgTargets) {
+                const sid = ch.stream_id;
+                if (sid && map[sid]) {
+                  const key = ch.epg_channel_id || ch.tvg_id || sid;
+                  const now = map[sid].now, next = map[sid].next;
+                  out[key] = {
+                    now: now ? { title: now.title, description: now.description || undefined, start: now.start_timestamp ? new Date(now.start_timestamp * 1000).toISOString() : now.start, stop: now.stop_timestamp ? new Date(now.stop_timestamp * 1000).toISOString() : now.stop } : null,
+                    next: next ? { title: next.title, description: next.description || undefined, start: next.start_timestamp ? new Date(next.start_timestamp * 1000).toISOString() : next.start, stop: next.stop_timestamp ? new Date(next.stop_timestamp * 1000).toISOString() : next.stop } : null,
+                  } as any;
+                }
               }
+              if (!cancelled) setEpgMap(prev => ({ ...prev, ...out }));
             }
-            if (!cancelled) setEpgMap(prev => ({ ...prev, ...out }));
+          } else if (activePlaylist.epgUrl) {
+            const ids = epgTargets.map(c => c.epg_channel_id || c.tvg_id).filter((x): x is string => !!x);
+            if (ids.length > 0) {
+              const { getNowNext } = await import("@/src/utils/epg");
+              const res = await getNowNext(activePlaylist.id, ids, activePlaylist.epgUrl);
+              if (!cancelled) setEpgMap(prev => ({ ...prev, ...(res.data as Record<string, NowNext>) }));
+            }
           }
-        } else if (activePlaylist.epgUrl) {
-          // CİHAZ-İÇİ XMLTV (backend YOK)
-          const ids = chList
-            .map(c => c.epg_channel_id || c.tvg_id)
-            .filter((x): x is string => !!x)
-            .slice(0, 200);
-          if (ids.length > 0) {
-            const { getNowNext } = await import("@/src/utils/epg");
-            const res = await getNowNext(activePlaylist.id, ids, activePlaylist.epgUrl);
-            if (!cancelled) setEpgMap(res.data as Record<string, NowNext>);
-          }
-        }
-      } catch { /* ignore */ }
-      if (!cancelled) setEpgLoading(false);
-    })();
-
-    return () => { cancelled = true; };
-  }, [activePlaylist?.id, activePlaylist?.epgUrl, activePlaylist, filtered, tab]);
+        } catch { /* EPG, kanal listesini bloke eden kritik yol değildir. */ }
+        if (!cancelled) setEpgLoading(false);
+      }, 280);
+    });
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      interaction.cancel();
+    };
+  }, [activePlaylist?.id, activePlaylist?.epgUrl, activePlaylist?.source, activePlaylist?.xtreamServer, activePlaylist?.xtreamUsername, activePlaylist?.xtreamPassword, epgTargetSignature, tab]);
 
   if (!activePlaylist) {
     return (

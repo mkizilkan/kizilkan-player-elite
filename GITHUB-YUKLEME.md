@@ -1,4 +1,4 @@
-# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.2-RC1
+# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.3-RC1
 
 **Native Core Migration Phase 1 başladı.** Ağır playlist JSON parse Android Kotlin Native Core'a, panel bilinmiyor çoklu hesap taraması foreground native service'e taşındı. React Native UI korunuyor. MPV dependency 1.0.0 olarak korunuyor.
 
@@ -59,7 +59,7 @@ Daha sonra:
 git add .
 git diff --cached --check
 git status
-git commit -m "feat: KIZILKAN PLAYER ELITE v15.1.1 RC1 player core mpv1 scan v2 ui fixes"
+git commit -m "feat: KIZILKAN PLAYER ELITE v15.2.3 RC1 lifecycle unified discovery native core"
 git push origin main
 ```
 

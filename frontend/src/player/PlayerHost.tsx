@@ -427,6 +427,7 @@ export default function PlayerHost() {
   // Aynı kanalın alternatif .ts/.m3u8 URL'sine geçerken aktif motoru koru.
   const nextSessionProfileRef = useRef<EngineProfile | null>(null);
   const successfulSessionRef = useRef<number | null>(null);
+  const successfulSessionAtRef = useRef(0);
   const [activeSessionId, setActiveSessionId] = useState(0);
   const [profileReadySessionId, setProfileReadySessionId] = useState(0);
   const [v2Profile, setV2Profile] = useState<EngineProfile>({ engine: "media3", surface: "surfaceView" });
@@ -578,6 +579,7 @@ export default function PlayerHost() {
     setProfileReadySessionId(0);
     transitioningSessionRef.current = null;
     successfulSessionRef.current = null;
+    successfulSessionAtRef.current = 0;
     resumeAttemptRef.current = { key: "", target: 0, attempts: 0, confirmed: false };
     vlcPlayingRef.current = false;
     mpvPlayingRef.current = false;
@@ -753,6 +755,12 @@ export default function PlayerHost() {
       }
 
       if (event?.error) {
+        // v15.2.3: first-frame/playing başarı callback'inden hemen sonra gelen
+        // bayat source error çalışan görüntüyü alternatif URL'ye sürüklemesin.
+        if (successfulSessionRef.current === sid && Date.now() - successfulSessionAtRef.current < 1800) {
+          setRecoveryMessage(null);
+          return;
+        }
         const classified = classifyPlaybackError(event.error);
 
         // Xtream bazı panellerde aynı stream'i yalnız .ts veya yalnız .m3u8
@@ -844,6 +852,7 @@ export default function PlayerHost() {
         setIsBuffering(false);
         if (successfulSessionRef.current !== sid) {
           successfulSessionRef.current = sid;
+          successfulSessionAtRef.current = Date.now();
           recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
         }
       }
@@ -1924,6 +1933,7 @@ export default function PlayerHost() {
     setIsBuffering(false);
     if (successfulSessionRef.current !== sid) {
       successfulSessionRef.current = sid;
+          successfulSessionAtRef.current = Date.now();
       recordEngineSuccess(String(channel?.id || ""), profile, firstFrameMs).catch(() => {});
     }
     return true;
@@ -2301,6 +2311,7 @@ export default function PlayerHost() {
                 setIsBuffering(false);
                 if (successfulSessionRef.current !== activeSessionId) {
                   successfulSessionRef.current = activeSessionId;
+                  successfulSessionAtRef.current = Date.now();
                   recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
                 }
               }}
@@ -2349,6 +2360,7 @@ export default function PlayerHost() {
                   setIsBuffering(false);
                   if (successfulSessionRef.current !== activeSessionId) {
                     successfulSessionRef.current = activeSessionId;
+                  successfulSessionAtRef.current = Date.now();
                     recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
                   }
                 }
@@ -2390,6 +2402,10 @@ export default function PlayerHost() {
                 const profileKey = v2ProfileKey;
 
                 void (async () => {
+                  if (successfulSessionRef.current === sid && Date.now() - successfulSessionAtRef.current < 1800) {
+                    setRecoveryMessage(null);
+                    return;
+                  }
                   // Playing geldiği halde Vout/track/time eventleri birkaç yüz ms sonra
                   // gelebilir. Bu kısa pencere spurious EncounteredError olayının çalışan
                   // görüntüyü kapatmasını engeller; snapshot/probe kullanılmaz.
@@ -2576,6 +2592,7 @@ export default function PlayerHost() {
                   setIsBuffering(false);
                   if (successfulSessionRef.current !== activeSessionId) {
                     successfulSessionRef.current = activeSessionId;
+                  successfulSessionAtRef.current = Date.now();
                     recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
                   }
                 }
@@ -2634,6 +2651,7 @@ export default function PlayerHost() {
                   setIsBuffering(false);
                   if (successfulSessionRef.current !== activeSessionId) {
                     successfulSessionRef.current = activeSessionId;
+                  successfulSessionAtRef.current = Date.now();
                     recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
                   }
                 }

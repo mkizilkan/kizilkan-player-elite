@@ -1,6 +1,6 @@
-# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.2-RC1
+# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.3-RC1
 
-**Native Data Core / Room + SQLite Phase 1 sürüyor.** v15.2.2-RC1, v15.2.1 Room store/paging temelini korurken iki P0 düzeltme ekler: GitHub build'i durduran Groovy/KSP kaçış hatası düzeltilmiştir ve seçili çoklu Xtream hesaplarının katalog indirme/normalize/kaydetme işi gerçek Android foreground native service'e taşınmıştır. Başarılı hesaplar bağımsız kalıcılaştırılır; tek sorunlu hesap diğerlerini bloke etmez; Pause/Resume/Stop ve background devamlılığı native job durumuyla yönetilir.
+**Native Core Phase 2 başlıyor.** v15.2.3-RC1, v15.2.2 Room + native bulk import temelini korurken gerçek cihazda kanıtlanan lifecycle reset, çok-playlist RAM baskısı, karma discovery ve duplicate import sorunlarını hedefler: GitHub build'i durduran Groovy/KSP kaçış hatası düzeltilmiştir ve seçili çoklu Xtream hesaplarının katalog indirme/normalize/kaydetme işi gerçek Android foreground native service'e taşınmıştır. Başarılı hesaplar bağımsız kalıcılaştırılır; tek sorunlu hesap diğerlerini bloke etmez; Pause/Resume/Stop ve background devamlılığı native job durumuyla yönetilir.
 
 Room sürümü bilinçli olarak **androidx.room 2.8.3** seçildi. Android-only Expo SDK 54 modülü için olgun 2.x hattı tercih edildi; 2.8.3 Cursor/JNI performans düzeltmesini içerir. Room 3.x KMP odaklı breaking yüzeyi bu faza gereksiz risk olarak eklenmedi.
 
@@ -10,9 +10,9 @@ Kritik amaç: playlist seçimi sonrası ScrollView çalışırken Pressable/navi
 
 # KIZILKAN PLAYER ELITE — AI PROJE DEVİR / TAM BAĞLAM BELGESİ
 
-> **Güncel çalışma paketi:** **v15.2.2-RC1 — Room/SQLite Native Data Core + Native Foreground Bulk Playlist Import / Player Core 1.0 RC / libmpv 1.0.0 / Native Scan**
-> **Son doğrulanmış kurulabilir APK:** **v15.1.1-RC1**
-> **Durum:** v15.2.1-RC1 GitHub build, `kizilkan-native-core/android/build.gradle` satır 4 içindeki literal `\\"` Groovy escape hatası nedeniyle Room/KSP derlemesine ulaşmadan kırıldı. v15.2.2-RC1 bu syntax hatasını düzeltir. Ayrıca gerçek cihazda 8 seçili hesabın 7-8 saat `Cihaza kaydediliyor...` aşamasında kalması P0 kabul edildi ve ekleme işi JS seri pipeline yerine native foreground service + Room pipeline'ına taşındı. Bu RC henüz GitHub full build ve cihaz kabul testi geçmedi.
+> **Güncel çalışma paketi:** **v15.2.3-RC1 — Room/SQLite Native Data Core + Native Foreground Bulk Playlist Import / Player Core 1.0 RC / libmpv 1.0.0 / Native Scan**
+> **Son doğrulanmış kurulabilir APK:** **v15.2.2-RC1** — GitHub build tamamlandı ve gerçek telefona kuruldu; ancak cihaz testinde lifecycle reset, çok-playlist RAM/UI kilidi, discovery ve duplicate import P0 sorunları devam etti.
+> **Durum:** v15.2.2-RC1 GitHub build tamamlandı ve APK gerçek telefona kuruldu. Room/KSP + native bulk import derlenebilirliği kanıtlandı. Gerçek cihaz testinde ise kısa background geçişinde uygulamanın cold-start/profil seçimine düşmesi, çok playlist ile ciddi yavaşlama/dokunma kilidi, aynı Xtream playlistin 3 kez eklenmesi, karma çoklu discovery davranışının eksikliği, EPG gecikmesi ve görüntü varken stale fallback banner görülmesi kanıtlandı. v15.2.3-RC1 bu P0 kümesini hedefler ve henüz GitHub full build/cihaz kabul testi geçmedi.
 > **Bu belge zorunludur.** Sohbet mesaj sınırı nedeniyle yeni sohbete geçildiğinde yeni yapay zekâ önce bu dosyayı, sonra en güncel sürüm notu ve regresyon belgesini okumalıdır.
 
 ## 1. SOHBET DEVİR SÖZLEŞMESİ
@@ -42,9 +42,9 @@ Bu dosya eski snapshot gibi bırakılmayacak. `tools/checkplayercore.js`, sürü
 - Temiz GPT GitHub repo: `mkizilkan/kizilkan-player-elite`
 - Telefon çalışma klasörü: `/sdcard/Download/gpt-kizilkan-player-elite`
 - ZIP iç kökü: `gpt-kizilkan-player-elite/`
-- Güncel uygulama sürümü: **15.2.2**
-- Android versionCode: **150202**
-- iOS buildNumber metadata: **15.2.2**
+- Güncel uygulama sürümü: **15.2.3**
+- Android versionCode: **150203**
+- iOS buildNumber metadata: **15.2.3**
 - Player Engine hedef etiketi: **1.0.0-RC** — gerçek cihaz kabul matrisi bitmeden Stable denmez.
 - Native MPV dependency: **`dev.jdtech.mpv:libmpv:1.0.0`**
 
@@ -409,5 +409,36 @@ Android'de seçili hesap ekleme `BulkPlaylistImportService` adlı foreground nat
 4. Başarısız tek hesabın diğer başarılı hesapları engellemediğinin testi.
 5. Native Room verisinin Live/VOD/Series ekranlarında tam uyumluluğu.
 
-Güncel paket: v15.2.2-RC1
-Güncel sürüm: 15.2.2 / versionCode 150202
+Bu tarihsel fazın paketi: v15.2.2-RC1
+Bu tarihsel fazın sürümü: 15.2.2 / versionCode 150202
+
+
+## 18. v15.2.3-RC1 — LIFECYCLE / UNIFIED DISCOVERY / RAM / ATOMIC IMPORT
+
+### Yeni gerçek cihaz kanıtları
+- Uygulama kısa süre arka planda kalınca siyah/splash ile yeniden başlıyor ve profil seçimine düşüyor; aynı davranış Canlı/Ayarlar/scan ekranlarında görüldü.
+- Tüm playlistler silinince açılış ve kanal geçişi belirgin rahatlıyor; çok playlist varken UI/dokunma ağırlaşıyor.
+- Tek Xtream playlist ekleme UI donduğu sırada aynı hesap üç kez oluştu.
+- Çoklu hesap discovery ekranda 0/sonuç durumuna düşüyor ve başka uygulamaya geçişte UI state kayboluyor.
+- EPG geç yükleniyor ve genel hız hissini düşürüyor.
+- Media3 görüntü üretmişken `Alternatif yayın yolu deneniyor (2/2)` banner'ı kalabildi; bayat error/fallback yarışı kanıtlandı.
+
+### Kök neden odaklı değişiklikler
+1. `PlaylistContext.addPlaylist` artık Android'de heavy dizileri React state'te tutmaz. bigStore yazımı sonrası Room reindex edilir, state metadata-only olur. Playlist değişince aktif olmayan legacy heavy koleksiyonlar RAM'den atılır. Bu, çok playlist → JS heap/native pressure → Android process kill/reset zincirini doğrudan hedefler.
+2. Root session persistence `AppState + usePathname/useSegments` ile son güvenli ekranı ve background zamanını kaydeder. 15 dakika içindeki recreation son ekrana döner; uzun cold-startta profil/PIN güvenliği korunur. Root yönlendirme gecikmesi 1200ms değil 80ms'dir.
+3. Çoklu discovery'nin direct server / serverCode / panelName / auto biçimleri tek `startUnifiedScan` foreground native motorunda per-account candidate set ile çalışır. Uzun tarama JS worker'a bağlı değildir.
+4. Pending bulk scan/import credential eşlemesi yalnız cihaz SecureStore'da tutulur. Foreground service snapshot'ı parola/token içermez. Add Playlist ekranı yeniden mount olduğunda native snapshot'a tekrar bağlanır; import tamamlanan playlist metadata'sı yeniden benimsenebilir.
+5. Xtream playlist id server+username'dan deterministik üretilir ve JS in-flight lock aynı hesabın UI gecikmesi sırasında tekrar kuyruğa girmesini engeller.
+6. EPG yalnız ilk görünür 16 kayıt için UI interactions bittikten sonra başlar; kanal listesinin hazır olması EPG'ye bağlı değildir.
+7. Player first-frame başarı timestamp'i tutulur; başarıdan hemen sonra gelen bayat source/VLC error 1.8 sn penceresinde çalışan session'ı alternatif URL'ye taşıyamaz.
+
+### v15.2.3 zorunlu GitHub/cihaz doğrulaması
+- `tsc --noEmit`, Expo prebuild, panel-scan unified Kotlin, Room/KSP Kotlin, MPV Kotlin, release APK/signing.
+- Canlı/Ayarlar/Add Playlist ekranında 1-5 dk background ve geri dönüş.
+- 5+ büyük playlist ile açılış, UI touch ve RAM.
+- Aynı Xtream hesabını art arda tetikleyip tek kayıt kalması.
+- Karışık çoklu hesap discovery + pause/resume/stop + background restore.
+- EPG ilk görünme süresi ve UI interaktifliği.
+- Görüntü geldikten sonra stale fallback banner/URL switch olmaması.
+
+**KALAN / SONRAKI ISLER:** Search/Favorites/VOD/Series ve custom-group ağır hydrate yollarını Room paging/index query'ye taşımak; RAM `dumpsys meminfo` matrisi; APK ABI/.so boyut analizi; 4K MPV ve 20 ZAP kabul testleri.

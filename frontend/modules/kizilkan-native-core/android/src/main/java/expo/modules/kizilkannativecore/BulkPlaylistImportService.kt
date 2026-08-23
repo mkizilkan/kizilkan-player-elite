@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * v15.2.2-RC1 — Çoklu hesap ekleme için gerçek native foreground pipeline.
+ * v15.2.3-RC1 — Çoklu hesap ekleme için gerçek native foreground pipeline.
  *
  * Amaç:
  * - JS thread uzun Xtream katalog indirme/JSON normalize/yazma işini taşımaz.
@@ -330,7 +330,7 @@ class BulkPlaylistImportService : Service() {
       conn.readTimeout = timeout
       conn.requestMethod = "GET"
       conn.setRequestProperty("Accept", "application/json")
-      conn.setRequestProperty("User-Agent", "KIZILKAN-PLAYER-ELITE/15.2.2")
+      conn.setRequestProperty("User-Agent", "KIZILKAN-PLAYER-ELITE/15.2.3")
       val code = conn.responseCode
       if (code !in 200..299) throw IllegalStateException("HTTP $code")
       return conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }

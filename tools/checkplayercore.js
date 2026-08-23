@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.2 RC1 ROOM NATIVE DATA CORE + BULK IMPORT FIX)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.3 RC1 LIFECYCLE + UNIFIED DISCOVERY + ATOMIC IMPORT)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -124,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.2.2') problem(`app version ${app?.expo?.version} (15.2.2 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150202) problem(`versionCode ${app?.expo?.android?.versionCode} (150202 bekleniyor)`);
+if (app?.expo?.version !== '15.2.3') problem(`app version ${app?.expo?.version} (15.2.3 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150203) problem(`versionCode ${app?.expo?.android?.versionCode} (150203 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -154,7 +154,7 @@ if (!fs.existsSync(handoffPath)) {
 } else {
   const handoff = fs.readFileSync(handoffPath, 'utf8');
   const requiredHandoffTokens = [
-    'v15.2.2-RC1',
+    'v15.2.3-RC1',
     'Media3 → MPV/FFmpeg → VLC',
     'ANDROID_CERT_SHA256',
     'KALAN / SONRAKI ISLER',
@@ -270,6 +270,69 @@ if (fs.existsSync(addPlaylistPath)) {
   requireText(addPlaylist, 'KizilkanNativeCore.pauseBulkImport()', 'bulk import pause UI');
   requireText(addPlaylist, 'KizilkanNativeCore.cancelBulkImport()', 'bulk import stop UI');
 }
+
+
+// v15.2.3-RC1 lifecycle / unified discovery / RAM / EPG / stale fallback hard gates.
+const appSessionPath = path.join(root, 'src/utils/appSession.ts');
+const rootLayoutPath = path.join(root, 'app/_layout.tsx');
+const rootIndexPath = path.join(root, 'app/index.tsx');
+const playlistContextPath = path.join(root, 'src/store/PlaylistContext.tsx');
+const panelScanModulePath = path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanModule.kt');
+const panelScanTsPath = path.join(root, 'modules/panel-scan/index.ts');
+for (const f of [appSessionPath,rootLayoutPath,rootIndexPath,playlistContextPath,panelScanModulePath,panelScanTsPath]) {
+  if (!fs.existsSync(f)) problem(`v15.2.3 dosya yok: ${path.relative(root, f)}`);
+}
+if (fs.existsSync(appSessionPath)) {
+  const a = fs.readFileSync(appSessionPath,'utf8');
+  requireText(a, 'RECENT_RESUME_MS', 'recent background session restore window');
+  requireText(a, 'backgroundAt', 'background timestamp persistence');
+  requireText(a, '"/(tabs)"', 'live tab safe resume route');
+}
+if (fs.existsSync(rootLayoutPath)) {
+  const l = fs.readFileSync(rootLayoutPath,'utf8');
+  requireText(l, 'AppState.addEventListener("change"', 'app lifecycle persistence listener');
+  requireText(l, 'markAppBackground', 'background session persistence');
+}
+if (fs.existsSync(rootIndexPath)) {
+  const i = fs.readFileSync(rootIndexPath,'utf8');
+  requireText(i, 'getRecentResumePath()', 'recent route restore');
+  requireText(i, '}, 80);', 'fast root redirect');
+}
+if (fs.existsSync(playlistContextPath)) {
+  const pc = fs.readFileSync(playlistContextPath,'utf8');
+  requireText(pc, 'v15.2.3 P0 RAM FIX', 'playlist JS heap compaction');
+  requireText(pc, 'KizilkanNativeCore.reindexPlaylist(p.id)', 'direct playlist Room reindex');
+  requireText(pc, 'fromMeta(toMeta(pl))', 'inactive playlist heavy eviction');
+}
+if (fs.existsSync(panelScanServicePath)) {
+  const ps = fs.readFileSync(panelScanServicePath,'utf8');
+  requireText(ps, 'ACTION_UNIFIED_START', 'unified native discovery action');
+  requireText(ps, 'runUnifiedScan(', 'per-account native discovery worker');
+}
+if (fs.existsSync(panelScanModulePath)) {
+  const pm = fs.readFileSync(panelScanModulePath,'utf8');
+  requireText(pm, 'AsyncFunction("startUnifiedScan")', 'unified discovery Expo bridge');
+}
+if (fs.existsSync(panelScanTsPath)) {
+  const pt = fs.readFileSync(panelScanTsPath,'utf8');
+  requireText(pt, 'startUnifiedScan:', 'unified discovery TS bridge');
+}
+if (fs.existsSync(addPlaylistPath)) {
+  const ap = fs.readFileSync(addPlaylistPath,'utf8');
+  requireText(ap, 'stableXtreamPlaylistId', 'idempotent Xtream playlist identity');
+  requireText(ap, 'directImportLocksRef', 'duplicate tap in-flight guard');
+  requireText(ap, 'PanelScan.startUnifiedScan', 'all bulk locator modes native discovery');
+  requireText(ap, 'PENDING_BULK_SCAN_KEY', 'native scan secure restore state');
+  requireText(ap, 'PENDING_BULK_IMPORT_KEY', 'native import secure restore state');
+}
+if (fs.existsSync(liveScreenPath)) {
+  const live = fs.readFileSync(liveScreenPath,'utf8');
+  requireText(live, 'EPG ISOLATION', 'EPG non-blocking isolation');
+  requireText(live, 'InteractionManager.runAfterInteractions', 'EPG deferred after interactions');
+  requireText(live, '.slice(0, 16)', 'bounded initial EPG window');
+}
+requireText(src, 'successfulSessionAtRef', 'late playback error success timestamp');
+requireText(src, 'bayat source error', 'stale post-first-frame error guard');
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.
 const sf = ts.createSourceFile(player, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TSX);

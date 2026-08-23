@@ -80,9 +80,9 @@ function toMeta(p: Playlist): PlaylistMeta {
   const { channels, vod, series, ...rest } = p;
   return {
     ...rest,
-    channelsCount: channels?.length || 0,
-    vodCount: vod?.length || 0,
-    seriesCount: series?.length || 0,
+    channelsCount: p.channelsCount ?? channels?.length ?? 0,
+    vodCount: p.vodCount ?? vod?.length ?? 0,
+    seriesCount: p.seriesCount ?? series?.length ?? 0,
   };
 }
 
@@ -369,15 +369,31 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       throw new Error('Liste içeriği cihaza kaydedilemedi. Depolama alanını kontrol edin.');
     }
 
-    // 2) Belleği güncelle (ağır dizilerle — aktif liste hemen kullanılabilir).
-    const normalizedP: Playlist = {
-      ...p, channelsCount: p.channels?.length || 0, vodCount: p.vod?.length || 0, seriesCount: p.series?.length || 0,
-    };
+    // v15.2.3 P0 RAM FIX: bir playlist eklenince on binlerce item'i React
+    // state'te kalıcı tutma. Android Native Core varsa Room indeksini hazırla ve
+    // yalnız metadata'yı belleğe al. Çok playlist -> JS heap -> Android LMK/reset
+    // zincirinin ana kaynaklarından biri buydu.
+    let normalizedP: Playlist;
+    if (KizilkanNativeCore.available) {
+      const summary = await KizilkanNativeCore.reindexPlaylist(p.id);
+      if (!summary?.roomIndexed) throw new Error('Playlist Room/SQLite indeksine alınamadı.');
+      normalizedP = {
+        ...p, channels: [], vod: [], series: [],
+        channelsCount: p.channels?.length || Number(summary.channels || 0),
+        vodCount: p.vod?.length || Number(summary.vod || 0),
+        seriesCount: p.series?.length || Number(summary.series || 0),
+      };
+      loadedHeavy.current.delete(p.id);
+    } else {
+      normalizedP = {
+        ...p, channelsCount: p.channels?.length || 0, vodCount: p.vod?.length || 0, seriesCount: p.series?.length || 0,
+      };
+      loadedHeavy.current.add(p.id);
+    }
     const current = playlistsRef.current;
     const next = [...current.filter(pl => pl.id !== p.id), normalizedP];
     playlistsRef.current = next;
     setPlaylists(next);
-    loadedHeavy.current.add(p.id);
 
     // 3) Metadata'yı yaz. Ref önce güncellendiği için arka arkaya eklemelerde
     // bir önceki playlist kaybolmaz.
@@ -387,8 +403,10 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     await storage.setItem(activeKey(currentPid()), p.id);
     setActiveId(p.id);
 
-    // Playlist artık güvenle kayıtlı ve kullanılabilir. +18 cache'i arka planda.
-    scheduleAdultFlags(p.channels, p.vod, p.series);
+    // Native Core modunda 50-100 bin öğeyi fire-and-forget JS closure'unda
+    // tutup +18 pre-scan yapma; bu hem heap'i hem event-loop'u yeniden şişirir.
+    // isAdultContent gerektiğinde lazy hesaplar. Web/legacy yolunda eski preload korunur.
+    if (!KizilkanNativeCore.available) scheduleAdultFlags(p.channels, p.vod, p.series);
   }, [persistMeta]);
 
   /**
@@ -437,12 +455,22 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   const updatePlaylist = useCallback(async (id: string, patch: Partial<Playlist>) => {
     const current = playlistsRef.current;
     const target = current.find(pl => pl.id === id);
-    const next = current.map(pl => (pl.id === id ? { ...pl, ...patch } : pl));
+    const heavyTouched = 'channels' in patch || 'vod' in patch || 'series' in patch;
+    const next = current.map(pl => {
+      if (pl.id !== id) return pl;
+      const merged = { ...pl, ...patch } as Playlist;
+      if (heavyTouched) {
+        merged.channelsCount = merged.channels?.length || 0;
+        merged.vodCount = merged.vod?.length || 0;
+        merged.seriesCount = merged.series?.length || 0;
+      }
+      return merged;
+    });
     playlistsRef.current = next;
     setPlaylists(next);
 
     // Ağır alanlardan biri güncellendiyse dosyayı da yenile.
-    const heavyTouched = 'channels' in patch || 'vod' in patch || 'series' in patch;
+
     if (heavyTouched && target) {
       const merged = { ...target, ...patch };
       merged.channelsCount = merged.channels?.length || 0;
@@ -460,13 +488,21 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     // Disk yazımı sürerken başka worker ref'i ilerletmişse eski `next` snapshot'ını
     // metadata'ya geri yazıp diğer güncellemeyi ezmeyelim; daima en güncel ref.
     await persistMeta(playlistsRef.current);
-    if (heavyTouched) {
+    if (heavyTouched && !KizilkanNativeCore.available) {
       const merged = target ? { ...target, ...patch } : (patch as Playlist);
       scheduleAdultFlags(merged.channels, merged.vod, merged.series);
     }
   }, [persistMeta]);
 
   const setActivePlaylist = useCallback(async (id: string) => {
+    // v15.2.3: önceki listelerde legacy ekranların hydrate ettiği dev diziler
+    // RAM'de birikmesin. Hedef liste hariç hepsini metadata-only forma sıkıştır.
+    if (KizilkanNativeCore.available) {
+      const compacted = playlistsRef.current.map(pl => pl.id === id ? pl : fromMeta(toMeta(pl)));
+      playlistsRef.current = compacted;
+      setPlaylists(compacted);
+      for (const loadedId of Array.from(loadedHeavy.current)) if (loadedId !== id) loadedHeavy.current.delete(loadedId);
+    }
     setActiveId(id);
     await storage.setItem(activeKey(currentPid()), id);
   }, []);

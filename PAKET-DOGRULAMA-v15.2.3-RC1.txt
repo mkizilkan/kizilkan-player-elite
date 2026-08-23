@@ -1,0 +1,36 @@
+KIZILKAN PLAYER ELITE v15.2.3-RC1
+versionCode=150203
+libmpv=1.0.0
+Room=2.8.3
+Kök=gpt-kizilkan-player-elite/
+
+PAKET HEDEFLERI
+- recent background route restore + fast root redirect
+- inactive playlist heavy JS RAM eviction
+- unified native per-account discovery (direct/serverCode/panelName/unknown)
+- native discovery/import snapshot rebind + SecureStore credential eşlemesi
+- deterministic Xtream identity + duplicate in-flight guard
+- deferred/bounded EPG enrichment
+- stale post-first-frame fallback guard
+
+BU PAKETTE GERCEKTEN CALISTIRILAN KONTROLLER
+- tools/denetle.js: 3 ayrı tur TEMIZ
+- tools/checkplayercore.js: TEMIZ
+- frontend altındaki 107 TS/TSX dosyası TypeScript transpile parser ile tarandı: 0 syntax diagnostic
+- frontend/package.json ve frontend/app.json JSON parse: TEMIZ
+- .github/workflows/build-apk.yml YAML parse: TEMIZ
+- v15.2.3 / versionCode 150203 / unified native discovery / deterministic Xtream id / deferred EPG / stale fallback gate kaynak doğrulamaları: TEMIZ
+- eski literal rootProject[\"kspVersion\"] KSP escape regresyon taraması: TEMIZ (eşleşme yok)
+- paket ağacında .jks / .keystore / .base64 / *-release-GITHUB.txt: YOK
+- paket ağacında .git ve node_modules: YOK
+
+BU ORTAMDA KANITLANMAYAN KAPILAR
+- Tam `npx tsc --noEmit`: dependency kurulumu tamamlanamadığı için gerçek proje typecheck sonucu bu ortamda kanıtlanamadı. Daha önceki install denemesi timeout oldu; eksik dependency ortamındaki tsc çıktısı geçerli build kanıtı sayılmadı.
+- Expo prebuild: GitHub Actions'ta kanıtlanacak.
+- Room/KSP Kotlin code generation/compile: GitHub Actions'ta kanıtlanacak.
+- PanelScan unified Kotlin compile: GitHub Actions'ta kanıtlanacak.
+- MPV Kotlin / Gradle release / signed APK: GitHub Actions'ta kanıtlanacak.
+- Gerçek cihaz P0 kabul testi: yeni APK kurulduktan sonra yapılacak.
+
+STABLE KURALI
+GitHub full build + gerçek cihaz kabul matrisi tamamlanmadan v15.2.3-RC1 Stable değildir.

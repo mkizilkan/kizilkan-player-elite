@@ -63,6 +63,16 @@ type BulkResolvedCandidate = {
   direct: boolean;
 };
 
+const PENDING_BULK_SCAN_KEY = "kizilkan.pendingBulkScan.v15.2.3";
+const PENDING_BULK_IMPORT_KEY = "kizilkan.pendingBulkImport.v15.2.3";
+
+function stableXtreamPlaylistId(server: string, username: string): string {
+  const key = `${String(server).replace(/\/+$/, "").toLowerCase()}\u0000${username}`;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return `pl-xt-${(h >>> 0).toString(16).padStart(8, "0")}`;
+}
+
 export default function AddPlaylist() {
   /**
    * ALAN ARASI GEÇİŞ (v9.3.0 — kullanıcı isteği)
@@ -83,6 +93,9 @@ export default function AddPlaylist() {
   const { colors } = useTheme();
   const { playlists, addPlaylist, addPreparedPlaylist } = usePlaylists();
   const playlistServerKeysRef = React.useRef<Set<string>>(new Set());
+  const directImportLocksRef = React.useRef<Set<string>>(new Set());
+  const restoredImportAdoptedRef = React.useRef<Set<string>>(new Set());
+  const bulkImportOwnedByScreenRef = React.useRef(false);
   React.useEffect(() => {
     playlistServerKeysRef.current = new Set(
       playlists
@@ -149,6 +162,7 @@ export default function AddPlaylist() {
   const [bulkManualRows, setBulkManualRows] = useState<Array<{ id: string; name: string; username: string; password: string; locator: string }>>([
     { id: "bulk-row-1", name: "", username: "", password: "", locator: "" },
   ]);
+
 
   const bulkParsed = React.useMemo(() => {
     const manual = bulkText.trim() ? parseBulkAccounts(bulkText) : { accounts: [] as BulkAccountInput[], warnings: [] as string[] };
@@ -546,10 +560,21 @@ export default function AddPlaylist() {
     navigateAfter = true,
     manageLoading = true,
   ): Promise<boolean> => {
+    const normalizedServer = cred.server.replace(/\/+$/, "").toLowerCase();
+    const accountKey = `${cred.username}\u0000${normalizedServer}`;
+    if (playlistServerKeysRef.current.has(accountKey)) {
+      setError(`${displayName?.trim() || "Bu hesap"} zaten ekli.`);
+      return false;
+    }
+    if (directImportLocksRef.current.has(accountKey)) {
+      setError("Bu hesap için ekleme işlemi zaten devam ediyor.");
+      return false;
+    }
+    directImportLocksRef.current.add(accountKey);
     if (manageLoading) setLoading(true);
     setProgress("Kimlik doğrulanıyor (Xtream)...");
     try {
-      const id = `pl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const id = stableXtreamPlaylistId(cred.server, cred.username);
       const login = await xtLoginLocal(cred);
       const { chRes, vodRes, serRes } = await loadXtreamContentWithProgress(cred);
       const channels = chRes.status === "fulfilled" ? chRes.value : [];
@@ -558,12 +583,6 @@ export default function AddPlaylist() {
       if (chRes.status === "rejected" && vod.length === 0 && series.length === 0) {
         throw new Error("İçerik yüklenemedi. Sunucu veya bilgileri kontrol edin.");
       }
-      const normalizedServer = cred.server.replace(/\/+$/, "").toLowerCase();
-      const accountKey = `${cred.username}\u0000${normalizedServer}`;
-      if (playlistServerKeysRef.current.has(accountKey)) {
-        throw new Error(`${displayName?.trim() || "Bu hesap"} zaten ekli.`);
-      }
-
       const playlist: Playlist = {
         id, name: displayName?.trim() || name.trim() || "Xtream Codes", source: "xtream",
         xtreamServer: cred.server, xtreamUsername: cred.username, xtreamPassword: cred.password,
@@ -585,6 +604,7 @@ export default function AddPlaylist() {
       setError(e.message || "Bilinmeyen hata");
       return false;
     } finally {
+      directImportLocksRef.current.delete(accountKey);
       if (manageLoading) {
         setLoading(false);
         setProgress("");
@@ -628,6 +648,64 @@ export default function AddPlaylist() {
     // Bilinçli olarak otomatik seçim YAPMA. Kullanıcı bulunanlardan istediğini seçsin.
     setShowBulkCandidates(true);
   }, []);
+
+  React.useEffect(() => {
+    if (Platform.OS !== "android") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const syncSnapshots = async () => {
+      try {
+        const scan = PanelScan.available ? PanelScan.getSnapshot() : {};
+        if ((scan.mode === "bulk" || scan.mode === "unified") && (scan.running || (scan.matches?.length || 0) > 0)) {
+          const saved = await storage.secureGet<string>(PENDING_BULK_SCAN_KEY, "");
+          const accounts: BulkAccountInput[] = saved ? JSON.parse(saved) : [];
+          if (!cancelled && accounts.length) {
+            const resolved: BulkResolvedCandidate[] = [];
+            for (const m of (scan.matches || [])) {
+              const ai=Number(m.accountIndex); const a=accounts[ai] || accounts.find(x=>x.row===Number(m.sourceRow)); if(!a) continue;
+              const server=String(m.server||""); if(!server) continue;
+              const panelName=String(m.panelName||"") || hostName(server), code=String(m.code||"");
+              resolved.push({ key:bulkCandidateKey(a.row,a.username,code,panelName,server), sourceRow:a.row, name:a.name||panelName, username:a.username, password:a.password, panelName, code, server, login:m.login, validatedHosts:[server], direct:!!a.server });
+            }
+            mergeBulkCandidates(resolved);
+            setBulkScanPaused(!!scan.paused); setBulkScanFinished(!scan.running); bulkNativeScanRef.current=!!scan.running;
+            if (!bulkAdding) setLoading(!!scan.running);
+            setProgress(scan.running ? `Native tarama geri yüklendi · ${Number(scan.tested||0)}/${Number(scan.total||0)} · ${Number(scan.found||0)} bulundu` : `Tarama sonucu geri yüklendi · ${Number(scan.found||0)} bulundu`);
+          }
+        }
+
+        const imp = KizilkanNativeCore.available ? KizilkanNativeCore.getBulkImportSnapshot() : {};
+        if (!bulkImportOwnedByScreenRef.current && !cancelled && (imp.running || (imp.jobs?.length || 0) > 0)) {
+          const rows:any[] = Array.isArray(imp.jobs) ? imp.jobs : [];
+          const statusObj:Record<string,any> = {};
+          rows.forEach(r => statusObj[String(r.jobKey||"")] = { state:String(r.state||"waiting"), message:String(r.message||""), channels:Number(r.channels||0), vod:Number(r.vod||0), series:Number(r.series||0) });
+          setBulkImportStatuses(statusObj); setBulkImportPaused(!!imp.paused); setBulkAdding(!!imp.running); setLoading(!!imp.running);
+
+          const chosenRaw = await storage.secureGet<string>(PENDING_BULK_IMPORT_KEY, "");
+          const chosen: BulkResolvedCandidate[] = chosenRaw ? JSON.parse(chosenRaw) : [];
+          const byKey = new Map(chosen.map(c => [c.key, c]));
+          for (const row of rows) {
+            if (row.state !== "completed" || !row.playlistId || restoredImportAdoptedRef.current.has(String(row.playlistId))) continue;
+            if (playlists.some(pl => pl.id === String(row.playlistId))) { restoredImportAdoptedRef.current.add(String(row.playlistId)); continue; }
+            const c = byKey.get(String(row.jobKey || "")); if (!c) continue;
+            await addPreparedPlaylist({
+              id:String(row.playlistId), name:String(row.displayName||c.name), source:"xtream",
+              xtreamServer:c.server, xtreamUsername:c.username, xtreamPassword:c.password,
+              serverCodeBinding:c.direct ? undefined : makeBinding(c.code,c.panelName,c.server,c.validatedHosts),
+              accountInfo:(row.userInfo||c.login?.user_info||null) as AccountInfo, serverInfo:row.serverInfo||c.login?.server_info||null,
+              channels:[], vod:[], series:[], channelsCount:Number(row.channels||0), vodCount:Number(row.vod||0), seriesCount:Number(row.series||0), createdAt:new Date().toISOString(),
+            });
+            restoredImportAdoptedRef.current.add(String(row.playlistId));
+          }
+        }
+      } catch (e) { console.warn("[v15.2.3 restore] native job snapshot", e); }
+    };
+
+    void syncSnapshots();
+    timer = setInterval(() => { void syncSnapshots(); }, 850);
+    return () => { cancelled = true; if (timer) clearInterval(timer); };
+  }, [mergeBulkCandidates, addPreparedPlaylist, playlists, bulkAdding]);
 
   const resolveOneBulkAccount = async (
     account: BulkAccountInput,
@@ -726,18 +804,35 @@ export default function AddPlaylist() {
   const runNativeBulkAccounts = async (accounts: BulkAccountInput[], cfg: { concurrency:number; timeoutMs:number; accountConcurrency:number; label:string }): Promise<{ found:number; completed:number; cancelled:boolean }> => {
     if (!PanelScan.available || Platform.OS !== "android") throw new Error("__NATIVE_SCAN_UNAVAILABLE__");
     const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
-    setProgress(`${cfg.label} · Native panel rehberi hazırlanıyor…`);
+    setProgress(`${cfg.label} · Birleşik native panel rehberi hazırlanıyor…`);
     const directory = await fetchPanelDirectory(src);
-    const candidates: Array<{panelName:string; code:string; server:string}> = [];
-    const seen = new Set<string>();
-    for (const item of directory) for (const server of item.hosts) {
-      const key = `${item.code}\u0000${item.panelName}\u0000${server.toLocaleLowerCase("tr")}`;
-      if (!seen.has(key)) { seen.add(key); candidates.push({ panelName:item.panelName, code:item.code, server }); }
+    const normalizeName = (v:string) => v.trim().toLocaleLowerCase("tr");
+    const jobs = accounts.map((a) => {
+      let candidates: Array<{panelName:string; code:string; server:string}> = [];
+      if (a.server) {
+        candidates = [{ panelName: a.panelName || a.name || hostName(a.server), code: a.serverCode || "", server: a.server }];
+      } else if (a.serverCode) {
+        const item = directory.find(x => x.code === a.serverCode);
+        if (item) candidates = item.hosts.map(server => ({ panelName:item.panelName, code:item.code, server }));
+      } else if (a.panelName) {
+        const wanted = normalizeName(a.panelName);
+        const exactCode = directory.find(x => x.code === a.panelName);
+        const byName = directory.filter(x => normalizeName(x.panelName) === wanted);
+        const item = exactCode || (byName.length === 1 ? byName[0] : undefined);
+        if (item) candidates = item.hosts.map(server => ({ panelName:item.panelName, code:item.code, server }));
+      } else {
+        for (const item of directory) for (const server of item.hosts) candidates.push({ panelName:item.panelName, code:item.code, server });
+      }
+      return { row:a.row, name:a.name, username:a.username, password:a.password, candidates };
+    });
+    if (jobs.some(j => !j.candidates.length)) {
+      const missing = jobs.filter(j => !j.candidates.length).map(j => j.name || j.username).slice(0,5).join(", ");
+      throw new Error(`Bazı hesaplar için panel/DNS adayı hazırlanamadı: ${missing}`);
     }
-    if (!candidates.length) throw new Error("Panel rehberinde taranacak DNS bulunamadı.");
+    await storage.secureSet(PENDING_BULK_SCAN_KEY, JSON.stringify(accounts));
     const nativeConcurrency = Math.max(1, Math.min(32, cfg.concurrency * Math.max(1, cfg.accountConcurrency)));
     bulkNativeScanRef.current = true;
-    await PanelScan.startBulkScan(candidates, accounts.map(a => ({ row:a.row, name:a.name, username:a.username, password:a.password })), nativeConcurrency, cfg.timeoutMs);
+    await PanelScan.startUnifiedScan(jobs, nativeConcurrency, cfg.timeoutMs);
     let lastFound=-1, completed=0;
     while (true) {
       const snap=PanelScan.getSnapshot(); if (snap.error) throw new Error(snap.error);
@@ -747,7 +842,7 @@ export default function AddPlaylist() {
         for (const m of raw) {
           const ai=Number(m.accountIndex); const account=Number.isInteger(ai)?accounts[ai]:accounts.find(a=>a.row===Number(m.sourceRow)); if(!account) continue;
           const panelName=String(m.panelName||"").trim(), code=String(m.code||"").trim(), server=String(m.server||"").trim(); if(!server) continue;
-          resolved.push({ key:bulkCandidateKey(account.row,account.username,code,panelName,server), sourceRow:account.row, name:account.name.trim()||panelName||hostName(server), username:account.username, password:account.password, panelName:panelName||hostName(server), code, server, login:m.login, validatedHosts:[server], direct:false });
+          resolved.push({ key:bulkCandidateKey(account.row,account.username,code,panelName,server), sourceRow:account.row, name:account.name.trim()||panelName||hostName(server), username:account.username, password:account.password, panelName:panelName||hostName(server), code, server, login:m.login, validatedHosts:[server], direct:!!account.server });
         }
         mergeBulkCandidates(resolved); lastFound=raw.length;
       }
@@ -789,8 +884,7 @@ export default function AddPlaylist() {
     };
 
     try {
-      const allAuto = parsed.accounts.every(a => !a.server && !a.serverCode && !a.panelName);
-      if (allAuto && PanelScan.available && Platform.OS === "android") {
+      if (PanelScan.available && Platform.OS === "android") {
         const nr = await runNativeBulkAccounts(parsed.accounts, cfg); found=nr.found; completed=nr.completed;
         setBulkScanFailures([]); setBulkScanFinished(true); setShowBulkCandidates(true);
         setProgress(nr.cancelled ? `Tarama durduruldu · ${completed}/${parsed.accounts.length} hesap · ${found} sonuç korunuyor.` : `Native tarama tamamlandı · ${completed}/${parsed.accounts.length} hesap · ${found} geçerli panel/DNS hesabı bulundu.`);
@@ -841,10 +935,11 @@ export default function AddPlaylist() {
     // tamamen foreground native service'te çalışır. JS arka plana alınsa bile iş
     // devam eder; UI geri geldiğinde kalıcı snapshot'tan kaldığı durumu okur.
     if (Platform.OS === "android" && KizilkanNativeCore.available) {
-      const now = Date.now();
-      const jobs = chosen.map((c, i) => ({
+      await storage.secureSet(PENDING_BULK_IMPORT_KEY, JSON.stringify(chosen));
+      bulkImportOwnedByScreenRef.current = true;
+      const jobs = chosen.map((c) => ({
         jobKey: c.key,
-        playlistId: `pl-${now}-${i}-${Math.random().toString(36).slice(2, 8)}`,
+        playlistId: stableXtreamPlaylistId(c.server, c.username),
         displayName: chosen.length === 1 ? c.name : `${c.name} · ${hostName(c.server)}`,
         server: c.server, username: c.username, password: c.password,
       }));
@@ -900,6 +995,7 @@ export default function AddPlaylist() {
       } catch (e: any) {
         setError(e?.message || "Native toplu hesap ekleme başarısız.");
       } finally {
+        bulkImportOwnedByScreenRef.current = false;
         setBulkAdding(false); setLoading(false); setProgress(""); setBulkImportPaused(false);
         if (ok > 0) { setShowBulkCandidates(false); setBulkCandidates([]); setSelectedBulkCandidateKeys([]); }
       }

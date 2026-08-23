@@ -16,6 +16,7 @@ class PanelScanService : Service() {
   companion object {
     const val ACTION_START = "expo.modules.panelscan.START"
     const val ACTION_BULK_START = "expo.modules.panelscan.BULK_START"
+    const val ACTION_UNIFIED_START = "expo.modules.panelscan.UNIFIED_START"
     const val ACTION_CANCEL = "expo.modules.panelscan.CANCEL"
     const val ACTION_PAUSE = "expo.modules.panelscan.PAUSE"
     const val ACTION_RESUME = "expo.modules.panelscan.RESUME"
@@ -84,6 +85,22 @@ class PanelScanService : Service() {
           .put("found", 0).put("matches", JSONArray()))
         startForeground(NOTIF_ID, notification("Çoklu hesap taraması başlıyor…", 0, initialTotal))
         Thread { runBulkScan(candidatesJson, accountsJson, concurrency, timeoutMs) }.start()
+      }
+      ACTION_UNIFIED_START -> if (!running) {
+        running = true
+        cancelled.set(false)
+        paused.set(false)
+        val jobsJson = intent.getStringExtra("jobsJson") ?: "[]"
+        val concurrency = intent.getIntExtra("concurrency", 8).coerceIn(1,32)
+        val timeoutMs = intent.getIntExtra("timeoutMs", 8000).coerceIn(2000,20000)
+        val jobs = try { JSONArray(jobsJson) } catch (_: Throwable) { JSONArray() }
+        var initialTotal = 0
+        for (i in 0 until jobs.length()) initialTotal += jobs.optJSONObject(i)?.optJSONArray("candidates")?.length() ?: 0
+        writeSnapshot(JSONObject().put("mode", "unified").put("running", true).put("paused", false)
+          .put("tested", 0).put("total", initialTotal).put("accountTested", 0).put("accountTotal", jobs.length())
+          .put("found", 0).put("matches", JSONArray()))
+        startForeground(NOTIF_ID, notification("Birleşik panel taraması başlıyor…", 0, initialTotal))
+        Thread { runUnifiedScan(jobsJson, concurrency, timeoutMs) }.start()
       }
       ACTION_START -> if (!running) {
         running = true
@@ -204,6 +221,75 @@ class PanelScanService : Service() {
     writeSnapshot(JSONObject().put("mode","bulk").put("running",runningValue).put("paused",paused.get()).put("cancelled",cancelled.get())
       .put("tested",tested).put("total",total).put("accountTested",accountTested).put("accountTotal",accountTotal).put("panelTotal",panelTotal)
       .put("found",matches.size).put("panelName",panelName).put("accountIndex",accountIndex).put("matches",resultArray))
+  }
+
+  private fun runUnifiedScan(jobsRaw: String, concurrency: Int, timeoutMs: Int) {
+    try {
+      val jobs = JSONArray(jobsRaw)
+      val accountCount = jobs.length()
+      if (accountCount == 0) throw IllegalArgumentException("Tarama için hesap yok")
+
+      data class Work(val accountIndex: Int, val candidateIndex: Int)
+      val work = ArrayList<Work>()
+      val completedByAccount = Array(accountCount) { AtomicInteger(0) }
+      val expectedByAccount = IntArray(accountCount)
+      val panelSet = linkedSetOf<String>()
+      for (ai in 0 until accountCount) {
+        val job = jobs.getJSONObject(ai)
+        val candidates = job.optJSONArray("candidates") ?: JSONArray()
+        expectedByAccount[ai] = candidates.length()
+        for (ci in 0 until candidates.length()) {
+          work.add(Work(ai, ci))
+          val c = candidates.optJSONObject(ci) ?: continue
+          panelSet.add("${c.optString("code")}\u0000${c.optString("panelName")}")
+        }
+      }
+      if (work.isEmpty()) throw IllegalArgumentException("Tarama için aday sunucu yok")
+
+      val total = work.size
+      val cursor = AtomicInteger(0)
+      val tested = AtomicInteger(0)
+      val accountDone = AtomicInteger(expectedByAccount.count { it == 0 })
+      val matches = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+      val pool = Executors.newFixedThreadPool(concurrency.coerceIn(1, minOf(32, total)))
+      repeat(concurrency.coerceIn(1, minOf(32, total))) {
+        pool.submit {
+          while (!cancelled.get()) {
+            while (paused.get() && !cancelled.get()) Thread.sleep(100)
+            if (cancelled.get()) break
+            val wi = cursor.getAndIncrement()
+            if (wi >= total) break
+            val unit = work[wi]
+            val account = jobs.getJSONObject(unit.accountIndex)
+            val candidates = account.optJSONArray("candidates") ?: JSONArray()
+            val candidate = candidates.getJSONObject(unit.candidateIndex)
+            val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
+            if (login != null) matches.add(JSONObject()
+              .put("accountIndex", unit.accountIndex)
+              .put("sourceRow", account.optInt("row", unit.accountIndex + 1))
+              .put("username", account.optString("username"))
+              .put("name", account.optString("name"))
+              .put("panelName", candidate.optString("panelName"))
+              .put("code", candidate.optString("code"))
+              .put("server", candidate.optString("server"))
+              .put("login", sanitizeLogin(login)))
+            if (completedByAccount[unit.accountIndex].incrementAndGet() == expectedByAccount[unit.accountIndex]) accountDone.incrementAndGet()
+            val done = tested.incrementAndGet()
+            if (done == total || done % 12 == 0 || login != null) {
+              writeBulkSnapshot(done, total, accountDone.get(), accountCount, panelSet.size, matches, candidate.optString("panelName"), unit.accountIndex)
+            }
+            if (done % 12 == 0 || login != null) getSystemService(NotificationManager::class.java)
+              .notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", done, total))
+          }
+        }
+      }
+      pool.shutdown()
+      while (!pool.isTerminated) Thread.sleep(100)
+      writeBulkSnapshot(tested.get(), total, accountDone.get(), accountCount, panelSet.size, matches, "", -1, false)
+      patchSnapshot { it.put("mode", "unified") }
+    } catch (e: Throwable) {
+      writeSnapshot(JSONObject().put("mode","unified").put("running",false).put("error",e.message ?: "Birleşik native panel tarama hatası"))
+    } finally { running=false; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
   }
 
   private fun runScan(raw: String, user: String, pass: String, concurrency: Int, timeoutMs: Int) {

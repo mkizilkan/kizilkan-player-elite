@@ -37,6 +37,18 @@ class PanelScanModule : Module() {
       true
     }
 
+    AsyncFunction("startUnifiedScan") { jobsJson: String, concurrency: Int, timeoutMs: Int ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      val intent = Intent(context, PanelScanService::class.java).apply {
+        action = PanelScanService.ACTION_UNIFIED_START
+        putExtra("jobsJson", jobsJson)
+        putExtra("concurrency", concurrency.coerceIn(1, 32))
+        putExtra("timeoutMs", timeoutMs.coerceIn(2000, 20000))
+      }
+      ContextCompat.startForegroundService(context, intent)
+      true
+    }
+
     AsyncFunction("cancelScan") {
       val context = appContext.reactContext ?: return@AsyncFunction false
       context.startService(Intent(context, PanelScanService::class.java).apply { action = PanelScanService.ACTION_CANCEL })
