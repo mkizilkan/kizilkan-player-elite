@@ -59,3 +59,7 @@ Room canonical migration, Native EPG, M3U native import, Search/Favorites/VOD/Se
 
 ## v15.2.5-RC1 DEVİR
 v15.2.4 üzerine onaylı son audit uygulanmıştır. Büyük compatibility playlist write artık bounded chunk staging -> native Room final transaction kullanır. Chromecast source-change, existing-session rebind, remote status authority, VOD remote->local position handoff, live DVR capability ve player-exit remote stop zinciri güçlendirilmiştir. Tam ayrıntı `AI-PROJE-DEVIR-BAGLAM.md` içindedir.
+
+
+## v15.2.6-RC1 DEVİR
+GitHub TypeScript HARD gate v15.2.5'i Search `T | FuzzyResult<T>` model çakışması ve duplicate erişilemez Xtream branch nedeniyle durdurdu. v15.2.6 bu iki kökü type-safe normalize + tek Xtream giriş yolu ile düzeltir. v15.2.5 özellikleri korunur.

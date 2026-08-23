@@ -543,3 +543,22 @@ v15.2.5'te TV Box arayüzü baştan yazılmamıştır. Native paging/player/cast
 3. MAG/Stalker protokolünü de tamamen native foreground core'a taşıma fizibilitesi; mevcut sürüm bunu yapılmış göstermez.
 4. TV Box 10-foot UI overhaul sonraki sürüm.
 5. Gerçek RAM/storage/APK footprint ölçüm raporlarının cihaz verisiyle karşılaştırılması.
+
+
+# v15.2.6-RC1 — TYPESCRIPT HARD-GATE REGRESSION FIX DEVİR EKİ (2026-08-23)
+
+## BUILD KIRILMASI VE KANITLANAN KÖK NEDEN
+GitHub Actions v15.2.5-RC1'i `npx tsc --noEmit` HARD gate aşamasında durdurdu. Gradle/KSP/Kotlin aşamasına geçilmedi. İki gerçek kaynak regresyonu kanıtlandı:
+
+1. `frontend/app/(tabs)/search.tsx`: Native Room `queryItems()` doğrudan `Channel/VodItem/SeriesItem` döndürürken legacy `fuzzySearch()` `FuzzyResult<T> = {item, score}` döndürüyordu. Aynı `liveResults/vodResults/seriesResults` değişkenleri iki farklı shape taşıdığı halde render yalnız `r.item` varsayıyordu. TS2339 hataları bu model çakışmasını doğru yakaladı. Ayrıca native Series sonuçları hesaplanmasına rağmen `seriesResults` eski fuzzy yolu kullanmaya devam ediyordu.
+2. `frontend/app/add-playlist.tsx`: Xtream yöntemi `submit()` içinde 1151 civarında `submitXtreamDirect()` ile işlenip `return` ediyordu. Daha aşağıdaki ikinci `else if (method === "xtream")` eski JS-heavy Xtream akışından kalmış, erişilemez duplicate koddu. TypeScript control-flow narrowing bunu TS2367 ile yakaladı. Aynı şekilde aşağıdaki `method === "code"` branch'i de üst discovery branch'leri tüm code durumlarını return ettiği için erişilemezdi.
+
+## UYGULANAN DÜZELTME
+- Search sonuçları UI katmanına artık tek shape ile gelir: `Channel[]`, `VodItem[]`, `SeriesItem[]`. Legacy fuzzy sonuçları render öncesi `.map(result => result.item)` ile gerçek item dizisine normalize edilir; Native Room sonuçları doğrudan aynı diziyi kullanır. `as any` ile hata bastırılmamıştır.
+- Native Series araması da `nativeSeriesResults` üzerinden aynı Room akışına bağlanmıştır.
+- İkinci/ölü Xtream branch'i kaldırılmıştır. Xtream için tek gerçek giriş `submitXtreamDirect()` olarak korunur: Android'de native foreground importer → Room; native olmayan fallback'te mevcut JS yolu korunur.
+- Üstte discovery tarafından tamamen tüketilen ikinci/ölü `method === "code"` branch'i de kaldırılmıştır. MAG/Stalker çalışan else yolu korunmuştur.
+- v15.2.5 Native Core Phase 2, Cast hardening, chunked staging, Room canonical, EPG, discovery ve player geliştirmelerinden hiçbir özellik çıkarılmamıştır.
+
+## DOĞRULAMA SINIRI
+Bu çalışma ortamında bağımlılık kurulumu ağ/DNS erişimi olmadığı için tamamlanamamıştır; bu nedenle tam proje `npx tsc --noEmit`, Expo prebuild, Room/KSP/Kotlin ve Gradle build burada başarılıymış gibi gösterilmez. Kaynak düzeltmeleri GitHub Actions gerçek HARD gate ile yeniden kanıtlanacaktır.

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.5 RC1 CAST + CHUNKED NATIVE IMPORT HARDENING)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.6 RC1 TYPESCRIPT HARD-GATE REGRESSION FIX)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -124,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.2.5') problem(`app version ${app?.expo?.version} (15.2.5 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150205) problem(`versionCode ${app?.expo?.android?.versionCode} (150205 bekleniyor)`);
+if (app?.expo?.version !== '15.2.6') problem(`app version ${app?.expo?.version} (15.2.6 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150206) problem(`versionCode ${app?.expo?.android?.versionCode} (150206 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -154,7 +154,7 @@ if (!fs.existsSync(handoffPath)) {
 } else {
   const handoff = fs.readFileSync(handoffPath, 'utf8');
   const requiredHandoffTokens = [
-    'v15.2.5-RC1',
+    'v15.2.6-RC1',
     'Media3 → MPV/FFmpeg → VLC',
     'ANDROID_CERT_SHA256',
     'KALAN / SONRAKI ISLER',
@@ -408,7 +408,7 @@ if (fs.existsSync(workflowPath)) {
 }
 
 
-// v15.2.5-RC1 Cast + chunked import hard gates.
+// v15.2.6-RC1 TypeScript hard-gate + v15.2.5 Cast/chunked import hard gates.
 const castButtonPath = path.join(root, 'src/components/CastButton.tsx');
 for (const f of [castButtonPath, bigStoreNativePath]) {
   if (!fs.existsSync(f)) problem(`v15.2.5 dosya yok: ${path.relative(root, f)}`);
@@ -438,6 +438,24 @@ requireText(src, 'client.getMediaStatus?.()', 'Cast initial remote status rebind
 requireText(src, 'liveSeekableRange', 'Cast live DVR capability');
 requireText(src, 'remote?.stop?.()', 'Cast remote stop on player exit');
 requireText(src, 'Cast receiver authoritative', 'Cast remote authoritative play/pause');
+
+// v15.2.6 TypeScript HARD-gate regression guards.
+if (!fs.existsSync(searchPath)) {
+  problem('v15.2.6 Search dosyasi yok: app/(tabs)/search.tsx');
+} else {
+  const search = fs.readFileSync(searchPath, 'utf8');
+  requireText(search, 'useMemo<Channel[]>', 'Search live result single-shape model');
+  requireText(search, 'useMemo<VodItem[]>', 'Search VOD result single-shape model');
+  requireText(search, 'useMemo<SeriesItem[]>', 'Search series result single-shape model');
+  requireText(search, 'nativeSeriesResults.slice(0, 60)', 'Search native Series Room result path');
+  requireText(search, '.map(result => result.item)', 'Search fuzzy result normalization');
+  if (/\br\.item\b/.test(search)) problem("v15.2.6 Search render tekrar FuzzyResult.item shape'ine baglanmis");
+}
+if (fs.existsSync(addPlaylistPath)) {
+  const add = fs.readFileSync(addPlaylistPath, 'utf8');
+  if (add.includes('else if (method === "xtream")')) problem('v15.2.6 duplicate/erisilemez ikinci Xtream branch geri gelmis');
+  requireText(add, 'await submitXtreamDirect({ server: xtServer.trim(), username: xtUser.trim(), password: xtPass.trim() });', 'Xtream tek submitXtreamDirect girisi');
+}
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.
 const sf = ts.createSourceFile(player, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TSX);

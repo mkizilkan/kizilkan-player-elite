@@ -152,25 +152,33 @@ export default function SearchTab() {
     return out;
   }, [debouncedQ]);
 
-  const liveResults = useMemo(() => {
+  // v15.2.6: Room sorguları doğrudan item döndürürken legacy fuzzySearch
+  // FuzzyResult<T> döndürüyordu. UI'ya iki farklı shape taşımak hem tip
+  // regresyonuna hem de native/legacy davranış farkına yol açıyordu. Buradan
+  // itibaren üç sonuç kümesi de yalnız gerçek item dizisidir.
+  const liveResults = useMemo<Channel[]>(() => {
     if (KizilkanNativeCore.available) return nativeLiveResults.slice(0, 60);
     if (!debouncedQ.trim() || (scope !== "all" && scope !== "live")) return [];
-    const cand = preFilter(liveChannels, (c: any) => [c.name, c.group, c.tvg_name]);
-    return fuzzySearch(cand, debouncedQ, (c) => [c.name, c.group, c.tvg_name], 60);
+    const cand = preFilter(liveChannels, (c: Channel) => [c.name, c.group, c.tvg_name]);
+    return fuzzySearch(cand, debouncedQ, (c) => [c.name, c.group, c.tvg_name], 60)
+      .map(result => result.item);
   }, [nativeLiveResults, liveChannels, debouncedQ, scope, preFilter]);
 
-  const vodResults = useMemo(() => {
+  const vodResults = useMemo<VodItem[]>(() => {
     if (KizilkanNativeCore.available) return nativeVodResults.slice(0, 60);
     if (!debouncedQ.trim() || (scope !== "all" && scope !== "vod")) return [];
-    const cand = preFilter(vodItems, (v: any) => [v.name, v.group, String(v.year || "")]);
-    return fuzzySearch(cand, debouncedQ, (v) => [v.name, v.group, String(v.year || "")], 60);
+    const cand = preFilter(vodItems, (v: VodItem) => [v.name, v.group, String(v.year || "")]);
+    return fuzzySearch(cand, debouncedQ, (v) => [v.name, v.group, String(v.year || "")], 60)
+      .map(result => result.item);
   }, [nativeVodResults, vodItems, debouncedQ, scope, preFilter]);
 
-  const seriesResults = useMemo(() => {
+  const seriesResults = useMemo<SeriesItem[]>(() => {
+    if (KizilkanNativeCore.available) return nativeSeriesResults.slice(0, 60);
     if (!debouncedQ.trim() || (scope !== "all" && scope !== "series")) return [];
-    const cand = preFilter(seriesItems, (x: any) => [x.name, x.group, x.cast, x.director, x.genre]);
-    return fuzzySearch(cand, debouncedQ, (s) => [s.name, s.group, s.cast, s.director, s.genre], 60);
-  }, [seriesItems, debouncedQ, scope, preFilter]);
+    const cand = preFilter(seriesItems, (x: SeriesItem) => [x.name, x.group, x.cast, x.director, x.genre]);
+    return fuzzySearch(cand, debouncedQ, (s) => [s.name, s.group, s.cast, s.director, s.genre], 60)
+      .map(result => result.item);
+  }, [nativeSeriesResults, seriesItems, debouncedQ, scope, preFilter]);
 
   const totalResults = liveResults.length + vodResults.length + seriesResults.length;
 
@@ -349,11 +357,11 @@ export default function SearchTab() {
                   <SectionHeader icon="tv" label={`Kanallar (${liveResults.length})`} />
                   {liveResults.map(r => (
                     <ChannelRow
-                      key={r.item.id}
-                      channel={r.item}
-                      isFavorite={isFavorite(r.item.id)}
-                      onToggleFavorite={() => { haptic.soft(); toggleFavorite(r.item.id); }}
-                      onPress={() => openChannel(r.item)}
+                      key={r.id}
+                      channel={r}
+                      isFavorite={isFavorite(r.id)}
+                      onToggleFavorite={() => { haptic.soft(); toggleFavorite(r.id); }}
+                      onPress={() => openChannel(r)}
                     />
                   ))}
                 </>
@@ -363,13 +371,13 @@ export default function SearchTab() {
                   <SectionHeader icon="film" label={`Filmler (${vodResults.length})`} />
                   {vodResults.map(r => (
                     <SearchPosterRow
-                      key={r.item.id}
-                      testID={`search-vod-${r.item.id}`}
-                      poster={r.item.poster}
-                      name={r.item.name}
-                      meta={[r.item.year && String(r.item.year), r.item.group].filter(Boolean).join(" • ")}
-                      rating={r.item.rating_5based}
-                      onPress={() => openDetail(r.item, "vod")}
+                      key={r.id}
+                      testID={`search-vod-${r.id}`}
+                      poster={r.poster}
+                      name={r.name}
+                      meta={[r.year && String(r.year), r.group].filter(Boolean).join(" • ")}
+                      rating={r.rating_5based}
+                      onPress={() => openDetail(r, "vod")}
                     />
                   ))}
                 </>
@@ -379,13 +387,13 @@ export default function SearchTab() {
                   <SectionHeader icon="albums" label={`Diziler (${seriesResults.length})`} />
                   {seriesResults.map(r => (
                     <SearchPosterRow
-                      key={r.item.id}
-                      testID={`search-series-${r.item.id}`}
-                      poster={r.item.poster}
-                      name={r.item.name}
-                      meta={[r.item.genre, r.item.director].filter(Boolean).join(" • ")}
-                      rating={r.item.rating_5based}
-                      onPress={() => openDetail(r.item, "series")}
+                      key={r.id}
+                      testID={`search-series-${r.id}`}
+                      poster={r.poster}
+                      name={r.name}
+                      meta={[r.genre, r.director].filter(Boolean).join(" • ")}
+                      rating={r.rating_5based}
+                      onPress={() => openDetail(r, "series")}
                     />
                   ))}
                 </>

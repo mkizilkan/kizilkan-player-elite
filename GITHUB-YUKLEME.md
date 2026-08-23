@@ -70,3 +70,7 @@ Sürüm 15.2.4 / versionCode 150204. GitHub Actions build sonunda APK yanında `
 
 ## v15.2.5-RC1
 GitHub Actions bu sürüm için `15.2.5 / versionCode 150205` görmelidir. Gerçek `tsc --noEmit`, Expo prebuild, Room/KSP/Kotlin ve Gradle release sonucu CI tarafından kanıtlanmadan sürüm stabil kabul edilmez.
+
+
+## v15.2.6-RC1
+GitHub Actions `15.2.6 / versionCode 150206` görmelidir. Özellikle `npx tsc --noEmit` gate'in Search TS2339 ve add-playlist TS2367 hatalarını artık üretmemesi ilk kabul kapısıdır; ardından Expo/Room-KSP/Kotlin/Gradle doğrulanır.

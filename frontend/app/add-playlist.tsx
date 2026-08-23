@@ -1212,41 +1212,6 @@ export default function AddPlaylist() {
           series: res.series,
           createdAt: new Date().toISOString(),
         };
-      } else if (method === "xtream") {
-        if (!xtServer.trim() || !xtUser.trim() || !xtPass.trim())
-          throw new Error("Sunucu, kullanıcı adı ve şifre gereklidir");
-        id = stableXtreamPlaylistId(xtServer.trim(), xtUser.trim());
-        if (playlists.some(pl => pl.id === id)) throw new Error("Bu Xtream hesabı zaten ekli.");
-        setProgress("Kimlik doğrulanıyor (cihazdan doğrudan)...");
-        const cred = { server: xtServer.trim(), username: xtUser.trim(), password: xtPass.trim() };
-        const login = await xtLoginLocal(cred);
-
-        // HIZ: Kanallar + Filmler + Diziler ARTIK PARALEL yükleniyor (IPTV Extreme gibi).
-        // ESKİ: art arda await -> kanallar bitmeden filmler başlamıyordu (3x yavaş).
-        // YENİ: Promise.allSettled -> üçü aynı anda; biri yoksa (VOD/Series olmayan
-        // sağlayıcı) diğerleri yine yüklenir, hata tüm işlemi durdurmaz.
-        const { chRes, vodRes, serRes } = await loadXtreamContentWithProgress(cred);
-
-        const channels = chRes.status === "fulfilled" ? chRes.value : [];
-        const vod = vodRes.status === "fulfilled" ? vodRes.value : [];
-        const series = serRes.status === "fulfilled" ? serRes.value : [];
-
-        if (chRes.status === "rejected" && vod.length === 0 && series.length === 0) {
-          // Hiçbiri gelmediyse gerçek bir bağlantı sorunu var.
-          throw new Error("İçerik yüklenemedi. Sunucu veya bilgileri kontrol edin.");
-        }
-
-        playlist = {
-          id, name: name.trim() || "Xtream Codes", source: "xtream",
-          xtreamServer: xtServer.trim(), xtreamUsername: xtUser.trim(), xtreamPassword: xtPass.trim(),
-          accountInfo: login.user_info as AccountInfo,
-          serverInfo: login.server_info || null,
-          channels, vod, series,
-          createdAt: new Date().toISOString(),
-        };
-      } else if (method === "code") {
-        // Yukarıdaki submitKnownPanelDiscovery bu yolu seçim ekranına taşır.
-        throw new Error("Sunucu DNS taraması tamamlanamadı.");
       } else {
         /**
          * STALKER / MAG — ARTIK CİHAZ İÇİ (v9.1.0)
