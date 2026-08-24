@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.11 RC1 SCAN TERMINAL CANCELLATION PARSER HARDENING)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.12 RC1 TYPESCRIPT CONTROL CONTRACT BUILD FIX)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -124,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.2.11') problem(`app version ${app?.expo?.version} (15.2.11 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150211) problem(`versionCode ${app?.expo?.android?.versionCode} (150211 bekleniyor)`);
+if (app?.expo?.version !== '15.2.12') problem(`app version ${app?.expo?.version} (15.2.12 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150212) problem(`versionCode ${app?.expo?.android?.versionCode} (150212 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -469,6 +469,9 @@ try {
   const panelModule = fs.readFileSync(path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanModule.kt'), 'utf8');
   const panelService = fs.readFileSync(path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt'), 'utf8');
   const add = fs.readFileSync(path.join(root, 'app/add-playlist.tsx'), 'utf8');
+  // v15.2.12: resolveOneBulkAccount control.signal kullandığı için control sözleşmesi zorunludur.
+  if (/resolveOneBulkAccount[\s\S]{0,600}control\?\s*:\s*ScanExecutionControl/.test(add)) problem('v15.2.12 resolveOneBulkAccount control opsiyonel regresyonu');
+  if (!/resolveOneBulkAccount[\s\S]{0,600}control\s*:\s*ScanExecutionControl/.test(add)) problem('v15.2.12 zorunlu ScanExecutionControl sözleşmesi bulunamadı');
   const core = fs.readFileSync(path.join(root, 'modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeCoreModule.kt'), 'utf8');
   const bulk = fs.readFileSync(path.join(root, 'modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/BulkPlaylistImportService.kt'), 'utf8');
   if (!panelModule.includes('claimRun') || !panelModule.includes('runId')) problem('v15.2.8+ panel scan runId lifecycle eksik');
@@ -512,7 +515,7 @@ try {
 } catch (e) { problem(`v15.2.9 guard okunamadi: ${e.message}`); }
 
 
-// v15.2.11 P0 scan cancellation / explicit selection / profile authorization gates.
+// v15.2.12 P0 scan cancellation / explicit selection / profile authorization + TS control contract gates.
 try {
   const pkg = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
   const panelService = fs.readFileSync(path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt'), 'utf8');
@@ -520,8 +523,8 @@ try {
   const add = fs.readFileSync(path.join(root, 'app/add-playlist.tsx'), 'utf8');
   const profile = fs.readFileSync(path.join(root, 'src/store/ProfileContext.tsx'), 'utf8');
   const layout = fs.readFileSync(path.join(root, 'app/_layout.tsx'), 'utf8');
-  requireText(pkg, '"version": "15.2.11"', 'v15.2.11 package version');
-  if (Number(app?.expo?.android?.versionCode) !== 150211) problem('v15.2.11 versionCode 150211 degil');
+  requireText(pkg, '"version": "15.2.12"', 'v15.2.12 package version');
+  if (Number(app?.expo?.android?.versionCode) !== 150212) problem('v15.2.12 versionCode 150212 degil');
   requireText(panelService, 'activeConnections', 'panel scan active connection registry');
   requireText(panelService, 'shutdownNow()', 'panel scan hard cancellation');
   requireText(panelService, 'conn.disconnect()', 'panel scan socket disconnect');

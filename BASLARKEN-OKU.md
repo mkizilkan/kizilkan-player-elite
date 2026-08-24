@@ -64,3 +64,6 @@ Güncel kaynak sürüm 15.2.9 / versionCode 150209'dur. Sunucu Kodu üç yolu ar
 - Unified hesap taraması round-robin dağıtılır; hesaplar paralel ilerleme görür.
 - Discovery sonucundan playlist importuna geçiş kullanıcı seçimine bağlı kalır; aynı aboneliğin DNS alias'ları tek playlist/validatedHosts olarak gruplanır.
 - Hızlı yapıştırmada `user:pass` ve `user:password` geçerli hesap çiftleridir.
+
+## v15.2.12-RC1
+TypeScript TS18048 build blocker giderildi: resolveOneBulkAccount ScanExecutionControl parametresi zorunlu hale getirildi; v15.2.11 davranışları korunur.

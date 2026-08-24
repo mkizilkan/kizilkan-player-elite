@@ -911,7 +911,7 @@ export default function AddPlaylist() {
     index: number,
     total: number,
     directoryCache: { value?: PanelDirectoryItem[]; promise?: Promise<PanelDirectoryItem[]> },
-    control?: ScanExecutionControl,
+    control: ScanExecutionControl,
   ): Promise<{ candidates: BulkResolvedCandidate[]; label: string; reason?: string }> => {
     const label = account.name.trim() || `Hesap ${index + 1}`;
     const cfg = scanConfigForSpeed();
@@ -1954,9 +1954,9 @@ export default function AddPlaylist() {
 
           {method === "bulk" && (
             <>
-              <View style={[styles.infoBanner, { backgroundColor: colors.brandPrimary + "16", borderColor: colors.brandPrimary }]}> 
+              <View style={[styles.infoBanner, { backgroundColor: colors.brandPrimary + "16", borderColor: colors.brandPrimary }]}>
                 <Ionicons name="shield-checkmark" size={20} color={colors.brandPrimary} />
-                <Text style={[styles.infoBannerText, { color: colors.onSurface }]}> 
+                <Text style={[styles.infoBannerText, { color: colors.onSurface }]}>
                   Birden fazla Xtream hesabını tek işlemde ekleyin. Kullanıcı adı ve şifreler Firebase'e gönderilmez; yalnız cihazınızdan aday IPTV sunucularında doğrulanır.
                 </Text>
               </View>
@@ -2035,7 +2035,7 @@ export default function AddPlaylist() {
               {(bulkParsed.accounts.length || bulkParsed.warnings.length) ? (() => {
                 const parsed = bulkParsed;
                 return (
-                  <View style={[styles.bulkPreview, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}> 
+                  <View style={[styles.bulkPreview, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
                     <FocusButton focusable onPress={() => setBulkPreviewOpen(v => !v)} style={styles.bulkPreviewHeader}>
                       <Ionicons name={parsed.accounts.length ? "checkmark-circle" : "alert-circle"} size={20} color={parsed.accounts.length ? colors.brandPrimary : colors.error} />
                       <Text style={{ color: colors.onSurface, flex: 1, fontWeight: FONT.weight.bold }}>{parsed.accounts.length} hesap algılandı</Text>
