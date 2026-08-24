@@ -614,3 +614,11 @@ Bu kaynak ortamında gerçek Expo prebuild/Android Gradle/Kotlin release build y
 - Panel taraması gerçek ağ bağlantısı iptali + worker shutdown ile durdurulur.
 - Analiz UI tarama başında açılır; progress/pause/resume/stop ve explicit selection zorunludur.
 - PIN’li profil process restart/session restore ile atlanamaz; runtime profile-session gate eklendi.
+
+## v15.2.11-RC1 — Scan Terminal Cancellation / Selection / Quick Parser Hardening
+- v15.2.10 cihaz testinde hazırlık aşamasında `Durdur`un yalnız mesaj üretmesi kökten düzeltildi: katalog REST çağrıları harici AbortSignal ile kesilir.
+- PanelScan native job finalization artık her çıkışta terminal snapshot yazar; CANCELLING/STARTING kalıcı olamaz.
+- Tekli/çoklu Durdur tek basışta `Durduruluyor…` kilidine girer; tekrar cancel spam'i yoktur.
+- Unified hesap taraması round-robin dağıtılır; hesaplar paralel ilerleme görür.
+- Discovery sonucundan playlist importuna geçiş kullanıcı seçimine bağlı kalır; aynı aboneliğin DNS alias'ları tek playlist/validatedHosts olarak gruplanır.
+- Hızlı yapıştırmada `user:pass` ve `user:password` geçerli hesap çiftleridir.

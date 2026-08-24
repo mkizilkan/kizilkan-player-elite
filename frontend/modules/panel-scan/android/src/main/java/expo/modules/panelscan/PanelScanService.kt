@@ -218,6 +218,27 @@ class PanelScanService : Service() {
     writeSnapshot(obj)
   }
 
+  /**
+   * v15.2.11: job hangi yoldan çıkarsa çıksın SharedPreferences'ta terminal
+   * snapshot bırak. Böylece UI CANCELLING/STARTING durumunda sonsuza kadar kalmaz.
+   */
+  private fun finalizeSnapshot(mode: String) {
+    patchSnapshot { obj ->
+      obj.put("mode", mode)
+        .put("running", false)
+        .put("paused", false)
+      if (cancelled.get()) {
+        obj.put("cancelled", true).put("state", "CANCELLED")
+        obj.remove("error")
+      } else if (obj.has("error")) {
+        obj.put("state", "FAILED")
+      } else {
+        val state = obj.optString("state", "")
+        if (state !in setOf("COMPLETED", "FAILED", "CANCELLED")) obj.put("state", "COMPLETED")
+      }
+    }
+  }
+
   private fun probe(server: String, username: String, password: String, timeoutMs: Int): JSONObject? {
     val base = server.trim().trimEnd('/')
     val u = java.net.URLEncoder.encode(username, "UTF-8")
@@ -304,6 +325,7 @@ class PanelScanService : Service() {
       writeSnapshot(JSONObject().put("mode","bulk").put("running",false).put("error",e.message ?: "Native çoklu hesap tarama hatası"))
     } finally {
       val finishedRunId = currentRunId
+      finalizeSnapshot("bulk")
       activeExecutor = null
       activeConnections.clear()
       running = false
@@ -337,14 +359,22 @@ class PanelScanService : Service() {
       val completedByAccount = Array(accountCount) { AtomicInteger(0) }
       val expectedByAccount = IntArray(accountCount)
       val panelSet = linkedSetOf<String>()
+      var maxCandidates = 0
       for (ai in 0 until accountCount) {
-        val job = jobs.getJSONObject(ai)
-        val candidates = job.optJSONArray("candidates") ?: JSONArray()
+        val candidates = jobs.getJSONObject(ai).optJSONArray("candidates") ?: JSONArray()
         expectedByAccount[ai] = candidates.length()
+        maxCandidates = maxOf(maxCandidates, candidates.length())
         for (ci in 0 until candidates.length()) {
-          work.add(Work(ai, ci))
           val c = candidates.optJSONObject(ci) ?: continue
           panelSet.add("${c.optString("code")}\u0000${c.optString("panelName")}")
+        }
+      }
+      // v15.2.11: işleri hesap-hesap bloklamak yerine round-robin sırala.
+      // Böylece Hesap 1 binlerce DNS bitirene kadar Hesap 2/3 `Bekliyor` kalmaz;
+      // aynı worker havuzu bütün hesaplarda kontrollü ve adil ilerler.
+      for (ci in 0 until maxCandidates) {
+        for (ai in 0 until accountCount) {
+          if (ci < expectedByAccount[ai]) work.add(Work(ai, ci))
         }
       }
       if (work.isEmpty()) throw IllegalArgumentException("Tarama için aday sunucu yok")
@@ -433,6 +463,7 @@ class PanelScanService : Service() {
       writeSnapshot(JSONObject().put("mode","unified").put("running",false).put("error",e.message ?: "Birleşik native panel tarama hatası"))
     } finally {
       val finishedRunId = currentRunId
+      finalizeSnapshot("unified")
       activeExecutor = null
       activeConnections.clear()
       running = false
@@ -506,6 +537,7 @@ class PanelScanService : Service() {
       writeSnapshot(JSONObject().put("running", false).put("error", e.message ?: "Native panel tarama hatası"))
     } finally {
       val finishedRunId = currentRunId
+      finalizeSnapshot("single")
       activeExecutor = null
       activeConnections.clear()
       running = false

@@ -41,10 +41,13 @@ function withFirebaseServerTimeout(url: string, timeoutMs: number): string {
   return `${url}${url.includes("?") ? "&" : "?"}timeout=${sec}s`;
 }
 
-async function getJson(url: string, timeoutMs = DIRECTORY_REQUEST_TIMEOUT_MS, retries = 1): Promise<any> {
+async function getJson(url: string, timeoutMs = DIRECTORY_REQUEST_TIMEOUT_MS, retries = 1, externalSignal?: AbortSignal): Promise<any> {
   let lastError: Error | null = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController();
+    const abortFromExternal = () => controller.abort();
+    if (externalSignal?.aborted) controller.abort();
+    else externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(withFirebaseServerTimeout(url, timeoutMs), {
@@ -58,23 +61,29 @@ async function getJson(url: string, timeoutMs = DIRECTORY_REQUEST_TIMEOUT_MS, re
         throw new Error("Kaynaktan beklenmeyen JSON yanıtı geldi.");
       }
     } catch (e: any) {
+      if (externalSignal?.aborted) {
+        const cancelled = new Error("Tarama hazırlığı kullanıcı tarafından durduruldu.");
+        cancelled.name = "AbortError";
+        throw cancelled;
+      }
       if (e?.name === "AbortError") lastError = new Error(`Panel rehberi isteği ${Math.ceil(timeoutMs / 1000)} sn içinde yanıt vermedi.`);
       else lastError = e instanceof Error ? e : new Error(String(e || "Kaynağa bağlanılamadı."));
       if (attempt < retries) await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
     } finally {
       clearTimeout(timer);
+      externalSignal?.removeEventListener("abort", abortFromExternal);
     }
   }
   throw lastError || new Error("Kaynağa bağlanılamadı. İnternet veya kaynak adresini kontrol edin.");
 }
 
 /** Adım A: Panel kodu -> panel adı. */
-export async function resolvePanelName(baseUrl: string, code: string): Promise<string> {
+export async function resolvePanelName(baseUrl: string, code: string, signal?: AbortSignal): Promise<string> {
   const base = trimBase(baseUrl);
   if (!base) throw new Error("Kod kaynağı adresi boş.");
   const c = String(code || "").trim();
   if (!c) throw new Error("Panel kodu boş.");
-  const data = await getJson(`${base}/Master/zeroWebServers/${encodeURIComponent(c)}.json`);
+  const data = await getJson(`${base}/Master/zeroWebServers/${encodeURIComponent(c)}.json`, DIRECTORY_REQUEST_TIMEOUT_MS, 1, signal);
   // Firebase bulunamayan yolda null döner.
   if (data == null || typeof data !== "string" || !data.trim()) {
     throw new Error("Panel kodu bulunamadı. Kodu kontrol edin.");
@@ -83,9 +92,9 @@ export async function resolvePanelName(baseUrl: string, code: string): Promise<s
 }
 
 /** Adım B: Panel adı -> DNS host listesi. */
-export async function resolveHosts(baseUrl: string, panelName: string): Promise<string[]> {
+export async function resolveHosts(baseUrl: string, panelName: string, signal?: AbortSignal): Promise<string[]> {
   const base = trimBase(baseUrl);
-  const data = await getJson(`${base}/Master/Servers/${encodeURIComponent(panelName)}.json`);
+  const data = await getJson(`${base}/Master/Servers/${encodeURIComponent(panelName)}.json`, DIRECTORY_REQUEST_TIMEOUT_MS, 1, signal);
   const hostsObj = data && typeof data === "object" ? (data as any).Hosts : null;
   if (!hostsObj || typeof hostsObj !== "object") {
     throw new Error("Bu panel için sunucu adresi bulunamadı.");
@@ -133,6 +142,8 @@ export type PanelDirectoryFetchOptions = {
   forceRefresh?: boolean;
   timeoutMs?: number;
   maxAgeMs?: number;
+  /** v15.2.11: kullanıcı Durdur dediğinde katalog hazırlığını da anında keser. */
+  signal?: AbortSignal;
 };
 
 type PanelDirectoryCacheRecord = {
@@ -158,11 +169,11 @@ async function writeDirectoryCache(baseUrl: string, items: PanelDirectoryItem[])
   await storage.setItem(PANEL_DIRECTORY_CACHE_KEY, JSON.stringify(record));
 }
 
-async function fetchPanelDirectoryRemote(baseUrl: string, timeoutMs: number): Promise<PanelDirectoryItem[]> {
+async function fetchPanelDirectoryRemote(baseUrl: string, timeoutMs: number, signal?: AbortSignal): Promise<PanelDirectoryItem[]> {
   const base = trimBase(baseUrl);
   const [codesRaw, serversRaw] = await Promise.all([
-    getJson(`${base}/Master/zeroWebServers.json`, timeoutMs, 1),
-    getJson(`${base}/Master/Servers.json`, timeoutMs, 1),
+    getJson(`${base}/Master/zeroWebServers.json`, timeoutMs, 1, signal),
+    getJson(`${base}/Master/Servers.json`, timeoutMs, 1, signal),
   ]);
 
   const codes = codesRaw && typeof codesRaw === "object" ? codesRaw as Record<string, any> : {};
@@ -195,7 +206,9 @@ export async function fetchPanelDirectory(baseUrl: string, options: PanelDirecto
   if (!base) throw new Error("Kod kaynağı adresi boş.");
   const timeoutMs = Math.max(3000, Math.min(15000, Number(options.timeoutMs || DIRECTORY_REQUEST_TIMEOUT_MS)));
   const maxAgeMs = Math.max(60_000, Number(options.maxAgeMs || DIRECTORY_CACHE_MAX_AGE_MS));
+  if (options.signal?.aborted) { const e = new Error("Tarama hazırlığı kullanıcı tarafından durduruldu."); e.name = "AbortError"; throw e; }
   const cached = await readDirectoryCache(base);
+  if (options.signal?.aborted) { const e = new Error("Tarama hazırlığı kullanıcı tarafından durduruldu."); e.name = "AbortError"; throw e; }
   const fresh = !!cached && (Date.now() - Number(cached.fetchedAt || 0) <= maxAgeMs);
   if (!options.forceRefresh && fresh) {
     // UI cache'den anında açılır; katalog/DNS değişiklikleri bir sonraki kullanım
@@ -207,35 +220,42 @@ export async function fetchPanelDirectory(baseUrl: string, options: PanelDirecto
   }
 
   try {
-    const items = await fetchPanelDirectoryRemote(base, timeoutMs);
+    const items = await fetchPanelDirectoryRemote(base, timeoutMs, options.signal);
     await writeDirectoryCache(base, items);
     return items;
   } catch (remoteError: any) {
+    if (options.signal?.aborted || remoteError?.name === "AbortError") throw remoteError;
     if (cached?.items?.length) return cached.items;
     throw remoteError;
   }
 }
 
 /** Kod/panel seçim yolları için cache/rehberden tek paneli çözer. */
-export async function resolvePanelDirectoryItem(baseUrl: string, code: string): Promise<PanelDirectoryItem> {
+export async function resolvePanelDirectoryItem(baseUrl: string, code: string, options: PanelDirectoryFetchOptions = {}): Promise<PanelDirectoryItem> {
   const wanted = String(code || "").trim().toLocaleLowerCase("tr");
   if (!wanted) throw new Error("Panel kodu boş.");
-  let directory = await fetchPanelDirectory(baseUrl);
+  let directory = await fetchPanelDirectory(baseUrl, options);
   let match = directory.find(item => item.code.trim().toLocaleLowerCase("tr") === wanted);
   if (!match) {
     // Taze görünen cache'e yeni eklenmiş bir kod düşmemiş olabilir. Kodu yok
     // saymadan önce remote katalog bir kez zorla yenilenir.
-    directory = await fetchPanelDirectory(baseUrl, { forceRefresh: true });
+    directory = await fetchPanelDirectory(baseUrl, { ...options, forceRefresh: true });
     match = directory.find(item => item.code.trim().toLocaleLowerCase("tr") === wanted);
   }
   if (!match) throw new Error("Panel kodu rehberde bulunamadı. Kodu kontrol edin.");
   return match;
 }
 
-function makeTimeoutSignal(timeoutMs: number): { signal: AbortSignal; cancel: () => void } {
+function makeTimeoutSignal(timeoutMs: number, externalSignal?: AbortSignal): { signal: AbortSignal; cancel: () => void } {
   const controller = new AbortController();
+  const externalAbort = () => controller.abort();
+  if (externalSignal?.aborted) controller.abort();
+  else externalSignal?.addEventListener("abort", externalAbort, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return { signal: controller.signal, cancel: () => clearTimeout(timer) };
+  return {
+    signal: controller.signal,
+    cancel: () => { clearTimeout(timer); externalSignal?.removeEventListener("abort", externalAbort); },
+  };
 }
 
 /**
@@ -247,9 +267,10 @@ async function probeXtreamHost(
   username: string,
   password: string,
   timeoutMs = 12000,
+  externalSignal?: AbortSignal,
 ): Promise<{ user_info: any; server_info: any } | null> {
   const base = trimBase(server);
-  const { signal, cancel } = makeTimeoutSignal(timeoutMs);
+  const { signal, cancel } = makeTimeoutSignal(timeoutMs, externalSignal);
   try {
     const url = `${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
     const res = await fetch(url, { signal });
@@ -287,6 +308,8 @@ export type HostDiscoveryProgress = { tested: number; total: number; found: numb
 export type ScanExecutionControl = {
   isCancelled?: () => boolean;
   waitIfPaused?: () => Promise<void>;
+  /** v15.2.11: JS fallback katalog ve HTTP probe'larını da gerçek AbortController ile keser. */
+  signal?: AbortSignal;
 };
 
 /**
@@ -304,8 +327,8 @@ export async function discoverServerCodeHosts(
   control?: ScanExecutionControl,
   directoryOverride?: PanelDirectoryItem,
 ): Promise<PanelCredentialMatch[]> {
-  const panelName = directoryOverride?.panelName || await resolvePanelName(baseUrl, code);
-  const hosts = directoryOverride?.hosts?.length ? directoryOverride.hosts : await resolveHosts(baseUrl, panelName);
+  const panelName = directoryOverride?.panelName || await resolvePanelName(baseUrl, code, control?.signal);
+  const hosts = directoryOverride?.hosts?.length ? directoryOverride.hosts : await resolveHosts(baseUrl, panelName, control?.signal);
   const user = String(username || "").trim();
   const pass = String(password || "").trim();
   if (!user || !pass) throw new Error("Kullanıcı adı ve şifre gereklidir.");
@@ -323,7 +346,7 @@ export async function discoverServerCodeHosts(
       if (i >= hosts.length) return;
       const server = hosts[i];
       onProgress?.({ tested, total: hosts.length, found: matches.length, server });
-      const login = await probeXtreamHost(server, user, pass, timeoutMs);
+      const login = await probeXtreamHost(server, user, pass, timeoutMs, control?.signal);
       tested += 1;
       if (login) matches.push({ panelName, code: String(code).trim(), server, login });
       onProgress?.({ tested, total: hosts.length, found: matches.length, server });
@@ -365,7 +388,7 @@ export async function discoverPanelsByCredentials(
   const pass = String(password || "").trim();
   if (!user || !pass) throw new Error("Kullanıcı adı ve şifre gereklidir.");
 
-  const directory = directoryOverride?.length ? directoryOverride : await fetchPanelDirectory(baseUrl);
+  const directory = directoryOverride?.length ? directoryOverride : await fetchPanelDirectory(baseUrl, { signal: control?.signal });
   const candidates: Array<{ panelName: string; code: string; server: string }> = [];
   const seenCandidates = new Set<string>();
 
@@ -403,7 +426,7 @@ export async function discoverPanelsByCredentials(
       const c = candidates[i];
 
       onProgress?.({ tested, total: candidates.length, panelTested, panelTotal, found: matches.length, panelName: c.panelName });
-      const login = await probeXtreamHost(c.server, user, pass, timeoutMs);
+      const login = await probeXtreamHost(c.server, user, pass, timeoutMs, control?.signal);
       tested += 1;
       const panelKey = `${c.code}\u0000${c.panelName}`;
       const left = Math.max(0, (remainingByPanel.get(panelKey) || 1) - 1);

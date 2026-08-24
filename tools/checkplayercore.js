@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.10 RC1 SCAN CANCELLATION SELECTION PROFILE AUTH HARDENING)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.11 RC1 SCAN TERMINAL CANCELLATION PARSER HARDENING)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -124,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.2.10') problem(`app version ${app?.expo?.version} (15.2.10 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150210) problem(`versionCode ${app?.expo?.android?.versionCode} (150210 bekleniyor)`);
+if (app?.expo?.version !== '15.2.11') problem(`app version ${app?.expo?.version} (15.2.11 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150211) problem(`versionCode ${app?.expo?.android?.versionCode} (150211 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -512,7 +512,7 @@ try {
 } catch (e) { problem(`v15.2.9 guard okunamadi: ${e.message}`); }
 
 
-// v15.2.10 P0 scan cancellation / explicit selection / profile authorization gates.
+// v15.2.11 P0 scan cancellation / explicit selection / profile authorization gates.
 try {
   const pkg = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
   const panelService = fs.readFileSync(path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt'), 'utf8');
@@ -520,8 +520,8 @@ try {
   const add = fs.readFileSync(path.join(root, 'app/add-playlist.tsx'), 'utf8');
   const profile = fs.readFileSync(path.join(root, 'src/store/ProfileContext.tsx'), 'utf8');
   const layout = fs.readFileSync(path.join(root, 'app/_layout.tsx'), 'utf8');
-  requireText(pkg, '"version": "15.2.10"', 'v15.2.10 package version');
-  if (Number(app?.expo?.android?.versionCode) !== 150210) problem('v15.2.10 versionCode 150210 degil');
+  requireText(pkg, '"version": "15.2.11"', 'v15.2.11 package version');
+  if (Number(app?.expo?.android?.versionCode) !== 150211) problem('v15.2.11 versionCode 150211 degil');
   requireText(panelService, 'activeConnections', 'panel scan active connection registry');
   requireText(panelService, 'shutdownNow()', 'panel scan hard cancellation');
   requireText(panelService, 'conn.disconnect()', 'panel scan socket disconnect');
@@ -531,10 +531,30 @@ try {
   requireText(add, 'Taramanın Bitmesini Bekleyin', 'scan/import phase barrier');
   requireText(add, 'Hesapları Analiz Et', 'bulk discovery-only CTA');
   requireText(add, 'Hesabımı Analiz Et', 'server discovery-only CTA');
-  if (add.includes('const addDiscoveredMatch = async')) problem('v15.2.10 tekli discovery otomatik import helper geri gelmis');
+  if (add.includes('const addDiscoveredMatch = async')) problem('v15.2.11 tekli discovery otomatik import helper geri gelmis');
   requireText(profile, 'sessionAuthorizedProfileId', 'profile runtime authorization state');
   requireText(layout, 'ProfileSessionGate', 'profile PIN route gate');
-} catch (e) { problem(`v15.2.10 guard okunamadi: ${e.message}`); }
+  requireText(panelService, 'finalizeSnapshot(', 'panel scan terminal snapshot finalizer');
+  requireText(panelService, 'for (ci in 0 until maxCandidates)', 'unified scan round-robin account scheduling');
+  requireText(add, 'bulkPreparationAbortRef.current?.abort()', 'bulk catalog preparation cancellation');
+  requireText(add, 'nativePreparationAbortRef.current?.abort()', 'single catalog preparation cancellation');
+  requireText(add, 'DURDURULUYOR — katalog hazırlığı/ağ istekleri kesiliyor', 'single-shot stop UI state');
+  const bulkAccounts = fs.readFileSync(path.join(root, 'src/utils/bulkAccounts.ts'), 'utf8');
+  requireText(bulkAccounts, '`user:pass` ve `user:password`', 'quick user:pass parser regression guard');
+  try {
+    const vm = require('vm');
+    const compiled = ts.transpileModule(bulkAccounts, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
+    const sandbox = { module: { exports: {} }, exports: {}, require, console };
+    sandbox.exports = sandbox.module.exports;
+    vm.runInNewContext(compiled, sandbox, { filename: 'bulkAccounts.js' });
+    const parsed = sandbox.module.exports.parseBulkAccounts('user:pass\nuser:password');
+    if (!parsed || parsed.accounts?.length !== 2 || parsed.accounts[0]?.username !== 'user' || parsed.accounts[1]?.password !== 'password') {
+      problem('v15.2.11 user:pass / user:password fonksiyonel parser testi basarisiz');
+    }
+  } catch (e) { problem(`v15.2.11 bulk parser fonksiyonel test calismadi: ${e.message}`); }
+  const serverCode = fs.readFileSync(path.join(root, 'src/utils/serverCode.ts'), 'utf8');
+  requireText(serverCode, 'signal?: AbortSignal', 'cancellable directory preparation');
+} catch (e) { problem(`v15.2.11 guard okunamadi: ${e.message}`); }
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.
 const sf = ts.createSourceFile(player, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TSX);

@@ -146,7 +146,10 @@ function fromUserPasswordLine(line: string, row: number): BulkAccountInput | nul
   const password = raw.slice(idx + 1).trim();
   if (!username || !password || /\s/.test(username)) return null;
   const key = normKey(username);
-  if ([...USER_KEYS, ...PASS_KEYS, ...SERVER_KEYS, ...CODE_KEYS, ...PANEL_KEYS].includes(key)) return null;
+  // v15.2.11: `user:pass` ve `user:password` gerçek hesap örnekleridir.
+  // `user` USER_KEYS içinde diye bunları yanlışlıkla alan etiketi sanma. Yalnız
+  // sunucu/kod/panel gibi gerçekten hesap çifti olamayacak sol etiketleri ele.
+  if ([...SERVER_KEYS, ...CODE_KEYS, ...PANEL_KEYS].includes(key)) return null;
   return { row, name: "", username, password };
 }
 

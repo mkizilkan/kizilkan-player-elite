@@ -188,7 +188,11 @@ export default function AddPlaylist() {
   const bulkScanRunIdRef = React.useRef<string>("");
   const [nativeScanRunning, setNativeScanRunning] = useState(false);
   const [nativeScanPaused, setNativeScanPaused] = useState(false);
+  const [nativeScanStopping, setNativeScanStopping] = useState(false);
+  const nativePreparationAbortRef = React.useRef<AbortController | null>(null);
   const [bulkScanPaused, setBulkScanPaused] = useState(false);
+  const [bulkScanStopping, setBulkScanStopping] = useState(false);
+  const bulkPreparationAbortRef = React.useRef<AbortController | null>(null);
   const bulkScanPausedRef = React.useRef(false);
   const bulkScanCancelledRef = React.useRef(false);
   const bulkNativeScanRef = React.useRef(false);
@@ -438,6 +442,25 @@ export default function AddPlaylist() {
     return result.runId;
   };
 
+  const isScanAbort = (e: any) => e?.name === "AbortError" || /kullanıcı tarafından durduruldu/i.test(String(e?.message || e || ""));
+
+  const beginDiscoveryPreparation = (title: string, subtitle: string, progressText: string) => {
+    nativePreparationAbortRef.current?.abort();
+    const controller = new AbortController();
+    nativePreparationAbortRef.current = controller;
+    setDiscoveryMatches([]);
+    setSelectedDiscoveryKeys([]);
+    setDiscoveryTitle(title);
+    setDiscoverySubtitle(subtitle);
+    setShowDiscoveryMatches(true);
+    setNativeScanRunning(true);
+    setNativeScanPaused(false);
+    setNativeScanStopping(false);
+    setLoading(true);
+    setProgress(progressText);
+    return controller;
+  };
+
   const runNativeBackgroundScan = async (
     candidates: Array<{panelName:string; code:string; server:string}>,
     title: string,
@@ -455,14 +478,16 @@ export default function AddPlaylist() {
     setDiscoverySubtitle("Tarama hazırlanıyor. Bulunan sonuçlar canlı eklenecek; seçim yapılmadan hiçbir playlist eklenmez.");
     setShowDiscoveryMatches(true);
     setNativeScanRunning(true);
+    setNativeScanStopping(false);
     setLoading(true);
+    nativePreparationAbortRef.current = null;
     let runId = "";
     try {
       runId = await startAcceptedScan(() => PanelScan.startScan(candidates, xtUser.trim(), xtPass.trim(), cfg.concurrency, cfg.timeoutMs));
       nativeScanRunIdRef.current = runId;
       setProgress(`${cfg.label} · NATIVE\nTarama başlatıldı · Adres 0/${candidates.length} · Bulunan 0\nGeçen: 0 sn · Tahmini kalan: hesaplanıyor`);
     } catch (e) {
-      setNativeScanRunning(false); setNativeScanPaused(false); setLoading(false);
+      setNativeScanRunning(false); setNativeScanPaused(false); setNativeScanStopping(false); setLoading(false);
       throw e;
     }
 
@@ -474,7 +499,7 @@ export default function AddPlaylist() {
         if (snap.error) {
           if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
           nativeScanTimerRef.current = null;
-          setNativeScanRunning(false); setNativeScanPaused(false); setLoading(false);
+          setNativeScanRunning(false); setNativeScanPaused(false); setNativeScanStopping(false); setLoading(false);
           if (nativeScanRunIdRef.current === runId) nativeScanRunIdRef.current = "";
           if (!settled) { settled = true; reject(new Error(snap.error)); }
           return;
@@ -496,7 +521,7 @@ export default function AddPlaylist() {
         if (snap.running === false && (snap.total || 0) > 0) {
           if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
           nativeScanTimerRef.current = null;
-          setNativeScanRunning(false); setNativeScanPaused(false); setLoading(false);
+          setNativeScanRunning(false); setNativeScanPaused(false); setNativeScanStopping(false); setLoading(false);
           if (nativeScanRunIdRef.current === runId) nativeScanRunIdRef.current = "";
           if (!settled) {
             settled = true;
@@ -520,15 +545,22 @@ export default function AddPlaylist() {
     const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
     await storage.setItem(CODE_SOURCE_KEY, src);
     const cfg = scanConfigForSpeed();
-    setProgress("Panelin DNS adayları hazırlanıyor...");
-
-    const selectedMatchesCode = selectedPanelItem && selectedPanelItem.code.trim().toLocaleLowerCase("tr") === codeVal.trim().toLocaleLowerCase("tr");
-    const panel = selectedMatchesCode ? selectedPanelItem! : await resolvePanelDirectoryItem(src, codeVal.trim());
-    const panelName = panel.panelName;
-    const hosts = panel.hosts;
-    const candidates = hosts.map(server => ({ panelName, code: panel.code, server }));
+    const prep = beginDiscoveryPreparation(
+      "Panel / DNS Hesapları Bulundu",
+      "Panel/DNS adayları hazırlanıyor. Durdur derseniz hazırlık da iptal edilir; seçim yapılmadan hiçbir playlist eklenmez.",
+      "Panelin DNS adayları hazırlanıyor…",
+    );
+    let resolvedPanel: PanelDirectoryItem | null = null;
 
     try {
+      const selectedMatchesCode = selectedPanelItem && selectedPanelItem.code.trim().toLocaleLowerCase("tr") === codeVal.trim().toLocaleLowerCase("tr");
+      const panel = selectedMatchesCode ? selectedPanelItem! : await resolvePanelDirectoryItem(src, codeVal.trim(), { signal: prep.signal, timeoutMs: cfg.timeoutMs });
+      resolvedPanel = panel;
+      if (prep.signal.aborted) { const e = new Error("Tarama hazırlığı kullanıcı tarafından durduruldu."); e.name = "AbortError"; throw e; }
+      nativePreparationAbortRef.current = null;
+      const panelName = panel.panelName;
+      const hosts = panel.hosts;
+      const candidates = hosts.map(server => ({ panelName, code: panel.code, server }));
       const matches = await runNativeBackgroundScan(
         candidates,
         `${panelName} · DNS Hesapları`,
@@ -538,16 +570,25 @@ export default function AddPlaylist() {
       mergeStreamingMatches(matches, `${panelName} · DNS Hesapları`,
         `${matches.length} kimlik doğrulaması başarılı DNS adayı bulundu. Eklemek istediklerinizi seçin.`);
     } catch (e:any) {
+      if (isScanAbort(e)) {
+        nativePreparationAbortRef.current = null;
+        setNativeScanRunning(false); setNativeScanPaused(false); setNativeScanStopping(false); setLoading(false);
+        setDiscoverySubtitle("Tarama kullanıcı tarafından hazırlık aşamasında durduruldu. Hiçbir playlist eklenmedi.");
+        setProgress("Tarama durduruldu · hazırlık iptal edildi.");
+        return;
+      }
       if (e?.message !== "__NATIVE_SCAN_UNAVAILABLE__") throw e;
+      nativePreparationAbortRef.current = null;
       const matches = await discoverServerCodeHosts(
         src, codeVal.trim(), xtUser.trim(), xtPass.trim(),
         (p) => {
           const pct = p.total ? Math.round((p.tested / p.total) * 100) : 0;
           setProgress(`${cfg.label} · %${pct} · DNS ${p.tested}/${p.total} · Bulunan ${p.found}${p.server ? `\nŞu an: ${p.server}` : ""}`);
         },
-        cfg.concurrency, cfg.timeoutMs, undefined, panel,
+        cfg.concurrency, cfg.timeoutMs, undefined, resolvedPanel || undefined,
       );
-      presentMatches(matches, `${panelName} · DNS Hesapları`,
+      const fallbackPanelName = resolvedPanel?.panelName || selectedPanelName || codeVal.trim();
+      presentMatches(matches, `${fallbackPanelName} · DNS Hesapları`,
         `${matches.length} kimlik doğrulaması başarılı DNS adayı bulundu. Eklemek istediklerinizi seçin.`);
     }
   };
@@ -558,20 +599,26 @@ export default function AddPlaylist() {
 
     const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
     await storage.setItem(CODE_SOURCE_KEY, src);
-    setDiscoveryMatches([]);
-    setShowDiscoveryMatches(false);
-    setProgress("Panel rehberi yükleniyor...");
     const cfg = scanConfigForSpeed();
+    const prep = beginDiscoveryPreparation(
+      "Panel / DNS Hesapları Bulundu",
+      "Panel rehberi hazırlanıyor. Durdur derseniz hazırlık da iptal edilir; seçim yapılmadan hiçbir playlist eklenmez.",
+      "Panel rehberi yükleniyor…",
+    );
 
-    const directory = panelDirectory.length && panelDirectorySource === src ? panelDirectory : await fetchPanelDirectory(src);
-    const seen = new Set<string>();
+    try {
+      const directory = panelDirectory.length && panelDirectorySource === src
+        ? panelDirectory
+        : await fetchPanelDirectory(src, { signal: prep.signal, timeoutMs: cfg.timeoutMs });
+      if (prep.signal.aborted) { const e = new Error("Tarama hazırlığı kullanıcı tarafından durduruldu."); e.name = "AbortError"; throw e; }
+      nativePreparationAbortRef.current = null;
+      const seen = new Set<string>();
     const candidates: Array<{panelName:string; code:string; server:string}> = [];
     for (const item of directory) for (const server of item.hosts) {
       const key = `${item.code}\u0000${item.panelName}\u0000${String(server).replace(/\/+$/,"").toLowerCase()}`;
       if (!seen.has(key)) { seen.add(key); candidates.push({panelName:item.panelName, code:item.code, server}); }
     }
 
-    try {
       const matches = await runNativeBackgroundScan(
         candidates,
         "Panel / DNS Hesapları Bulundu",
@@ -581,7 +628,15 @@ export default function AddPlaylist() {
       mergeStreamingMatches(matches, "Panel / DNS Hesapları Bulundu",
         "Tarama tamamlandı. Geçerli panel/DNS hesaplarını seçin.");
     } catch (e:any) {
+      if (isScanAbort(e)) {
+        nativePreparationAbortRef.current = null;
+        setNativeScanRunning(false); setNativeScanPaused(false); setNativeScanStopping(false); setLoading(false);
+        setDiscoverySubtitle("Tarama kullanıcı tarafından hazırlık aşamasında durduruldu. Hiçbir playlist eklenmedi.");
+        setProgress("Tarama durduruldu · hazırlık iptal edildi.");
+        return;
+      }
       if (e?.message !== "__NATIVE_SCAN_UNAVAILABLE__") throw e;
+      nativePreparationAbortRef.current = null;
       const matches = await discoverPanelsByCredentials(
         src, xtUser.trim(), xtPass.trim(),
         (p) => {
@@ -770,6 +825,12 @@ export default function AddPlaylist() {
   const bulkCandidateKey = (row: number, username: string, code: string, panelName: string, server: string) =>
     `${row}\u0000${username}\u0000${code}\u0000${panelName}\u0000${String(server).replace(/\/+$/, "").toLowerCase()}`;
 
+  const bulkSubscriptionKey = (c: BulkResolvedCandidate) => c.direct
+    ? `${c.sourceRow}\u0000${c.username}\u0000direct\u0000${String(c.server).replace(/\/+$/, "").toLowerCase()}`
+    : `${c.sourceRow}\u0000${c.username}\u0000panel\u0000${c.code}\u0000${c.panelName}`;
+
+  const isActiveBulkCandidate = (c: BulkResolvedCandidate) => String(c.login?.user_info?.status || "").toLowerCase() === "active";
+
   const mergeBulkCandidates = React.useCallback((incoming: BulkResolvedCandidate[], reveal = true) => {
     if (!incoming.length) return;
     setBulkCandidates(prev => {
@@ -883,7 +944,7 @@ export default function AddPlaylist() {
         );
       } else if (account.panelName) {
         if (!directoryCache.value) {
-          directoryCache.promise ??= fetchPanelDirectory(src);
+          directoryCache.promise ??= fetchPanelDirectory(src, { signal: control.signal, timeoutMs: cfg.timeoutMs });
           directoryCache.value = await directoryCache.promise;
         }
         const wanted = normalizePanelName(account.panelName);
@@ -903,7 +964,7 @@ export default function AddPlaylist() {
         );
       } else {
         if (!directoryCache.value) {
-          directoryCache.promise ??= fetchPanelDirectory(src);
+          directoryCache.promise ??= fetchPanelDirectory(src, { signal: control.signal, timeoutMs: cfg.timeoutMs });
           directoryCache.value = await directoryCache.promise;
         }
         setProgress(`${progressPrefix}\nPanel bilinmiyor; tüm panel rehberi taranıyor…`);
@@ -939,11 +1000,15 @@ export default function AddPlaylist() {
     }
   };
 
-  const runNativeBulkAccounts = async (accounts: BulkAccountInput[], cfg: { concurrency:number; timeoutMs:number; accountConcurrency:number; label:string }): Promise<{ found:number; completed:number; cancelled:boolean }> => {
+  const runNativeBulkAccounts = async (accounts: BulkAccountInput[], cfg: { concurrency:number; timeoutMs:number; accountConcurrency:number; label:string }, signal?: AbortSignal): Promise<{ found:number; completed:number; cancelled:boolean }> => {
     if (!PanelScan.available || Platform.OS !== "android") throw new Error("__NATIVE_SCAN_UNAVAILABLE__");
     const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
     setProgress(`${cfg.label} · Birleşik native panel rehberi hazırlanıyor…`);
-    const directory = panelDirectory.length && panelDirectorySource === src ? panelDirectory : await fetchPanelDirectory(src);
+    if (signal?.aborted || bulkScanCancelledRef.current) return { found: 0, completed: 0, cancelled: true };
+    const directory = panelDirectory.length && panelDirectorySource === src
+      ? panelDirectory
+      : await fetchPanelDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
+    if (signal?.aborted || bulkScanCancelledRef.current) return { found: 0, completed: 0, cancelled: true };
     const normalizeName = (v:string) => v.trim().toLocaleLowerCase("tr");
     const jobs = accounts.map((a) => {
       let candidates: Array<{panelName:string; code:string; server:string}> = [];
@@ -968,6 +1033,11 @@ export default function AddPlaylist() {
       throw new Error(`Bazı hesaplar için panel/DNS adayı hazırlanamadı: ${missing}`);
     }
     await storage.secureSet(PENDING_BULK_SCAN_KEY, JSON.stringify(accounts));
+    if (signal?.aborted || bulkScanCancelledRef.current) {
+      await storage.secureRemove(PENDING_BULK_SCAN_KEY);
+      return { found: 0, completed: 0, cancelled: true };
+    }
+    bulkPreparationAbortRef.current = null;
     const nativeConcurrency = Math.max(1, Math.min(32, cfg.concurrency * Math.max(1, cfg.accountConcurrency)));
     bulkNativeScanRef.current = true;
     let runId = "";
@@ -1024,6 +1094,10 @@ export default function AddPlaylist() {
     setBulkScanPaused(false);
     bulkScanPausedRef.current = false;
     bulkScanCancelledRef.current = false;
+    setBulkScanStopping(false);
+    bulkPreparationAbortRef.current?.abort();
+    const preparationController = new AbortController();
+    bulkPreparationAbortRef.current = preparationController;
     const directoryCache: { value?: PanelDirectoryItem[]; promise?: Promise<PanelDirectoryItem[]> } = {};
     const failures: string[] = [];
     const cfg = scanConfigForSpeed();
@@ -1033,6 +1107,7 @@ export default function AddPlaylist() {
 
     const control: ScanExecutionControl = {
       isCancelled: () => bulkScanCancelledRef.current,
+      signal: preparationController.signal,
       waitIfPaused: async () => {
         while (bulkScanPausedRef.current && !bulkScanCancelledRef.current) {
           await new Promise(resolve => setTimeout(resolve, 120));
@@ -1042,7 +1117,7 @@ export default function AddPlaylist() {
 
     try {
       if (PanelScan.available && Platform.OS === "android") {
-        const nr = await runNativeBulkAccounts(parsed.accounts, cfg); found=nr.found; completed=nr.completed;
+        const nr = await runNativeBulkAccounts(parsed.accounts, cfg, preparationController.signal); found=nr.found; completed=nr.completed;
         setBulkScanFailures([]); setBulkScanFinished(true); setShowBulkCandidates(true);
         setProgress(nr.cancelled ? `Tarama durduruldu · ${completed}/${parsed.accounts.length} hesap · ${found} sonuç korunuyor.` : `Native tarama tamamlandı · ${completed}/${parsed.accounts.length} hesap · ${found} kimlik doğrulaması başarılı panel/DNS adayı bulundu.`);
         if (!found && !nr.cancelled) setError("Kimlik doğrulaması başarılı aday bulunamadı.");
@@ -1075,19 +1150,49 @@ export default function AddPlaylist() {
     } catch (e: any) {
       setBulkScanFinished(true);
       setShowBulkCandidates(true);
+      if (isScanAbort(e) || bulkScanCancelledRef.current) {
+        setProgress(`Tarama durduruldu · ${completed}/${parsed.accounts.length} hesap işlendi · ${found} sonuç korunuyor.`);
+        setError(null);
+        return;
+      }
       setProgress(`Tarama tamamlanamadı: ${String(e?.message || e)}`);
       setError(String(e?.message || e));
       throw e;
     } finally {
+      if (bulkPreparationAbortRef.current === preparationController) bulkPreparationAbortRef.current = null;
       setLoading(false);
       setBulkScanPaused(false);
+      setBulkScanStopping(false);
       bulkScanPausedRef.current = false;
       bulkNativeScanRef.current = false;
     }
   };
 
   const addSelectedBulkCandidates = async () => {
-    const chosen = bulkCandidates.filter(c => selectedBulkCandidateKeys.includes(c.key));
+    const selectedRaw = bulkCandidates.filter(c => selectedBulkCandidateKeys.includes(c.key));
+    if (!selectedRaw.length) return;
+
+    // v15.2.11: aynı hesap+panelin birden fazla çalışan DNS'i ayrı playlist
+    // değildir. Seçim DNS satırlarından yapılsa bile import tek abonelik olarak
+    // gruplanır; bütün çalışan DNS'ler validatedHosts yedeği olarak korunur.
+    const allBySubscription = new Map<string, BulkResolvedCandidate[]>();
+    for (const c of bulkCandidates) {
+      const k = bulkSubscriptionKey(c);
+      allBySubscription.set(k, [...(allBySubscription.get(k) || []), c]);
+    }
+    const selectedGroups = new Map<string, BulkResolvedCandidate[]>();
+    for (const c of selectedRaw) {
+      const k = bulkSubscriptionKey(c);
+      selectedGroups.set(k, [...(selectedGroups.get(k) || []), c]);
+    }
+    const chosen: BulkResolvedCandidate[] = Array.from(selectedGroups.entries()).map(([k, rows]) => {
+      const allRows = allBySubscription.get(k) || rows;
+      const preferred = rows.find(isActiveBulkCandidate) || rows[0];
+      return {
+        ...preferred,
+        validatedHosts: Array.from(new Set(allRows.flatMap(x => x.validatedHosts?.length ? x.validatedHosts : [x.server]))),
+      };
+    });
     if (!chosen.length) return;
     setBulkAdding(true);
     setLoading(true);
@@ -2158,23 +2263,26 @@ export default function AddPlaylist() {
 
               {!bulkScanFinished && (loading || bulkScanPaused) && (
                 <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
-                  <FocusButton focusable disabled={bulkAdding} onPress={async () => {
+                  <FocusButton focusable disabled={bulkAdding || bulkScanStopping || !bulkScanRunIdRef.current} onPress={async () => {
                     const next = !bulkScanPausedRef.current;
                     bulkScanPausedRef.current = next;
                     setBulkScanPaused(next);
-                    if (bulkNativeScanRef.current && bulkScanRunIdRef.current) { if (next) await PanelScan.pauseScan(bulkScanRunIdRef.current); else await PanelScan.resumeScan(bulkScanRunIdRef.current); }
+                    if (bulkScanRunIdRef.current) { if (next) await PanelScan.pauseScan(bulkScanRunIdRef.current); else await PanelScan.resumeScan(bulkScanRunIdRef.current); }
                     setProgress(prev => `${prev || "Çoklu hesap taraması"}\n${next ? "DURAKLATILDI — aktif istekler tamamlanır, yeni iş başlatılmaz." : "Tarama devam ediyor…"}`);
-                  }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
-                    <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{bulkScanPaused ? "Devam Et" : "Duraklat"}</Text>
+                  }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary,opacity:bulkScanRunIdRef.current && !bulkScanStopping ? 1 : 0.5}]}>
+                    <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{!bulkScanRunIdRef.current ? "Hazırlanıyor" : bulkScanPaused ? "Devam Et" : "Duraklat"}</Text>
                   </FocusButton>
-                  <FocusButton focusable disabled={bulkAdding} onPress={async () => {
+                  <FocusButton focusable disabled={bulkAdding || bulkScanStopping} onPress={async () => {
+                    if (bulkScanStopping) return;
+                    setBulkScanStopping(true);
                     bulkScanCancelledRef.current = true;
                     bulkScanPausedRef.current = false;
                     setBulkScanPaused(false);
-                    if (bulkNativeScanRef.current && bulkScanRunIdRef.current) await PanelScan.cancelScan(bulkScanRunIdRef.current);
-                    setProgress(prev => `${prev || "Çoklu hesap taraması"}\nDurdurma isteği gönderildi; bulunan sonuçlar korunacak.`);
-                  }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surfaceSecondary}]}>
-                    <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>Durdur</Text>
+                    bulkPreparationAbortRef.current?.abort();
+                    if (bulkScanRunIdRef.current) await PanelScan.cancelScan(bulkScanRunIdRef.current);
+                    setProgress("DURDURULUYOR — katalog hazırlığı/ağ istekleri kesiliyor; bulunan sonuçlar korunacak.");
+                  }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surfaceSecondary,opacity:bulkScanStopping?0.55:1}]}>
+                    <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>{bulkScanStopping ? "Durduruluyor…" : "Durdur"}</Text>
                   </FocusButton>
                 </View>
               )}
@@ -2187,7 +2295,7 @@ export default function AddPlaylist() {
                 </FocusButton>
                 <FocusButton focusable disabled={bulkAdding || selectedBulkCandidateKeys.length===0 || !bulkScanFinished} onPress={addSelectedBulkCandidates}
                   style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedBulkCandidateKeys.length && bulkScanFinished?1:0.5}]}>
-                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{!bulkScanFinished ? "Taramanın Bitmesini Bekleyin" : `${selectedBulkCandidateKeys.length} Seçileni Doğrula ve Ekle`}</Text>}
+                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{!bulkScanFinished ? "Taramanın Bitmesini Bekleyin" : `${new Set(bulkCandidates.filter(c=>selectedBulkCandidateKeys.includes(c.key)).map(bulkSubscriptionKey)).size} Aboneliği Doğrula ve Ekle`}</Text>}
                 </FocusButton>
               </View>
             </View>
@@ -2232,17 +2340,21 @@ export default function AddPlaylist() {
                   <Text style={{ color: colors.onSurfaceSecondary, flex: 1, fontSize: FONT.size.sm, lineHeight: 19 }}>{progress}</Text>
                   {nativeScanRunning && (
                     <View style={{ gap: 6 }}>
-                      <FocusButton focusable onPress={async () => {
-                        if (nativeScanRunIdRef.current) { if (nativeScanPaused) await PanelScan.resumeScan(nativeScanRunIdRef.current); else await PanelScan.pauseScan(nativeScanRunIdRef.current); }
+                      <FocusButton focusable disabled={nativeScanStopping || !nativeScanRunIdRef.current} onPress={async () => {
+                        if (!nativeScanRunIdRef.current) return;
+                        if (nativeScanPaused) await PanelScan.resumeScan(nativeScanRunIdRef.current); else await PanelScan.pauseScan(nativeScanRunIdRef.current);
                         setNativeScanPaused(!nativeScanPaused);
-                      }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surface}]}>
-                        <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{nativeScanPaused ? "Devam" : "Duraklat"}</Text>
+                      }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surface,opacity:nativeScanRunIdRef.current && !nativeScanStopping ? 1 : 0.5}]}>
+                        <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{!nativeScanRunIdRef.current ? "Hazırlanıyor" : nativeScanPaused ? "Devam" : "Duraklat"}</Text>
                       </FocusButton>
-                      <FocusButton focusable onPress={async () => {
+                      <FocusButton focusable disabled={nativeScanStopping} onPress={async () => {
+                        if (nativeScanStopping) return;
+                        setNativeScanStopping(true);
+                        nativePreparationAbortRef.current?.abort();
                         if (nativeScanRunIdRef.current) await PanelScan.cancelScan(nativeScanRunIdRef.current);
-                        setProgress(prev => prev ? `${prev}\nDurdurma isteği gönderildi…` : "Durdurma isteği gönderildi…");
-                      }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surface}]}>
-                        <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>Durdur</Text>
+                        setProgress("DURDURULUYOR — katalog hazırlığı/ağ istekleri kesiliyor; bulunan sonuçlar korunacak.");
+                      }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surface,opacity:nativeScanStopping?0.55:1}]}>
+                        <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>{nativeScanStopping ? "Durduruluyor…" : "Durdur"}</Text>
                       </FocusButton>
                     </View>
                   )}
