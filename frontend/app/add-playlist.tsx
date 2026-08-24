@@ -77,6 +77,20 @@ function stableXtreamPlaylistId(server: string, username: string): string {
   return stablePlaylistId("xt", `${String(server).replace(/\/+$/, "").toLowerCase()}\u0000${username}`);
 }
 
+
+function formatScanDuration(ms: number): string {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  return min > 0 ? `${min} dk ${rem} sn` : `${rem} sn`;
+}
+
+function scanEta(createdAt: number, tested: number, total: number): string {
+  if (!createdAt || tested <= 0 || total <= tested) return total <= tested && total > 0 ? "0 sn" : "hesaplanıyor";
+  const elapsed = Math.max(1, Date.now() - createdAt);
+  return formatScanDuration((elapsed / tested) * (total - tested));
+}
+
 function canonicalUrlIdentity(value: string): string {
   const raw = String(value || "").trim();
   const m = raw.match(/^(https?):\/\/([^/]+)(.*)$/i);
@@ -346,9 +360,9 @@ export default function AddPlaylist() {
     setDiscoveryTitle(title);
     setDiscoverySubtitle(subtitle);
     setDiscoveryMatches(sortedMatches);
-    const activeKeys = sortedMatches.filter(isActiveDiscoveryMatch).map(discoveryKey);
-    // Expired/disabled auth sonuçları görünür ama otomatik seçilmez.
-    setSelectedDiscoveryKeys(activeKeys);
+    // v15.2.10: sonuç bulundu diye otomatik seçim yapılmaz. Kullanıcı açıkça
+    // hangi abonelikleri ekleyeceğini seçer; tarama hiçbir zaman importu tetiklemez.
+    setSelectedDiscoveryKeys([]);
     setShowDiscoveryMatches(true);
     setLoading(false);
     setProgress(`Tarama tamamlandı · ${sortedMatches.length} geçerli DNS bulundu.`);
@@ -377,16 +391,9 @@ export default function AddPlaylist() {
         return sa - sb || a.panelName.localeCompare(b.panelName, "tr") || a.server.localeCompare(b.server);
       });
     });
-    setSelectedDiscoveryKeys(prev => {
-      const next = new Set(prev);
-      for (const m of incoming) {
-        const key = discoveryKey(m);
-        if (!nativeScanSeenRef.current.has(key) &&
-            String(m.login?.user_info?.status || "").toLowerCase() === "active") next.add(key);
-        nativeScanSeenRef.current.add(key);
-      }
-      return Array.from(next);
-    });
+    // Canlı sonuçlar seçim durumunu değiştirmez. Kullanıcının mevcut seçimleri
+    // korunur ve yeni bulunan adaylar kendiliğinden seçilmez.
+    for (const m of incoming) nativeScanSeenRef.current.add(discoveryKey(m));
     setShowDiscoveryMatches(true);
   }, []);
 
@@ -403,13 +410,13 @@ export default function AddPlaylist() {
       );
     });
 
-  const waitForScanRelease = async (runId: string, timeoutMs = 7000) => {
+  const waitForScanRelease = async (runId: string, timeoutMs = 25000) => {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
       if (PanelScan.getActiveRunId() !== runId) return;
       await new Promise(resolve => setTimeout(resolve, 120));
     }
-    throw new Error("Önceki tarama zamanında durmadı. Birkaç saniye sonra tekrar deneyin.");
+    throw new Error("Önceki tarama güvenli biçimde kapatılamadı. Ağ işçileri hâlâ aktif; yeni tarama başlatılmadı.");
   };
 
   const startAcceptedScan = async (starter: () => Promise<NativeScanStartResult | null>): Promise<string> => {
@@ -420,6 +427,7 @@ export default function AddPlaylist() {
       const replace = await askReplaceRunningScan(active);
       if (!replace) throw new Error("Yeni tarama başlatılmadı; mevcut tarama çalışmaya devam ediyor.");
       if (!active) throw new Error("Devam eden taramanın kimliği alınamadı.");
+      setProgress("Önceki tarama durduruluyor… Açık ağ bağlantıları kapatılıyor ve worker havuzu boşaltılıyor.");
       await PanelScan.cancelScan(active);
       await waitForScanRelease(active);
       result = await starter();
@@ -443,12 +451,16 @@ export default function AddPlaylist() {
     nativeScanSeenRef.current = new Set();
     setDiscoveryMatches([]);
     setSelectedDiscoveryKeys([]);
+    setDiscoveryTitle(title);
+    setDiscoverySubtitle("Tarama hazırlanıyor. Bulunan sonuçlar canlı eklenecek; seçim yapılmadan hiçbir playlist eklenmez.");
+    setShowDiscoveryMatches(true);
     setNativeScanRunning(true);
     setLoading(true);
     let runId = "";
     try {
       runId = await startAcceptedScan(() => PanelScan.startScan(candidates, xtUser.trim(), xtPass.trim(), cfg.concurrency, cfg.timeoutMs));
       nativeScanRunIdRef.current = runId;
+      setProgress(`${cfg.label} · NATIVE\nTarama başlatıldı · Adres 0/${candidates.length} · Bulunan 0\nGeçen: 0 sn · Tahmini kalan: hesaplanıyor`);
     } catch (e) {
       setNativeScanRunning(false); setNativeScanPaused(false); setLoading(false);
       throw e;
@@ -471,11 +483,15 @@ export default function AddPlaylist() {
         setNativeScanPaused(!!snap.paused);
         mergeStreamingMatches(matches, title, subtitle);
         const pct = snap.total ? Math.round(((snap.tested || 0) / snap.total) * 100) : 0;
+        const createdAt = Number(snap.createdAt || Date.now());
+        const testedNow = Number(snap.tested || 0);
+        const totalNow = Number(snap.total || candidates.length);
         setProgress(
-          `${cfg.label} · %${pct}\n` +
-          `Panel: ${snap.panelTested || 0}/${snap.panelTotal || 0} · Adres: ${snap.tested || 0}/${snap.total || candidates.length} · Bulunan: ${snap.found || matches.length}` +
-          (snap.panelName ? `\nŞu an: ${snap.panelName}` : "") +
-          `\nUygulamadan çıksanız da Android taramayı sürdürecek.`
+          `${cfg.label} · NATIVE · %${pct}\n` +
+          `Panel ${snap.panelTested || 0}/${snap.panelTotal || 0} · Adres ${testedNow}/${totalNow} · Kalan ${Math.max(0,totalNow-testedNow)} · Bulunan ${snap.found || matches.length}` +
+          (snap.panelName ? `\nŞu an: ${snap.panelName}${snap.currentServer ? ` · ${snap.currentServer}` : ""}` : "") +
+          `\nGeçen: ${formatScanDuration(Date.now()-createdAt)} · Tahmini kalan: ${scanEta(createdAt,testedNow,totalNow)}` +
+          (snap.paused ? `\nDURAKLATILDI` : snap.state === "CANCELLING" ? `\nDURDURULUYOR — aktif ağ istekleri kapatılıyor` : "")
         );
         if (snap.running === false && (snap.total || 0) > 0) {
           if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
@@ -484,8 +500,13 @@ export default function AddPlaylist() {
           if (nativeScanRunIdRef.current === runId) nativeScanRunIdRef.current = "";
           if (!settled) {
             settled = true;
-            if (matches.length) resolve(matches);
-            else reject(new Error("Bu kullanıcı adı ve şifre taranan DNS adreslerinde bulunamadı."));
+            setDiscoverySubtitle(snap.cancelled
+              ? `Tarama kullanıcı tarafından durduruldu. ${matches.length} sonuç korundu; seçim yapmadan hiçbir playlist eklenmez.`
+              : matches.length
+                ? `Tarama tamamlandı. ${matches.length} aday bulundu. Eklemek istediklerinizi seçin.`
+                : "Tarama tamamlandı. Eşleşme bulunamadı; hiçbir playlist eklenmedi.");
+            setProgress(snap.cancelled ? `Tarama durduruldu · ${matches.length} sonuç korundu.` : `Tarama tamamlandı · ${matches.length} aday bulundu.`);
+            resolve(matches);
           }
         }
       }, 450);
@@ -531,24 +552,6 @@ export default function AddPlaylist() {
     }
   };
 
-  const addDiscoveredMatch = async (found: PanelCredentialMatch) => {
-    setShowDiscoveryMatches(false);
-    setDiscoveryMatches([]);
-    setCodeVal(found.code);
-    setSelectedPanelName(found.panelName);
-    if (!name.trim()) setName(found.panelName);
-    setProgress(`Seçildi: ${found.panelName}. İçerik yükleniyor...`);
-
-    await submitXtreamDirect(
-      {
-        server: found.server,
-        username: xtUser.trim(),
-        password: xtPass.trim(),
-      },
-      name.trim() || found.panelName,
-      makeBinding(found.code, found.panelName, found.server),
-    );
-  };
 
   const submitAutoDiscovery = async () => {
     if (!xtUser.trim() || !xtPass.trim()) throw new Error("Kullanıcı adı ve şifre gereklidir");
@@ -993,8 +996,9 @@ export default function AddPlaylist() {
         mergeBulkCandidates(resolved); lastFound=raw.length;
       }
       completed=Number(snap.accountTested||0); const tested=Number(snap.tested||0), total=Number(snap.total||0), pct=total?Math.round(tested/total*100):0;
+      const createdAt = Number(snap.createdAt || Date.now());
       setBulkScanPaused(!!snap.paused);
-      setProgress(`${cfg.label} · NATIVE · %${pct}\nHesap ${completed}/${accounts.length} · Adres ${tested}/${total} · Kalan ${Math.max(0,total-tested)} · Bulunan ${raw.length}${snap.paused?" · DURAKLATILDI":""}${snap.panelName?`\nŞu an: ${snap.panelName}${snap.currentServer ? ` · ${snap.currentServer}` : ""}`:""}`);
+      setProgress(`${cfg.label} · NATIVE · %${pct}\nHesap ${completed}/${accounts.length} · Adres ${tested}/${total} · Kalan ${Math.max(0,total-tested)} · Bulunan ${raw.length}${snap.panelName?`\nŞu an: ${snap.panelName}${snap.currentServer ? ` · ${snap.currentServer}` : ""}`:""}\nGeçen: ${formatScanDuration(Date.now()-createdAt)} · Tahmini kalan: ${scanEta(createdAt,tested,total)}${snap.paused?"\nDURAKLATILDI":snap.state==="CANCELLING"?"\nDURDURULUYOR — aktif ağ istekleri kapatılıyor":""}`);
       if (!snap.running) {
         await storage.secureRemove(PENDING_BULK_SCAN_KEY);
         bulkNativeScanRef.current = false;
@@ -1016,6 +1020,7 @@ export default function AddPlaylist() {
     setBulkScanFailures([]);
     setBulkAccountProgress([]);
     setBulkScanFinished(false);
+    setShowBulkCandidates(true);
     setBulkScanPaused(false);
     bulkScanPausedRef.current = false;
     bulkScanCancelledRef.current = false;
@@ -1067,6 +1072,12 @@ export default function AddPlaylist() {
         setProgress(`Tarama tamamlandı · ${completed}/${parsed.accounts.length} hesap işlendi · ${found} kimlik doğrulaması başarılı panel/DNS adayı bulundu${failures.length ? ` · ${failures.length} hesapta sonuç yok` : ""}`);
       }
       if (!found && !bulkScanCancelledRef.current) setError(failures.join("\n") || "Kimlik doğrulaması başarılı aday bulunamadı.");
+    } catch (e: any) {
+      setBulkScanFinished(true);
+      setShowBulkCandidates(true);
+      setProgress(`Tarama tamamlanamadı: ${String(e?.message || e)}`);
+      setError(String(e?.message || e));
+      throw e;
     } finally {
       setLoading(false);
       setBulkScanPaused(false);
@@ -2030,8 +2041,8 @@ export default function AddPlaylist() {
           <View style={[styles.footer, { backgroundColor: colors.surface, borderTopColor: colors.border, marginTop: SPACING.lg, marginBottom: keyboardHeight > 0 ? SPACING.sm : SPACING.lg }]}>
             <FocusButton testID="submit-playlist-btn" onPress={submit} disabled={loading} activeOpacity={0.85} style={[styles.cta, { backgroundColor: colors.brandPrimary, opacity: loading ? 0.7 : 1 }]}>
               {loading ? <ActivityIndicator color={colors.onBrandPrimary} /> : <>
-                <Ionicons name={method === "bulk" ? "people" : method === "code" && codeMode === "auto" ? "search" : "checkmark-circle"} size={22} color={colors.onBrandPrimary} />
-                <Text style={[styles.ctaText, { color: colors.onBrandPrimary }]}>{method === "bulk" ? "Hesapları Toplu Ekle" : method === "code" && codeMode === "auto" ? "Hesabımı Bul ve Ekle" : "Kaydet ve Yükle"}</Text>
+                <Ionicons name={method === "bulk" || method === "code" ? "search" : "checkmark-circle"} size={22} color={colors.onBrandPrimary} />
+                <Text style={[styles.ctaText, { color: colors.onBrandPrimary }]}>{method === "bulk" ? "Hesapları Analiz Et" : method === "code" ? "Hesabımı Analiz Et" : "Kaydet ve Yükle"}</Text>
               </>}
             </FocusButton>
           </View>
@@ -2041,7 +2052,7 @@ export default function AddPlaylist() {
           visible={showBulkCandidates}
           transparent
           animationType="fade"
-          onRequestClose={() => { if (!bulkAdding) setShowBulkCandidates(false); }}
+          onRequestClose={() => { if (!bulkAdding && bulkScanFinished) setShowBulkCandidates(false); }}
         >
           <View style={styles.matchModalBackdrop}>
             <View style={[styles.matchModalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -2054,7 +2065,7 @@ export default function AddPlaylist() {
                       : `Tarama sürüyor. Bulunan sonuçlar canlı ekleniyor; seçimleriniz korunur.`}
                   </Text>
                 </View>
-                <FocusButton focusable disabled={bulkAdding} onPress={() => setShowBulkCandidates(false)} style={styles.matchCloseBtn}>
+                <FocusButton focusable disabled={bulkAdding || !bulkScanFinished} onPress={() => { if (bulkScanFinished) setShowBulkCandidates(false); }} style={[styles.matchCloseBtn, { opacity: bulkScanFinished ? 1 : 0.35 }]}>
                   <Ionicons name="close" size={24} color={colors.onSurface} />
                 </FocusButton>
               </View>
@@ -2174,9 +2185,9 @@ export default function AddPlaylist() {
                   style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
                   <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{selectedBulkCandidateKeys.length===bulkCandidates.length && bulkCandidates.length?"Seçimi Kaldır":"Tümünü Seç"}</Text>
                 </FocusButton>
-                <FocusButton focusable disabled={bulkAdding || selectedBulkCandidateKeys.length===0} onPress={addSelectedBulkCandidates}
-                  style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedBulkCandidateKeys.length?1:0.5}]}>
-                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{selectedBulkCandidateKeys.length} Seçileni Doğrula ve Ekle</Text>}
+                <FocusButton focusable disabled={bulkAdding || selectedBulkCandidateKeys.length===0 || !bulkScanFinished} onPress={addSelectedBulkCandidates}
+                  style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedBulkCandidateKeys.length && bulkScanFinished?1:0.5}]}>
+                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{!bulkScanFinished ? "Taramanın Bitmesini Bekleyin" : `${selectedBulkCandidateKeys.length} Seçileni Doğrula ve Ekle`}</Text>}
                 </FocusButton>
               </View>
             </View>
@@ -2188,7 +2199,7 @@ export default function AddPlaylist() {
           transparent
           animationType="fade"
           onRequestClose={() => {
-            setShowDiscoveryMatches(false);
+            if (!nativeScanRunning && !bulkAdding) setShowDiscoveryMatches(false);
           }}
         >
           <View style={styles.matchModalBackdrop}>
@@ -2205,10 +2216,11 @@ export default function AddPlaylist() {
                 <FocusButton
                   testID="discovery-match-close"
                   focusable
+                  disabled={nativeScanRunning || bulkAdding}
                   onPress={() => {
-                    setShowDiscoveryMatches(false);
+                    if (!nativeScanRunning && !bulkAdding) setShowDiscoveryMatches(false);
                   }}
-                  style={styles.matchCloseBtn}
+                  style={[styles.matchCloseBtn, { opacity: nativeScanRunning || bulkAdding ? 0.35 : 1 }]}
                 >
                   <Ionicons name="close" size={24} color={colors.onSurface} />
                 </FocusButton>
@@ -2282,7 +2294,7 @@ export default function AddPlaylist() {
                 }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
                   <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>Aktifleri Seç / Kaldır</Text>
                 </FocusButton>
-                <FocusButton testID="discovery-add-selected" focusable disabled={bulkAdding || selectedDiscoveryKeys.length===0} onPress={async()=>{
+                <FocusButton testID="discovery-add-selected" focusable disabled={bulkAdding || selectedDiscoveryKeys.length===0 || nativeScanRunning} onPress={async()=>{
                   const chosen=discoveryMatches.filter(m=>selectedDiscoveryKeys.includes(discoveryKey(m))); setBulkAdding(true); let ok=0; const failed:string[]=[];
                   try {
                     const hostsByPanel = new Map<string, string[]>();
@@ -2319,15 +2331,15 @@ export default function AddPlaylist() {
                     Alert.alert("Panel Ekleme",`${ok}/${panelGroups.length} playlist eklendi.`+(failed.length?`\nEklenemeyen: ${failed.join(", ")}`:""));
                     if(ok>0) router.replace("/(tabs)");
                   } finally { setBulkAdding(false); setLoading(false); setProgress(""); }
-                }} style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedDiscoveryKeys.length?1:0.5}]}>
-                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{new Set(discoveryMatches.filter(m=>selectedDiscoveryKeys.includes(discoveryKey(m))).map(m=>`${m.code}\u0000${m.panelName}`)).size} Paneli Ekle</Text>}
+                }} style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedDiscoveryKeys.length && !nativeScanRunning?1:0.5}]}>
+                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{nativeScanRunning ? "Taramanın Bitmesini Bekleyin" : `${new Set(discoveryMatches.filter(m=>selectedDiscoveryKeys.includes(discoveryKey(m))).map(m=>`${m.code}\u0000${m.panelName}`)).size} Seçileni Doğrula ve Ekle`}</Text>}
                 </FocusButton>
               </View>
 
               <View style={[styles.infoBanner, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginTop: SPACING.md }]}>
                 <Ionicons name="shield-checkmark" size={18} color={colors.brandPrimary} />
                 <Text style={{ color: colors.onSurface, flex: 1, fontSize: FONT.size.sm }}>
-                  Seçtiğiniz her DNS hesabı ayrı playlist olarak kaydedilir. Tercih edilen DNS çalıştığı sürece korunur; arıza halinde yalnız aynı panelin doğrulanmış/yeni DNS adresleri denenir.
+                  Aynı aboneliğin birden fazla çalışan DNS’i tek playlist altında gruplanır. Seçiminizden sonra yalnız seçilen abonelikler yeniden doğrulanır ve eklenir; diğer çalışan DNS’ler yedek validatedHosts olarak saklanır.
                 </Text>
               </View>
             </View>

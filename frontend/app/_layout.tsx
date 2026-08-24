@@ -29,7 +29,7 @@
 import { Stack, usePathname, useRouter, useSegments } from "expo-router";
 import * as Linking from "expo-linking";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -37,7 +37,7 @@ import { StatusBar } from "expo-status-bar";
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { ErrorBoundary } from "@/src/components/ErrorBoundary";
 import { ThemeProvider } from "@/src/theme/ThemeContext";
-import { ProfileProvider } from "@/src/store/ProfileContext";
+import { ProfileProvider, useProfiles } from "@/src/store/ProfileContext";
 import { PlaylistProvider } from "@/src/store/PlaylistContext";
 import { ParentalProvider } from "@/src/store/ParentalContext";
 import { LibraryProvider } from "@/src/store/LibraryContext";
@@ -55,6 +55,22 @@ import { markAppBackground, markAppForeground, persistAppPath } from "@/src/util
 SplashScreen.preventAutoHideAsync().catch(() => {
   /* bazı platformlarda çağrı zaten yapılmış olabilir — yoksayılabilir */
 });
+
+
+const PROFILE_GATE_EXEMPT_PATHS = new Set(["/", "/welcome", "/profile-select"]);
+
+function ProfileSessionGate({ children }: { children: ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const { activeProfile, isLoading, sessionAuthorizedProfileId } = useProfiles();
+  const blocked = !isLoading && !PROFILE_GATE_EXEMPT_PATHS.has(pathname) && !!activeProfile?.hasPin && sessionAuthorizedProfileId !== activeProfile.id;
+  useEffect(() => {
+    if (blocked) router.replace("/profile-select");
+  }, [blocked, router]);
+  // PIN korumalı route bir frame bile görünmesin; redirect tamamlanana kadar siyah bariyer.
+  if (blocked) return <View style={{ flex: 1, backgroundColor: "#000" }} />;
+  return <>{children}</>;
+}
 
 /** Bildirim izni istemeden önce beklenen süre (kullanıcı splash'i görsün). */
 const PERMISSION_PROMPT_DELAY_MS = 3000;
@@ -137,6 +153,7 @@ export default function RootLayout() {
               Bağımlılık kontrolü yapıldı: ProfileContext ne temayı ne de TV
               bağlamını kullanıyor, bu yüzden sıra değişimi güvenli. */}
           <ProfileProvider>
+          <ProfileSessionGate>
           <TvProvider>
           <ThemeProvider>
               <PlaylistProvider>
@@ -216,6 +233,7 @@ export default function RootLayout() {
               </PlaylistProvider>
             </ThemeProvider>
           </TvProvider>
+          </ProfileSessionGate>
           </ProfileProvider>
         </SafeAreaProvider>
       </GestureHandlerRootView>

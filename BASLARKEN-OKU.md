@@ -50,3 +50,9 @@ GitHub Kotlin chunked staging writer API-signature düzeltmesi; ayrıntı için 
 
 ## v15.2.9-RC1 AKTİF GELİŞTİRME NOTU
 Güncel kaynak sürüm 15.2.9 / versionCode 150209'dur. Sunucu Kodu üç yolu artık Server Discovery Orchestrator üzerinden ortak candidate -> native scan -> verify -> import -> Room akışına bağlanmıştır. PanelScan başlangıçları atomik claim + ACCEPTED/BUSY sözleşmelidir; pause/resume/cancel runId-scoped'dur. Panel directory cache-first + timeout/retry kullanır. Ayrıntı `AI-PROJE-DEVIR-BAGLAM.md` ve `SURUM-NOTU-GPT-ELITE-v15.2.9-RC1.md` içindedir.
+
+
+## v15.2.10-RC1
+- Panel taraması gerçek ağ bağlantısı iptali + worker shutdown ile durdurulur.
+- Analiz UI tarama başında açılır; progress/pause/resume/stop ve explicit selection zorunludur.
+- PIN’li profil process restart/session restore ile atlanamaz; runtime profile-session gate eklendi.

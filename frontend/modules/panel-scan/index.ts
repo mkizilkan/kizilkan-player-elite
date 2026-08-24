@@ -8,7 +8,7 @@ export type NativeScanStartResult = {
 };
 
 type NativeSnapshot = {
-  runId?: string; state?: "STARTING" | "RUNNING" | "PAUSED" | "COMPLETED" | "FAILED" | "CANCELLED"; createdAt?: number; updatedAt?: number;
+  runId?: string; state?: "STARTING" | "RUNNING" | "PAUSED" | "CANCELLING" | "COMPLETED" | "FAILED" | "CANCELLED"; createdAt?: number; updatedAt?: number;
   mode?: "single" | "bulk" | "unified"; running?: boolean; cancelled?: boolean; paused?: boolean;
   tested?: number; total?: number; accountTested?: number; accountTotal?: number; accountIndex?: number;
   panelTested?: number; panelTotal?: number; found?: number; panelName?: string; currentServer?: string; error?: string; matches?: any[];

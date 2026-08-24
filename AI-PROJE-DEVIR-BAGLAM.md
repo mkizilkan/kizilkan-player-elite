@@ -608,3 +608,9 @@ Gerçek cihaz videosu + v15.2.8 kaynak audit'i ile Sunucu Kodu bölümündeki `K
 
 ## DOĞRULAMA SINIRI
 Bu kaynak ortamında gerçek Expo prebuild/Android Gradle/Kotlin release build yapılmış sayılmaz. Statik gate ve syntax kontrolleri yapılır; gerçek Kotlin/Gradle/APK kanıtı GitHub Actions, davranış kanıtı gerçek cihaz testidir.
+
+
+## v15.2.10-RC1
+- Panel taraması gerçek ağ bağlantısı iptali + worker shutdown ile durdurulur.
+- Analiz UI tarama başında açılır; progress/pause/resume/stop ve explicit selection zorunludur.
+- PIN’li profil process restart/session restore ile atlanamaz; runtime profile-session gate eklendi.

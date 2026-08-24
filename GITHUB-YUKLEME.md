@@ -88,3 +88,9 @@ GitHub Kotlin chunked staging writer API-signature düzeltmesi; ayrıntı için 
 
 ## v15.2.9-RC1
 GitHub Actions `15.2.9 / versionCode 150209` görmelidir. İlk kapılar `npx tsc --noEmit`, Expo prebuild, `:panel-scan:compileReleaseKotlin`, `:kizilkan-native-core:compileReleaseKotlin` ve release APK'dır. Signing dosyaları commit edilmez. Cihaz kabulünde Sunucu Kodu üç yolu ayrı ayrı test edilmelidir.
+
+
+## v15.2.10-RC1
+- Panel taraması gerçek ağ bağlantısı iptali + worker shutdown ile durdurulur.
+- Analiz UI tarama başında açılır; progress/pause/resume/stop ve explicit selection zorunludur.
+- PIN’li profil process restart/session restore ile atlanamaz; runtime profile-session gate eklendi.

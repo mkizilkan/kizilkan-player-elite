@@ -31,6 +31,11 @@ interface ProfileContextValue {
   verifyAdminPin: (pin: string) => Promise<boolean>;
   /** Yönetici koruması aktif mi (yöneticinin PIN'i var mı)? */
   adminHasPin: () => boolean;
+  /** Process-ömürlü profil yetkisi; diske yazılmaz. PIN koruması process restart ile yeniden istenir. */
+  sessionAuthorizedProfileId: string | null;
+  authorizeProfileSession: (id: string) => void;
+  clearProfileSession: () => void;
+  isProfileSessionAuthorized: (id: string) => boolean;
 }
 
 const ProfileContext = createContext<ProfileContextValue | null>(null);
@@ -48,6 +53,7 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
   const [profiles, setProfiles] = useState<Profile[]>([DEFAULT_PROFILE]);
   const [activeId, setActiveId] = useState<string>('default');
   const [isLoading, setIsLoading] = useState(true);
+  const [sessionAuthorizedProfileId, setSessionAuthorizedProfileId] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -213,12 +219,21 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
     return !!admin?.hasPin;
   }, [profiles]);
 
+  const authorizeProfileSession = useCallback((id: string) => {
+    const list = profilesRef.current.length ? profilesRef.current : profiles;
+    if (list.some(p => p.id === id)) setSessionAuthorizedProfileId(id);
+  }, [profiles]);
+
+  const clearProfileSession = useCallback(() => setSessionAuthorizedProfileId(null), []);
+  const isProfileSessionAuthorized = useCallback((id: string) => sessionAuthorizedProfileId === id, [sessionAuthorizedProfileId]);
+
   const activeProfile = profiles.find(p => p.id === activeId) || profiles[0] || DEFAULT_PROFILE;
 
   return (
     <ProfileContext.Provider value={{
       profiles, activeProfile, isLoading,
       addProfile, updateProfile, removeProfile, switchProfile, setPin, verifyPin, verifyPinAsync, verifyAdminPin, adminHasPin,
+      sessionAuthorizedProfileId, authorizeProfileSession, clearProfileSession, isProfileSessionAuthorized,
     }}>
       {children}
     </ProfileContext.Provider>

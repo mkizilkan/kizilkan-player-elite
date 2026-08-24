@@ -77,3 +77,9 @@ GitHub Kotlin chunked staging writer API-signature düzeltmesi; ayrıntı için 
 
 ## v15.2.9-RC1 DEVİR
 Sunucu Kodu `Kodum var / Paneli biliyorum / Paneli bilmiyorum` orchestration kök hataları giderildi: atomik native job claim, açık BUSY sonucu, runId-scoped kontrol, Firebase client+server timeout, retry, cache-first panel directory ve seçilmiş `hosts[]` doğrudan native scan. v15.2.8 ve önceki Room/Cast/Player/Discovery özellikleri korunur. Gerçek build CI, üç yolun davranış kabulü gerçek cihazla doğrulanacaktır.
+
+
+## v15.2.10-RC1
+- Panel taraması gerçek ağ bağlantısı iptali + worker shutdown ile durdurulur.
+- Analiz UI tarama başında açılır; progress/pause/resume/stop ve explicit selection zorunludur.
+- PIN’li profil process restart/session restore ile atlanamaz; runtime profile-session gate eklendi.

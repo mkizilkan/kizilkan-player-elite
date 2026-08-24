@@ -10,6 +10,8 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -66,6 +68,16 @@ class PanelScanService : Service() {
   private val paused = AtomicBoolean(false)
   @Volatile private var running = false
   @Volatile private var currentRunId = ""
+  @Volatile private var activeExecutor: ExecutorService? = null
+  private val activeConnections = ConcurrentHashMap.newKeySet<HttpURLConnection>()
+
+  private fun abortActiveNetworkWork() {
+    try { activeExecutor?.shutdownNow() } catch (_: Throwable) {}
+    val snapshot = activeConnections.toList()
+    for (conn in snapshot) {
+      try { conn.disconnect() } catch (_: Throwable) {}
+    }
+  }
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -94,7 +106,8 @@ class PanelScanService : Service() {
         if (running && requestedRunId == currentRunId) {
           cancelled.set(true)
           paused.set(false)
-          patchSnapshot { it.put("running", true).put("cancelled", true).put("paused", false).put("state", "CANCELLED") }
+          patchSnapshot { it.put("running", true).put("cancelled", true).put("paused", false).put("state", "CANCELLING") }
+          abortActiveNetworkWork()
           getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("Panel taraması durduruluyor…", 0, 0))
         }
       }
@@ -179,6 +192,11 @@ class PanelScanService : Service() {
 
   @Synchronized private fun writeSnapshot(obj: JSONObject) {
     if (currentRunId.isNotBlank() && !obj.has("runId")) obj.put("runId", currentRunId)
+    if (!obj.has("createdAt")) {
+      val previousRaw = getSharedPreferences(PREFS, 0).getString(KEY_SNAPSHOT, "{}") ?: "{}"
+      val previousCreatedAt = try { JSONObject(previousRaw).optLong("createdAt", 0L) } catch (_: Throwable) { 0L }
+      obj.put("createdAt", if (previousCreatedAt > 0L) previousCreatedAt else System.currentTimeMillis())
+    }
     if (!obj.has("state")) {
       val state = when {
         obj.optBoolean("cancelled", false) -> "CANCELLED"
@@ -206,19 +224,23 @@ class PanelScanService : Service() {
     val p = java.net.URLEncoder.encode(password, "UTF-8")
     var conn: HttpURLConnection? = null
     return try {
-      conn = URL("$base/player_api.php?username=$u&password=$p").openConnection() as HttpURLConnection
-      conn.connectTimeout = timeoutMs
-      conn.readTimeout = timeoutMs
-      conn.requestMethod = "GET"
-      conn.setRequestProperty("Accept", "application/json")
-      if (conn.responseCode !in 200..299) return null
-      val text = conn.inputStream.bufferedReader().use { it.readText() }
+      if (cancelled.get() || Thread.currentThread().isInterrupted) return null
+      val opened = URL("$base/player_api.php?username=$u&password=$p").openConnection() as HttpURLConnection
+      conn = opened
+      activeConnections.add(opened)
+      if (cancelled.get() || Thread.currentThread().isInterrupted) return null
+      opened.connectTimeout = timeoutMs
+      opened.readTimeout = timeoutMs
+      opened.requestMethod = "GET"
+      opened.setRequestProperty("Accept", "application/json")
+      if (opened.responseCode !in 200..299) return null
+      val text = opened.inputStream.bufferedReader().use { it.readText() }
       val data = JSONObject(text)
       val ui = data.optJSONObject("user_info") ?: return null
       val auth = ui.opt("auth")?.toString()
       if (auth == "0" || auth == "false") return null
       data
-    } catch (_: Throwable) { null } finally { conn?.disconnect() }
+    } catch (_: Throwable) { null } finally { conn?.let { activeConnections.remove(it) }; conn?.disconnect() }
   }
 
   /** Snapshot diskte kalıcıdır; parola/token gibi hassas alanları yazma. */
@@ -255,6 +277,7 @@ class PanelScanService : Service() {
       val panelSet = linkedSetOf<String>()
       for (i in 0 until candidateCount) { val c = candidates.getJSONObject(i); panelSet.add("${c.optString("code")}\u0000${c.optString("panelName")}") }
       val workerCount = concurrency.coerceIn(1, minOf(32, total)); val pool = Executors.newFixedThreadPool(workerCount)
+      activeExecutor = pool
       repeat(workerCount) {
         pool.submit {
           while (!cancelled.get()) {
@@ -281,6 +304,8 @@ class PanelScanService : Service() {
       writeSnapshot(JSONObject().put("mode","bulk").put("running",false).put("error",e.message ?: "Native çoklu hesap tarama hatası"))
     } finally {
       val finishedRunId = currentRunId
+      activeExecutor = null
+      activeConnections.clear()
       running = false
       releaseRun(finishedRunId)
       stopForeground(STOP_FOREGROUND_REMOVE)
@@ -360,6 +385,7 @@ class PanelScanService : Service() {
         return arr
       }
       val pool = Executors.newFixedThreadPool(concurrency.coerceIn(1, minOf(32, total)))
+      activeExecutor = pool
       repeat(concurrency.coerceIn(1, minOf(32, total))) {
         pool.submit {
           while (!cancelled.get()) {
@@ -407,6 +433,8 @@ class PanelScanService : Service() {
       writeSnapshot(JSONObject().put("mode","unified").put("running",false).put("error",e.message ?: "Birleşik native panel tarama hatası"))
     } finally {
       val finishedRunId = currentRunId
+      activeExecutor = null
+      activeConnections.clear()
       running = false
       releaseRun(finishedRunId)
       stopForeground(STOP_FOREGROUND_REMOVE)
@@ -430,6 +458,7 @@ class PanelScanService : Service() {
       }
       val panelTotal = panelRemaining.size
       val pool = Executors.newFixedThreadPool(concurrency)
+      activeExecutor = pool
       repeat(concurrency) {
         pool.submit {
           while (!cancelled.get()) {
@@ -457,7 +486,7 @@ class PanelScanService : Service() {
               .put("running", done < total && !cancelled.get()).put("paused", paused.get())
               .put("tested", done).put("total", total)
               .put("panelTested", panelDone.get()).put("panelTotal", panelTotal)
-              .put("found", matches.size).put("panelName", panelName)
+              .put("found", matches.size).put("panelName", panelName).put("currentServer", server)
               .put("matches", resultArray)
             writeSnapshot(snap)
             val nm = getSystemService(NotificationManager::class.java)
@@ -477,6 +506,8 @@ class PanelScanService : Service() {
       writeSnapshot(JSONObject().put("running", false).put("error", e.message ?: "Native panel tarama hatası"))
     } finally {
       val finishedRunId = currentRunId
+      activeExecutor = null
+      activeConnections.clear()
       running = false
       releaseRun(finishedRunId)
       stopForeground(STOP_FOREGROUND_REMOVE)

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.9 RC1 SERVER DISCOVERY ORCHESTRATOR HARDENING)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.10 RC1 SCAN CANCELLATION SELECTION PROFILE AUTH HARDENING)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -124,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.2.9') problem(`app version ${app?.expo?.version} (15.2.9 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150209) problem(`versionCode ${app?.expo?.android?.versionCode} (150209 bekleniyor)`);
+if (app?.expo?.version !== '15.2.10') problem(`app version ${app?.expo?.version} (15.2.10 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150210) problem(`versionCode ${app?.expo?.android?.versionCode} (150210 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -510,6 +510,31 @@ try {
   requireText(add, 'const grouped = new Map<string, PanelCredentialMatch[]>()', 'same-panel DNS alias playlist grouping');
   if (add.includes('const panelName = await resolvePanelName(src, codeVal.trim())')) problem('v15.2.9 Paneli biliyorum tekrar Firebase resolve yoluna dusuyor');
 } catch (e) { problem(`v15.2.9 guard okunamadi: ${e.message}`); }
+
+
+// v15.2.10 P0 scan cancellation / explicit selection / profile authorization gates.
+try {
+  const pkg = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
+  const panelService = fs.readFileSync(path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt'), 'utf8');
+  const panelTs = fs.readFileSync(path.join(root, 'modules/panel-scan/index.ts'), 'utf8');
+  const add = fs.readFileSync(path.join(root, 'app/add-playlist.tsx'), 'utf8');
+  const profile = fs.readFileSync(path.join(root, 'src/store/ProfileContext.tsx'), 'utf8');
+  const layout = fs.readFileSync(path.join(root, 'app/_layout.tsx'), 'utf8');
+  requireText(pkg, '"version": "15.2.10"', 'v15.2.10 package version');
+  if (Number(app?.expo?.android?.versionCode) !== 150210) problem('v15.2.10 versionCode 150210 degil');
+  requireText(panelService, 'activeConnections', 'panel scan active connection registry');
+  requireText(panelService, 'shutdownNow()', 'panel scan hard cancellation');
+  requireText(panelService, 'conn.disconnect()', 'panel scan socket disconnect');
+  requireText(panelTs, '"CANCELLING"', 'panel scan cancelling state');
+  requireText(add, 'Bulunan sonuçlar canlı eklenecek; seçim yapılmadan hiçbir playlist eklenmez', 'scan UI explicit selection contract');
+  requireText(add, 'Seçileni Doğrula ve Ekle', 'explicit import action');
+  requireText(add, 'Taramanın Bitmesini Bekleyin', 'scan/import phase barrier');
+  requireText(add, 'Hesapları Analiz Et', 'bulk discovery-only CTA');
+  requireText(add, 'Hesabımı Analiz Et', 'server discovery-only CTA');
+  if (add.includes('const addDiscoveredMatch = async')) problem('v15.2.10 tekli discovery otomatik import helper geri gelmis');
+  requireText(profile, 'sessionAuthorizedProfileId', 'profile runtime authorization state');
+  requireText(layout, 'ProfileSessionGate', 'profile PIN route gate');
+} catch (e) { problem(`v15.2.10 guard okunamadi: ${e.message}`); }
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.
 const sf = ts.createSourceFile(player, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TSX);
