@@ -32,10 +32,10 @@ import { FocusButton } from "@/src/components/FocusButton";
 import {
   DEFAULT_CODE_SOURCE, CODE_SOURCE_KEY,
   fetchPanelDirectory, discoverPanelsByCredentials, discoverServerCodeHosts,
-  resolvePanelName, resolveHosts,
+  resolvePanelDirectoryItem,
   type PanelDirectoryItem, type PanelCredentialMatch, type ScanExecutionControl,
 } from "@/src/utils/serverCode";
-import { PanelScan } from "@/modules/panel-scan";
+import { PanelScan, type NativeScanStartResult } from "@/modules/panel-scan";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { storage } from "@/src/utils/storage";
 import {
@@ -141,9 +141,11 @@ export default function AddPlaylist() {
   // GPT v10.5.0: Yaşlı/teknik olmayan kullanıcılar için üç kolay sunucu-kodu yolu.
   const [codeMode, setCodeMode] = useState<CodeMode>("code");
   const [panelDirectory, setPanelDirectory] = useState<PanelDirectoryItem[]>([]);
+  const [panelDirectorySource, setPanelDirectorySource] = useState("");
   const [panelSearch, setPanelSearch] = useState("");
   const [directoryLoading, setDirectoryLoading] = useState(false);
   const [selectedPanelName, setSelectedPanelName] = useState("");
+  const [selectedPanelItem, setSelectedPanelItem] = useState<PanelDirectoryItem | null>(null);
   // GPT v10.5.1: aynı kullanıcı/şifre birden fazla panelde bulunursa
   // otomatik karar VERME; kullanıcı doğru aboneliği seçsin.
   const [discoveryMatches, setDiscoveryMatches] = useState<PanelCredentialMatch[]>([]);
@@ -168,6 +170,8 @@ export default function AddPlaylist() {
   const [error, setError] = useState<string | null>(null);
   const nativeScanTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const nativeScanSeenRef = React.useRef<Set<string>>(new Set());
+  const nativeScanRunIdRef = React.useRef<string>("");
+  const bulkScanRunIdRef = React.useRef<string>("");
   const [nativeScanRunning, setNativeScanRunning] = useState(false);
   const [nativeScanPaused, setNativeScanPaused] = useState(false);
   const [bulkScanPaused, setBulkScanPaused] = useState(false);
@@ -276,15 +280,16 @@ export default function AddPlaylist() {
       .slice(0, 100);
   }, [panelDirectory, panelSearch]);
 
-  const loadPanelDirectory = async () => {
+  const loadPanelDirectory = async (forceRefresh = false) => {
     if (directoryLoading) return;
     setError(null);
     setDirectoryLoading(true);
     try {
       const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
       await storage.setItem(CODE_SOURCE_KEY, src);
-      const list = await fetchPanelDirectory(src);
+      const list = await fetchPanelDirectory(src, { forceRefresh });
       setPanelDirectory(list);
+      setPanelDirectorySource(src);
       if (list.length === 0) throw new Error("Panel rehberi boş.");
     } catch (e: any) {
       setError(e?.message || "Panel rehberi yüklenemedi.");
@@ -294,6 +299,9 @@ export default function AddPlaylist() {
   };
 
   const choosePanel = (item: PanelDirectoryItem) => {
+    // v15.2.9: kullanıcının seçtiği hosts[] kaybolmaz; submit sırasında Firebase'e
+    // ikinci kez gidilmeden doğrudan bu candidate set native scan'e verilir.
+    setSelectedPanelItem(item);
     setCodeVal(item.code);
     setSelectedPanelName(item.panelName);
     if (!name.trim()) setName(item.panelName);
@@ -319,6 +327,7 @@ export default function AddPlaylist() {
   });
 
   const discoveryKey = (m: PanelCredentialMatch) => `${m.code}\u0000${m.panelName}\u0000${m.server}`;
+  const isActiveDiscoveryMatch = (m: PanelCredentialMatch) => String(m.login?.user_info?.status || "").toLowerCase() === "active";
 
   const hostName = (server: string) => {
     try { return new URL(server).hostname || server; } catch { return server.replace(/^https?:\/\//i, "").replace(/\/$/, ""); }
@@ -337,10 +346,9 @@ export default function AddPlaylist() {
     setDiscoveryTitle(title);
     setDiscoverySubtitle(subtitle);
     setDiscoveryMatches(sortedMatches);
-    const activeKeys = sortedMatches
-      .filter(m => String(m.login?.user_info?.status || "").toLowerCase() === "active")
-      .map(discoveryKey);
-    setSelectedDiscoveryKeys(activeKeys.length ? activeKeys : sortedMatches.map(discoveryKey));
+    const activeKeys = sortedMatches.filter(isActiveDiscoveryMatch).map(discoveryKey);
+    // Expired/disabled auth sonuçları görünür ama otomatik seçilmez.
+    setSelectedDiscoveryKeys(activeKeys);
     setShowDiscoveryMatches(true);
     setLoading(false);
     setProgress(`Tarama tamamlandı · ${sortedMatches.length} geçerli DNS bulundu.`);
@@ -382,6 +390,46 @@ export default function AddPlaylist() {
     setShowDiscoveryMatches(true);
   }, []);
 
+  const askReplaceRunningScan = (activeRunId?: string): Promise<boolean> =>
+    new Promise(resolve => {
+      Alert.alert(
+        "Devam eden tarama var",
+        "Başka bir panel taraması hâlâ çalışıyor. Onu durdurup yeni taramayı başlatmak ister misiniz?",
+        [
+          { text: "Vazgeç", style: "cancel", onPress: () => resolve(false) },
+          { text: "Durdur ve Yeni Tara", style: "destructive", onPress: () => resolve(true) },
+        ],
+        { cancelable: true, onDismiss: () => resolve(false) },
+      );
+    });
+
+  const waitForScanRelease = async (runId: string, timeoutMs = 7000) => {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      if (PanelScan.getActiveRunId() !== runId) return;
+      await new Promise(resolve => setTimeout(resolve, 120));
+    }
+    throw new Error("Önceki tarama zamanında durmadı. Birkaç saniye sonra tekrar deneyin.");
+  };
+
+  const startAcceptedScan = async (starter: () => Promise<NativeScanStartResult | null>): Promise<string> => {
+    let result = await starter();
+    if (!result) throw new Error("Native tarama başlatılamadı.");
+    if (!result.accepted && result.state === "BUSY") {
+      const active = String(result.activeRunId || "");
+      const replace = await askReplaceRunningScan(active);
+      if (!replace) throw new Error("Yeni tarama başlatılmadı; mevcut tarama çalışmaya devam ediyor.");
+      if (!active) throw new Error("Devam eden taramanın kimliği alınamadı.");
+      await PanelScan.cancelScan(active);
+      await waitForScanRelease(active);
+      result = await starter();
+    }
+    if (!result?.accepted || !result.runId) {
+      throw new Error(result?.state === "BUSY" ? "Panel tarama motoru hâlâ meşgul." : "Native tarama isteği reddedildi.");
+    }
+    return result.runId;
+  };
+
   const runNativeBackgroundScan = async (
     candidates: Array<{panelName:string; code:string; server:string}>,
     title: string,
@@ -397,8 +445,14 @@ export default function AddPlaylist() {
     setSelectedDiscoveryKeys([]);
     setNativeScanRunning(true);
     setLoading(true);
-    const runId = await PanelScan.startScan(candidates, xtUser.trim(), xtPass.trim(), cfg.concurrency, cfg.timeoutMs);
-    if (!runId) throw new Error("Native tarama başlatılamadı.");
+    let runId = "";
+    try {
+      runId = await startAcceptedScan(() => PanelScan.startScan(candidates, xtUser.trim(), xtPass.trim(), cfg.concurrency, cfg.timeoutMs));
+      nativeScanRunIdRef.current = runId;
+    } catch (e) {
+      setNativeScanRunning(false); setNativeScanPaused(false); setLoading(false);
+      throw e;
+    }
 
     return await new Promise<PanelCredentialMatch[]>((resolve, reject) => {
       let settled = false;
@@ -409,6 +463,7 @@ export default function AddPlaylist() {
           if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
           nativeScanTimerRef.current = null;
           setNativeScanRunning(false); setNativeScanPaused(false); setLoading(false);
+          if (nativeScanRunIdRef.current === runId) nativeScanRunIdRef.current = "";
           if (!settled) { settled = true; reject(new Error(snap.error)); }
           return;
         }
@@ -426,6 +481,7 @@ export default function AddPlaylist() {
           if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
           nativeScanTimerRef.current = null;
           setNativeScanRunning(false); setNativeScanPaused(false); setLoading(false);
+          if (nativeScanRunIdRef.current === runId) nativeScanRunIdRef.current = "";
           if (!settled) {
             settled = true;
             if (matches.length) resolve(matches);
@@ -443,11 +499,13 @@ export default function AddPlaylist() {
     const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
     await storage.setItem(CODE_SOURCE_KEY, src);
     const cfg = scanConfigForSpeed();
-    setProgress("Panelin tüm DNS adresleri hazırlanıyor...");
+    setProgress("Panelin DNS adayları hazırlanıyor...");
 
-    const panelName = await resolvePanelName(src, codeVal.trim());
-    const hosts = await resolveHosts(src, panelName);
-    const candidates = hosts.map(server => ({ panelName, code: codeVal.trim(), server }));
+    const selectedMatchesCode = selectedPanelItem && selectedPanelItem.code.trim().toLocaleLowerCase("tr") === codeVal.trim().toLocaleLowerCase("tr");
+    const panel = selectedMatchesCode ? selectedPanelItem! : await resolvePanelDirectoryItem(src, codeVal.trim());
+    const panelName = panel.panelName;
+    const hosts = panel.hosts;
+    const candidates = hosts.map(server => ({ panelName, code: panel.code, server }));
 
     try {
       const matches = await runNativeBackgroundScan(
@@ -466,7 +524,7 @@ export default function AddPlaylist() {
           const pct = p.total ? Math.round((p.tested / p.total) * 100) : 0;
           setProgress(`${cfg.label} · %${pct} · DNS ${p.tested}/${p.total} · Bulunan ${p.found}${p.server ? `\nŞu an: ${p.server}` : ""}`);
         },
-        cfg.concurrency, cfg.timeoutMs,
+        cfg.concurrency, cfg.timeoutMs, undefined, panel,
       );
       presentMatches(matches, `${panelName} · DNS Hesapları`,
         `${matches.length} kimlik doğrulaması başarılı DNS adayı bulundu. Eklemek istediklerinizi seçin.`);
@@ -502,7 +560,7 @@ export default function AddPlaylist() {
     setProgress("Panel rehberi yükleniyor...");
     const cfg = scanConfigForSpeed();
 
-    const directory = await fetchPanelDirectory(src);
+    const directory = panelDirectory.length && panelDirectorySource === src ? panelDirectory : await fetchPanelDirectory(src);
     const seen = new Set<string>();
     const candidates: Array<{panelName:string; code:string; server:string}> = [];
     for (const item of directory) for (const server of item.hosts) {
@@ -744,6 +802,8 @@ export default function AddPlaylist() {
             const shouldReveal = !!scan.running || bulkNativeScanRef.current;
             mergeBulkCandidates(resolved, shouldReveal);
             setBulkScanPaused(!!scan.paused); setBulkScanFinished(!scan.running); bulkNativeScanRef.current=!!scan.running;
+            if (scan.running && scan.runId) bulkScanRunIdRef.current = String(scan.runId);
+            else if (!scan.running && bulkScanRunIdRef.current === scan.runId) bulkScanRunIdRef.current = "";
             if (!scan.running) await storage.secureRemove(PENDING_BULK_SCAN_KEY);
             if (!bulkAdding) setLoading(!!scan.running);
             setProgress(scan.running ? `Native tarama geri yüklendi · ${Number(scan.tested||0)}/${Number(scan.total||0)} · ${Number(scan.found||0)} bulundu` : `Tarama sonucu geri yüklendi · ${Number(scan.found||0)} bulundu`);
@@ -880,7 +940,7 @@ export default function AddPlaylist() {
     if (!PanelScan.available || Platform.OS !== "android") throw new Error("__NATIVE_SCAN_UNAVAILABLE__");
     const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
     setProgress(`${cfg.label} · Birleşik native panel rehberi hazırlanıyor…`);
-    const directory = await fetchPanelDirectory(src);
+    const directory = panelDirectory.length && panelDirectorySource === src ? panelDirectory : await fetchPanelDirectory(src);
     const normalizeName = (v:string) => v.trim().toLocaleLowerCase("tr");
     const jobs = accounts.map((a) => {
       let candidates: Array<{panelName:string; code:string; server:string}> = [];
@@ -907,8 +967,15 @@ export default function AddPlaylist() {
     await storage.secureSet(PENDING_BULK_SCAN_KEY, JSON.stringify(accounts));
     const nativeConcurrency = Math.max(1, Math.min(32, cfg.concurrency * Math.max(1, cfg.accountConcurrency)));
     bulkNativeScanRef.current = true;
-    const runId = await PanelScan.startUnifiedScan(jobs, nativeConcurrency, cfg.timeoutMs);
-    if (!runId) throw new Error("Birleşik native tarama başlatılamadı.");
+    let runId = "";
+    try {
+      runId = await startAcceptedScan(() => PanelScan.startUnifiedScan(jobs, nativeConcurrency, cfg.timeoutMs));
+      bulkScanRunIdRef.current = runId;
+    } catch (e) {
+      bulkNativeScanRef.current = false;
+      bulkScanRunIdRef.current = "";
+      throw e;
+    }
     let lastFound=-1, completed=0;
     while (true) {
       const snap=PanelScan.getSnapshot();
@@ -931,6 +998,7 @@ export default function AddPlaylist() {
       if (!snap.running) {
         await storage.secureRemove(PENDING_BULK_SCAN_KEY);
         bulkNativeScanRef.current = false;
+        if (bulkScanRunIdRef.current === runId) bulkScanRunIdRef.current = "";
         return { found:raw.length, completed, cancelled:!!snap.cancelled };
       }
       await new Promise(resolve=>setTimeout(resolve,350));
@@ -1503,7 +1571,7 @@ export default function AddPlaylist() {
                       onPress={() => {
                         setCodeMode(opt.key);
                         setError(null);
-                        if (opt.key === "directory" && panelDirectory.length === 0) void loadPanelDirectory();
+                        if (opt.key === "directory" && panelDirectory.length === 0) void loadPanelDirectory(false);
                       }}
                       style={[
                         styles.codeModeCard,
@@ -1555,7 +1623,7 @@ export default function AddPlaylist() {
                   />
                   <FocusButton
                     testID="panel-directory-refresh"
-                    onPress={loadPanelDirectory}
+                    onPress={() => void loadPanelDirectory(true)}
                     disabled={directoryLoading}
                     style={[styles.directoryRefresh, { borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}
                   >
@@ -1650,7 +1718,7 @@ export default function AddPlaylist() {
                         <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold }}>{selectedPanelName}</Text>
                         <Text style={{ color: colors.onSurfaceSecondary }}>Sunucu kodu: {codeVal}</Text>
                       </View>
-                      <FocusButton onPress={() => { setSelectedPanelName(""); setCodeVal(""); setCodeMode("directory"); }}>
+                      <FocusButton onPress={() => { setSelectedPanelItem(null); setSelectedPanelName(""); setCodeVal(""); setCodeMode("directory"); }}>
                         <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>Değiştir</Text>
                       </FocusButton>
                     </View>
@@ -1660,7 +1728,7 @@ export default function AddPlaylist() {
                       <TextInput
                         testID="code-value-input"
                         value={codeVal}
-                        onChangeText={t => { setCodeVal(t); setSelectedPanelName(""); }}
+                        onChangeText={t => { setCodeVal(t); setSelectedPanelItem(null); setSelectedPanelName(""); }}
                         placeholder="Örn: 0001"
                         placeholderTextColor={colors.onSurfaceTertiary}
                         autoCapitalize="none"
@@ -1746,7 +1814,13 @@ export default function AddPlaylist() {
                   <TextInput
                     testID="code-source-input"
                     value={codeSource}
-                    onChangeText={setCodeSource}
+                    onChangeText={t => {
+                      setCodeSource(t);
+                      setPanelDirectory([]);
+                      setPanelDirectorySource("");
+                      setSelectedPanelItem(null);
+                      setSelectedPanelName("");
+                    }}
                     placeholder={DEFAULT_CODE_SOURCE}
                     placeholderTextColor={colors.onSurfaceTertiary}
                     autoCapitalize="none"
@@ -2077,7 +2151,7 @@ export default function AddPlaylist() {
                     const next = !bulkScanPausedRef.current;
                     bulkScanPausedRef.current = next;
                     setBulkScanPaused(next);
-                    if (bulkNativeScanRef.current) { if (next) await PanelScan.pauseScan(); else await PanelScan.resumeScan(); }
+                    if (bulkNativeScanRef.current && bulkScanRunIdRef.current) { if (next) await PanelScan.pauseScan(bulkScanRunIdRef.current); else await PanelScan.resumeScan(bulkScanRunIdRef.current); }
                     setProgress(prev => `${prev || "Çoklu hesap taraması"}\n${next ? "DURAKLATILDI — aktif istekler tamamlanır, yeni iş başlatılmaz." : "Tarama devam ediyor…"}`);
                   }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
                     <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{bulkScanPaused ? "Devam Et" : "Duraklat"}</Text>
@@ -2086,7 +2160,7 @@ export default function AddPlaylist() {
                     bulkScanCancelledRef.current = true;
                     bulkScanPausedRef.current = false;
                     setBulkScanPaused(false);
-                    if (bulkNativeScanRef.current) await PanelScan.cancelScan();
+                    if (bulkNativeScanRef.current && bulkScanRunIdRef.current) await PanelScan.cancelScan(bulkScanRunIdRef.current);
                     setProgress(prev => `${prev || "Çoklu hesap taraması"}\nDurdurma isteği gönderildi; bulunan sonuçlar korunacak.`);
                   }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surfaceSecondary}]}>
                     <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>Durdur</Text>
@@ -2147,13 +2221,13 @@ export default function AddPlaylist() {
                   {nativeScanRunning && (
                     <View style={{ gap: 6 }}>
                       <FocusButton focusable onPress={async () => {
-                        if (nativeScanPaused) await PanelScan.resumeScan(); else await PanelScan.pauseScan();
+                        if (nativeScanRunIdRef.current) { if (nativeScanPaused) await PanelScan.resumeScan(nativeScanRunIdRef.current); else await PanelScan.pauseScan(nativeScanRunIdRef.current); }
                         setNativeScanPaused(!nativeScanPaused);
                       }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surface}]}>
                         <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{nativeScanPaused ? "Devam" : "Duraklat"}</Text>
                       </FocusButton>
                       <FocusButton focusable onPress={async () => {
-                        await PanelScan.cancelScan();
+                        if (nativeScanRunIdRef.current) await PanelScan.cancelScan(nativeScanRunIdRef.current);
                         setProgress(prev => prev ? `${prev}\nDurdurma isteği gönderildi…` : "Durdurma isteği gönderildi…");
                       }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surface}]}>
                         <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>Durdur</Text>
@@ -2202,8 +2276,11 @@ export default function AddPlaylist() {
               </ScrollView>
 
               <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.md }}>
-                <FocusButton focusable onPress={() => setSelectedDiscoveryKeys(selectedDiscoveryKeys.length === discoveryMatches.length ? [] : discoveryMatches.map(discoveryKey))} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
-                  <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{selectedDiscoveryKeys.length === discoveryMatches.length ? "Seçimi Kaldır" : "Tümünü Seç"}</Text>
+                <FocusButton focusable onPress={() => {
+                  const activeKeys = discoveryMatches.filter(isActiveDiscoveryMatch).map(discoveryKey);
+                  setSelectedDiscoveryKeys(activeKeys.length > 0 && activeKeys.every(k => selectedDiscoveryKeys.includes(k)) ? [] : activeKeys);
+                }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
+                  <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>Aktifleri Seç / Kaldır</Text>
                 </FocusButton>
                 <FocusButton testID="discovery-add-selected" focusable disabled={bulkAdding || selectedDiscoveryKeys.length===0} onPress={async()=>{
                   const chosen=discoveryMatches.filter(m=>selectedDiscoveryKeys.includes(discoveryKey(m))); setBulkAdding(true); let ok=0; const failed:string[]=[];
@@ -2213,38 +2290,37 @@ export default function AddPlaylist() {
                       const panelKey = `${all.code}\u0000${all.panelName}`;
                       hostsByPanel.set(panelKey, [...(hostsByPanel.get(panelKey) || []), all.server]);
                     }
-                    const selectedCountByPanel = new Map<string, number>();
+                    // Aynı panelin birden fazla çalışan DNS'i ayrı abonelik değildir.
+                    // Seçilen DNS'leri panel bazında grupla; tek playlist + validatedHosts yaz.
+                    const grouped = new Map<string, PanelCredentialMatch[]>();
                     for (const m of chosen) {
                       const panelKey = `${m.code}\u0000${m.panelName}`;
-                      selectedCountByPanel.set(panelKey, (selectedCountByPanel.get(panelKey) || 0) + 1);
+                      grouped.set(panelKey, [...(grouped.get(panelKey) || []), m]);
                     }
-                    for(let i=0;i<chosen.length;i++){
-                      const m=chosen[i];
-                      const panelKey = `${m.code}\u0000${m.panelName}`;
-                      const multiDns = (selectedCountByPanel.get(panelKey) || 0) > 1;
+                    const panelGroups = Array.from(grouped.entries());
+                    for(let i=0;i<panelGroups.length;i++){
+                      const [panelKey, group] = panelGroups[i];
+                      const preferred = group.find(isActiveDiscoveryMatch) || group[0];
                       const customBase = name.trim();
                       const displayName = customBase
-                        ? (chosen.length === 1
-                            ? customBase
-                            : multiDns
-                              ? `${customBase} · ${hostName(m.server)}`
-                              : `${customBase} · ${m.panelName}`)
-                        : (multiDns ? `${m.panelName} · ${hostName(m.server)}` : m.panelName);
-                      setProgress(`${i+1}/${chosen.length} · ${displayName} ekleniyor...`);
+                        ? (panelGroups.length === 1 ? customBase : `${customBase} · ${preferred.panelName}`)
+                        : preferred.panelName;
+                      const validatedHosts = Array.from(new Set(hostsByPanel.get(panelKey) || group.map(x => x.server)));
+                      setProgress(`${i+1}/${panelGroups.length} · ${displayName} doğrulanıyor ve ekleniyor...`);
                       const added=await submitXtreamDirect(
-                        {server:m.server,username:xtUser.trim(),password:xtPass.trim()},
+                        {server:preferred.server,username:xtUser.trim(),password:xtPass.trim()},
                         displayName,
-                        makeBinding(m.code,m.panelName,m.server,hostsByPanel.get(panelKey) || [m.server]),
+                        makeBinding(preferred.code,preferred.panelName,preferred.server,validatedHosts),
                         false
                       );
                       if(added) ok++; else failed.push(displayName);
                     }
                     setShowDiscoveryMatches(false); setDiscoveryMatches([]); setSelectedDiscoveryKeys([]);
-                    Alert.alert("Panel Ekleme",`${ok}/${chosen.length} playlist eklendi.`+(failed.length?`\nEklenemeyen: ${failed.join(", ")}`:""));
+                    Alert.alert("Panel Ekleme",`${ok}/${panelGroups.length} playlist eklendi.`+(failed.length?`\nEklenemeyen: ${failed.join(", ")}`:""));
                     if(ok>0) router.replace("/(tabs)");
                   } finally { setBulkAdding(false); setLoading(false); setProgress(""); }
                 }} style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedDiscoveryKeys.length?1:0.5}]}>
-                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{selectedDiscoveryKeys.length} Seçileni Ekle</Text>}
+                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{new Set(discoveryMatches.filter(m=>selectedDiscoveryKeys.includes(discoveryKey(m))).map(m=>`${m.code}\u0000${m.panelName}`)).size} Paneli Ekle</Text>}
                 </FocusButton>
               </View>
 

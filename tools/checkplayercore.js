@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.8 RC1 JOB LIFECYCLE DISCOVERY PLAYER HEALTH HARDENING)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.9 RC1 SERVER DISCOVERY ORCHESTRATOR HARDENING)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -124,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.2.8') problem(`app version ${app?.expo?.version} (15.2.8 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150208) problem(`versionCode ${app?.expo?.android?.versionCode} (150208 bekleniyor)`);
+if (app?.expo?.version !== '15.2.9') problem(`app version ${app?.expo?.version} (15.2.9 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150209) problem(`versionCode ${app?.expo?.android?.versionCode} (150209 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -174,7 +174,7 @@ const settingsPath = path.join(root, 'app/(tabs)/settings.tsx');
 for (const f of [addPlaylistPath, panelScanServicePath, settingsPath]) { if (!fs.existsSync(f)) problem(`dosya yok: ${path.relative(root, f)}`); }
 if (fs.existsSync(addPlaylistPath)) {
   const addPlaylist = fs.readFileSync(addPlaylistPath, 'utf8');
-  for (const token of ['"very_safe"', '"turbo"', 'accountConcurrency', 'bulkScanPausedRef', 'bulkScanCancelledRef', 'PanelScan.pauseScan()', 'PanelScan.resumeScan()']) {
+  for (const token of ['"very_safe"', '"turbo"', 'accountConcurrency', 'bulkScanPausedRef', 'bulkScanCancelledRef', 'PanelScan.pauseScan(', 'PanelScan.resumeScan(']) {
     requireText(addPlaylist, token, `Scan Engine v2: ${token}`);
   }
   requireText(addPlaylist, 'flexWrap: "wrap"', '5 scan profile phone responsive wrap');
@@ -471,13 +471,45 @@ try {
   const add = fs.readFileSync(path.join(root, 'app/add-playlist.tsx'), 'utf8');
   const core = fs.readFileSync(path.join(root, 'modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeCoreModule.kt'), 'utf8');
   const bulk = fs.readFileSync(path.join(root, 'modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/BulkPlaylistImportService.kt'), 'utf8');
-  if (!panelModule.includes('seedStartingSnapshot') || !panelModule.includes('runId')) problem('v15.2.8 panel scan runId lifecycle eksik');
+  if (!panelModule.includes('claimRun') || !panelModule.includes('runId')) problem('v15.2.8+ panel scan runId lifecycle eksik');
   if (!panelService.includes('STARTING') || !panelService.includes('currentRunId')) problem('v15.2.8 panel snapshot lifecycle eksik');
   if (!core.includes('BulkPlaylistImportService.seedStartingSnapshot') || !bulk.includes('currentRunId')) problem('v15.2.8 bulk import runId lifecycle eksik');
   if (bulk.includes('fetchArraySafe(')) problem('v15.2.8 endpoint hatalarini yutan fetchArraySafe geri gelmis');
   if (!add.includes('canonicalUrlIdentity') || !add.includes('Bu M3U kaynağı zaten ekli.')) problem('v15.2.8 canonical M3U duplicate guard eksik');
   if (src.includes('Yayın kısa süre ilerlemedi; aynı motor yeniden senkronlanıyor')) problem('v15.2.8 eski false-stall soft recovery geri gelmis');
 } catch (e) { problem(`v15.2.8 guard okunamadi: ${e.message}`); }
+
+
+// v15.2.9 Server Discovery Orchestrator hard gates.
+try {
+  const panelModule = fs.readFileSync(path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanModule.kt'), 'utf8');
+  const panelService = fs.readFileSync(path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt'), 'utf8');
+  const panelTs = fs.readFileSync(path.join(root, 'modules/panel-scan/index.ts'), 'utf8');
+  const serverCode = fs.readFileSync(path.join(root, 'src/utils/serverCode.ts'), 'utf8');
+  const add = fs.readFileSync(path.join(root, 'app/add-playlist.tsx'), 'utf8');
+  requireText(panelModule, 'PanelScanService.claimRun', 'atomic scan job claim');
+  requireText(panelModule, 'state" to "BUSY"', 'explicit BUSY start result');
+  requireText(panelModule, 'AsyncFunction("cancelScan") { runId: String', 'runId-scoped cancel');
+  requireText(panelModule, 'AsyncFunction("pauseScan") { runId: String', 'runId-scoped pause');
+  requireText(panelModule, 'AsyncFunction("resumeScan") { runId: String', 'runId-scoped resume');
+  requireText(panelService, 'private var claimedRunId', 'single active scan ownership');
+  requireText(panelService, 'releaseRun(finishedRunId)', 'scan ownership release');
+  if (/ACTION_(?:START|BULK_START|UNIFIED_START) -> if \(!running\)/.test(panelService)) problem('v15.2.9 sessiz if(!running) job reddi geri gelmis');
+  requireText(panelTs, 'NativeScanStartResult', 'typed ACCEPTED/BUSY bridge');
+  requireText(panelTs, 'getActiveRunId', 'native active-run visibility');
+  requireText(serverCode, 'PANEL_DIRECTORY_CACHE_KEY', 'panel directory local cache');
+  requireText(serverCode, 'AbortController', 'panel catalog client timeout');
+  requireText(serverCode, 'timeout=${sec}s', 'Firebase server-side timeout');
+  requireText(serverCode, 'forceRefresh', 'panel directory explicit refresh');
+  requireText(serverCode, 'resolvePanelDirectoryItem', 'code-to-cached-directory resolver');
+  requireText(add, 'selectedPanelItem', 'directory selected hosts persistence');
+  requireText(add, 'startAcceptedScan', 'common accepted/busy scan start');
+  requireText(add, 'Durdur ve Yeni Tara', 'busy scan user arbitration');
+  requireText(add, 'PanelScan.cancelScan(active)', 'busy active-run cancellation');
+  requireText(add, 'isActiveDiscoveryMatch', 'active-only default discovery selection');
+  requireText(add, 'const grouped = new Map<string, PanelCredentialMatch[]>()', 'same-panel DNS alias playlist grouping');
+  if (add.includes('const panelName = await resolvePanelName(src, codeVal.trim())')) problem('v15.2.9 Paneli biliyorum tekrar Firebase resolve yoluna dusuyor');
+} catch (e) { problem(`v15.2.9 guard okunamadi: ${e.message}`); }
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.
 const sf = ts.createSourceFile(player, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TSX);

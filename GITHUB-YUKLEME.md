@@ -85,3 +85,6 @@ GitHub Kotlin chunked staging writer API-signature düzeltmesi; ayrıntı için 
 - Discovery AUTH başarısı ile import başarısı ayrıldı; endpoint hataları artık sessizce [] yapılmıyor.
 - Live VLC soft stall pause/play müdahalesi kaldırıldı; canlı VLC health son native event + advance sinyaliyle değerlendirilir.
 - M3U/MAG canonical duplicate koruması, doğrulanmış Room sonrası legacy cleanup ve Android process-exit telemetrisi eklendi.
+
+## v15.2.9-RC1
+GitHub Actions `15.2.9 / versionCode 150209` görmelidir. İlk kapılar `npx tsc --noEmit`, Expo prebuild, `:panel-scan:compileReleaseKotlin`, `:kizilkan-native-core:compileReleaseKotlin` ve release APK'dır. Signing dosyaları commit edilmez. Cihaz kabulünde Sunucu Kodu üç yolu ayrı ayrı test edilmelidir.

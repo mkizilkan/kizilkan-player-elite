@@ -26,7 +26,17 @@ class PanelScanService : Service() {
     const val CHANNEL_ID = "panel_scan"
     const val NOTIF_ID = 13001
 
-    fun seedStartingSnapshot(context: Context, mode: String, runId: String) {
+    private val RUN_LOCK = Any()
+    @Volatile private var claimedRunId: String = ""
+
+    /**
+     * v15.2.9: job sahipliği Service çalıştırılmadan ÖNCE atomik olarak alınır.
+     * Böylece çalışan Service'in yeni Intent'i sessizce yutması ve JS'in sahte
+     * STARTING snapshot'ında sonsuza kadar beklemesi mümkün değildir.
+     */
+    fun claimRun(context: Context, mode: String, runId: String): Pair<Boolean, String> = synchronized(RUN_LOCK) {
+      if (claimedRunId.isNotBlank()) return@synchronized Pair(false, claimedRunId)
+      claimedRunId = runId
       val now = System.currentTimeMillis()
       val obj = JSONObject()
         .put("mode", mode)
@@ -42,7 +52,14 @@ class PanelScanService : Service() {
         .put("createdAt", now)
         .put("updatedAt", now)
       context.getSharedPreferences(PREFS, 0).edit().putString(KEY_SNAPSHOT, obj.toString()).commit()
+      Pair(true, runId)
     }
+
+    fun releaseRun(runId: String) = synchronized(RUN_LOCK) {
+      if (claimedRunId == runId) claimedRunId = ""
+    }
+
+    fun activeRunId(): String = synchronized(RUN_LOCK) { claimedRunId }
   }
 
   private val cancelled = AtomicBoolean(false)
@@ -73,24 +90,34 @@ class PanelScanService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     when (intent?.action) {
       ACTION_CANCEL -> {
-        cancelled.set(true)
-        paused.set(false)
-        patchSnapshot { it.put("running", false).put("cancelled", true).put("paused", false) }
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        val requestedRunId = intent.getStringExtra("runId") ?: ""
+        if (running && requestedRunId == currentRunId) {
+          cancelled.set(true)
+          paused.set(false)
+          patchSnapshot { it.put("running", true).put("cancelled", true).put("paused", false).put("state", "CANCELLED") }
+          getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("Panel taraması durduruluyor…", 0, 0))
+        }
       }
-      ACTION_PAUSE -> if (running) {
-        paused.set(true)
-        patchSnapshot { it.put("paused", true).put("running", true) }
-        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("Panel taraması duraklatıldı", 0, 0))
+      ACTION_PAUSE -> {
+        val requestedRunId = intent.getStringExtra("runId") ?: ""
+        if (running && requestedRunId == currentRunId) {
+          paused.set(true)
+          patchSnapshot { it.put("paused", true).put("running", true).put("state", "PAUSED") }
+          getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("Panel taraması duraklatıldı", 0, 0))
+        }
       }
-      ACTION_RESUME -> if (running) {
-        paused.set(false)
-        patchSnapshot { it.put("paused", false).put("running", true) }
-        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("Panel taraması devam ediyor", 0, 0))
+      ACTION_RESUME -> {
+        val requestedRunId = intent.getStringExtra("runId") ?: ""
+        if (running && requestedRunId == currentRunId) {
+          paused.set(false)
+          patchSnapshot { it.put("paused", false).put("running", true).put("state", "RUNNING") }
+          getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("Panel taraması devam ediyor", 0, 0))
+        }
       }
-      ACTION_BULK_START -> if (!running) {
-        currentRunId = intent.getStringExtra("runId") ?: java.util.UUID.randomUUID().toString()
+      ACTION_BULK_START -> {
+        val requestedRunId = intent.getStringExtra("runId") ?: ""
+        if (requestedRunId.isBlank() || requestedRunId != activeRunId() || running) return START_NOT_STICKY
+        currentRunId = requestedRunId
         running = true
         cancelled.set(false)
         paused.set(false)
@@ -107,8 +134,10 @@ class PanelScanService : Service() {
         startForeground(NOTIF_ID, notification("Çoklu hesap taraması başlıyor…", 0, initialTotal))
         Thread { runBulkScan(candidatesJson, accountsJson, concurrency, timeoutMs) }.start()
       }
-      ACTION_UNIFIED_START -> if (!running) {
-        currentRunId = intent.getStringExtra("runId") ?: java.util.UUID.randomUUID().toString()
+      ACTION_UNIFIED_START -> {
+        val requestedRunId = intent.getStringExtra("runId") ?: ""
+        if (requestedRunId.isBlank() || requestedRunId != activeRunId() || running) return START_NOT_STICKY
+        currentRunId = requestedRunId
         running = true
         cancelled.set(false)
         paused.set(false)
@@ -124,8 +153,10 @@ class PanelScanService : Service() {
         startForeground(NOTIF_ID, notification("Birleşik panel taraması başlıyor…", 0, initialTotal))
         Thread { runUnifiedScan(jobsJson, concurrency, timeoutMs) }.start()
       }
-      ACTION_START -> if (!running) {
-        currentRunId = intent.getStringExtra("runId") ?: java.util.UUID.randomUUID().toString()
+      ACTION_START -> {
+        val requestedRunId = intent.getStringExtra("runId") ?: ""
+        if (requestedRunId.isBlank() || requestedRunId != activeRunId() || running) return START_NOT_STICKY
+        currentRunId = requestedRunId
         running = true
         cancelled.set(false)
         paused.set(false)
@@ -248,7 +279,13 @@ class PanelScanService : Service() {
       writeBulkSnapshot(tested.get(),total,accountDone.get(),accountCount,panelSet.size,matches,"",-1,false)
     } catch (e: Throwable) {
       writeSnapshot(JSONObject().put("mode","bulk").put("running",false).put("error",e.message ?: "Native çoklu hesap tarama hatası"))
-    } finally { running=false; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
+    } finally {
+      val finishedRunId = currentRunId
+      running = false
+      releaseRun(finishedRunId)
+      stopForeground(STOP_FOREGROUND_REMOVE)
+      stopSelf()
+    }
   }
 
   private fun writeBulkSnapshot(
@@ -368,7 +405,13 @@ class PanelScanService : Service() {
       )
     } catch (e: Throwable) {
       writeSnapshot(JSONObject().put("mode","unified").put("running",false).put("error",e.message ?: "Birleşik native panel tarama hatası"))
-    } finally { running=false; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
+    } finally {
+      val finishedRunId = currentRunId
+      running = false
+      releaseRun(finishedRunId)
+      stopForeground(STOP_FOREGROUND_REMOVE)
+      stopSelf()
+    }
   }
 
   private fun runScan(raw: String, user: String, pass: String, concurrency: Int, timeoutMs: Int) {
@@ -427,13 +470,15 @@ class PanelScanService : Service() {
       val resultArray = JSONArray()
       synchronized(matches) { matches.forEach { resultArray.put(it) } }
       writeSnapshot(JSONObject()
-        .put("running", false).put("paused", false).put("tested", tested.get()).put("total", total)
+        .put("running", false).put("paused", false).put("cancelled", cancelled.get()).put("tested", tested.get()).put("total", total)
         .put("panelTested", panelDone.get()).put("panelTotal", panelTotal)
         .put("found", matches.size).put("matches", resultArray))
     } catch (e: Throwable) {
       writeSnapshot(JSONObject().put("running", false).put("error", e.message ?: "Native panel tarama hatası"))
     } finally {
+      val finishedRunId = currentRunId
       running = false
+      releaseRun(finishedRunId)
       stopForeground(STOP_FOREGROUND_REMOVE)
       stopSelf()
     }

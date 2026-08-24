@@ -74,3 +74,6 @@ GitHub Kotlin chunked staging writer API-signature düzeltmesi; ayrıntı için 
 - Discovery AUTH başarısı ile import başarısı ayrıldı; endpoint hataları artık sessizce [] yapılmıyor.
 - Live VLC soft stall pause/play müdahalesi kaldırıldı; canlı VLC health son native event + advance sinyaliyle değerlendirilir.
 - M3U/MAG canonical duplicate koruması, doğrulanmış Room sonrası legacy cleanup ve Android process-exit telemetrisi eklendi.
+
+## v15.2.9-RC1 DEVİR
+Sunucu Kodu `Kodum var / Paneli biliyorum / Paneli bilmiyorum` orchestration kök hataları giderildi: atomik native job claim, açık BUSY sonucu, runId-scoped kontrol, Firebase client+server timeout, retry, cache-first panel directory ve seçilmiş `hosts[]` doğrudan native scan. v15.2.8 ve önceki Room/Cast/Player/Discovery özellikleri korunur. Gerçek build CI, üç yolun davranış kabulü gerçek cihazla doğrulanacaktır.

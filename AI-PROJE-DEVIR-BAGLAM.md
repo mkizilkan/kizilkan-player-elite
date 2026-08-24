@@ -574,3 +574,37 @@ GitHub Actions v15.2.6-RC1 TypeScript HARD gate'i ve `:kizilkan-native-core:kspR
 - Discovery AUTH başarısı ile import başarısı ayrıldı; endpoint hataları artık sessizce [] yapılmıyor.
 - Live VLC soft stall pause/play müdahalesi kaldırıldı; canlı VLC health son native event + advance sinyaliyle değerlendirilir.
 - M3U/MAG canonical duplicate koruması, doğrulanmış Room sonrası legacy cleanup ve Android process-exit telemetrisi eklendi.
+
+# v15.2.9-RC1 — SERVER DISCOVERY ORCHESTRATOR HARDENING (2026-08-24)
+
+## KANITLANAN KÖK NEDENLER
+Gerçek cihaz videosu + v15.2.8 kaynak audit'i ile Sunucu Kodu bölümündeki `Kodum var / Paneli biliyorum / Paneli bilmiyorum` yollarının ortak problemi doğrulandı:
+1. `PanelScanService` çalışan job varken yeni ACTION_START/BULK/UNIFIED isteğini `if (!running)` ile sessizce yutabiliyordu. `PanelScanModule` ise bundan önce yeni runId + STARTING snapshot yazdığı için JS gerçekte başlamamış işi bekleyebiliyordu.
+2. Pause/Resume/Cancel komutları runId taşımıyordu; yanlış job'ı kontrol etme riski vardı.
+3. Firebase katalog `fetch()` çağrılarında client timeout yoktu; kritik UI yolu uzun süre `Panel rehberi yükleniyor / DNS hazırlanıyor` durumunda kalabiliyordu.
+4. `Paneli biliyorum` seçiminde zaten mevcut olan `PanelDirectoryItem.hosts[]` kaybediliyor, submit sırasında panel/kod Firebase'den ikinci kez çözülüyordu.
+5. Katalog her kullanımda ağdan çekilmeye fazla bağımlıydı; sağlam son rehber cihazda cache-first kullanılmıyordu.
+
+## UYGULANAN MİMARİ
+- `PanelScanService.claimRun()` process-içi atomik job sahipliği ekledi. Service başlamadan önce iş gerçekten CLAIM edilir; claim başarısızsa native bridge açık `BUSY + activeRunId` döndürür.
+- Sessiz `ACTION_* -> if (!running)` başlangıç modeli kaldırıldı. Service yalnız claim edilmiş runId'yi kabul eder.
+- Pause/Resume/Cancel artık runId-scoped; Service yalnız `requestedRunId == currentRunId` ise kontrol uygular.
+- TS bridge `NativeScanStartResult {accepted,state,runId,activeRunId}` kullanır. UI BUSY durumunda kullanıcıya `Vazgeç / Durdur ve Yeni Tara` seçimi sunar; eski run gerçekten release edilmeden yeni tarama başlatılmaz.
+- `serverCode.ts` katalog fetch'ine AbortController client timeout + Firebase REST `timeout=` parametresi + bounded retry eklendi.
+- Son başarılı panel directory cihazda `kizilkan.panelDirectory.cache.v15.2.9` altında tutulur. Taze cache UI'yi anında açar; arka planda remote refresh denenir. Stale cache remote hata halinde fallback olarak korunur.
+- Kod cache'de yoksa `resolvePanelDirectoryItem()` remote kataloğu bir kez force-refresh eder; yeni eklenen kodlar taze cache yüzünden yanlış `yok` sayılmaz.
+- `Paneli biliyorum`: seçilen `PanelDirectoryItem` state'te korunur; `hosts[]` doğrudan candidate set olur ve submit sırasında ikinci Firebase lookup yapılmaz.
+- `Kodum var`: code -> directory item -> hosts candidate set; native scan ortak motoru.
+- `Paneli bilmiyorum`: mevcut aynı-source directory/cache -> bütün candidate set -> aynı native scan ortak motoru.
+- Çoklu hesap unified discovery de aynı cache-first directory üretimini kullanır.
+
+## KABUL KRİTERLERİ
+- Üç giriş yolunda native scan gerçekten ACCEPTED olmadan UI RUNNING sayılmaz.
+- Aynı anda eski scan varsa yeni scan sessizce kaybolmaz; kullanıcı açık BUSY kararı görür.
+- Pause/Resume/Cancel başka run'a etki etmez.
+- Paneli biliyorum seçiminden sonra ikinci Firebase çözüm çağrısı yoktur.
+- Firebase yavaş/erişilemez olduğunda bounded timeout ve varsa son sağlam cache kullanılır.
+- Gerçek cihazda `Kodum var / Paneli biliyorum / Paneli bilmiyorum` aynı geçerli hesapla tarama -> seçim -> doğrulama -> import -> Room -> playlist commit zincirini tamamlamadan bu RC stabil sayılmaz.
+
+## DOĞRULAMA SINIRI
+Bu kaynak ortamında gerçek Expo prebuild/Android Gradle/Kotlin release build yapılmış sayılmaz. Statik gate ve syntax kontrolleri yapılır; gerçek Kotlin/Gradle/APK kanıtı GitHub Actions, davranış kanıtı gerçek cihaz testidir.

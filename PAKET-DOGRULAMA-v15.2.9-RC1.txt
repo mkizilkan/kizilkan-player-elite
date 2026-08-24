@@ -1,0 +1,12 @@
+KIZILKAN PLAYER ELITE v15.2.9-RC1
+versionCode=150209
+Kapsam=Server Discovery Orchestrator Hardening
+Kontroller:
+- tools/denetle.js 3 tur
+- tools/checkplayercore.js
+- TS/TSX syntax diagnostics
+- JSON/YAML parse
+- git diff --check benzeri whitespace audit
+- signing/private dosya ZIP dışında
+- ZIP integrity + SHA-256
+Gerçek Gradle/Kotlin/APK build sonucu GitHub Actions ile kanıtlanacaktır.

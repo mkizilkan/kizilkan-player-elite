@@ -18,6 +18,7 @@
  * ===========================================================================
  */
 import { xtreamLogin } from "@/src/utils/iptv";
+import { storage } from "@/src/utils/storage";
 
 /** Uygulama sahibinin verdiği VARSAYILAN kaynak. Ayarlardan değiştirilebilir.
  *  Storage'da değer yoksa bu kullanılır. */
@@ -26,24 +27,45 @@ export const DEFAULT_CODE_SOURCE =
 
 /** Kaynak URL'i storage'da saklamak için anahtar. */
 export const CODE_SOURCE_KEY = "kizilkan.codeSource.baseUrl";
+export const PANEL_DIRECTORY_CACHE_KEY = "kizilkan.panelDirectory.cache.v15.2.9";
+const DIRECTORY_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const DIRECTORY_REQUEST_TIMEOUT_MS = 9000;
 
 function trimBase(u: string): string {
   return String(u || "").trim().replace(/\/+$/, "");
 }
 
-async function getJson(url: string): Promise<any> {
-  let res: Response;
-  try {
-    res = await fetch(url);
-  } catch {
-    throw new Error("Kaynağa bağlanılamadı. İnternet veya kaynak adresini kontrol edin.");
+function withFirebaseServerTimeout(url: string, timeoutMs: number): string {
+  // Firebase RTDB REST `timeout` parametresi sunucu tarafında da uzun beklemeyi sınırlar.
+  const sec = Math.max(1, Math.min(15, Math.ceil(timeoutMs / 1000)));
+  return `${url}${url.includes("?") ? "&" : "?"}timeout=${sec}s`;
+}
+
+async function getJson(url: string, timeoutMs = DIRECTORY_REQUEST_TIMEOUT_MS, retries = 1): Promise<any> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(withFirebaseServerTimeout(url, timeoutMs), {
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) throw new Error(`Kaynak yanıtı hatalı (HTTP ${res.status}).`);
+      try {
+        return await res.json();
+      } catch {
+        throw new Error("Kaynaktan beklenmeyen JSON yanıtı geldi.");
+      }
+    } catch (e: any) {
+      if (e?.name === "AbortError") lastError = new Error(`Panel rehberi isteği ${Math.ceil(timeoutMs / 1000)} sn içinde yanıt vermedi.`);
+      else lastError = e instanceof Error ? e : new Error(String(e || "Kaynağa bağlanılamadı."));
+      if (attempt < retries) await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
+    } finally {
+      clearTimeout(timer);
+    }
   }
-  if (!res.ok) throw new Error(`Kaynak yanıtı hatalı (HTTP ${res.status}).`);
-  try {
-    return await res.json();
-  } catch {
-    throw new Error("Kaynaktan beklenmeyen yanıt geldi.");
-  }
+  throw lastError || new Error("Kaynağa bağlanılamadı. İnternet veya kaynak adresini kontrol edin.");
 }
 
 /** Adım A: Panel kodu -> panel adı. */
@@ -107,13 +129,40 @@ export type PanelDirectoryItem = {
  * Firebase kataloğunu tek seferde okur ve kullanıcıya gösterilecek panel rehberini
  * üretir. Kullanıcı adı/şifre BU İŞLEMDE KULLANILMAZ ve Firebase'e gönderilmez.
  */
-export async function fetchPanelDirectory(baseUrl: string): Promise<PanelDirectoryItem[]> {
-  const base = trimBase(baseUrl);
-  if (!base) throw new Error("Kod kaynağı adresi boş.");
+export type PanelDirectoryFetchOptions = {
+  forceRefresh?: boolean;
+  timeoutMs?: number;
+  maxAgeMs?: number;
+};
 
+type PanelDirectoryCacheRecord = {
+  source: string;
+  fetchedAt: number;
+  items: PanelDirectoryItem[];
+};
+
+async function readDirectoryCache(baseUrl: string): Promise<PanelDirectoryCacheRecord | null> {
+  try {
+    const raw = await storage.getItem<string>(PANEL_DIRECTORY_CACHE_KEY, "");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PanelDirectoryCacheRecord;
+    if (trimBase(parsed?.source) !== trimBase(baseUrl) || !Array.isArray(parsed?.items) || !parsed.items.length) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function writeDirectoryCache(baseUrl: string, items: PanelDirectoryItem[]): Promise<void> {
+  const record: PanelDirectoryCacheRecord = { source: trimBase(baseUrl), fetchedAt: Date.now(), items };
+  await storage.setItem(PANEL_DIRECTORY_CACHE_KEY, JSON.stringify(record));
+}
+
+async function fetchPanelDirectoryRemote(baseUrl: string, timeoutMs: number): Promise<PanelDirectoryItem[]> {
+  const base = trimBase(baseUrl);
   const [codesRaw, serversRaw] = await Promise.all([
-    getJson(`${base}/Master/zeroWebServers.json`),
-    getJson(`${base}/Master/Servers.json`),
+    getJson(`${base}/Master/zeroWebServers.json`, timeoutMs, 1),
+    getJson(`${base}/Master/Servers.json`, timeoutMs, 1),
   ]);
 
   const codes = codesRaw && typeof codesRaw === "object" ? codesRaw as Record<string, any> : {};
@@ -131,10 +180,56 @@ export async function fetchPanelDirectory(baseUrl: string): Promise<PanelDirecto
     if (hosts.length === 0) continue;
     out.push({ code: String(code), panelName, hosts });
   }
-
   out.sort((a, b) => a.panelName.localeCompare(b.panelName, "tr", { sensitivity: "base" }) || a.code.localeCompare(b.code));
   if (out.length === 0) throw new Error("Panel rehberinde kullanılabilir kayıt bulunamadı.");
   return out;
+}
+
+/**
+ * v15.2.9 — Cache-first panel rehberi.
+ * Taze cache UI'yi anında açar. Cache eskiyse remote yenileme denenir; remote
+ * başarısız olursa son sağlam cache çalışmaya devam eder.
+ */
+export async function fetchPanelDirectory(baseUrl: string, options: PanelDirectoryFetchOptions = {}): Promise<PanelDirectoryItem[]> {
+  const base = trimBase(baseUrl);
+  if (!base) throw new Error("Kod kaynağı adresi boş.");
+  const timeoutMs = Math.max(3000, Math.min(15000, Number(options.timeoutMs || DIRECTORY_REQUEST_TIMEOUT_MS)));
+  const maxAgeMs = Math.max(60_000, Number(options.maxAgeMs || DIRECTORY_CACHE_MAX_AGE_MS));
+  const cached = await readDirectoryCache(base);
+  const fresh = !!cached && (Date.now() - Number(cached.fetchedAt || 0) <= maxAgeMs);
+  if (!options.forceRefresh && fresh) {
+    // UI cache'den anında açılır; katalog/DNS değişiklikleri bir sonraki kullanım
+    // için arka planda atomik olarak tazelenir. Başarısız refresh cache'i bozmaz.
+    void fetchPanelDirectoryRemote(base, timeoutMs)
+      .then(items => writeDirectoryCache(base, items))
+      .catch(() => undefined);
+    return cached!.items;
+  }
+
+  try {
+    const items = await fetchPanelDirectoryRemote(base, timeoutMs);
+    await writeDirectoryCache(base, items);
+    return items;
+  } catch (remoteError: any) {
+    if (cached?.items?.length) return cached.items;
+    throw remoteError;
+  }
+}
+
+/** Kod/panel seçim yolları için cache/rehberden tek paneli çözer. */
+export async function resolvePanelDirectoryItem(baseUrl: string, code: string): Promise<PanelDirectoryItem> {
+  const wanted = String(code || "").trim().toLocaleLowerCase("tr");
+  if (!wanted) throw new Error("Panel kodu boş.");
+  let directory = await fetchPanelDirectory(baseUrl);
+  let match = directory.find(item => item.code.trim().toLocaleLowerCase("tr") === wanted);
+  if (!match) {
+    // Taze görünen cache'e yeni eklenmiş bir kod düşmemiş olabilir. Kodu yok
+    // saymadan önce remote katalog bir kez zorla yenilenir.
+    directory = await fetchPanelDirectory(baseUrl, { forceRefresh: true });
+    match = directory.find(item => item.code.trim().toLocaleLowerCase("tr") === wanted);
+  }
+  if (!match) throw new Error("Panel kodu rehberde bulunamadı. Kodu kontrol edin.");
+  return match;
 }
 
 function makeTimeoutSignal(timeoutMs: number): { signal: AbortSignal; cancel: () => void } {
@@ -207,9 +302,10 @@ export async function discoverServerCodeHosts(
   concurrency = 6,
   timeoutMs = 8000,
   control?: ScanExecutionControl,
+  directoryOverride?: PanelDirectoryItem,
 ): Promise<PanelCredentialMatch[]> {
-  const panelName = await resolvePanelName(baseUrl, code);
-  const hosts = await resolveHosts(baseUrl, panelName);
+  const panelName = directoryOverride?.panelName || await resolvePanelName(baseUrl, code);
+  const hosts = directoryOverride?.hosts?.length ? directoryOverride.hosts : await resolveHosts(baseUrl, panelName);
   const user = String(username || "").trim();
   const pass = String(password || "").trim();
   if (!user || !pass) throw new Error("Kullanıcı adı ve şifre gereklidir.");
