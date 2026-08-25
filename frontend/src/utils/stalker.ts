@@ -435,7 +435,13 @@ export async function stalkerSeriesInfo(cred: StalkerCreds, ses: StalkerSession,
     const season=String(forcedSeason ?? e?.season ?? e?.season_number ?? 1); const arr=grouped.get(season)||[]; arr.push(asEpisode(e,`${season}-${idx}`)); grouped.set(season,arr);
   };
   // Önce ayrı type=series kullanan portalları dene.
-  for (const extra of [{series_id:String(seriesId)},{movie_id:String(seriesId)}]) {
+  // Explicit Record tipi, heterojen object literal dizisinin `string | undefined`
+  // union olarak genişleyip stalkerOrderedList sözleşmesini bozmasını engeller.
+  const seriesLookupVariants: Record<string,string>[] = [
+    {series_id:String(seriesId)},
+    {movie_id:String(seriesId)},
+  ];
+  for (const extra of seriesLookupVariants) {
     try {
       const rows=await stalkerOrderedList(cred,ses,"series",extra);
       if (rows.length) {

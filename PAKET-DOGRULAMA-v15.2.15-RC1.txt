@@ -1,0 +1,12 @@
+KIZILKAN PLAYER ELITE v15.2.15-RC1
+version=15.2.15
+versionCode=150215
+Hedef: v15.2.14 stalker.ts TS2345 TypeScript HARD gate blocker
+Düzeltme: seriesLookupVariants explicit Record<string,string>[]
+Yeni gate: tools/check-v15215-typescript-contract.js
+Yerel denetle.js: TEMIZ
+Yerel checkplayercore.js: TEMIZ
+Yerel check-v15214-hardening.js: TEMIZ
+Yerel check-v15215-typescript-contract.js: TEMIZ
+GitHub Actions: HENUZ KANITLANMADI
+Gercek cihaz: HENUZ KANITLANMADI

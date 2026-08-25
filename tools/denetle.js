@@ -3,7 +3,7 @@
  * KIZILKAN PLAYER — TÜM DENETİMLERİ ÇALIŞTIR
  * Kullanım:  cd frontend && node ../tools/denetle.js
  *
- * Bu betik 10 statik denetleyiciyi sırayla çalıştırır. Her biri, geliştirme
+ * Bu betik kritik statik/fonksiyonel denetleyicileri sırayla çalıştırır. Her biri, geliştirme
  * sırasında GERÇEKTEN YAŞANMIŞ bir çökme/hata sınıfından sonra yazıldı.
  * Derleme öncesi çalıştırılırsa o hatalar bir daha kullanıcıya ulaşmaz.
  */
@@ -24,6 +24,7 @@ const CHECKS = [
   ["checkimports.js",  "Eksik nokta-import (Modal/Alert/…)",    ""],
   ["checkplayercore.js", "Player Core v15 kritik regresyon kapisi", ""],
   ["check-v15214-hardening.js", "v15.2.14 Stalker/Backup fonksiyonel fixture", ""],
+  ["check-v15215-typescript-contract.js", "v15.2.15 Stalker Series TypeScript contract", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 

@@ -650,3 +650,11 @@ v15.2.13 yeniden kaynak ve dış kaynak denetiminde iki açık kanıtlandı:
 Yerel denetle/checkplayercore/fonksiyonel fixture ve TS parser temizdir. Tam `tsc --noEmit`, KSP/Kotlin/Gradle release APK ve gerçek cihaz acceptance GitHub Actions/cihaz kanıtı bekler.
 
 **Aktif kaynak paketi:** v15.2.14-RC1 / versionCode 150214. Bu bölüm eski devam noktalarından üstündür.
+
+## NİHAİ DEVAM NOKTASI — v15.2.15-RC1 — 2026-08-25
+- v15.2.14-RC1 GitHub Actions TypeScript HARD gate: `stalker.ts(440,61) TS2345`.
+- Kök neden: heterojen `{series_id}` / `{movie_id}` object literal dizisinin `undefined` içeren union inference üretmesi ve `Record<string,string>` parametresiyle çakışması.
+- v15.2.15: `seriesLookupVariants: Record<string,string>[]` explicit contract ile düzeltildi; runtime MAG davranışı değiştirilmedi.
+- Yeni regresyon gate: `tools/check-v15215-typescript-contract.js`; `tools/denetle.js` zincirine bağlı.
+- Sürüm: 15.2.15 / versionCode 150215.
+- Yerel statik/fonksiyonel denetim zinciri temiz. GitHub Actions build ve gerçek cihaz testi henüz kanıtlanmış sayılmaz.
