@@ -44,6 +44,7 @@ export const KizilkanNativeCore = {
   getStorageFootprint: async (): Promise<Record<string, any>> => native ? (await native.getStorageFootprint()) : {},
   getRuntimeMemory: (): Record<string, any> => native ? (native.getRuntimeMemory() || {}) : {},
   getLastExitInfo: (): Record<string, any> => native ? (native.getLastExitInfo?.() || {}) : {},
+  getExitHistory: (maxNum = 5): Record<string, any>[] => native ? (native.getExitHistory?.(maxNum) || []) : [],
   beginPlayerSession: (): number | null => native ? Number(native.beginPlayerSession()) : null,
   getPlayerSession: (): number | null => native ? Number(native.getPlayerSession()) : null,
   isPlayerSessionActive: (id: number): boolean => native ? !!native.isPlayerSessionActive(id) : false,

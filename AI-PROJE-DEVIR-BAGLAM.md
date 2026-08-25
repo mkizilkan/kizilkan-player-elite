@@ -658,3 +658,27 @@ Yerel denetle/checkplayercore/fonksiyonel fixture ve TS parser temizdir. Tam `ts
 - Yeni regresyon gate: `tools/check-v15215-typescript-contract.js`; `tools/denetle.js` zincirine bağlı.
 - Sürüm: 15.2.15 / versionCode 150215.
 - Yerel statik/fonksiyonel denetim zinciri temiz. GitHub Actions build ve gerçek cihaz testi henüz kanıtlanmış sayılmaz.
+
+---
+
+# 2026-08-25 — v15.2.16-RC1 TANILAMA / MAG SESSION HARDENING DEVAM NOKTASI
+
+Aktif kaynak sürümü: **15.2.16-RC1**, Android `versionCode=150216`.
+
+v15.2.15 cihaz bulguları sonrası bu sürümde:
+- kalıcı credential-redacted KIZILKAN flight recorder,
+- Player first-frame/resolve/rebuffer/engine diagnostics,
+- ApplicationExitInfo history + sistem RAM,
+- native panel scan kalıcı diagnostic events,
+- MAG session cache ve auth failure fresh-login retry,
+- MAG get_profile profile-variant diagnostics/compatibility,
+- MAG add error görünürlüğü
+uygulandı.
+
+v15.2.15'e kadar çalışan scan lifecycle, round-robin, selection-before-import, DNS alias grouping, profile PIN session gate, MAG/Xtream/M3U katalog ve atomic backup restore davranışları korunmalıdır.
+
+Bu paket için statik/fixture/parser kontrolleri yapılmıştır; TAM `tsc`, Gradle release ve gerçek cihaz sonucu GitHub Actions/APK ile ayrıca kanıtlanmalıdır.
+
+Bir sonraki kabul testinde özellikle MAG Save&Load, ardışık MAG channel zap süreleri, Player Tanılama, scan reset sonrası Process Exit korelasyonu ve sanitised diagnostic export doğrulanmalıdır.
+
+Restore manifest preview/seçmeli profil-playlist restore, admin-normal user authorization ve playlist sıralama UX'i bu sürümde tamamlanmış sayılmaz; ayrı geliştirme fazıdır.

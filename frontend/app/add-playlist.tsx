@@ -38,6 +38,7 @@ import {
 import { PanelScan, type NativeScanStartResult } from "@/modules/panel-scan";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { storage } from "@/src/utils/storage";
+import { recordDiagnostic } from "@/src/utils/diagnostics";
 import {
   BULK_ACCOUNT_EXAMPLE,
   bulkAccountFromManual,
@@ -269,6 +270,15 @@ export default function AddPlaylist() {
       scroll?.scrollResponderScrollNativeHandleToKeyboard?.(target, 48, true);
     }, 80);
   }, []);
+
+  React.useEffect(() => {
+    if (!error || method !== "stalker") return;
+    const t = setTimeout(() => {
+      const scroll: any = formScrollRef.current;
+      scroll?.scrollToEnd?.({ animated: true });
+    }, 100);
+    return () => clearTimeout(t);
+  }, [error, method]); // stalker-error-reveal
 
   const formatExpiry = (raw: any): string => {
     if (raw == null || raw === "") return "Bilinmiyor";
@@ -1457,10 +1467,15 @@ export default function AddPlaylist() {
         const { session, profile: prof } = await stLogin(cred);
 
         setProgress("Canlı / Film / Dizi katalogları yükleniyor...");
-        const catalog = await stalkerCatalog(cred, session);
+        let catalog;
+        try { catalog = await stalkerCatalog(cred, session); }
+        catch (e: any) {
+          throw new Error(`MAG katalog yükleme başarısız: ${String(e?.message || e)}${session.profileError ? `\nProfil aşaması: ${session.profileError}` : ""}`);
+        }
         if (catalog.channels.length + catalog.vod.length + catalog.series.length === 0) {
           throw new Error(
             "Portal bağlandı ama kanal listesi BOŞ.\n\n" +
+              (session.profileError ? `Profil aşaması: ${session.profileError}\n\n` : "") +
               "Olası sebepler:\n" +
               "• MAC adresi bu portalda kayıtlı değil\n" +
               "• Abonelik süresi dolmuş\n" +
@@ -1484,7 +1499,9 @@ export default function AddPlaylist() {
       setProgress("Playlist hazır. +18 filtresi arka planda hazırlanıyor...");
       router.replace("/(tabs)");
     } catch (e: any) {
-      setError(e.message || "Bilinmeyen hata");
+      const message = e.message || "Bilinmeyen hata";
+      if (method === "stalker") void recordDiagnostic("catalog", "STALKER_ADD_ERROR", { message });
+      setError(message);
     } finally {
       setLoading(false);
       setProgress("");

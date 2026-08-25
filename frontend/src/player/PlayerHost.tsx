@@ -60,6 +60,7 @@ import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
 import { useLibrary } from "@/src/store/LibraryContext";
+import { recordDiagnostic } from "@/src/utils/diagnostics";
 import { storage } from "@/src/utils/storage";
 import { haptic } from "@/src/utils/haptic";
 import { CastButton } from "@/src/components/CastButton";
@@ -429,6 +430,8 @@ export default function PlayerHost() {
   // GPT ELITE v14.0.0 — Player V2 session/controller state.
   const sessionGateRef = useRef(new PlaybackSessionGate());
   const sessionStartedAtRef = useRef(Date.now());
+  const playerSelectionStartedAtRef = useRef(Date.now());
+  const playerDiagnosticSessionRef = useRef("");
   const transitioningSessionRef = useRef<number | null>(null);
   // Aynı kanalın alternatif .ts/.m3u8 URL'sine geçerken aktif motoru koru.
   const nextSessionProfileRef = useRef<EngineProfile | null>(null);
@@ -542,6 +545,14 @@ export default function PlayerHost() {
   } : null, [playbackRequest]);
 
   useEffect(() => {
+    if (!visible || !channel?.id) return;
+    const started = Date.now();
+    playerSelectionStartedAtRef.current = started;
+    playerDiagnosticSessionRef.current = `${String(channel.id)}-${started}`;
+    void recordDiagnostic("player", "CHANNEL_SELECTED", { channelId: String(channel.id), source: activePlaylist?.source || "", contentType: channel?.stream_type || "live" }, { sessionId: playerDiagnosticSessionRef.current });
+  }, [visible, channel?.id, activePlaylist?.source]);
+
+  useEffect(() => {
     // Stalker değilse çözüme gerek yok
     if (!channel?.url || activePlaylist?.source !== "stalker") { setResolvedUrl(null); return; }
     let alive = true;
@@ -590,6 +601,7 @@ export default function PlayerHost() {
     vlcPlayingRef.current = false;
     mpvPlayingRef.current = false;
     sessionStartedAtRef.current = Date.now();
+    void recordDiagnostic("player", "PLAYER_SESSION_START", { channelId: String(channel.id), engine: v2Profile.engine, fromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current) }, { sessionId: playerDiagnosticSessionRef.current });
     const sessionNow = Date.now();
     media3ClockRef.current = makePlaybackClock(sessionNow);
     vlcClockRef.current = makePlaybackClock(sessionNow);
@@ -754,6 +766,14 @@ export default function PlayerHost() {
 
     const statusSub = player.addListener("statusChange", (event: any) => {
       if (!stillMine()) return;
+      if (event?.status) {
+        void recordDiagnostic("player", "MEDIA3_STATUS", {
+          status: String(event.status),
+          fromSessionMs: Math.max(0, Date.now() - sessionStartedAtRef.current),
+          fromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current),
+          rebuffer: successfulSessionRef.current === sid && (event.status === "loading" || event.status === "buffering"),
+        }, { sessionId: playerDiagnosticSessionRef.current });
+      }
 
       if (event?.status === "loading" || event?.status === "buffering") {
         setV2Phase("preparing");
@@ -860,6 +880,7 @@ export default function PlayerHost() {
           successfulSessionRef.current = sid;
           successfulSessionAtRef.current = Date.now();
           recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
+          recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
         }
       }
     });
@@ -1950,6 +1971,16 @@ export default function PlayerHost() {
    * metadata/track + ilerleyen playback clock olaylarının birleşiminden türetilir.
    * HW -> SW geçişi yalnız gerçek native onError olayında yapılır.
    */
+  const recordFirstFrameDiagnostic = React.useCallback((profile: EngineProfile, firstFrameMs: number) => {
+    void recordDiagnostic("player", "FIRST_FRAME", {
+      channelId: String(channel?.id || ""),
+      source: activePlaylist?.source || "",
+      engine: profile.engine,
+      firstFrameMs,
+      totalFromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current),
+    }, { sessionId: playerDiagnosticSessionRef.current });
+  }, [channel?.id, activePlaylist?.source]);
+
   const markVlcHealthy = React.useCallback((
     sid: number,
     profile: EngineProfile,
@@ -1974,6 +2005,7 @@ export default function PlayerHost() {
       successfulSessionRef.current = sid;
           successfulSessionAtRef.current = Date.now();
       recordEngineSuccess(String(channel?.id || ""), profile, firstFrameMs).catch(() => {});
+      recordFirstFrameDiagnostic(profile, firstFrameMs);
     }
     return true;
   }, [channel?.id]);
@@ -2332,6 +2364,7 @@ export default function PlayerHost() {
                   successfulSessionRef.current = activeSessionId;
                   successfulSessionAtRef.current = Date.now();
                   recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
+                  recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
                 }
               }}
             />
@@ -2381,6 +2414,7 @@ export default function PlayerHost() {
                     successfulSessionRef.current = activeSessionId;
                   successfulSessionAtRef.current = Date.now();
                     recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
+                    recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
                   }
                 }
               }}
@@ -2403,7 +2437,9 @@ export default function PlayerHost() {
                   !useVLC
                 ) return;
                 const buffering = progress < 100;
+                const wasBuffering = isBufferingRef.current;
                 isBufferingRef.current = buffering;
+                if (wasBuffering !== buffering) void recordDiagnostic("player", buffering ? "VLC_BUFFERING_START" : "VLC_BUFFERING_END", { progress, afterFirstFrame: successfulSessionRef.current === activeSessionId }, { sessionId: playerDiagnosticSessionRef.current });
                 setIsBuffering(prev => prev === buffering ? prev : buffering);
                 if (buffering && v2Phase !== "preparing") setV2Phase("preparing");
                 else if (!buffering && !vlcVideoReady && v2Phase !== "waiting_first_frame") setV2Phase("waiting_first_frame");
@@ -2613,6 +2649,7 @@ export default function PlayerHost() {
                     successfulSessionRef.current = activeSessionId;
                   successfulSessionAtRef.current = Date.now();
                     recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
+                    recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
                   }
                 }
               }}
@@ -2623,7 +2660,9 @@ export default function PlayerHost() {
                   v2Profile.engine !== "mpv"
                 ) return;
                 const buffering = !!e?.nativeEvent?.isBuffering || !!e?.isBuffering;
+                const wasBuffering = isBufferingRef.current;
                 isBufferingRef.current = buffering;
+                if (wasBuffering !== buffering) void recordDiagnostic("player", buffering ? "MPV_BUFFERING_START" : "MPV_BUFFERING_END", { afterFirstFrame: successfulSessionRef.current === activeSessionId }, { sessionId: playerDiagnosticSessionRef.current });
                 setIsBuffering(prev => prev === buffering ? prev : buffering);
                 if (buffering) setV2Phase("preparing");
                 else if (!mpvVideoReady) setV2Phase("waiting_first_frame");
@@ -2672,6 +2711,7 @@ export default function PlayerHost() {
                     successfulSessionRef.current = activeSessionId;
                   successfulSessionAtRef.current = Date.now();
                     recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
+                    recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
                   }
                 }
               }}

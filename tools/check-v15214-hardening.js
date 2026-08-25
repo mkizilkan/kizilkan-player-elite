@@ -20,7 +20,8 @@ function q(url) { const u = new URL(url); return { type:u.searchParams.get('type
 async function testStalker() {
   const js = compile('src/utils/stalker.ts');
   const load = (fetchImpl) => {
-    const box={module:{exports:{}},exports:{},require,console,URL,URLSearchParams,AbortController,setTimeout,clearTimeout,fetch:fetchImpl};
+    const req = id => id==='@/src/utils/diagnostics' ? { recordDiagnostic: async()=>{} } : require(id);
+    const box={module:{exports:{}},exports:{},require:req,console,URL,URLSearchParams,AbortController,setTimeout,clearTimeout,fetch:fetchImpl};
     box.exports=box.module.exports; vm.runInNewContext(js,box,{filename:'stalker.ts'}); return box.module.exports;
   };
   const goodFetch = async url => {

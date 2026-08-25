@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.Context
 import android.os.Build
 import android.os.IBinder
+import android.os.Debug
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -25,6 +26,7 @@ class PanelScanService : Service() {
     const val ACTION_RESUME = "expo.modules.panelscan.RESUME"
     const val PREFS = "gpt_elite_panel_scan"
     const val KEY_SNAPSHOT = "snapshot"
+    const val KEY_EVENTS = "diagnostic_events"
     const val CHANNEL_ID = "panel_scan"
     const val NOTIF_ID = 13001
 
@@ -69,6 +71,8 @@ class PanelScanService : Service() {
   @Volatile private var running = false
   @Volatile private var currentRunId = ""
   @Volatile private var activeExecutor: ExecutorService? = null
+  @Volatile private var lastDiagnosticState = ""
+  @Volatile private var lastDiagnosticBucket = -1
   private val activeConnections = ConcurrentHashMap.newKeySet<HttpURLConnection>()
 
   private fun abortActiveNetworkWork() {
@@ -190,6 +194,25 @@ class PanelScanService : Service() {
     return START_NOT_STICKY
   }
 
+  @Synchronized private fun appendDiagnosticEvent(obj: JSONObject) {
+    val prefs = getSharedPreferences(PREFS, 0)
+    val arr = try { JSONArray(prefs.getString(KEY_EVENTS, "[]") ?: "[]") } catch (_: Throwable) { JSONArray() }
+    val event = JSONObject()
+      .put("at", System.currentTimeMillis())
+      .put("runId", obj.optString("runId", currentRunId))
+      .put("mode", obj.optString("mode", ""))
+      .put("state", obj.optString("state", ""))
+      .put("tested", obj.optInt("tested", 0))
+      .put("total", obj.optInt("total", 0))
+      .put("found", obj.optInt("found", 0))
+      .put("accountIndex", obj.optInt("accountIndex", -1))
+      .put("pssKb", Debug.getPss())
+      .put("error", obj.optString("error", "").take(300))
+    val next = JSONArray(); next.put(event)
+    for (i in 0 until minOf(arr.length(), 79)) next.put(arr.opt(i))
+    prefs.edit().putString(KEY_EVENTS, next.toString()).commit()
+  }
+
   @Synchronized private fun writeSnapshot(obj: JSONObject) {
     if (currentRunId.isNotBlank() && !obj.has("runId")) obj.put("runId", currentRunId)
     if (!obj.has("createdAt")) {
@@ -209,6 +232,13 @@ class PanelScanService : Service() {
     }
     obj.put("updatedAt", System.currentTimeMillis())
     getSharedPreferences(PREFS, 0).edit().putString(KEY_SNAPSHOT, obj.toString()).apply()
+    val stateNow = obj.optString("state", "")
+    val bucket = obj.optInt("tested", 0) / 100
+    if (stateNow != lastDiagnosticState || bucket != lastDiagnosticBucket || obj.has("error")) {
+      appendDiagnosticEvent(obj)
+      lastDiagnosticState = stateNow
+      lastDiagnosticBucket = bucket
+    }
   }
 
   @Synchronized private fun patchSnapshot(mutator: (JSONObject) -> Unit) {

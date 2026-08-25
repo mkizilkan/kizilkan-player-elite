@@ -9,7 +9,7 @@
  *
  * PROTOKOL ZİNCİRİ:
  *   1) handshake        -> token
- *   2) get_profile      -> cihazı tanıt (ZORUNLU, atlanırsa liste boş gelir)
+ *   2) get_profile      -> cihazı tanıt (portal varyantlarına göre kimlik alanları değişebilir)
  *   3) get_genres       -> kategoriler
  *   4) get_all_channels -> kanallar
  *   5) create_link      -> OYNATMA ANINDA gerçek adres (adresler GEÇİCİ)
@@ -23,6 +23,7 @@
  */
 
 import type { AccountInfo, Channel, SeriesItem, VodItem } from "@/src/types";
+import { recordDiagnostic } from "@/src/utils/diagnostics";
 
 /** MAG250 kimliği. Portallar bunu bekler. */
 const MAG_UA =
@@ -50,7 +51,24 @@ export interface StalkerSession {
   token: string;
   endpoint: string;
   profile?: any;
+  profileError?: string;
+  profileVariant?: string;
 }
+
+const SESSION_TTL_MS = 15 * 60 * 1000;
+const stalkerSessionCache = new Map<string, { session: StalkerSession; profile: any; at: number }>();
+
+function sessionKey(cred: StalkerCreds): string { return `${baseOf(cred.portal).toLowerCase()}|${normalizeMac(cred.mac)}|${cred.serial || ""}|${cred.deviceId || ""}`; }
+function getCachedSession(cred: StalkerCreds): { session: StalkerSession; profile: any } | null {
+  const key = sessionKey(cred); const hit = stalkerSessionCache.get(key); if (!hit) return null;
+  if (Date.now() - hit.at > SESSION_TTL_MS) { stalkerSessionCache.delete(key); return null; }
+  return { session: hit.session, profile: hit.profile };
+}
+function cacheSession(cred: StalkerCreds, session: StalkerSession, profile: any) {
+  const key = sessionKey(cred); stalkerSessionCache.set(key, { session, profile, at: Date.now() });
+  if (stalkerSessionCache.size > 8) { const oldest = [...stalkerSessionCache.entries()].sort((a,b)=>a[1].at-b[1].at)[0]?.[0]; if (oldest) stalkerSessionCache.delete(oldest); }
+}
+function invalidateSession(cred: StalkerCreds) { stalkerSessionCache.delete(sessionKey(cred)); }
 
 /** MAC'i portalın beklediği biçime getirir: BÜYÜK harf, iki nokta ayraçlı. */
 export function normalizeMac(raw: string): string {
@@ -192,31 +210,113 @@ export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSessi
   );
 }
 
-/** 2) GET_PROFILE — ZORUNLU. Atlanırsa çoğu portal boş liste döndürür. */
-export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession): Promise<any> {
+/** 2) GET_PROFILE — portal varyantlarına kontrollü uyumluluk. */
+type StalkerProfileVariant = { label: string; params: Record<string,string> };
+
+async function derivedMagIdentity(cred: StalkerCreds): Promise<{sn:string; deviceId:string; deviceId2:string; signatureLegacy:string; signatureModern:string; hwVersion2:string}> {
+  const Crypto = await import("expo-crypto");
   const mac = normalizeMac(cred.mac);
-  const data = await req(
-    buildUrl(ses.endpoint, {
-      type: "stb",
-      action: "get_profile",
-      hd: "1",
-      ver: "ImageDescription: 0.2.18-r23-250; ImageDate: Wed Aug 29 10:49:53 EEST 2018; PORTAL version: 5.6.2; API Version: JS API version: 343; STB API version: 146; Player Engine version: 0x58c",
-      device_id: cred.deviceId || "",
-      device_id2: cred.deviceId || "",
-      sn: cred.serial || "",
-      stb_type: "MAG250",
-      client_type: "STB",
-      image_version: "218",
-      video_out: "hdmi",
-      num_banks: "2",
-      mac,
-      auth_second_step: "0",
-      hw_version: "1.7-BD-00",
-      not_valid_token: "0",
-    }),
-    headersFor(cred, ses.token, ses.endpoint)
-  );
-  return data?.js || null;
+  const md5 = (value:string) => Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.MD5, value);
+  const sha1 = (value:string) => Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA1, value);
+  const sha256 = (value:string) => Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, value);
+  const serial = String(cred.serial || (await md5(mac)).toUpperCase().slice(13));
+  const deviceId = String(cred.deviceId || await sha256(serial)).toUpperCase();
+  const deviceId2 = String(await sha256(mac)).toUpperCase();
+  return {
+    sn: serial,
+    deviceId,
+    deviceId2,
+    signatureLegacy: String(await sha256(serial + mac)).toUpperCase(),
+    signatureModern: String(await sha256(mac + serial + deviceId + deviceId2)).toUpperCase(),
+    hwVersion2: String(await sha1(mac)).toLowerCase(),
+  };
+}
+
+function baseProfileParams(mac:string): Record<string,string> {
+  return {
+    type: "stb",
+    action: "get_profile",
+    hd: "1",
+    ver: "ImageDescription: 0.2.18-r23-250; ImageDate: Wed Aug 29 10:49:53 EEST 2018; PORTAL version: 5.6.2; API Version: JS API version: 343; STB API version: 146; Player Engine version: 0x58c",
+    stb_type: "MAG250",
+    image_version: "218",
+    num_banks: "2",
+    auth_second_step: "0",
+    hw_version: "1.7-BD-00",
+    not_valid_token: "0",
+    mac,
+  };
+}
+
+function initialProfileVariants(cred:StalkerCreds): StalkerProfileVariant[] {
+  const mac=normalizeMac(cred.mac);
+  const base=baseProfileParams(mac);
+  return [{
+    label:"MAG250-explicit",
+    params:{...base, sn:cred.serial || "", device_id:cred.deviceId || "", device_id2:cred.deviceId || "", client_type:"STB", video_out:"hdmi"},
+  }, {
+    label:"MAG250-legacy-minimal",
+    params:{...base, num_banks:"1", sn:cred.serial || "", device_id:"", device_id2:"", signature:""},
+  }];
+}
+
+async function derivedProfileVariants(cred:StalkerCreds): Promise<StalkerProfileVariant[]> {
+  try {
+    const mac=normalizeMac(cred.mac);
+    const base=baseProfileParams(mac);
+    const id=await derivedMagIdentity(cred);
+    const metrics=JSON.stringify({mac, sn:id.sn, type:"STB", model:"MAG250", uid:"", random:""});
+    return [{
+      label:"MAG250-derived-identity",
+      params:{...base, sn:id.sn, device_id:id.deviceId, device_id2:id.deviceId2, signature:id.signatureModern, auth_second_step:"1", client_type:"STB", video_out:"hdmi", metrics, hw_version_2:id.hwVersion2, api_signature:"262", prehash:""},
+    }, {
+      label:"MAG250-derived-legacy-signature",
+      params:{...base, sn:id.sn, device_id:id.deviceId, device_id2:id.deviceId2, signature:id.signatureLegacy, auth_second_step:"0"},
+    }];
+  } catch {
+    return [];
+  }
+}
+
+function profilePayload(data:any): any {
+  const js=data?.js;
+  if (js && typeof js === "object") return js;
+  return null;
+}
+
+/**
+ * get_profile için ilk olarak mevcut KIZILKAN kimliği kullanılır. Yalnız profil
+ * gerçekten reddedilir/geçersiz dönerse sahada görülen iki MAG kimlik modeli
+ * kontrollü biçimde denenir. Katalog başarısı yine nihai doğrulamadır; hiçbir
+ * varyant sahte başarılı sayılmaz.
+ */
+export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession): Promise<any> {
+  const errors:string[]=[];
+  const tryVariants = async (variants:StalkerProfileVariant[]): Promise<any> => {
+  for (const variant of variants) {
+    const started=Date.now();
+    try {
+      const data=await req(buildUrl(ses.endpoint, variant.params), headersFor(cred, ses.token, ses.endpoint));
+      const profile=profilePayload(data);
+      if (profile) {
+        ses.profileVariant=variant.label;
+        void recordDiagnostic("catalog","STALKER_PROFILE_VARIANT_OK",{variant:variant.label, elapsedMs:Date.now()-started, endpoint:ses.endpoint});
+        return profile;
+      }
+      errors.push(`${variant.label}: profil boş`);
+      void recordDiagnostic("catalog","STALKER_PROFILE_VARIANT_EMPTY",{variant:variant.label, elapsedMs:Date.now()-started, endpoint:ses.endpoint});
+    } catch (e:any) {
+      errors.push(`${variant.label}: ${String(e?.message || e)}`);
+      void recordDiagnostic("catalog","STALKER_PROFILE_VARIANT_ERROR",{variant:variant.label, elapsedMs:Date.now()-started, endpoint:ses.endpoint, status:e?.status, message:String(e?.message || e)});
+    }
+  }
+  return null;
+  };
+  const direct=await tryVariants(initialProfileVariants(cred));
+  if (direct) return direct;
+  const derived=await tryVariants(await derivedProfileVariants(cred));
+  if (derived) return derived;
+  throw new Error("MAG profil doğrulaması başarısız. " + errors.join(" | "));
 }
 
 /** 3) KATEGORİLER */
@@ -498,6 +598,8 @@ async function retryCatalogPart<T>(label:string, fn:()=>Promise<T>):Promise<T> {
 }
 
 export async function stalkerCatalog(cred: StalkerCreds, ses: StalkerSession): Promise<{channels:Channel[]; vod:VodItem[]; series:SeriesItem[]; diagnostics:StalkerCatalogDiagnostics}> {
+  const catalogStarted = Date.now();
+  void recordDiagnostic("catalog", "STALKER_CATALOG_START", { endpoint: ses.endpoint, profileError: ses.profileError || "" });
   const channels=await stalkerChannels(cred,ses);
   let vodPart:VodPartition;
   try { vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses)); }
@@ -522,6 +624,7 @@ export async function stalkerCatalog(cred: StalkerCreds, ses: StalkerSession): P
     warnings,
   };
   console.info('[StalkerCatalog]', {live:channels.length,vod:vodPart.vod.length,series:series.length,diagnostics});
+  void recordDiagnostic("catalog", "STALKER_CATALOG_DONE", { elapsedMs: Date.now()-catalogStarted, live: channels.length, vod: vodPart.vod.length, series: series.length, diagnostics });
   return {channels,vod:vodPart.vod,series,diagnostics};
 }
 
@@ -557,12 +660,26 @@ export async function stalkerCreateLink(
 
 /** Tam oturum: handshake + profil. */
 export async function stalkerLogin(
-  cred: StalkerCreds
+  cred: StalkerCreds,
+  opts: { forceFresh?: boolean } = {}
 ): Promise<{ session: StalkerSession; profile: any }> {
+  if (!opts.forceFresh) { const cached = getCachedSession(cred); if (cached) { void recordDiagnostic("catalog", "STALKER_SESSION_CACHE_HIT", { portal: cred.portal }); return cached; } }
+  const started = Date.now();
+  void recordDiagnostic("catalog", "STALKER_HANDSHAKE_START", { portal: cred.portal });
   const session = await stalkerHandshake(cred);
-  const profile = await stalkerProfile(cred, session).catch(() => null);
-  session.profile = profile;
-  return { session, profile };
+  void recordDiagnostic("catalog", "STALKER_HANDSHAKE_OK", { endpoint: session.endpoint, elapsedMs: Date.now()-started });
+  let profile: any = null;
+  try {
+    profile = await stalkerProfile(cred, session);
+    void recordDiagnostic("catalog", "STALKER_PROFILE_OK", { endpoint: session.endpoint, elapsedMs: Date.now()-started });
+  } catch (e: any) {
+    session.profileError = String(e?.message || e);
+    void recordDiagnostic("catalog", "STALKER_PROFILE_ERROR", { endpoint: session.endpoint, message: session.profileError, status: e?.status });
+    // Bazı eski Ministra/Stalker varyantları get_profile alanlarının bir kısmını
+    // reddederken katalog çağrılarını kabul eder. Uyumluluğu bozmak yerine hata
+    // session üzerinde taşınır; katalog da başarısız/boşsa kullanıcıya aşama bilgisi verilir.
+  }
+  session.profile = profile; cacheSession(cred, session, profile); return { session, profile };
 }
 
 /**
@@ -574,17 +691,23 @@ export async function stalkerResolveStream(
   ses: StalkerSession | null,
   cmd: string
 ): Promise<{ url: string; session: StalkerSession }> {
-  let session = ses;
+  const started = Date.now();
+  let session = ses || getCachedSession(cred)?.session || null;
+  const cacheHit = !!session;
   if (!session) session = (await stalkerLogin(cred)).session;
-
   const parsed = parseMediaCommand(cmd);
   try {
     const url = await stalkerCreateLink(cred, session, parsed.cmd, parsed.kind, parsed.series);
+    void recordDiagnostic("player", "STALKER_RESOLVE_DONE", { elapsedMs: Date.now()-started, cacheHit, mediaType: parsed.kind });
     return { url, session };
   } catch (e: any) {
-    if (e?.status === 401 || e?.status === 403 || /token/i.test(String(e?.message))) {
-      const fresh = await stalkerLogin(cred);
+    const message = String(e?.message || e);
+    void recordDiagnostic("player", "STALKER_RESOLVE_ERROR", { elapsedMs: Date.now()-started, cacheHit, message, status: e?.status });
+    if (e?.status === 401 || e?.status === 403 || /token|auth/i.test(message)) {
+      invalidateSession(cred);
+      const fresh = await stalkerLogin(cred, { forceFresh: true });
       const url = await stalkerCreateLink(cred, fresh.session, parsed.cmd, parsed.kind, parsed.series);
+      void recordDiagnostic("player", "STALKER_RESOLVE_REFRESHED", { elapsedMs: Date.now()-started, mediaType: parsed.kind });
       return { url, session: fresh.session };
     }
     throw e;

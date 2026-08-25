@@ -116,5 +116,11 @@ class PanelScanModule : Module() {
       context.getSharedPreferences(PanelScanService.PREFS, 0)
         .getString(PanelScanService.KEY_SNAPSHOT, "{}") ?: "{}"
     }
+
+    Function("getDiagnosticEvents") {
+      val context = appContext.reactContext ?: return@Function "[]"
+      context.getSharedPreferences(PanelScanService.PREFS, 0)
+        .getString(PanelScanService.KEY_EVENTS, "[]") ?: "[]"
+    }
   }
 }

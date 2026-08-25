@@ -210,10 +210,13 @@ export default function EditPlaylist() {
           const profile = prof || {};
           patch.accountInfo = normalizeStalkerAccountInfo(profile);
           setProgress("Canlı / Film / Dizi katalogları yükleniyor...");
-          const catalog = await stalkerCatalog(cred, session);
+          let catalog;
+          try { catalog = await stalkerCatalog(cred, session); }
+          catch (e: any) { throw new Error(`MAG katalog yenileme başarısız: ${String(e?.message || e)}${session.profileError ? `\nProfil aşaması: ${session.profileError}` : ""}`); }
           if (catalog.channels.length + catalog.vod.length + catalog.series.length === 0) {
             throw new Error(
               "Portal bağlandı ama kanal listesi BOŞ.\n\n" +
+                (session.profileError ? `Profil aşaması: ${session.profileError}\n\n` : "") +
                 "• MAC bu portalda kayıtlı olmayabilir\n" +
                 "• Abonelik süresi dolmuş olabilir"
             );

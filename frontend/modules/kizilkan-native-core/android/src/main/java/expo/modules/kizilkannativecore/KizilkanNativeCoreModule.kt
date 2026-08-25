@@ -169,19 +169,11 @@ class KizilkanNativeCoreModule : Module() {
     }
 
     Function("getLastExitInfo") {
-      if (Build.VERSION.SDK_INT < 30) return@Function emptyMap<String, Any>()
-      val am = context().getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-      val info = am.getHistoricalProcessExitReasons(context().packageName, 0, 5).firstOrNull()
-        ?: return@Function emptyMap<String, Any>()
-      mapOf<String, Any>(
-        "reason" to info.reason,
-        "reasonLabel" to exitReasonLabel(info.reason),
-        "status" to info.status,
-        "importance" to info.importance,
-        "timestamp" to info.timestamp,
-        "processName" to (info.processName ?: ""),
-        "description" to (info.description?.toString() ?: "")
-      )
+      exitHistory(1).firstOrNull() ?: emptyMap<String, Any>()
+    }
+
+    Function("getExitHistory") { maxNum: Int ->
+      exitHistory(maxNum.coerceIn(1, 10))
     }
 
     // v15.2.4 Native Player Session Arbiter Phase 1: player motorlarını henüz
@@ -999,12 +991,34 @@ class KizilkanNativeCoreModule : Module() {
     else -> "REASON_$reason"
   } else "UNAVAILABLE"
 
+  private fun exitHistory(maxNum: Int): List<Map<String, Any>> {
+    if (Build.VERSION.SDK_INT < 30) return emptyList()
+    val am = context().getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+    return am.getHistoricalProcessExitReasons(context().packageName, 0, maxNum).map { info ->
+      val traceAvailable = try { info.traceInputStream?.use { true } ?: false } catch (_: Throwable) { false }
+      mapOf<String, Any>(
+        "reason" to info.reason,
+        "reasonLabel" to exitReasonLabel(info.reason),
+        "status" to info.status,
+        "importance" to info.importance,
+        "timestamp" to info.timestamp,
+        "processName" to (info.processName ?: ""),
+        "description" to (info.description?.toString() ?: ""),
+        "pssKb" to info.pss,
+        "rssKb" to info.rss,
+        "traceAvailable" to traceAvailable,
+      )
+    }
+  }
+
   private fun runtimeMemory(): Map<String, Any> {
     val info = Debug.MemoryInfo()
     Debug.getMemoryInfo(info)
     val runtime = Runtime.getRuntime()
     val am = context().getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
     val javaUsed = runtime.totalMemory() - runtime.freeMemory()
+    val sys = ActivityManager.MemoryInfo()
+    am?.getMemoryInfo(sys)
     return mapOf(
       "totalPssKb" to info.totalPss,
       "totalPrivateDirtyKb" to info.totalPrivateDirty,
@@ -1017,6 +1031,10 @@ class KizilkanNativeCoreModule : Module() {
       "memoryClassMb" to (am?.memoryClass ?: 0),
       "largeMemoryClassMb" to (am?.largeMemoryClass ?: 0),
       "lowRamDevice" to (am?.isLowRamDevice ?: false),
+      "systemAvailMemBytes" to sys.availMem,
+      "systemTotalMemBytes" to sys.totalMem,
+      "systemThresholdBytes" to sys.threshold,
+      "systemLowMemory" to sys.lowMemory,
     )
   }
 

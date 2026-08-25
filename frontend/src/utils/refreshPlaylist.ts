@@ -174,9 +174,11 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       onProgress?.({ phase: "login", message: "Portal doğrulanıyor..." });
       const { session } = await stalkerLogin(cred);
       onProgress?.({ phase: "content", message: "Canlı / Film / Dizi katalogları yükleniyor..." });
-      const catalog = await stalkerCatalog(cred, session);
+      let catalog;
+      try { catalog = await stalkerCatalog(cred, session); }
+      catch (e: any) { return { ok: false, message: `MAG katalog yenileme başarısız: ${String(e?.message || e)}${session.profileError ? ` · Profil: ${session.profileError}` : ""}` }; }
       if (catalog.channels.length + catalog.vod.length + catalog.series.length === 0) {
-        return { ok: false, message: "Portal bağlandı ama kanal listesi boş." };
+        return { ok: false, message: `Portal bağlandı ama kanal listesi boş.${session.profileError ? ` Profil: ${session.profileError}` : ""}` };
       }
       return {
         ok: true,

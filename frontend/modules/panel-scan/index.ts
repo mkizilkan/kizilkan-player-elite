@@ -42,4 +42,5 @@ export const PanelScan = {
   resumeScan: async (runId: string) => native && runId ? native.resumeScan(runId) : false,
   getActiveRunId: (): string => native ? String(native.getActiveRunId?.() || "") : "",
   getSnapshot: (): NativeSnapshot => { if (!native) return {}; try { return JSON.parse(native.getSnapshot() || "{}"); } catch { return {}; } },
+  getDiagnosticEvents: (): any[] => { if (!native) return []; try { const v = JSON.parse(native.getDiagnosticEvents?.() || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } },
 };

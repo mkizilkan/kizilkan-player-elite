@@ -25,6 +25,7 @@ const CHECKS = [
   ["checkplayercore.js", "Player Core v15 kritik regresyon kapisi", ""],
   ["check-v15214-hardening.js", "v15.2.14 Stalker/Backup fonksiyonel fixture", ""],
   ["check-v15215-typescript-contract.js", "v15.2.15 Stalker Series TypeScript contract", ""],
+  ["check-v15216-diagnostics.js", "v15.2.16 Tanılama/MAG session cache contract", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 
