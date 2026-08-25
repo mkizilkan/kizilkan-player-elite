@@ -114,6 +114,21 @@ class KizilkanNativeCoreModule : Module() {
       !file.exists() || file.delete()
     }
 
+    // v15.2.14: Tam yedek restore, gerçek playlist ID'lerine doğrudan yazmaz.
+    // Önce __kzb_stage_* ID'leri tamamen doğrulanır; ardından TEK Room transaction
+    // içinde mevcut snapshot rollback alanına taşınır ve staging canlı ID'ye alınır.
+    AsyncFunction("applyAtomicPlaylistRestore") { sessionId: String, mappingsJson: String ->
+      applyAtomicPlaylistRestore(sessionId, mappingsJson)
+    }
+
+    AsyncFunction("finalizeAtomicPlaylistRestore") { sessionId: String, targetIdsJson: String ->
+      finalizeAtomicPlaylistRestore(sessionId, targetIdsJson)
+    }
+
+    AsyncFunction("rollbackAtomicPlaylistRestore") { sessionId: String, targetIdsJson: String ->
+      rollbackAtomicPlaylistRestore(sessionId, targetIdsJson)
+    }
+
     // v15.2.4: M3U URL/Dosya yolu da ağır JS parse + dev array üretmez.
     // Metin native worker'da parse edilir ve doğrudan Room canonical store'a girer.
     AsyncFunction("importM3uText") { id: String, text: String ->
@@ -604,6 +619,103 @@ class KizilkanNativeCoreModule : Module() {
     return summary(snapshot, cacheHit = false)
   }
 
+  private fun restoreRollbackId(sessionId: String, targetId: String): String =
+    "__kzb_rollback_${sessionId}_${targetId}"
+
+  /**
+   * Room içindeki bir playlist'i kopyalamadan yeniden adlandırır. Hedef önceden
+   * temizlenir; bütün çağrılar dışarıdaki runInTransaction içinde yapılmalıdır.
+   */
+  private fun movePlaylistRows(db: KizilkanNativeDatabase, fromId: String, toId: String) {
+    if (fromId == toId) return
+    db.mediaDao().deletePlaylist(toId)
+    db.epgDao().deletePlaylist(toId)
+    db.snapshotDao().delete(toId)
+    db.mediaDao().movePlaylist(fromId, toId)
+    db.epgDao().movePlaylist(fromId, toId)
+    val snap = db.snapshotDao().get(fromId)
+    if (snap != null) {
+      db.snapshotDao().put(snap.copy(playlistId = toId))
+      db.snapshotDao().delete(fromId)
+    }
+  }
+
+  /**
+   * mappingsJson: [{"targetId":"...","stageId":"..."|null}]
+   * stageId null ise playlist tam snapshot'ta yoktur ve başarı halinde silinir.
+   * Her stage snapshot daha transaction başlamadan doğrulanır.
+   */
+  private fun applyAtomicPlaylistRestore(sessionId: String, mappingsJson: String): Boolean {
+    if (sessionId.isBlank()) throw IllegalArgumentException("Restore sessionId boş")
+    val arr = JSONTokener(mappingsJson).nextValue() as? JSONArray
+      ?: throw IllegalArgumentException("Restore mapping JSON array değil")
+    val mappings = ArrayList<Pair<String, String?>>(arr.length())
+    val db = database()
+    for (i in 0 until arr.length()) {
+      val obj = arr.optJSONObject(i) ?: throw IllegalArgumentException("Restore mapping nesne değil: $i")
+      val targetId = obj.optString("targetId", "").trim()
+      val stageId = if (obj.isNull("stageId")) null else obj.optString("stageId", "").trim().ifEmpty { null }
+      if (targetId.isEmpty()) throw IllegalArgumentException("Restore targetId eksik: $i")
+      if (targetId.startsWith("__kzb_")) throw IllegalArgumentException("Restore targetId ayrılmış namespace kullanıyor: $targetId")
+      if (stageId != null && db.snapshotDao().get(stageId) == null) {
+        throw IllegalStateException("Restore staging Room snapshot bulunamadı: $targetId")
+      }
+      mappings.add(targetId to stageId)
+    }
+    db.runInTransaction {
+      for ((targetId, stageId) in mappings) {
+        val rollbackId = restoreRollbackId(sessionId, targetId)
+        // Önce geçmiş yarım session kalıntısı varsa temizle.
+        db.mediaDao().deletePlaylist(rollbackId)
+        db.epgDao().deletePlaylist(rollbackId)
+        db.snapshotDao().delete(rollbackId)
+        // Boş snapshot veya yalnız EPG içeren eski playlist de rollback'e taşınır.
+        movePlaylistRows(db, targetId, rollbackId)
+        if (stageId != null) movePlaylistRows(db, stageId, targetId)
+      }
+    }
+    for ((targetId, stageId) in mappings) {
+      invalidated.remove(targetId); telemetry.remove(targetId)
+      if (stageId != null) { invalidated.remove(stageId); telemetry.remove(stageId); indexLocks.remove(stageId) }
+    }
+    return true
+  }
+
+  private fun finalizeAtomicPlaylistRestore(sessionId: String, targetIdsJson: String): Boolean {
+    val arr = JSONTokener(targetIdsJson).nextValue() as? JSONArray
+      ?: throw IllegalArgumentException("Restore target list JSON array değil")
+    val ids = (0 until arr.length()).map { arr.optString(it, "").trim() }.filter { it.isNotEmpty() }
+    val db = database()
+    db.runInTransaction {
+      for (targetId in ids) {
+        val rollbackId = restoreRollbackId(sessionId, targetId)
+        db.mediaDao().deletePlaylist(rollbackId)
+        db.epgDao().deletePlaylist(rollbackId)
+        db.snapshotDao().delete(rollbackId)
+      }
+    }
+    return true
+  }
+
+  private fun rollbackAtomicPlaylistRestore(sessionId: String, targetIdsJson: String): Boolean {
+    val arr = JSONTokener(targetIdsJson).nextValue() as? JSONArray
+      ?: throw IllegalArgumentException("Restore target list JSON array değil")
+    val ids = (0 until arr.length()).map { arr.optString(it, "").trim() }.filter { it.isNotEmpty() }
+    val db = database()
+    db.runInTransaction {
+      for (targetId in ids) {
+        val rollbackId = restoreRollbackId(sessionId, targetId)
+        // Yeni restore edilmiş target'ı kaldır. Eski snapshot varsa geri taşı.
+        db.mediaDao().deletePlaylist(targetId)
+        db.epgDao().deletePlaylist(targetId)
+        db.snapshotDao().delete(targetId)
+        movePlaylistRows(db, rollbackId, targetId)
+      }
+    }
+    for (targetId in ids) invalidated.remove(targetId)
+    return true
+  }
+
   private fun summary(snapshot: PlaylistSnapshotEntity, cacheHit: Boolean): Map<String, Any> = mapOf(
     "id" to snapshot.playlistId,
     "bytes" to snapshot.sourceSize,
@@ -815,7 +927,7 @@ class KizilkanNativeCoreModule : Module() {
         val tvg = obj.optString("tvg_id", "").trim()
         val name = obj.optString("name", "Kanal")
         val stable = m3uChannelId(tvg, line, name)
-        when (classifyM3u(line, ext)) {
+        when (classifyM3u(line, ext, obj.optString("group", ""), name)) {
           "vod" -> vod.put(JSONObject().apply {
             put("id", "vod-$stable"); put("name", name); put("group", obj.optString("group", "Genel")); put("poster", obj.opt("logo"))
             put("url", line); put("container_ext", ext ?: "mp4"); put("stream_id", JSONObject.NULL)
@@ -823,6 +935,7 @@ class KizilkanNativeCoreModule : Module() {
           })
           "series" -> series.put(JSONObject().apply {
             put("id", "ser-$stable"); put("name", name); put("group", obj.optString("group", "Genel")); put("poster", obj.opt("logo")); put("series_id", JSONObject.NULL)
+            put("url", line); put("container_ext", ext ?: JSONObject.NULL)
             for (k in listOf("year","rating","rating_5based","plot","cast","director","genre")) put(k, JSONObject.NULL)
           })
           else -> { obj.put("id", stable); channels.put(obj) }
@@ -842,11 +955,16 @@ class KizilkanNativeCoreModule : Module() {
     return out
   }
 
-  private fun classifyM3u(url: String, ext: String?): String {
+  private fun classifyM3u(url: String, ext: String?, group: String, name: String): String {
     val u = url.lowercase(Locale.ROOT)
-    if (u.contains("/series/") || u.contains("/tv-series/")) return "series"
-    if (u.contains("/movie/") || u.contains("/vod/") || u.contains("/films/") || u.contains("/movies/")) return "vod"
-    if (ext != null && ext in setOf("mp4","mkv","avi","mov","webm","flv","wmv")) return "vod"
+    val g = group.lowercase(Locale.ROOT)
+    val text = "$g ${name.lowercase(Locale.ROOT)}"
+    if (Regex("/(series|tv-series|episodes?)/").containsMatchIn(u)) return "series"
+    if (Regex("/(movie|vod|films?|movies?)/").containsMatchIn(u)) return "vod"
+    if (Regex("\\b(s\\d{1,2}e\\d{1,3}|\\d{1,2}x\\d{1,3}|season\\s*\\d+|sezon\\s*\\d+|episode\\s*\\d+|bölüm\\s*\\d+)\\b", RegexOption.IGNORE_CASE).containsMatchIn(text) ||
+        Regex("\\b(dizi|diziler|series|tv shows?|serials?)\\b", RegexOption.IGNORE_CASE).containsMatchIn(g)) return "series"
+    if (Regex("\\b(film|filmler|movie|movies|vod|sinema|cinema)\\b", RegexOption.IGNORE_CASE).containsMatchIn(g)) return "vod"
+    if (ext != null && ext in setOf("mp4","mkv","avi","mov","webm","flv","wmv","m4v")) return "vod"
     return "live"
   }
 

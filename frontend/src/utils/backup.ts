@@ -48,7 +48,7 @@ const activeKey = (pid: string) => `kizilkan.activePlaylistId.${pid}`;
 
 type PlaylistHeavy = { channels: any[]; vod: any[]; series: any[] };
 
-type PlaylistProfileBackup = {
+export type PlaylistProfileBackup = {
   /** Exact serialized PlaylistMeta[] value used by PlaylistContext. */
   metadata: string;
   activeId?: string;
@@ -107,6 +107,53 @@ async function getProfileIds(): Promise<string[]> {
 async function collectKey(data: Record<string, string>, key: string): Promise<void> {
   const value = await storage.getItem<string>(key, '');
   if (value) data[key] = value;
+}
+
+export type BackupScope = 'quick' | 'personal' | 'full';
+
+const PLAYLIST_BASE_KEYS = new Set([
+  'kizilkan.playlists', 'kizilkan.playlists.meta', 'kizilkan.activePlaylistId', 'kizilkan.playlists.migratedTo',
+]);
+
+/** v15.2.13: Ağır katalogları JS belleğine almadan küçük/stream yedek başlığı üretir. */
+export async function createBackupMetadata(scope: BackupScope = 'quick'): Promise<BackupPayload> {
+  const data: Record<string, string> = {};
+  const warnings: string[] = [];
+  const includePlaylists = scope !== 'personal';
+
+  for (const key of BASE_KEYS) {
+    if (key === 'kizilkan.playlists') continue; // eski monolitik heavy JSON yeni yedeği tekrar şişirmesin
+    if (!includePlaylists && PLAYLIST_BASE_KEYS.has(key)) continue;
+    await collectKey(data, key);
+  }
+
+  const profileIds = await getProfileIds();
+  const playlistProfiles: Record<string, PlaylistProfileBackup> = {};
+  const uniquePlaylistIds = new Set<string>();
+  for (const pid of profileIds) {
+    for (const prefix of PROFILE_PREFIXED) await collectKey(data, prefix + pid);
+    if (!includePlaylists) continue;
+    const mk = metaKey(pid); const ak = activeKey(pid);
+    const metadata = (await storage.getItem<string>(mk, '')) || '';
+    const activeId = (await storage.getItem<string>(ak, '')) || '';
+    if (metadata) data[mk] = metadata;
+    if (activeId) data[ak] = activeId;
+    const playlistIds = parseArray(metadata).map((m:any)=>String(m?.id || '').trim()).filter(Boolean);
+    playlistProfiles[pid] = { metadata, ...(activeId ? { activeId } : {}), playlistIds };
+    playlistIds.forEach(id => uniquePlaylistIds.add(id));
+  }
+  return {
+    version: scope === 'full' ? '3.0-meta' : '2.1',
+    createdAt: new Date().toISOString(), appName: 'KIZILKAN PLAYER ELITE', data,
+    ...(includePlaylists ? { playlists: { profiles: playlistProfiles, heavy: {} } } : {}),
+    summary: { profiles: profileIds.filter(id=>id !== 'default').length, playlists: uniquePlaylistIds.size, heavyPlaylists: 0, settings: Object.keys(data).length, warnings },
+  };
+}
+
+export function backupPlaylistIds(payload: BackupPayload): string[] {
+  const out = new Set<string>();
+  for (const profile of Object.values(payload.playlists?.profiles || {})) for (const id of profile.playlistIds || []) out.add(id);
+  return Array.from(out);
 }
 
 export async function createBackup(): Promise<BackupPayload> {
@@ -195,7 +242,7 @@ export async function createBackup(): Promise<BackupPayload> {
   };
 }
 
-async function clearCurrentPlaylistState(profileIds: string[]): Promise<void> {
+async function clearCurrentPlaylistState(profileIds: string[], removeHeavy = true): Promise<void> {
   const ids = new Set<string>();
   for (const pid of profileIds) {
     const raw = (await storage.getItem<string>(metaKey(pid), '')) || '';
@@ -205,11 +252,89 @@ async function clearCurrentPlaylistState(profileIds: string[]): Promise<void> {
     await storage.removeItem(metaKey(pid));
     await storage.removeItem(activeKey(pid));
   }
-  for (const id of ids) await bigStore.remove(id);
+  if (removeHeavy) for (const id of ids) await bigStore.remove(id);
 }
 
 export function isKizilkanBackup(payload: any): boolean {
   return payload?.appName === 'KIZILKAN PLAYER' || payload?.appName === 'GPT KIZILKAN PLAYER' || payload?.appName === 'KIZILKAN PLAYER ELITE';
+}
+
+/**
+ * v15.2.14: Tam yedek commit/rollback için backup'ın yönettiği metadata
+ * namespace'ini önce kesin olarak temizler, sonra snapshot'ı uygular. Böylece
+ * restore sırasında eklenmiş yeni profil/favori/recent anahtarları rollback
+ * sonrasında cihazda yetim kalmaz. Ağır Room verisine dokunmaz.
+ */
+export async function restoreBackupMetadataExact(payload: BackupPayload): Promise<RestoreResult> {
+  if (!payload?.data || typeof payload.data !== 'object') throw new Error('Geçersiz yedek dosyası');
+  if (!isKizilkanBackup(payload)) throw new Error('Bu bir KIZILKAN PLAYER ELITE yedek dosyası değil');
+
+  const incomingProfiles = parseArray(payload.data['kizilkan.profiles'] || '');
+  const incomingProfileIds = new Set<string>(['default']);
+  for (const p of incomingProfiles) if (p?.id) incomingProfileIds.add(String(p.id));
+  const currentProfileIds = await getProfileIds();
+  const allProfileIds = new Set<string>([
+    ...currentProfileIds,
+    ...incomingProfileIds,
+    ...Object.keys(payload.playlists?.profiles || {}),
+  ]);
+
+  // Backup formatının yönettiği bütün bilinen anahtarları önce kaldır. Bu işlem
+  // bigStore/Room kataloglarını silmez; atomik heavy swap native tarafta yönetilir.
+  for (const key of BASE_KEYS) {
+    const ok = await storage.removeItem(key);
+    if (!ok) throw new Error(`Yedek metadata temizlenemedi: ${key}`);
+  }
+  for (const pid of allProfileIds) {
+    for (const prefix of PROFILE_PREFIXED) {
+      const ok = await storage.removeItem(prefix + pid);
+      if (!ok) throw new Error(`Profil metadata temizlenemedi: ${prefix + pid}`);
+    }
+    for (const key of [metaKey(pid), activeKey(pid)]) {
+      const ok = await storage.removeItem(key);
+      if (!ok) throw new Error(`Playlist metadata temizlenemedi: ${key}`);
+    }
+  }
+
+  let restored = 0;
+  for (const [key, value] of Object.entries(payload.data)) {
+    if (typeof value !== 'string' || !key.startsWith('kizilkan.')) continue;
+    const ok = await storage.setItem(key, value);
+    if (!ok) throw new Error(`Yedek geri yüklenirken kayıt yazılamadı: ${key}`);
+    restored++;
+  }
+  return {
+    restored,
+    profiles: incomingProfiles.length,
+    playlists: payload.playlists ? backupPlaylistIds(payload).length : (payload.data['kizilkan.playlists'] ? parseArray(payload.data['kizilkan.playlists']).length : 0),
+    heavyPlaylists: 0,
+    warnings: [],
+  };
+}
+
+export async function restoreBackupMetadata(payload: BackupPayload, opts?: { preserveHeavy?: boolean }): Promise<RestoreResult> {
+  if (!payload?.data || typeof payload.data !== 'object') throw new Error('Geçersiz yedek dosyası');
+  if (!isKizilkanBackup(payload)) throw new Error('Bu bir KIZILKAN PLAYER ELITE yedek dosyası değil');
+  let restored = 0;
+  const incomingProfiles = parseArray(payload.data['kizilkan.profiles'] || '');
+  const incomingProfileIds = new Set<string>(['default']);
+  for (const p of incomingProfiles) if (p?.id) incomingProfileIds.add(String(p.id));
+  const currentProfileIds = await getProfileIds();
+  if (payload.playlists) {
+    const allProfileIds = new Set<string>([...currentProfileIds, ...incomingProfileIds, ...Object.keys(payload.playlists.profiles || {})]);
+    await clearCurrentPlaylistState(Array.from(allProfileIds), !opts?.preserveHeavy);
+  }
+  for (const [key, value] of Object.entries(payload.data)) {
+    if (typeof value !== 'string' || !key.startsWith('kizilkan.')) continue;
+    const ok = await storage.setItem(key, value);
+    if (!ok) throw new Error(`Yedek geri yüklenirken kayıt yazılamadı: ${key}`);
+    restored++;
+  }
+  return {
+    restored, profiles: incomingProfiles.length,
+    playlists: payload.playlists ? backupPlaylistIds(payload).length : (payload.data['kizilkan.playlists'] ? parseArray(payload.data['kizilkan.playlists']).length : 0),
+    heavyPlaylists: 0, warnings: [],
+  };
 }
 
 export async function restoreBackup(payload: BackupPayload): Promise<RestoreResult> {

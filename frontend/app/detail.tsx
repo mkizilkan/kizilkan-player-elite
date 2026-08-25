@@ -77,23 +77,31 @@ export default function DetailScreen() {
 
   useEffect(() => {
     if (!activePlaylist || !item) { setLoading(false); return; }
-    if (activePlaylist.source !== "xtream") { setLoading(false); return; }
-    setLoading(true);
-    const { xtreamServer, xtreamUsername, xtreamPassword } = activePlaylist;
-    const cred = { server: xtreamServer!, username: xtreamUsername!, password: xtreamPassword! };
-    // CİHAZ-İÇİ: Artık backend proxy (emergent) YOK. Doğrudan sağlayıcının
-    // Xtream API'sine bağlanıyoruz. Böylece dizi sezon/bölüm listesi ve film
-    // bilgisi backend olmadan gelir; "backend'e ulaşılamıyor" hatası biter.
-    const call = isSeries
-      ? xtSeriesInfoLocal(cred, String((item as any).series_id))
-      : xtVodInfoLocal(cred, String((item as any).stream_id));
-    call
-      .then((res: any) => {
+    if (activePlaylist.source === "xtream") {
+      setLoading(true);
+      const { xtreamServer, xtreamUsername, xtreamPassword } = activePlaylist;
+      const cred = { server: xtreamServer!, username: xtreamUsername!, password: xtreamPassword! };
+      const call = isSeries
+        ? xtSeriesInfoLocal(cred, String((item as any).series_id))
+        : xtVodInfoLocal(cred, String((item as any).stream_id));
+      call.then((res: any) => {
         setInfo(res.info || {});
         if (isSeries) setSeasons(res.seasons || []);
-      })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
+      }).catch(e => setError(e.message)).finally(() => setLoading(false));
+      return;
+    }
+    if (activePlaylist.source === "stalker" && isSeries && (item as any).series_id) {
+      setLoading(true);
+      (async () => {
+        const { stalkerLogin, stalkerSeriesInfo, normalizeMac } = await import("@/src/utils/stalker");
+        const cred = { portal: activePlaylist.stalkerPortal!, mac: normalizeMac(activePlaylist.stalkerMac || ""), serial: activePlaylist.stalkerSerial };
+        const { session } = await stalkerLogin(cred);
+        return stalkerSeriesInfo(cred, session, String((item as any).series_id));
+      })().then(res => { setInfo(res.info || {}); setSeasons(res.seasons || []); })
+        .catch(e => setError(e.message)).finally(() => setLoading(false));
+      return;
+    }
+    setLoading(false);
   }, [activePlaylist, item, isSeries]);
 
   if (!item) {
@@ -419,6 +427,21 @@ export default function DetailScreen() {
               {info?.country ? <DetailRow label="Ülke" value={info.country} /> : null}
               {info?.rating || (item as any).rating ? <DetailRow label="Puan" value={String(info?.rating || (item as any).rating)} /> : null}
             </View>
+
+            {isSeries && seasons.length === 0 && (item as any).url ? (
+              <FocusButton testID="play-series-direct-btn" onPress={async () => {
+                const syntheticId = `seriesplay-${item.id}`;
+                await storage.setItem(EPISODE_URL_KEY + syntheticId, JSON.stringify({
+                  url: (item as any).url, name: item.name, group: "Dizi", container_ext: (item as any).container_ext || "mp4",
+                }));
+                const resumeAt = await chooseResumePosition(watchProgress[item.id]);
+                addToRecent(item.id);
+                router.push({ pathname: "/player", params: { id: syntheticId, ext: "true", ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}) } });
+              }} focusable style={[styles.playBtn, { backgroundColor: colors.brandPrimary }]}>
+                <Ionicons name="play" size={20} color={colors.onBrandPrimary} />
+                <Text style={[styles.playBtnText, { color: colors.onBrandPrimary }]}>Oynat</Text>
+              </FocusButton>
+            ) : null}
 
             {isSeries && seasons.length > 0 && (
               <View style={{ marginTop: SPACING.xl }}>

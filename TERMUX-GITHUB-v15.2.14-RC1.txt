@@ -1,0 +1,47 @@
+# KIZILKAN PLAYER ELITE v15.2.14-RC1 — TERMUX / GITHUB
+# ZIP dosyasını /sdcard/Download içine koyduktan sonra:
+
+cd /sdcard/Download
+rm -rf kizilkan-v15.2.14-stage
+mkdir -p kizilkan-v15.2.14-stage
+unzip -q KIZILKAN-PLAYER-ELITE-v15.2.14-RC1-STALKER-ATOMIC-BACKUP-HARDENING.zip -d kizilkan-v15.2.14-stage
+
+rsync -av --delete \
+  --exclude='.git/' \
+  --exclude='frontend/kizilkan-player-elite-release.jks' \
+  --exclude='frontend/kizilkan-player-elite-release.jks.base64' \
+  --exclude='frontend/kizilkan-player-elite-release-GITHUB.txt' \
+  /sdcard/Download/kizilkan-v15.2.14-stage/gpt-kizilkan-player-elite/ \
+  /sdcard/Download/gpt-kizilkan-player-elite/
+
+cd /sdcard/Download/gpt-kizilkan-player-elite
+
+git status --short
+grep -n '"version"' frontend/package.json | head
+grep -n '"versionCode"' frontend/app.json
+
+git diff --check
+git diff --stat
+git diff --name-status
+
+git check-ignore -v \
+  frontend/kizilkan-player-elite-release.jks \
+  frontend/kizilkan-player-elite-release.jks.base64 \
+  frontend/kizilkan-player-elite-release-GITHUB.txt
+
+cd frontend
+node ../tools/denetle.js
+node ../tools/checkplayercore.js
+cd ..
+
+git add .
+git status --short
+git diff --cached --check
+git diff --cached --stat
+git diff --cached --name-status
+
+git commit -m "fix: KIZILKAN PLAYER ELITE v15.2.14 RC1 Stalker catalog and atomic backup restore hardening"
+git push origin main
+
+git status
+git log -1 --oneline

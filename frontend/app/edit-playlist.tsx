@@ -174,10 +174,17 @@ export default function EditPlaylist() {
             patch.serverInfo = login.server_info || null;
             setProgress("Kanallar, filmler ve diziler paralel yükleniyor...");
             const [chRes, vodRes, serRes] = await Promise.allSettled([xtreamLiveStreams(cred), xtVodLocal(cred), xtSeriesLocal(cred)]);
-            patch.channels = chRes.status === "fulfilled" ? chRes.value : [];
-            patch.vod = vodRes.status === "fulfilled" ? vodRes.value : [];
-            patch.series = serRes.status === "fulfilled" ? serRes.value : [];
-            if (chRes.status === "rejected" && (patch.vod?.length || 0) === 0 && (patch.series?.length || 0) === 0) throw new Error("İçerik yüklenemedi. Sunucu veya bilgileri kontrol edin.");
+            if (chRes.status === "rejected" || vodRes.status === "rejected" || serRes.status === "rejected") {
+              const failed = [
+                chRes.status === "rejected" ? `Canlı: ${String(chRes.reason?.message || chRes.reason)}` : "",
+                vodRes.status === "rejected" ? `Film: ${String(vodRes.reason?.message || vodRes.reason)}` : "",
+                serRes.status === "rejected" ? `Dizi: ${String(serRes.reason?.message || serRes.reason)}` : "",
+              ].filter(Boolean).join(" · ");
+              throw new Error(`Xtream yenileme eksik kaldı; mevcut katalog korunuyor. ${failed}`);
+            }
+            patch.channels = chRes.value;
+            patch.vod = vodRes.value;
+            patch.series = serRes.value;
           }
         }
       } else if (pl.source === "stalker") {
@@ -192,7 +199,7 @@ export default function EditPlaylist() {
         patch.stalkerMac = (stMac.trim().toUpperCase()) || pl.stalkerMac;
         patch.stalkerSerial = stSerial.trim() || pl.stalkerSerial;
         if (reloadContent) {
-          const { stalkerLogin, stalkerChannels, normalizeMac } = await import("@/src/utils/stalker");
+          const { stalkerLogin, stalkerCatalog, normalizeMac, normalizeStalkerAccountInfo } = await import("@/src/utils/stalker");
           const cred = {
             portal: (patch.stalkerPortal || "").trim(),
             mac: normalizeMac((patch.stalkerMac || "").trim()),
@@ -201,21 +208,19 @@ export default function EditPlaylist() {
           setProgress("Portal doğrulanıyor...");
           const { session, profile: prof } = await stalkerLogin(cred);
           const profile = prof || {};
-          patch.accountInfo = {
-            username: profile.login, status: profile.status, mac: profile.mac,
-            phone: profile.phone, tariff_plan: profile.tariff_plan,
-            tariff_expired_date: profile.tariff_expired_date || profile.exp_billing_date,
-          };
-          setProgress("Kanallar yükleniyor...");
-          const chans = await stalkerChannels(cred, session);
-          if (chans.length === 0) {
+          patch.accountInfo = normalizeStalkerAccountInfo(profile);
+          setProgress("Canlı / Film / Dizi katalogları yükleniyor...");
+          const catalog = await stalkerCatalog(cred, session);
+          if (catalog.channels.length + catalog.vod.length + catalog.series.length === 0) {
             throw new Error(
               "Portal bağlandı ama kanal listesi BOŞ.\n\n" +
                 "• MAC bu portalda kayıtlı olmayabilir\n" +
                 "• Abonelik süresi dolmuş olabilir"
             );
           }
-          patch.channels = chans;
+          patch.channels = catalog.channels;
+          patch.vod = catalog.vod;
+          patch.series = catalog.series;
         }
       }
 

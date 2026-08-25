@@ -23,6 +23,7 @@ const CHECKS = [
   ["checkhooksrc.js",  "Yanlış hook kaynağı",                   ""],
   ["checkimports.js",  "Eksik nokta-import (Modal/Alert/…)",    ""],
   ["checkplayercore.js", "Player Core v15 kritik regresyon kapisi", ""],
+  ["check-v15214-hardening.js", "v15.2.14 Stalker/Backup fonksiyonel fixture", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 

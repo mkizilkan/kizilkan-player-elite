@@ -1,3 +1,7 @@
+# 2026-08-25 — GÜNCEL v15.2.13-RC1 DEVAM NOTU
+
+> **Bu bölüm dosyanın eski başlıklarından üstündür.** v15.2.13-RC1 / versionCode 150213, v15.2.12-RC1 `be124f0` tabanı üzerinde cihazda bulunan bulk scan kontrol görünürlüğü, MAG AccountInfo crash, MAG/Xtream/M3U Live-VOD-Series ve büyük backup sorunlarını düzeltmek üzere hazırlanmıştır. Kaynak değişiklikleri paketleme çalışma kopyasında uygulanmıştır. Henüz GitHub commit/push, tam CI build veya v15.2.13 cihaz acceptance yapılmış değildir; bunlar yapılmış gibi kabul edilmemelidir. Signing/keystore pakete eklenmemelidir.
+
 # GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.3-RC1
 
 **Native Core Phase 2 başlıyor.** v15.2.3-RC1, v15.2.2 Room + native bulk import temelini korurken gerçek cihazda kanıtlanan lifecycle reset, çok-playlist RAM baskısı, karma discovery ve duplicate import sorunlarını hedefler: GitHub build'i durduran Groovy/KSP kaçış hatası düzeltilmiştir ve seçili çoklu Xtream hesaplarının katalog indirme/normalize/kaydetme işi gerçek Android foreground native service'e taşınmıştır. Başarılı hesaplar bağımsız kalıcılaştırılır; tek sorunlu hesap diğerlerini bloke etmez; Pause/Resume/Stop ve background devamlılığı native job durumuyla yönetilir.
@@ -625,3 +629,24 @@ Bu kaynak ortamında gerçek Expo prebuild/Android Gradle/Kotlin release build y
 
 ## v15.2.12-RC1
 TypeScript TS18048 build blocker giderildi: resolveOneBulkAccount ScanExecutionControl parametresi zorunlu hale getirildi; v15.2.11 davranışları korunur.
+
+# v15.2.14-RC1 — STALKER CATALOG + ATOMIC BACKUP RESTORE HARDENING (2026-08-25)
+
+## NEDEN
+v15.2.13 yeniden kaynak ve dış kaynak denetiminde iki açık kanıtlandı:
+1. MAG/Stalker VOD/Series transient hataları retry sonrasında `[]` fallback'e dönüşerek eksik kataloğu başarılı gösterebiliyordu.
+2. Full Backup v3 restore, tüm dosya/end/metadata seti doğrulanmadan playlist bazında canlı Room ID'lerine final commit edebiliyordu.
+
+## UYGULANAN
+- Stalker katalog hatası ile unsupported endpoint ayrıldı; transient VOD/Series hatası sessiz boş liste değildir.
+- Ayrı Series empty/unsupported iken VOD `is_series`/kategori fallback her zaman birleştirilir.
+- VOD-backed `movie_id -> season_id -> episode_id` Series çözümü eklendi/güçlendirildi.
+- Full restore session-scoped staging ID'lerinde tamamlanır; bütün dosya doğrulanınca native Room transaction ile live/rollback swap yapılır.
+- Media + EPG + PlaylistSnapshot birlikte taşınır.
+- Metadata exact-snapshot apply/rollback vardır.
+- Yeni `tools/check-v15214-hardening.js` gerçek TS kaynaklarını transpile edip Stalker + Backup fixture'larını CI statik kapısında çalıştırır.
+
+## DOĞRULAMA
+Yerel denetle/checkplayercore/fonksiyonel fixture ve TS parser temizdir. Tam `tsc --noEmit`, KSP/Kotlin/Gradle release APK ve gerçek cihaz acceptance GitHub Actions/cihaz kanıtı bekler.
+
+**Aktif kaynak paketi:** v15.2.14-RC1 / versionCode 150214. Bu bölüm eski devam noktalarından üstündür.

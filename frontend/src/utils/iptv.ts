@@ -127,11 +127,26 @@ export interface ParsedM3U {
   count: number;
 }
 
-function classifyUrl(url: string, ext: string | null): "live" | "vod" | "series" {
-  const u = url.toLowerCase();
-  if (u.includes("/series/") || u.includes("/tv-series/")) return "series";
-  if (u.includes("/movie/") || u.includes("/vod/") || u.includes("/films/") || u.includes("/movies/")) return "vod";
-  const vodExts = ["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv"];
+function classifyM3UEntry(meta: any, url: string, ext: string | null): "live" | "vod" | "series" {
+  const u = String(url || "").toLowerCase();
+  const group = String(meta?.group || "").toLocaleLowerCase("tr-TR");
+  const name = String(meta?.name || "").toLocaleLowerCase("tr-TR");
+  const text = `${group} ${name}`;
+
+  // Güçlü sağlayıcı yolu sinyalleri her zaman metadata'dan üstündür.
+  if (/\/(series|tv-series|episodes?)\//i.test(u)) return "series";
+  if (/\/(movie|vod|films?|movies?)\//i.test(u)) return "vod";
+
+  // Bölüm adları ve dizi kategori adları. Canlı TV'deki tekil "series" sözcüğü
+  // yerine sezon/bölüm deseni veya açık kategori sinyali aranır.
+  if (/\b(s\d{1,2}e\d{1,3}|\d{1,2}x\d{1,3}|season\s*\d+|sezon\s*\d+|episode\s*\d+|bölüm\s*\d+)\b/i.test(text) ||
+      /\b(dizi|diziler|series|tv shows?|serials?)\b/i.test(group)) return "series";
+
+  // Birçok M3U sağlayıcısı VOD'u .ts adresiyle verir; bu yüzden yalnız uzantıya
+  // güvenmek yerine açık kategori/isim metadata'sını da kullan.
+  if (/\b(film|filmler|movie|movies|vod|sinema|cinema)\b/i.test(group)) return "vod";
+
+  const vodExts = ["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v"];
   if (ext && vodExts.includes(ext)) return "vod";
   return "live";
 }
@@ -200,7 +215,7 @@ export function parseM3U(rawContent: string): ParsedM3U {
       // Kalıcı ID artık URL biliniyorken üretiliyor (P0-2). Aynı kanal = aynı ID.
       const stable = channelId('ch', { tvgId: pending.tvg_id, url: pending.url, name: pending.name });
 
-      const kind = classifyUrl(line, pending.container_ext);
+      const kind = classifyM3UEntry(pending, line, pending.container_ext);
       if (kind === "vod") {
         vod.push({
           id: `vod-${stable}`,
@@ -220,6 +235,8 @@ export function parseM3U(rawContent: string): ParsedM3U {
           group: pending.group,
           poster: pending.logo,
           series_id: null,
+          url: pending.url,
+          container_ext: pending.container_ext || null,
           year: null, rating: null, rating_5based: null,
           plot: null, cast: null, director: null, genre: null,
         } as SeriesItem);
@@ -283,17 +300,24 @@ function normalizeServer(server: string): string {
 }
 
 async function xtGet<T>(url: string, timeoutMs = 60000): Promise<T> {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: { 'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16', 'Accept': 'application/json,*/*' },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const text = await res.text();
-    try { return JSON.parse(text) as T; } catch { throw new Error('Geçersiz JSON'); }
-  } finally { clearTimeout(t); }
+  let last: any = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        signal: controller.signal,
+        headers: { 'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16', 'Accept': 'application/json,*/*' },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      try { return JSON.parse(text) as T; } catch { throw new Error('Geçersiz JSON'); }
+    } catch (e) {
+      last = e;
+      if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 350));
+    } finally { clearTimeout(t); }
+  }
+  throw last || new Error('Xtream isteği başarısız');
 }
 
 export async function xtreamLogin(cred: XtreamCredentials): Promise<{ user_info: XtreamAccountInfo; server_info: any }> {

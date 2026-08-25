@@ -28,6 +28,10 @@ interface MediaItemDao {
   @Query("DELETE FROM media_items WHERE playlistId = :playlistId")
   fun deletePlaylist(playlistId: String)
 
+  /** v15.2.14: backup restore swap için satırları JS'e taşımadan playlist kimliğini değiştir. */
+  @Query("UPDATE media_items SET rowKey = :toId || substr(rowKey, length(:fromId) + 1), playlistId = :toId WHERE playlistId = :fromId")
+  fun movePlaylist(fromId: String, toId: String): Int
+
   @Query("DELETE FROM media_items")
   fun clear()
 
@@ -93,6 +97,10 @@ interface EpgProgramDao {
 
   @Query("DELETE FROM epg_programs WHERE playlistId = :playlistId")
   fun deletePlaylist(playlistId: String)
+
+  /** v15.2.14: atomik restore rollback sırasında mevcut EPG de korunur. */
+  @Query("UPDATE epg_programs SET rowKey = :toId || substr(rowKey, length(:fromId) + 1), playlistId = :toId WHERE playlistId = :fromId")
+  fun movePlaylist(fromId: String, toId: String): Int
 
   @Query("DELETE FROM epg_programs")
   fun clear()

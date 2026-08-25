@@ -1687,7 +1687,10 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
   };
 
   const d = daysLeft();
-  const isActive = (acc.status || "").toLowerCase() === "active" || d === null || (d !== null && d > 0);
+  const normalizedStatus = String(acc.status ?? "").trim().toLowerCase();
+  const explicitlyActive = ["active", "1", "true", "enabled"].includes(normalizedStatus);
+  const explicitlyInactive = ["disabled", "blocked", "expired", "inactive", "0", "false"].includes(normalizedStatus);
+  const isActive = explicitlyActive ? true : explicitlyInactive ? false : (isXtream ? (d === null || d > 0) : true);
 
   return (
     <View style={[cardStyles.card, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]} testID="account-info-card">

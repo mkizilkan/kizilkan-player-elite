@@ -1,3 +1,7 @@
+# 2026-08-25 — GÜNCEL v15.2.13-RC1 DEVAM NOTU
+
+> **Bu bölüm dosyanın eski başlıklarından üstündür.** v15.2.13-RC1 / versionCode 150213, v15.2.12-RC1 `be124f0` tabanı üzerinde cihazda bulunan bulk scan kontrol görünürlüğü, MAG AccountInfo crash, MAG/Xtream/M3U Live-VOD-Series ve büyük backup sorunlarını düzeltmek üzere hazırlanmıştır. Kaynak değişiklikleri paketleme çalışma kopyasında uygulanmıştır. Henüz GitHub commit/push, tam CI build veya v15.2.13 cihaz acceptance yapılmış değildir; bunlar yapılmış gibi kabul edilmemelidir. Signing/keystore pakete eklenmemelidir.
+
 # GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.3-RC1
 
 **Native Data Core / Room + SQLite Phase 1 aktif.** Büyük playlist verisi Room/SQLite indeksine alınır; ana Canlı ekran yalnız görünür sayfayı native sorgular. Native background scan ve MPV 1.0.0 korunur.
@@ -67,3 +71,7 @@ Güncel kaynak sürüm 15.2.9 / versionCode 150209'dur. Sunucu Kodu üç yolu ar
 
 ## v15.2.12-RC1
 TypeScript TS18048 build blocker giderildi: resolveOneBulkAccount ScanExecutionControl parametresi zorunlu hale getirildi; v15.2.11 davranışları korunur.
+
+---
+## 2026-08-25 EN GÜNCEL DEVAM NOKTASI — v15.2.14-RC1
+Eski başlıklardaki sürüm bilgileri tarihsel bağlamdır. Aktif paket **15.2.14 / versionCode 150214**. Önce `00-OKU-BENI-v15.2.14-RC1.md` ve `SURUM-NOTU-GPT-ELITE-v15.2.14-RC1.md` okunmalıdır. MAG/Stalker katalog bütünlüğü ve Full Backup atomik restore hardening bu sürümde uygulanmıştır. Yerel statik/fonksiyonel fixture temiz olsa da GitHub Actions tam build ve gerçek cihaz acceptance yapılmadan başarılı kabul edilmez.

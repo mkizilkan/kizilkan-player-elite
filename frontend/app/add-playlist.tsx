@@ -763,12 +763,17 @@ export default function AddPlaylist() {
 
       const login = await xtLoginLocal(cred);
       const { chRes, vodRes, serRes } = await loadXtreamContentWithProgress(cred);
-      const channels = chRes.status === "fulfilled" ? chRes.value : [];
-      const vod = vodRes.status === "fulfilled" ? vodRes.value : [];
-      const series = serRes.status === "fulfilled" ? serRes.value : [];
-      if (chRes.status === "rejected" && vod.length === 0 && series.length === 0) {
-        throw new Error("İçerik yüklenemedi. Sunucu veya bilgileri kontrol edin.");
+      if (chRes.status === "rejected" || vodRes.status === "rejected" || serRes.status === "rejected") {
+        const failed = [
+          chRes.status === "rejected" ? `Canlı: ${String(chRes.reason?.message || chRes.reason)}` : "",
+          vodRes.status === "rejected" ? `Film: ${String(vodRes.reason?.message || vodRes.reason)}` : "",
+          serRes.status === "rejected" ? `Dizi: ${String(serRes.reason?.message || serRes.reason)}` : "",
+        ].filter(Boolean).join(" · ");
+        throw new Error(`Xtream kataloglarından biri alınamadı; eksik/yanlış playlist kaydedilmedi. ${failed}`);
       }
+      const channels = chRes.value;
+      const vod = vodRes.value;
+      const series = serRes.value;
       const playlist: Playlist = {
         id, name: displayName?.trim() || name.trim() || "Xtream Codes", source: "xtream",
         xtreamServer: cred.server, xtreamUsername: cred.username, xtreamPassword: cred.password,
@@ -1441,7 +1446,7 @@ export default function AddPlaylist() {
           throw new Error("Bu MAG/Portal hesabı zaten ekli.");
         }
 
-        const { stalkerLogin: stLogin, stalkerChannels, normalizeMac } = await import("@/src/utils/stalker");
+        const { stalkerLogin: stLogin, stalkerCatalog, normalizeMac, normalizeStalkerAccountInfo } = await import("@/src/utils/stalker");
         const cred = {
           portal: stPortal.trim(),
           mac: normalizeMac(stMac.trim()),
@@ -1451,9 +1456,9 @@ export default function AddPlaylist() {
         setProgress("Portala bağlanılıyor...");
         const { session, profile: prof } = await stLogin(cred);
 
-        setProgress("Kanallar yükleniyor...");
-        const chans = await stalkerChannels(cred, session);
-        if (chans.length === 0) {
+        setProgress("Canlı / Film / Dizi katalogları yükleniyor...");
+        const catalog = await stalkerCatalog(cred, session);
+        if (catalog.channels.length + catalog.vod.length + catalog.series.length === 0) {
           throw new Error(
             "Portal bağlandı ama kanal listesi BOŞ.\n\n" +
               "Olası sebepler:\n" +
@@ -1462,21 +1467,13 @@ export default function AddPlaylist() {
               "• Portal bu cihaz türünü kabul etmiyor"
           );
         }
-        const load = { channels: chans };
         const profile = prof || {};
         playlist = {
           id, name: name.trim() || "MAG Portal", source: "stalker",
           stalkerPortal: stPortal.trim(), stalkerMac: stMac.trim().toUpperCase(),
           stalkerSerial: stSerial.trim() || undefined,
-          accountInfo: {
-            username: profile.login,
-            status: profile.status,
-            mac: profile.mac,
-            phone: profile.phone,
-            tariff_plan: profile.tariff_plan,
-            tariff_expired_date: profile.tariff_expired_date || profile.exp_billing_date,
-          },
-          channels: load.channels, createdAt: new Date().toISOString(),
+          accountInfo: normalizeStalkerAccountInfo(profile),
+          channels: catalog.channels, vod: catalog.vod, series: catalog.series, createdAt: new Date().toISOString(),
         };
       }
 
@@ -2261,7 +2258,7 @@ export default function AddPlaylist() {
                 </View>
               )}
 
-              {!bulkScanFinished && (loading || bulkScanPaused) && (
+              {!bulkScanFinished && (bulkNativeScanRef.current || !!bulkPreparationAbortRef.current || bulkScanPaused || bulkScanStopping) && (
                 <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
                   <FocusButton focusable disabled={bulkAdding || bulkScanStopping || !bulkScanRunIdRef.current} onPress={async () => {
                     const next = !bulkScanPausedRef.current;

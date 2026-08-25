@@ -180,10 +180,20 @@ class BulkPlaylistImportService : Service() {
 
   private data class EndpointResult(val name: String, val data: JSONArray, val error: String? = null)
 
-  private fun fetchArrayDetailed(name: String, url: String, timeout: Int): EndpointResult = try {
-    EndpointResult(name, fetchArray(url, timeout), null)
-  } catch (e: Throwable) {
-    EndpointResult(name, JSONArray(), e.message ?: e.javaClass.simpleName)
+  private fun fetchArrayDetailed(name: String, url: String, timeout: Int): EndpointResult {
+    var last: Throwable? = null
+    repeat(2) { attempt ->
+      try {
+        return EndpointResult(name, fetchArray(url, timeout), null)
+      } catch (e: Throwable) {
+        last = e
+        if (attempt == 0) {
+          awaitIfPaused()
+          try { Thread.sleep(350L) } catch (_: InterruptedException) { throw e }
+        }
+      }
+    }
+    return EndpointResult(name, JSONArray(), last?.message ?: last?.javaClass?.simpleName ?: "Bilinmeyen endpoint hatası")
   }
 
   private fun diagnosticsJson(results: List<EndpointResult>): JSONObject {
@@ -228,6 +238,11 @@ class BulkPlaylistImportService : Service() {
       val vodRaw = vodR.data; val vodCats = categoryMap(vodCatsR.data)
       val seriesRaw = seriesR.data; val seriesCats = categoryMap(seriesCatsR.data)
       val endpointResults = listOf(liveR, liveCatsR, vodR, vodCatsR, seriesR, seriesCatsR)
+      val contentFailures = listOf(liveR, vodR, seriesR).filter { it.error != null }
+      if (contentFailures.isNotEmpty()) {
+        val failures = contentFailures.joinToString("; ") { "${it.name}: ${it.error}" }
+        throw IllegalStateException("Xtream kataloglarından biri alınamadı; kısmi playlist kaydedilmedi: $failures")
+      }
       val diagnostics = diagnosticsJson(endpointResults)
       statusMap[key]?.put("endpointDiagnostics", diagnostics)
       publishSnapshot()
@@ -380,7 +395,7 @@ class BulkPlaylistImportService : Service() {
       conn.readTimeout = timeout
       conn.requestMethod = "GET"
       conn.setRequestProperty("Accept", "application/json")
-      conn.setRequestProperty("User-Agent", "KIZILKAN-PLAYER-ELITE/15.2.4")
+      conn.setRequestProperty("User-Agent", "KIZILKAN-PLAYER-ELITE/15.2.14")
       val code = conn.responseCode
       if (code !in 200..299) throw IllegalStateException("HTTP $code")
       return conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }

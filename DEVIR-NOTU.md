@@ -1,3 +1,7 @@
+# 2026-08-25 — GÜNCEL v15.2.13-RC1 DEVAM NOTU
+
+> **Bu bölüm dosyanın eski başlıklarından üstündür.** v15.2.13-RC1 / versionCode 150213, v15.2.12-RC1 `be124f0` tabanı üzerinde cihazda bulunan bulk scan kontrol görünürlüğü, MAG AccountInfo crash, MAG/Xtream/M3U Live-VOD-Series ve büyük backup sorunlarını düzeltmek üzere hazırlanmıştır. Kaynak değişiklikleri paketleme çalışma kopyasında uygulanmıştır. Henüz GitHub commit/push, tam CI build veya v15.2.13 cihaz acceptance yapılmış değildir; bunlar yapılmış gibi kabul edilmemelidir. Signing/keystore pakete eklenmemelidir.
+
 # GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.3-RC1
 
 **Native Data Core / Room + SQLite Phase 1 aktif.** Büyük playlist verisi Room/SQLite indeksine alınır; ana Canlı ekran yalnız görünür sayfayı native sorgular. Native background scan ve MPV 1.0.0 korunur.
@@ -94,3 +98,11 @@ Sunucu Kodu `Kodum var / Paneli biliyorum / Paneli bilmiyorum` orchestration kö
 
 ## v15.2.12-RC1
 TypeScript TS18048 build blocker giderildi: resolveOneBulkAccount ScanExecutionControl parametresi zorunlu hale getirildi; v15.2.11 davranışları korunur.
+
+## v15.2.14-RC1 — GÜNCEL DEVİR (2026-08-25)
+- Aktif paket: 15.2.14 / versionCode 150214.
+- v15.2.13 audit'inde bulunan MAG sessiz VOD/Series fallback'i kaldırıldı; transient hata açık hata olur, unsupported endpoint ayrı işlenir, VOD `is_series` fallback ve VOD-series sezon/bölüm varyasyonu güçlendirildi.
+- Tam Backup v3 restore artık bütün dosyayı session staging'de doğrulamadan canlı Room ID'lerine commit etmez; doğrulama sonrası Media+EPG+Snapshot tek native transaction swap ile uygulanır, metadata/Room rollback vardır.
+- `tools/check-v15214-hardening.js` standart denetim zincirine bağlandı.
+- Yerel statik/fixture kontroller temiz. Tam tsc/Kotlin/Gradle/APK ve cihaz kabulü yapılmış sayılmaz.
+- Ayrıntı: `00-OKU-BENI-v15.2.14-RC1.md` ve v15.2.14 sürüm/regresyon/paket belgeleri.

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.12 RC1 TYPESCRIPT CONTROL CONTRACT BUILD FIX)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.14 RC1 STALKER CATALOG + ATOMIC BACKUP RESTORE HARDENING)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -124,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.2.12') problem(`app version ${app?.expo?.version} (15.2.12 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150212) problem(`versionCode ${app?.expo?.android?.versionCode} (150212 bekleniyor)`);
+if (app?.expo?.version !== '15.2.14') problem(`app version ${app?.expo?.version} (15.2.14 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150214) problem(`versionCode ${app?.expo?.android?.versionCode} (150214 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -470,8 +470,11 @@ try {
   const panelService = fs.readFileSync(path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt'), 'utf8');
   const add = fs.readFileSync(path.join(root, 'app/add-playlist.tsx'), 'utf8');
   // v15.2.12: resolveOneBulkAccount control.signal kullandığı için control sözleşmesi zorunludur.
-  if (/resolveOneBulkAccount[\s\S]{0,600}control\?\s*:\s*ScanExecutionControl/.test(add)) problem('v15.2.12 resolveOneBulkAccount control opsiyonel regresyonu');
-  if (!/resolveOneBulkAccount[\s\S]{0,600}control\s*:\s*ScanExecutionControl/.test(add)) problem('v15.2.12 zorunlu ScanExecutionControl sözleşmesi bulunamadı');
+  if (/resolveOneBulkAccount[\s\S]{0,600}control\?\s*:\s*ScanExecutionControl/.test(add)) problem('v15.2.14 resolveOneBulkAccount control opsiyonel regresyonu');
+  if (!/resolveOneBulkAccount[\s\S]{0,600}control\s*:\s*ScanExecutionControl/.test(add)) problem('v15.2.14 zorunlu ScanExecutionControl sözleşmesi bulunamadı');
+  if (/!bulkScanFinished\s*&&\s*\(loading\s*\|\|\s*bulkScanPaused\)/.test(add)) problem('v15.2.14 scan kontrol görünürlüğü yeniden generic loading stateine bağlandı');
+  requireText(add, 'bulkPreparationAbortRef.current', 'v15.2.14 hazırlık scan kontrol görünürlüğü');
+
   const core = fs.readFileSync(path.join(root, 'modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeCoreModule.kt'), 'utf8');
   const bulk = fs.readFileSync(path.join(root, 'modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/BulkPlaylistImportService.kt'), 'utf8');
   if (!panelModule.includes('claimRun') || !panelModule.includes('runId')) problem('v15.2.8+ panel scan runId lifecycle eksik');
@@ -515,7 +518,7 @@ try {
 } catch (e) { problem(`v15.2.9 guard okunamadi: ${e.message}`); }
 
 
-// v15.2.12 P0 scan cancellation / explicit selection / profile authorization + TS control contract gates.
+// v15.2.14 P0 scan/media/backup hardening gates.
 try {
   const pkg = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
   const panelService = fs.readFileSync(path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt'), 'utf8');
@@ -523,8 +526,8 @@ try {
   const add = fs.readFileSync(path.join(root, 'app/add-playlist.tsx'), 'utf8');
   const profile = fs.readFileSync(path.join(root, 'src/store/ProfileContext.tsx'), 'utf8');
   const layout = fs.readFileSync(path.join(root, 'app/_layout.tsx'), 'utf8');
-  requireText(pkg, '"version": "15.2.12"', 'v15.2.12 package version');
-  if (Number(app?.expo?.android?.versionCode) !== 150212) problem('v15.2.12 versionCode 150212 degil');
+  requireText(pkg, '"version": "15.2.14"', 'v15.2.14 package version');
+  if (Number(app?.expo?.android?.versionCode) !== 150214) problem('v15.2.14 versionCode 150214 degil');
   requireText(panelService, 'activeConnections', 'panel scan active connection registry');
   requireText(panelService, 'shutdownNow()', 'panel scan hard cancellation');
   requireText(panelService, 'conn.disconnect()', 'panel scan socket disconnect');
@@ -557,7 +560,43 @@ try {
   } catch (e) { problem(`v15.2.11 bulk parser fonksiyonel test calismadi: ${e.message}`); }
   const serverCode = fs.readFileSync(path.join(root, 'src/utils/serverCode.ts'), 'utf8');
   requireText(serverCode, 'signal?: AbortSignal', 'cancellable directory preparation');
-} catch (e) { problem(`v15.2.11 guard okunamadi: ${e.message}`); }
+
+  // v15.2.14 media/catalog/backup regressions.
+  const settings = fs.readFileSync(path.join(root, 'app/(tabs)/settings.tsx'), 'utf8');
+  const stalker = fs.readFileSync(path.join(root, 'src/utils/stalker.ts'), 'utf8');
+  const iptv = fs.readFileSync(path.join(root, 'src/utils/iptv.ts'), 'utf8');
+  const refresh = fs.readFileSync(path.join(root, 'src/utils/refreshPlaylist.ts'), 'utf8');
+  const backupV3 = fs.readFileSync(path.join(root, 'src/utils/backupV3.ts'), 'utf8');
+  const backup = fs.readFileSync(path.join(root, 'src/utils/backup.ts'), 'utf8');
+  const nativeCore = fs.readFileSync(path.join(root, 'modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeCoreModule.kt'), 'utf8');
+  const nativeBulk = fs.readFileSync(path.join(root, 'modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/BulkPlaylistImportService.kt'), 'utf8');
+  requireText(settings, 'const normalizedStatus = String(acc.status ?? "").trim().toLowerCase();', 'MAG AccountInfo status type normalization');
+  requireText(stalker, 'export async function stalkerCatalog', 'Stalker Live/VOD/Series catalog orchestrator');
+  requireText(stalker, 'export async function stalkerVod', 'Stalker VOD catalog');
+  requireText(stalker, 'export async function stalkerSeries', 'Stalker Series catalog');
+  requireText(stalker, 'if (firstNonEmptyPage === null && page === 0) { page=1; continue; }', 'Stalker p=0/p=1 pagination compatibility');
+  requireText(stalker, 'truthyPortalFlag(v?.is_series)', 'Stalker VOD is_series classification');
+  requireText(stalker, 'type=series boş dönse bile VOD is_series/kategori fallback', 'Stalker empty-native-series fallback contract');
+  requireText(stalker, 'retryCatalogPart', 'Stalker transient catalog retry');
+  if (/optional catalog failed[\s\S]{0,160}return fallback/.test(stalker)) problem('v15.2.14 Stalker katalog hatasi yeniden sessiz [] fallback oldu');
+  requireText(iptv, 'function classifyM3UEntry', 'M3U metadata-aware classifier');
+  requireText(nativeCore, 'classifyM3u(', 'Android native M3U classification parity');
+  requireText(add, 'Xtream kataloglarından biri alınamadı; eksik/yanlış playlist kaydedilmedi.', 'Xtream add partial-catalog commit barrier');
+  requireText(refresh, 'Xtream yenileme eksik kaldı; mevcut playlist korunuyor.', 'Xtream refresh partial-catalog commit barrier');
+  requireText(nativeBulk, 'Xtream kataloglarından biri alınamadı; kısmi playlist kaydedilmedi', 'native Xtream partial-catalog commit barrier');
+  requireText(backupV3, 'KIZILKAN_BACKUP_V3', 'streaming backup v3 format');
+  requireText(backupV3, 'KizilkanNativeCore.queryItems', 'backup Room paging');
+  requireText(backupV3, 'appendPlaylistChunk', 'backup chunked Room restore');
+  requireText(backupV3, '__kzb_stage_', 'backup restore isolated staging namespace');
+  requireText(backupV3, 'applyAtomicPlaylistRestore', 'backup atomic Room swap');
+  requireText(backupV3, 'rollbackAtomicPlaylistRestore', 'backup transactional rollback');
+  requireText(backupV3, 'restoreBackupMetadataExact', 'backup exact metadata rollback');
+  requireText(backup, 'export async function restoreBackupMetadataExact', 'backup exact metadata helper export');
+  requireText(nativeCore, 'applyAtomicPlaylistRestore', 'native backup atomic swap implementation');
+  requireText(nativeCore, 'restoreRollbackId', 'native backup rollback namespace');
+  requireText(backupV3, 'writeBytes', 'backup streaming file write');
+  if (/createBackup\(\)[\s\S]{0,200}JSON\.stringify/.test(fs.readFileSync(path.join(root, 'app/backup.tsx'), 'utf8'))) problem('v15.2.14 backup ekrani eski monolitik createBackup + stringify yoluna donmus');
+} catch (e) { problem(`v15.2.14 guard okunamadi: ${e.message}`); }
 
 // Parse PlayerHost itself; syntax regressions must not pass this gate.
 const sf = ts.createSourceFile(player, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TSX);

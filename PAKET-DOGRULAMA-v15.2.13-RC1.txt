@@ -1,0 +1,28 @@
+KIZILKAN PLAYER ELITE v15.2.13-RC1 PAKET DOGRULAMA
+
+- Surum: 15.2.13
+- Android versionCode: 150213
+- Temel: v15.2.12-RC1 / be124f0
+- Kapsam: bulk scan controls, MAG AccountInfo crash, MAG/Xtream/M3U Live-VOD-Series, scalable backup.
+
+GERCEK PAKETLEME ONCESI KONTROLLER
+- denetle.js: TEMIZ
+- checkplayercore.js: TEMIZ
+- Degisen TS/TSX parser: 10 dosya / 0 parse hatasi
+- Kotlin isolated parser kontrolu: syntax-token hatasi tespit edilmedi; Android/Expo bagimliliklari olmadan tam Kotlin compile sayilmaz.
+- Tum frontend TS/TSX parser: 108 dosya / 0 parse hatasi
+- M3U JS parser smoke testi: live=1 / vod=1 / series=1 ve series direct URL korunuyor.
+- Expo SDK 54 File/FileHandle API: resmi dokumantasyonla File(DocumentPicker asset), open/readBytes/writeBytes/move uyumlulugu kontrol edildi.
+- Tam npx tsc --noEmit: BU ORTAMDA CALISTIRILAMADI; kaynak pakette node_modules yok ve registry erisimi yok.
+- Expo prebuild/Kotlin/Gradle/release APK: BU ORTAMDA CALISTIRILMADI; GitHub Actions kanitlamalidir.
+- Gercek cihaz acceptance: HENUZ v15.2.13 APK ile YAPILMADI.
+- Signing/keystore: kaynak agacinda .jks/.keystore/.p12/.base64/release-GITHUB dosyasi bulunmadi.
+
+CI BASARILI OLURSA P0 CIHAZ TESTLERI
+1) Bulk Durdur/Duraklat/Devam + round-robin
+2) parser 4/4
+3) selection-before-import + only-selected import + alias grouping
+4) MAG Ayarlar AccountInfoCard crash reproduksiyonunun tekrari
+5) MAG/Xtream/M3U Live-VOD-Series sayi ve kategori dogrulamasi
+6) Tam backup buyuk veri + iptal + restore + legacy JSON restore
+7) Profil PIN process/session matrisi
