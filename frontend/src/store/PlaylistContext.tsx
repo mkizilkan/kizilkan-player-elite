@@ -48,6 +48,7 @@ import { Playlist } from '@/src/types';
 import { useProfiles } from './ProfileContext';
 import { scheduleAdultFlags } from '@/src/utils/adult';
 import { KizilkanNativeCore, type NativePlaylistSummary } from '@/modules/kizilkan-native-core';
+import { recordDiagnostic } from '@/src/utils/diagnostics';
 
 /**
  * v5.7.0 — LİSTELER ARTIK PROFİLE ÖZEL
@@ -517,9 +518,23 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       setPlaylists(compacted);
       for (const loadedId of Array.from(loadedHeavy.current)) if (loadedId !== id) loadedHeavy.current.delete(loadedId);
     }
+    const previousId = activeId;
     setActiveId(id);
+    setNativeSummary(null);
     await storage.setItem(activeKey(currentPid()), id);
-  }, []);
+    void recordDiagnostic('navigation', 'PLAYLIST_SWITCH', { fromPlaylistId: previousId || '', toPlaylistId: id, nativeCore: KizilkanNativeCore.available });
+    // v15.2.18: hedef liste seçildiği anda görünür ekranın eski listenin native
+    // özetini kullanmasını engelle. Yeni özet/heavy state hedef kimlikle yeniden kurulur.
+    if (KizilkanNativeCore.available) {
+      try {
+        const summary = await KizilkanNativeCore.getPlaylistSummary(id);
+        setNativeSummary(summary || null);
+        void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_READY', { playlistId: id, channels: summary?.channels || 0, vod: summary?.vod || 0, series: summary?.series || 0 });
+      } catch (e:any) {
+        void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_SUMMARY_ERROR', { playlistId: id, error: String(e?.message || e) });
+      }
+    }
+  }, [activeId]);
 
   const toggleFavorite = useCallback(async (channelId: string) => {
     const next = favorites.includes(channelId)

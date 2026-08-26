@@ -60,7 +60,7 @@ import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
 import { useLibrary } from "@/src/store/LibraryContext";
-import { recordDiagnostic } from "@/src/utils/diagnostics";
+import { recordDiagnostic, recordBlackBox } from "@/src/utils/diagnostics";
 import { storage } from "@/src/utils/storage";
 import { haptic } from "@/src/utils/haptic";
 import { CastButton } from "@/src/components/CastButton";
@@ -379,7 +379,9 @@ export default function PlayerHost() {
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
+      const previous = appStateRef.current;
       appStateRef.current = state;
+      void recordBlackBox("APP_STATE", { previous, state, visible, channelId: channel?.id || "", phase: v2Phase, engine: v2Profile.engine, buffering: isBufferingRef.current });
       // Arka planda Android player/view lifecycle değişebilir. Geri dönüşte
       // stall kronometresini sıfırla; background süresini "donma" sanma.
       if (state === "active") {
@@ -1017,6 +1019,7 @@ export default function PlayerHost() {
   /** Belirli bir saniyeye atlar (her iki motorda da çalışır). */
   const seekTo = (seconds: number) => {
     const target = Math.max(0, Math.floor(seconds));
+    void recordDiagnostic("player", "SEEK_REQUEST", { target, engine: v2Profile.engine, phase: v2Phase, buffering: isBufferingRef.current }, { sessionId: playerDiagnosticSessionRef.current });
     if (v2Profile.engine === "mpv") {
       if (!isSeekable && !isSynthetic) { flashMessage("Bu yayında ileri/geri alınamaz"); return; }
       void mpvRef.current?.seekTo(target);
@@ -1490,6 +1493,7 @@ export default function PlayerHost() {
   };
 
   const seekBy = (delta: number) => {
+    void recordDiagnostic("player", "SEEK_RELATIVE_REQUEST", { delta, engine: v2Profile.engine, phase: v2Phase, buffering: isBufferingRef.current }, { sessionId: playerDiagnosticSessionRef.current });
     /**
      * YAYIN SIRASINDA SARMA (v7.4.0, v8.1.0'da iyileştirildi)
      * CANLI yayında sarma yapılamaz (kayıtlı içerik değil) — kullanıcıya
@@ -3276,7 +3280,7 @@ export default function PlayerHost() {
 
       {channel && !error && (
         <View style={styles.spinnerOverlay} pointerEvents="none">
-          {isBuffering && <ActivityIndicator size="large" color={colors.brandPrimary} />}
+          {isBuffering && !(successfulSessionRef.current === activeSessionId && isPlaying) && <ActivityIndicator size="large" color={colors.brandPrimary} />}
         </View>
       )}
 

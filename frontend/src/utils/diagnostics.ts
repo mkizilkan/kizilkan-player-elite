@@ -14,8 +14,10 @@ export type DiagnosticEvent = {
   data?: Record<string, any>;
 };
 
-const KEY = 'kizilkan.diagnostics.flightRecorder.v1';
-const MAX_EVENTS = 400;
+const KEY = 'kizilkan.diagnostics.flightRecorder.v2';
+const LEGACY_KEY = 'kizilkan.diagnostics.flightRecorder.v1';
+const MAX_EVENTS = 1500;
+const MAX_EXPORT_EVENTS = 1500;
 const SENSITIVE_KEY = /(pass(word)?|token|cookie|authorization|secret|pin|device[_-]?id|serial|mac|username|user(name)?)/i;
 
 function shortHash(input: string): string {
@@ -83,7 +85,8 @@ export async function recordDiagnostic(
     data: sanitizeValue(data),
   };
   writeQueue = writeQueue.then(async () => {
-    const raw = (await storage.getItem<string>(KEY, '')) || '';
+    let raw = (await storage.getItem<string>(KEY, '')) || '';
+    if (!raw) raw = (await storage.getItem<string>(LEGACY_KEY, '')) || '';
     const prev = parseEvents(raw);
     const next = [item, ...prev].slice(0, MAX_EVENTS);
     await storage.setItem(KEY, JSON.stringify(next));
@@ -93,13 +96,14 @@ export async function recordDiagnostic(
 
 export async function loadDiagnostics(limit = MAX_EVENTS): Promise<DiagnosticEvent[]> {
   await writeQueue.catch(() => {});
-  const raw = (await storage.getItem<string>(KEY, '')) || '';
+  let raw = (await storage.getItem<string>(KEY, '')) || '';
+  if (!raw) raw = (await storage.getItem<string>(LEGACY_KEY, '')) || '';
   return parseEvents(raw).slice(0, Math.max(1, Math.min(MAX_EVENTS, limit)));
 }
 
 export async function clearDiagnostics(): Promise<void> {
   await writeQueue.catch(() => {});
-  await storage.removeItem(KEY);
+  await Promise.all([storage.removeItem(KEY), storage.removeItem(LEGACY_KEY)]);
 }
 
 export function summarizePlayerDiagnostics(events: DiagnosticEvent[]) {
@@ -129,10 +133,16 @@ export function summarizePlayerDiagnostics(events: DiagnosticEvent[]) {
   };
 }
 
+export async function recordBlackBox(event: string, data: Record<string, any> = {}, ctx: { sessionId?: string; runId?: string } = {}): Promise<void> {
+  return recordDiagnostic('system', `BLACKBOX_${event}`, { ...data, appAt: Date.now() }, ctx);
+}
+
 export async function exportDiagnosticReport(extra: Record<string, any> = {}): Promise<string> {
-  const events = await loadDiagnostics(MAX_EVENTS);
+  const events = await loadDiagnostics(MAX_EXPORT_EVENTS);
   const payload = sanitizeValue({
-    format: 'KIZILKAN_DIAGNOSTICS_V1',
+    format: 'KIZILKAN_BLACK_BOX_V2',
+    schemaVersion: 2,
+    eventCapacity: MAX_EVENTS,
     createdAt: new Date().toISOString(),
     extra,
     events,

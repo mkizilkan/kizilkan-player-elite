@@ -698,3 +698,11 @@ v15.2.17:
 - MAG endpoint bağlantı diagnostikleri HTTP/content-type/redirect/network sınıflarıyla genişletildi.
 
 Bu sürüm build/cihazda henüz kanıtlanmış sayılmaz. İlk doğrulama GitHub Actions, ardından crash tekrarlı acceptance ve MAG portal testidir.
+
+## v15.2.18 RC1 (2026-08-26)
+- Taban: v15.2.17 RC1.
+- Playlist switch sırasında stale native summary temizlenip hedef summary yeniden okunuyor.
+- KIZILKAN BLACK BOX V2: 1500 olay, V1 geriye dönük okuma, app-state + seek + playlist switch olayları.
+- Başarılı/oynayan player session üzerinde stale buffering spinner overlay bastırılıyor; buffering tanılaması korunuyor.
+- v15.2.17 unified scan app-private staging/Binder koruması korunuyor.
+- APK/fiziksel cihaz testi kaynak paket hazırlanırken yapılmadı.

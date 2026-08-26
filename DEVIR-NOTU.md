@@ -109,3 +109,6 @@ TypeScript TS18048 build blocker giderildi: resolveOneBulkAccount ScanExecutionC
 
 ## v15.2.17-RC1 — 2026-08-26
 Unified scan büyük Intent/Binder payload yolu app-private staging ile değiştirildi; candidate listeleri deduplicate edildi. ProcessStateSummary + chained Java crash recorder + worker failure telemetry eklendi. MAG endpoint diagnostics HTTP/content-type/redirect/network sınıflarıyla genişletildi. versionCode 150217. CI ve cihaz acceptance bekleniyor.
+
+### 2026-08-26 / v15.2.18 RC1
+Son kaynak: v15.2.18 / 150218. Test edilmesi gereken P0 akışlar: playlist otomatik görünürlük, seek-spinner, live→VOD eski frame, live sonsuz siyah ekran, scan background→foreground, MAG katalog. Tanılama raporu artık KIZILKAN_BLACK_BOX_V2 ve 1500 olaya kadar saklar.

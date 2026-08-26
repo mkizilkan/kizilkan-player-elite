@@ -1,0 +1,6 @@
+KIZILKAN PLAYER ELITE v15.2.18 RC1
+version=15.2.18
+versionCode=150218
+Hard gate: node tools/check-v15218-blackbox.js
+Kaynak tabanı: v15.2.17 RC1
+APK/device test: yapılmadı; kullanıcı Termux derlemesi sonrası yapılacak.
