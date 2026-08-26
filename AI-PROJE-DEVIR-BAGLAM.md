@@ -682,3 +682,19 @@ Bu paket için statik/fixture/parser kontrolleri yapılmıştır; TAM `tsc`, Gra
 Bir sonraki kabul testinde özellikle MAG Save&Load, ardışık MAG channel zap süreleri, Player Tanılama, scan reset sonrası Process Exit korelasyonu ve sanitised diagnostic export doğrulanmalıdır.
 
 Restore manifest preview/seçmeli profil-playlist restore, admin-normal user authorization ve playlist sıralama UX'i bu sürümde tamamlanmış sayılmaz; ayrı geliştirme fazıdır.
+
+# 2026-08-26 — v15.2.17-RC1 SCAN TRANSPORT / CRASH / MAG CONNECTION DEVAM NOKTASI
+
+Aktif kaynak sürümü: **15.2.17-RC1**, Android `versionCode=150217`.
+
+Gerçek cihaz v15.2.16 bulgusu: unified çoklu hesap scan sırasında process `CRASH`; crash PSS düşük/orta seviyede, systemLowMemory=false ve native scanDiagnostics boş. Kaynakta unified `jobsJson` Android Intent extras üzerinden foreground service'e taşınıyordu.
+
+v15.2.17:
+- unified payload Intent'ten kaldırıldı; app-private staging dosyasına taşındı,
+- aynı candidate listeleri candidateSets ile deduplicate edildi,
+- pre-service/service/worker kalıcı checkpoint zinciri eklendi,
+- Android processStateSummary ve chained Java crash recorder eklendi,
+- worker exception görünürlüğü sertleştirildi,
+- MAG endpoint bağlantı diagnostikleri HTTP/content-type/redirect/network sınıflarıyla genişletildi.
+
+Bu sürüm build/cihazda henüz kanıtlanmış sayılmaz. İlk doğrulama GitHub Actions, ardından crash tekrarlı acceptance ve MAG portal testidir.

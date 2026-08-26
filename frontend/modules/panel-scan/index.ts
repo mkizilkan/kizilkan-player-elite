@@ -35,12 +35,31 @@ export const PanelScan = {
     native ? normalizeStartResult(await native.startScan(JSON.stringify(candidates), username, password, concurrency, timeoutMs)) : null,
   startBulkScan: async (candidates: any[], accounts: Array<{ row?: number; name?: string; username: string; password: string }>, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> =>
     native ? normalizeStartResult(await native.startBulkScan(JSON.stringify(candidates), JSON.stringify(accounts), concurrency, timeoutMs)) : null,
-  startUnifiedScan: async (jobs: Array<{ row?: number; name?: string; username: string; password: string; candidates: any[] }>, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> =>
-    native ? normalizeStartResult(await native.startUnifiedScan(JSON.stringify(jobs), concurrency, timeoutMs)) : null,
+  startUnifiedScan: async (jobs: Array<{ row?: number; name?: string; username: string; password: string; candidates: any[] }>, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> => {
+    if (!native) return null;
+    // v15.2.17: Aynı panel rehberi birden fazla hesapta kullanılıyorsa JSON içinde
+    // tekrar tekrar çoğaltma. Native service tarafı candidateSet indeksini doğrudan okur.
+    const setIndex = new Map<string, number>();
+    const candidateSets: any[][] = [];
+    const compactJobs = jobs.map(({ candidates, ...job }) => {
+      const key = JSON.stringify(candidates || []);
+      let index = setIndex.get(key);
+      if (index === undefined) {
+        index = candidateSets.length;
+        setIndex.set(key, index);
+        candidateSets.push(candidates || []);
+      }
+      return { ...job, candidateSet: index };
+    });
+    const payload = { version: 2, candidateSets, jobs: compactJobs };
+    const initialTotal = jobs.reduce((sum, job) => sum + (job.candidates?.length || 0), 0);
+    return normalizeStartResult(await native.startUnifiedScan(JSON.stringify(payload), jobs.length, initialTotal, concurrency, timeoutMs));
+  },
   cancelScan: async (runId: string) => native && runId ? native.cancelScan(runId) : false,
   pauseScan: async (runId: string) => native && runId ? native.pauseScan(runId) : false,
   resumeScan: async (runId: string) => native && runId ? native.resumeScan(runId) : false,
   getActiveRunId: (): string => native ? String(native.getActiveRunId?.() || "") : "",
   getSnapshot: (): NativeSnapshot => { if (!native) return {}; try { return JSON.parse(native.getSnapshot() || "{}"); } catch { return {}; } },
   getDiagnosticEvents: (): any[] => { if (!native) return []; try { const v = JSON.parse(native.getDiagnosticEvents?.() || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } },
+  getLastCrash: (): any => { if (!native) return {}; try { return JSON.parse(native.getLastCrash?.() || "{}"); } catch { return {}; } },
 };

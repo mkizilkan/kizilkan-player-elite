@@ -26,6 +26,7 @@ const CHECKS = [
   ["check-v15214-hardening.js", "v15.2.14 Stalker/Backup fonksiyonel fixture", ""],
   ["check-v15215-typescript-contract.js", "v15.2.15 Stalker Series TypeScript contract", ""],
   ["check-v15216-diagnostics.js", "v15.2.16 Tanılama/MAG session cache contract", ""],
+  ["check-v15217-scan-transport.js", "v15.2.17 Scan transport/crash/MAG connection contract", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 

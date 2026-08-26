@@ -75,3 +75,6 @@ TypeScript TS18048 build blocker giderildi: resolveOneBulkAccount ScanExecutionC
 ---
 ## 2026-08-25 EN GÜNCEL DEVAM NOKTASI — v15.2.14-RC1
 Eski başlıklardaki sürüm bilgileri tarihsel bağlamdır. Aktif paket **15.2.14 / versionCode 150214**. Önce `00-OKU-BENI-v15.2.14-RC1.md` ve `SURUM-NOTU-GPT-ELITE-v15.2.14-RC1.md` okunmalıdır. MAG/Stalker katalog bütünlüğü ve Full Backup atomik restore hardening bu sürümde uygulanmıştır. Yerel statik/fonksiyonel fixture temiz olsa da GitHub Actions tam build ve gerçek cihaz acceptance yapılmadan başarılı kabul edilmez.
+
+## GÜNCEL DEVAM — v15.2.17-RC1
+Aktif kaynak 15.2.17 / versionCode 150217. Unified scan Binder payload crash hardening ve MAG connection diagnostics sürümüdür. GitHub Actions ve gerçek cihaz testi yapılmadan tamamlandı sayılmaz.

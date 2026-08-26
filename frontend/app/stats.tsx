@@ -26,6 +26,7 @@ export default function StatsScreen() {
   const [exitHistory, setExitHistory] = useState<Record<string, any>[]>([]);
   const [diagnostics, setDiagnostics] = useState<DiagnosticEvent[]>([]);
   const [scanDiagnostics, setScanDiagnostics] = useState<any[]>([]);
+  const [lastScanCrash, setLastScanCrash] = useState<Record<string, any>>({});
 
   // v15.2.4: İstatistik ekranı yalnız birkaç favori/son kanal için artık
   // on binlerce kanalı hydrate etmez. Native Core varsa ID bazlı Room sorgusu.
@@ -51,6 +52,7 @@ export default function StatsScreen() {
       setLastExitInfo(KizilkanNativeCore.getLastExitInfo());
       setExitHistory(KizilkanNativeCore.getExitHistory(5));
       setScanDiagnostics(PanelScan.getDiagnosticEvents().slice(0, 12));
+      setLastScanCrash(PanelScan.getLastCrash());
       setDiagnostics(await loadDiagnostics(120));
     })();
     return () => { cancelled = true; };
@@ -67,6 +69,7 @@ export default function StatsScreen() {
         setLastExitInfo(KizilkanNativeCore.getLastExitInfo());
         setExitHistory(KizilkanNativeCore.getExitHistory(5));
         setScanDiagnostics(PanelScan.getDiagnosticEvents().slice(0, 12));
+        setLastScanCrash(PanelScan.getLastCrash());
       }
     })();
     return () => { live = false; };
@@ -233,6 +236,7 @@ export default function StatsScreen() {
               {lastExitInfo.reasonLabel ? (
                 <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>Son süreç çıkışı: {String(lastExitInfo.reasonLabel)} · {lastExitInfo.description ? String(lastExitInfo.description) : `kod ${String(lastExitInfo.reason)}`} · status {String(lastExitInfo.status ?? "—")} · PSS {formatKb(lastExitInfo.pssKb)} · RSS {formatKb(lastExitInfo.rssKb)} · {formatDate(lastExitInfo.timestamp)}</Text>
               ) : null}
+              {lastExitInfo.processStateSummary ? <Text style={[styles.telemetryLine, { color: colors.brandPrimary }]}>Ölüm öncesi durum: {String(lastExitInfo.processStateSummary)}</Text> : null}
               {exitHistory.slice(1,5).map((x:any, i:number) => (
                 <Text key={`exit-${i}`} style={[styles.telemetryLine, { color: colors.onSurfaceTertiary }]}>Önceki {i+2}: {String(x.reasonLabel || x.reason)} · {formatDate(x.timestamp)} · PSS {formatKb(x.pssKb)}{x.traceAvailable ? " · trace var" : ""}</Text>
               ))}
@@ -252,6 +256,7 @@ export default function StatsScreen() {
 
         <SectionTitle icon="pulse" label="Tarama Tanılama" />
         <View style={[styles.telemetry, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+          {lastScanCrash?.exception ? <Text style={[styles.telemetryLine, { color: colors.error }]}>Son Java crash: {String(lastScanCrash.exception)} · {String(lastScanCrash.thread || "?")} · PSS {formatKb(lastScanCrash.pssKb)}{lastScanCrash.message ? ` · ${String(lastScanCrash.message)}` : ""}</Text> : null}
           {scanDiagnostics.length ? scanDiagnostics.slice(0,6).map((x:any, i:number) => (
             <Text key={`scan-${i}`} style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>{formatTime(x.at)} · {x.state || "?"} · {x.tested || 0}/{x.total || 0} · PSS {formatKb(x.pssKb)}{x.error ? ` · ${x.error}` : ""}</Text>
           )) : <Text style={[styles.telemetryLine, { color: colors.onSurfaceTertiary }]}>Henüz kalıcı tarama olayı yok.</Text>}
@@ -259,7 +264,7 @@ export default function StatsScreen() {
 
         <View style={{ flexDirection: "row", gap: SPACING.sm }}>
           <FocusButton testID="diagnostics-share-btn" style={[styles.diagButton, { backgroundColor: colors.brandPrimary }]} onPress={async () => {
-            try { await exportDiagnosticReport({ runtimeMemory, storageFootprint, exitHistory, scanDiagnostics }); }
+            try { await exportDiagnosticReport({ runtimeMemory, storageFootprint, exitHistory, scanDiagnostics, lastScanCrash }); }
             catch (e:any) { Alert.alert("Tanılama", e?.message || "Rapor oluşturulamadı."); }
           }}>
             <Ionicons name="share-social" size={18} color="#fff" /><Text style={styles.diagButtonText}>Tanılama Raporunu Paylaş</Text>

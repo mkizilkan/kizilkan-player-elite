@@ -2,6 +2,8 @@ package expo.modules.panelscan
 
 import android.content.Intent
 import java.util.UUID
+import java.io.File
+import org.json.JSONObject
 import androidx.core.content.ContextCompat
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -55,22 +57,49 @@ class PanelScanModule : Module() {
       }
     }
 
-    AsyncFunction("startUnifiedScan") { jobsJson: String, concurrency: Int, timeoutMs: Int ->
+    AsyncFunction("startUnifiedScan") { jobsJson: String, accountCount: Int, initialTotal: Int, concurrency: Int, timeoutMs: Int ->
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      PanelScanService.installCrashRecorder(context)
       val runId = UUID.randomUUID().toString()
       val claim = PanelScanService.claimRun(context, "unified", runId)
       if (!claim.first) return@AsyncFunction mapOf("accepted" to false, "state" to "BUSY", "runId" to runId, "activeRunId" to claim.second)
+      val stagingDir = File(context.filesDir, "kizilkan/panel-scan-staging").apply { mkdirs() }
+      val stagingFile = File(stagingDir, "$runId.json")
       try {
+        // v15.2.17: Büyük birleşik tarama payload'ını Intent/Bundle içine koyma.
+        // Android Binder transaction buffer'ı process genelinde sınırlıdır; servis yalnız
+        // küçük metadata alır, asıl payload app-private staging dosyasından okunur.
+        stagingDir.listFiles()?.filter { it.isFile && System.currentTimeMillis() - it.lastModified() > 24L * 60L * 60L * 1000L }?.forEach { runCatching { it.delete() } }
+        stagingFile.bufferedWriter(Charsets.UTF_8).use { it.write(jobsJson) }
+        val payloadBytes = stagingFile.length()
+        val safeAccountCount = accountCount.coerceAtLeast(0)
+        val safeInitialTotal = initialTotal.coerceAtLeast(0)
+        PanelScanService.recordExternalDiagnostic(context, JSONObject()
+          .put("runId", runId).put("mode", "unified").put("state", "STAGED")
+          .put("total", safeInitialTotal).put("accountTotal", safeAccountCount).put("payloadBytes", payloadBytes))
+        PanelScanService.setProcessSummary(context, "scan:STAGED:a$safeAccountCount:t$safeInitialTotal:b$payloadBytes")
         val intent = Intent(context, PanelScanService::class.java).apply {
           action = PanelScanService.ACTION_UNIFIED_START
-          putExtra("jobsJson", jobsJson)
+          putExtra("stagingKey", runId)
+          putExtra("initialTotal", safeInitialTotal)
+          putExtra("accountCount", safeAccountCount)
+          putExtra("payloadBytes", payloadBytes)
           putExtra("concurrency", concurrency.coerceIn(1, 32))
           putExtra("timeoutMs", timeoutMs.coerceIn(2000, 20000))
           putExtra("runId", runId)
         }
+        PanelScanService.recordExternalDiagnostic(context, JSONObject()
+          .put("runId", runId).put("mode", "unified").put("state", "SERVICE_DISPATCH")
+          .put("total", safeInitialTotal).put("accountTotal", safeAccountCount).put("payloadBytes", payloadBytes))
+        PanelScanService.setProcessSummary(context, "scan:DISPATCH:a$safeAccountCount:t$safeInitialTotal:b$payloadBytes")
         ContextCompat.startForegroundService(context, intent)
         mapOf("accepted" to true, "state" to "STARTING", "runId" to runId, "activeRunId" to runId)
       } catch (e: Throwable) {
+        runCatching { stagingFile.delete() }
+        PanelScanService.recordExternalDiagnostic(context, JSONObject()
+          .put("runId", runId).put("mode", "unified").put("state", "DISPATCH_FAILED")
+          .put("error", "${e.javaClass.simpleName}: ${e.message ?: ""}"))
+        PanelScanService.setProcessSummary(context, "scan:DISPATCH_FAILED:${e.javaClass.simpleName}")
         PanelScanService.releaseRun(runId)
         throw e
       }
@@ -121,6 +150,12 @@ class PanelScanModule : Module() {
       val context = appContext.reactContext ?: return@Function "[]"
       context.getSharedPreferences(PanelScanService.PREFS, 0)
         .getString(PanelScanService.KEY_EVENTS, "[]") ?: "[]"
+    }
+
+    Function("getLastCrash") {
+      val context = appContext.reactContext ?: return@Function "{}"
+      context.getSharedPreferences(PanelScanService.PREFS, 0)
+        .getString(PanelScanService.KEY_LAST_CRASH, "{}") ?: "{}"
     }
   }
 }

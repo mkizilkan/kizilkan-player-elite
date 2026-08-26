@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.16 RC1 DIAGNOSTICS AND MAG SESSION HARDENING)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.17 RC1 SCAN TRANSPORT AND MAG CONNECTION DIAGNOSTICS)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -124,8 +124,8 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.2.16') problem(`app version ${app?.expo?.version} (15.2.16 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150216) problem(`versionCode ${app?.expo?.android?.versionCode} (150216 bekleniyor)`);
+if (app?.expo?.version !== '15.2.17') problem(`app version ${app?.expo?.version} (15.2.17 bekleniyor)`);
+if (app?.expo?.android?.versionCode !== 150217) problem(`versionCode ${app?.expo?.android?.versionCode} (150217 bekleniyor)`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
@@ -526,8 +526,8 @@ try {
   const add = fs.readFileSync(path.join(root, 'app/add-playlist.tsx'), 'utf8');
   const profile = fs.readFileSync(path.join(root, 'src/store/ProfileContext.tsx'), 'utf8');
   const layout = fs.readFileSync(path.join(root, 'app/_layout.tsx'), 'utf8');
-  requireText(pkg, '"version": "15.2.16"', 'v15.2.16 package version');
-  if (Number(app?.expo?.android?.versionCode) !== 150216) problem('v15.2.16 versionCode 150216 degil');
+  requireText(pkg, '"version": "15.2.17"', 'v15.2.17 package version');
+  if (Number(app?.expo?.android?.versionCode) !== 150217) problem('v15.2.17 versionCode 150217 degil');
   requireText(panelService, 'activeConnections', 'panel scan active connection registry');
   requireText(panelService, 'shutdownNow()', 'panel scan hard cancellation');
   requireText(panelService, 'conn.disconnect()', 'panel scan socket disconnect');

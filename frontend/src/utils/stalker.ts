@@ -150,19 +150,27 @@ async function req(url: string, headers: Record<string, string>, timeoutMs = 200
   const c = new AbortController();
   const t = setTimeout(() => c.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { headers, signal: c.signal });
+    let res: any;
+    try {
+      res = await fetch(url, { headers, signal: c.signal });
+    } catch (cause: any) {
+      const err: any = new Error(cause?.name === "AbortError" ? `Bağlantı zaman aşımı (${timeoutMs} ms)` : `Network request failed: ${String(cause?.message || cause || "bilinmeyen ağ hatası")}`);
+      err.kind = cause?.name === "AbortError" ? "TIMEOUT" : "NETWORK";
+      err.causeName = String(cause?.name || "");
+      throw err;
+    }
+    const contentType = String(res.headers?.get?.("content-type") || "");
+    const finalUrl = String((res as any).url || url);
+    const redirected = !!(res as any).redirected;
     const text = await res.text();
     if (!res.ok) {
-      const err: any = new Error(`HTTP ${res.status}`);
-      err.status = res.status;
+      const err: any = new Error(`HTTP ${res.status}${contentType ? ` · ${contentType.split(";")[0]}` : ""}`);
+      err.status = res.status; err.kind = "HTTP"; err.contentType = contentType; err.finalUrl = finalUrl; err.redirected = redirected;
       throw err;
     }
     try {
       return JSON.parse(text.replace(/^\uFEFF/, "").trim());
     } catch {
-      // Bazı eski Stalker load.php kurulumları debug/prefix metni basıp JSON'u
-      // aynı response içinde döndürür. HTML hata sayfasını kabul etmeden yalnız
-      // ilk {...} JSON nesnesini ikinci şans olarak ayrıştır.
       const trimmed = text.replace(/^\uFEFF/, "").trim();
       if (!/^</.test(trimmed)) {
         const first = trimmed.indexOf("{");
@@ -171,8 +179,9 @@ async function req(url: string, headers: Record<string, string>, timeoutMs = 200
           try { return JSON.parse(trimmed.slice(first, last + 1)); } catch {}
         }
       }
-      const err: any = new Error("Portal geçersiz yanıt verdi (JSON değil)");
-      err.raw = text.slice(0, 200);
+      const kind = /^</.test(trimmed) ? "HTML" : "NON_JSON";
+      const err: any = new Error(`Portal JSON değil · HTTP ${res.status}${contentType ? ` · ${contentType.split(";")[0]}` : ""}${redirected ? " · yönlendirme var" : ""}`);
+      err.kind = kind; err.status = res.status; err.contentType = contentType; err.finalUrl = finalUrl; err.redirected = redirected;
       throw err;
     }
   } finally {
@@ -191,16 +200,24 @@ export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSessi
 
   for (const endpoint of portalCandidates(cred.portal)) {
     const label = (() => { try { return new URL(endpoint).pathname; } catch { return endpoint; } })();
+    const attemptAt = Date.now();
+    void recordDiagnostic("catalog", "STALKER_ENDPOINT_ATTEMPT", { endpoint, path: label });
     try {
       const data = await req(
         buildUrl(endpoint, { type: "stb", action: "handshake", token: "", prehash: "0" }),
         headersFor(cred, undefined, endpoint)
       );
       const token = data?.js?.token;
-      if (token) return { token, endpoint };
+      if (token) {
+        void recordDiagnostic("catalog", "STALKER_ENDPOINT_OK", { endpoint, path: label, elapsedMs: Date.now()-attemptAt });
+        return { token, endpoint };
+      }
       errors.push(`${label}: token yok`);
+      void recordDiagnostic("catalog", "STALKER_ENDPOINT_ERROR", { endpoint, path: label, elapsedMs: Date.now()-attemptAt, kind:"NO_TOKEN", message:"token yok" });
     } catch (e: any) {
-      errors.push(`${label}: ${e?.message || e}`);
+      const detail = [e?.message, e?.finalUrl && e.finalUrl !== endpoint ? `final=${String(e.finalUrl)}` : ""].filter(Boolean).join(" · ");
+      errors.push(`${label}: ${detail || e}`);
+      void recordDiagnostic("catalog", "STALKER_ENDPOINT_ERROR", { endpoint, path: label, elapsedMs: Date.now()-attemptAt, kind:e?.kind, status:e?.status, contentType:e?.contentType, redirected:e?.redirected, finalUrl:e?.finalUrl, message:String(e?.message || e) });
     }
   }
 
@@ -307,7 +324,7 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession): P
       void recordDiagnostic("catalog","STALKER_PROFILE_VARIANT_EMPTY",{variant:variant.label, elapsedMs:Date.now()-started, endpoint:ses.endpoint});
     } catch (e:any) {
       errors.push(`${variant.label}: ${String(e?.message || e)}`);
-      void recordDiagnostic("catalog","STALKER_PROFILE_VARIANT_ERROR",{variant:variant.label, elapsedMs:Date.now()-started, endpoint:ses.endpoint, status:e?.status, message:String(e?.message || e)});
+      void recordDiagnostic("catalog","STALKER_PROFILE_VARIANT_ERROR",{variant:variant.label, elapsedMs:Date.now()-started, endpoint:ses.endpoint, status:e?.status, kind:e?.kind, contentType:e?.contentType, redirected:e?.redirected, finalUrl:e?.finalUrl, message:String(e?.message || e)});
     }
   }
   return null;
@@ -594,7 +611,8 @@ async function retryCatalogPart<T>(label:string, fn:()=>Promise<T>):Promise<T> {
     try { return await fn(); }
     catch (e) { if (e instanceof StalkerCatalogUnsupportedError) throw e; last=e; if (i===0) await new Promise(r=>setTimeout(r,350)); }
   }
-  const err:any=new Error(`${label} kataloğu alınamadı: ${last?.message || last}`); err.cause=last; throw err;
+  void recordDiagnostic("catalog", "STALKER_CATALOG_PART_ERROR", { label, kind:last?.kind, status:last?.status, contentType:last?.contentType, redirected:last?.redirected, finalUrl:last?.finalUrl, message:String(last?.message || last) });
+  const err:any=new Error(`${label} kataloğu alınamadı: ${last?.message || last}`); err.cause=last; err.kind=last?.kind; err.status=last?.status; err.contentType=last?.contentType; err.redirected=last?.redirected; err.finalUrl=last?.finalUrl; throw err;
 }
 
 export async function stalkerCatalog(cred: StalkerCreds, ses: StalkerSession): Promise<{channels:Channel[]; vod:VodItem[]; series:SeriesItem[]; diagnostics:StalkerCatalogDiagnostics}> {
@@ -674,7 +692,7 @@ export async function stalkerLogin(
     void recordDiagnostic("catalog", "STALKER_PROFILE_OK", { endpoint: session.endpoint, elapsedMs: Date.now()-started });
   } catch (e: any) {
     session.profileError = String(e?.message || e);
-    void recordDiagnostic("catalog", "STALKER_PROFILE_ERROR", { endpoint: session.endpoint, message: session.profileError, status: e?.status });
+    void recordDiagnostic("catalog", "STALKER_PROFILE_ERROR", { endpoint: session.endpoint, message: session.profileError, status: e?.status, kind:e?.kind, contentType:e?.contentType, redirected:e?.redirected, finalUrl:e?.finalUrl });
     // Bazı eski Ministra/Stalker varyantları get_profile alanlarının bir kısmını
     // reddederken katalog çağrılarını kabul eder. Uyumluluğu bozmak yerine hata
     // session üzerinde taşınır; katalog da başarısız/boşsa kullanıcıya aşama bilgisi verilir.

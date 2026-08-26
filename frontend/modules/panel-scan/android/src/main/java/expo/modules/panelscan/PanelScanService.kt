@@ -6,6 +6,8 @@ import android.content.Context
 import android.os.Build
 import android.os.IBinder
 import android.os.Debug
+import android.app.ActivityManager
+import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -15,6 +17,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 class PanelScanService : Service() {
   companion object {
@@ -27,11 +30,78 @@ class PanelScanService : Service() {
     const val PREFS = "gpt_elite_panel_scan"
     const val KEY_SNAPSHOT = "snapshot"
     const val KEY_EVENTS = "diagnostic_events"
+    const val KEY_LAST_CRASH = "last_crash"
     const val CHANNEL_ID = "panel_scan"
     const val NOTIF_ID = 13001
 
     private val RUN_LOCK = Any()
     @Volatile private var claimedRunId: String = ""
+    private val crashRecorderInstalled = AtomicBoolean(false)
+
+
+    private fun sanitizedCrashMessage(value: String): String = value
+      .replace(Regex("https?://[^\\s]+", RegexOption.IGNORE_CASE), "<url>")
+      .replace(Regex("(?i)(username|password|token|authorization|cookie|mac)=([^&\\s]+)"), "\$1=<redacted>")
+      .take(320)
+
+    fun setProcessSummary(context: Context, raw: String) {
+      if (Build.VERSION.SDK_INT < 30) return
+      try {
+        val bytes = raw.take(128).toByteArray(Charsets.UTF_8)
+        val clipped = if (bytes.size <= 128) bytes else bytes.copyOf(128)
+        (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).setProcessStateSummary(clipped)
+      } catch (_: Throwable) {}
+    }
+
+    @Synchronized fun recordExternalDiagnostic(context: Context, obj: JSONObject) {
+      try {
+        val prefs = context.getSharedPreferences(PREFS, 0)
+        val arr = try { JSONArray(prefs.getString(KEY_EVENTS, "[]") ?: "[]") } catch (_: Throwable) { JSONArray() }
+        val event = JSONObject()
+          .put("at", System.currentTimeMillis())
+          .put("runId", obj.optString("runId", ""))
+          .put("mode", obj.optString("mode", ""))
+          .put("state", obj.optString("state", ""))
+          .put("tested", obj.optInt("tested", 0))
+          .put("total", obj.optInt("total", 0))
+          .put("found", obj.optInt("found", 0))
+          .put("accountIndex", obj.optInt("accountIndex", -1))
+          .put("accountTotal", obj.optInt("accountTotal", 0))
+          .put("payloadBytes", obj.optLong("payloadBytes", 0L))
+          .put("pssKb", Debug.getPss())
+          .put("error", obj.optString("error", "").take(300))
+        val next = JSONArray(); next.put(event)
+        for (i in 0 until minOf(arr.length(), 79)) next.put(arr.opt(i))
+        prefs.edit().putString(KEY_EVENTS, next.toString()).commit()
+      } catch (_: Throwable) {}
+    }
+
+    fun installCrashRecorder(context: Context) {
+      if (!crashRecorderInstalled.compareAndSet(false, true)) return
+      val previous = Thread.getDefaultUncaughtExceptionHandler()
+      Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+        try {
+          val stack = JSONArray()
+          error.stackTrace.take(10).forEach { stack.put(it.toString().take(240)) }
+          val crash = JSONObject()
+            .put("at", System.currentTimeMillis())
+            .put("thread", thread.name.take(120))
+            .put("exception", error.javaClass.name.take(180))
+            .put("message", sanitizedCrashMessage(error.message ?: ""))
+            .put("stack", stack)
+            .put("pssKb", Debug.getPss())
+          context.getSharedPreferences(PREFS, 0).edit().putString(KEY_LAST_CRASH, crash.toString()).commit()
+          recordExternalDiagnostic(context, JSONObject()
+            .put("mode", "unified").put("state", "PROCESS_CRASH")
+            .put("error", "${error.javaClass.simpleName}: ${sanitizedCrashMessage(error.message ?: "")}"))
+          setProcessSummary(context, "scan:CRASH:${error.javaClass.simpleName}:${thread.name}")
+        } catch (_: Throwable) {}
+        if (previous != null) previous.uncaughtException(thread, error) else {
+          android.os.Process.killProcess(android.os.Process.myPid())
+          kotlin.system.exitProcess(10)
+        }
+      }
+    }
 
     /**
      * v15.2.9: job sahipliği Service çalıştırılmadan ÖNCE atomik olarak alınır.
@@ -56,6 +126,8 @@ class PanelScanService : Service() {
         .put("createdAt", now)
         .put("updatedAt", now)
       context.getSharedPreferences(PREFS, 0).edit().putString(KEY_SNAPSHOT, obj.toString()).commit()
+      recordExternalDiagnostic(context, JSONObject().put("mode", mode).put("runId", runId).put("state", "STARTING"))
+      setProcessSummary(context, "scan:STARTING:$mode")
       Pair(true, runId)
     }
 
@@ -87,6 +159,7 @@ class PanelScanService : Service() {
 
   override fun onCreate() {
     super.onCreate()
+    installCrashRecorder(applicationContext)
     if (Build.VERSION.SDK_INT >= 26) {
       val nm = getSystemService(NotificationManager::class.java)
       nm.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Panel taraması", NotificationManager.IMPORTANCE_LOW))
@@ -158,17 +231,20 @@ class PanelScanService : Service() {
         running = true
         cancelled.set(false)
         paused.set(false)
-        val jobsJson = intent.getStringExtra("jobsJson") ?: "[]"
+        val stagingKey = intent.getStringExtra("stagingKey") ?: requestedRunId
         val concurrency = intent.getIntExtra("concurrency", 8).coerceIn(1,32)
         val timeoutMs = intent.getIntExtra("timeoutMs", 8000).coerceIn(2000,20000)
-        val jobs = try { JSONArray(jobsJson) } catch (_: Throwable) { JSONArray() }
-        var initialTotal = 0
-        for (i in 0 until jobs.length()) initialTotal += jobs.optJSONObject(i)?.optJSONArray("candidates")?.length() ?: 0
+        val initialTotal = intent.getIntExtra("initialTotal", 0).coerceAtLeast(0)
+        val accountCount = intent.getIntExtra("accountCount", 0).coerceAtLeast(0)
+        val payloadBytes = intent.getLongExtra("payloadBytes", 0L).coerceAtLeast(0L)
         writeSnapshot(JSONObject().put("mode", "unified").put("running", true).put("paused", false)
-          .put("tested", 0).put("total", initialTotal).put("accountTested", 0).put("accountTotal", jobs.length())
-          .put("found", 0).put("matches", JSONArray()))
+          .put("tested", 0).put("total", initialTotal).put("accountTested", 0).put("accountTotal", accountCount)
+          .put("payloadBytes", payloadBytes).put("found", 0).put("matches", JSONArray()))
+        recordExternalDiagnostic(applicationContext, JSONObject().put("runId", requestedRunId).put("mode", "unified")
+          .put("state", "SERVICE_ENTER").put("total", initialTotal).put("accountTotal", accountCount).put("payloadBytes", payloadBytes))
+        setProcessSummary(applicationContext, "scan:SERVICE_ENTER:a$accountCount:t$initialTotal:b$payloadBytes")
         startForeground(NOTIF_ID, notification("Birleşik panel taraması başlıyor…", 0, initialTotal))
-        Thread { runUnifiedScan(jobsJson, concurrency, timeoutMs) }.start()
+        Thread({ runUnifiedScanFromStaging(stagingKey, concurrency, timeoutMs) }, "kizilkan-panel-scan-$requestedRunId").start()
       }
       ACTION_START -> {
         val requestedRunId = intent.getStringExtra("runId") ?: ""
@@ -378,20 +454,60 @@ class PanelScanService : Service() {
     writeSnapshot(snap)
   }
 
+  private fun runUnifiedScanFromStaging(stagingKey: String, concurrency: Int, timeoutMs: Int) {
+    val safeKey = stagingKey.replace(Regex("[^a-zA-Z0-9_.-]"), "_")
+    val file = File(filesDir, "kizilkan/panel-scan-staging/$safeKey.json")
+    try {
+      if (!file.exists()) throw IllegalStateException("Birleşik tarama staging dosyası bulunamadı")
+      recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("mode", "unified")
+        .put("state", "STAGING_READ").put("payloadBytes", file.length()))
+      setProcessSummary(applicationContext, "scan:STAGING_READ:b${file.length()}")
+      val raw = file.bufferedReader(Charsets.UTF_8).use { it.readText() }
+      // Credential içeren staging payload'ı RAM'e alındıktan hemen sonra diskten kaldır.
+      runCatching { file.delete() }
+      runUnifiedScan(raw, concurrency, timeoutMs)
+    } catch (e: Throwable) {
+      writeSnapshot(JSONObject().put("mode","unified").put("running",false)
+        .put("error", "${e.javaClass.simpleName}: ${e.message ?: "Birleşik tarama staging hatası"}"))
+      recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("mode", "unified")
+        .put("state", "STAGING_FAILED").put("error", "${e.javaClass.simpleName}: ${e.message ?: ""}"))
+      val finishedRunId = currentRunId
+      finalizeSnapshot("unified")
+      activeExecutor = null
+      activeConnections.clear()
+      running = false
+      releaseRun(finishedRunId)
+      stopForeground(STOP_FOREGROUND_REMOVE)
+      stopSelf()
+    } finally {
+      runCatching { file.delete() }
+    }
+  }
+
   private fun runUnifiedScan(jobsRaw: String, concurrency: Int, timeoutMs: Int) {
     try {
-      val jobs = JSONArray(jobsRaw)
+      val root = try { JSONObject(jobsRaw) } catch (_: Throwable) { null }
+      val jobs = root?.optJSONArray("jobs") ?: JSONArray(jobsRaw)
+      val candidateSets = root?.optJSONArray("candidateSets")
       val accountCount = jobs.length()
       if (accountCount == 0) throw IllegalArgumentException("Tarama için hesap yok")
+
+      fun candidatesFor(accountIndex: Int): JSONArray {
+        val job = jobs.optJSONObject(accountIndex) ?: return JSONArray()
+        job.optJSONArray("candidates")?.let { return it }
+        val setIndex = job.optInt("candidateSet", -1)
+        return if (candidateSets != null && setIndex in 0 until candidateSets.length()) candidateSets.optJSONArray(setIndex) ?: JSONArray() else JSONArray()
+      }
 
       data class Work(val accountIndex: Int, val candidateIndex: Int)
       val work = ArrayList<Work>()
       val completedByAccount = Array(accountCount) { AtomicInteger(0) }
       val expectedByAccount = IntArray(accountCount)
+      val candidateArrays = Array(accountCount) { candidatesFor(it) }
       val panelSet = linkedSetOf<String>()
       var maxCandidates = 0
       for (ai in 0 until accountCount) {
-        val candidates = jobs.getJSONObject(ai).optJSONArray("candidates") ?: JSONArray()
+        val candidates = candidateArrays[ai]
         expectedByAccount[ai] = candidates.length()
         maxCandidates = maxOf(maxCandidates, candidates.length())
         for (ci in 0 until candidates.length()) {
@@ -399,9 +515,8 @@ class PanelScanService : Service() {
           panelSet.add("${c.optString("code")}\u0000${c.optString("panelName")}")
         }
       }
-      // v15.2.11: işleri hesap-hesap bloklamak yerine round-robin sırala.
-      // Böylece Hesap 1 binlerce DNS bitirene kadar Hesap 2/3 `Bekliyor` kalmaz;
-      // aynı worker havuzu bütün hesaplarda kontrollü ve adil ilerler.
+      // v15.2.11 sözleşmesi korunur: işler hesap bloklarıyla değil candidate→account round-robin sıralanır.
+      // v15.2.17 candidateSets yalnız payload tekrarını kaldırır; tarama adaletini değiştirmez.
       for (ci in 0 until maxCandidates) {
         for (ai in 0 until accountCount) {
           if (ci < expectedByAccount[ai]) work.add(Work(ai, ci))
@@ -414,6 +529,7 @@ class PanelScanService : Service() {
       val tested = AtomicInteger(0)
       val accountDone = AtomicInteger(expectedByAccount.count { it == 0 })
       val matches = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+      val workerFailure = AtomicReference<Throwable?>(null)
       fun accountStatuses(currentIndex: Int): JSONArray {
         val foundCounts = IntArray(accountCount)
         synchronized(matches) {
@@ -444,56 +560,74 @@ class PanelScanService : Service() {
         }
         return arr
       }
-      val pool = Executors.newFixedThreadPool(concurrency.coerceIn(1, minOf(32, total)))
+      val workerCount = concurrency.coerceIn(1, minOf(32, total))
+      val pool = Executors.newFixedThreadPool(workerCount)
       activeExecutor = pool
-      repeat(concurrency.coerceIn(1, minOf(32, total))) {
+      recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("mode", "unified")
+        .put("state", "WORKERS_STARTED").put("total", total).put("accountTotal", accountCount))
+      setProcessSummary(applicationContext, "scan:WORKERS:a$accountCount:t$total:w$workerCount")
+      repeat(workerCount) {
         pool.submit {
-          while (!cancelled.get()) {
-            while (paused.get() && !cancelled.get()) Thread.sleep(100)
-            if (cancelled.get()) break
-            val wi = cursor.getAndIncrement()
-            if (wi >= total) break
-            val unit = work[wi]
-            val account = jobs.getJSONObject(unit.accountIndex)
-            val candidates = account.optJSONArray("candidates") ?: JSONArray()
-            val candidate = candidates.getJSONObject(unit.candidateIndex)
-            val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
-            if (login != null) matches.add(JSONObject()
-              .put("accountIndex", unit.accountIndex)
-              .put("sourceRow", account.optInt("row", unit.accountIndex + 1))
-              .put("username", account.optString("username"))
-              .put("name", account.optString("name"))
-              .put("panelName", candidate.optString("panelName"))
-              .put("code", candidate.optString("code"))
-              .put("server", candidate.optString("server"))
-              .put("login", sanitizeLogin(login)))
-            if (completedByAccount[unit.accountIndex].incrementAndGet() == expectedByAccount[unit.accountIndex]) accountDone.incrementAndGet()
-            val done = tested.incrementAndGet()
-            if (done == total || done % 12 == 0 || login != null) {
-              writeBulkSnapshot(
-                done, total, accountDone.get(), accountCount, panelSet.size, matches,
-                candidate.optString("panelName"), unit.accountIndex,
-                currentServer = candidate.optString("server"),
-                accountStatuses = accountStatuses(unit.accountIndex),
-                mode = "unified",
-              )
+          try {
+            while (!cancelled.get() && workerFailure.get() == null) {
+              while (paused.get() && !cancelled.get()) Thread.sleep(100)
+              if (cancelled.get() || workerFailure.get() != null) break
+              val wi = cursor.getAndIncrement()
+              if (wi >= total) break
+              val unit = work[wi]
+              val account = jobs.getJSONObject(unit.accountIndex)
+              val candidates = candidateArrays[unit.accountIndex]
+              val candidate = candidates.getJSONObject(unit.candidateIndex)
+              val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
+              if (login != null) matches.add(JSONObject()
+                .put("accountIndex", unit.accountIndex)
+                .put("sourceRow", account.optInt("row", unit.accountIndex + 1))
+                .put("username", account.optString("username"))
+                .put("name", account.optString("name"))
+                .put("panelName", candidate.optString("panelName"))
+                .put("code", candidate.optString("code"))
+                .put("server", candidate.optString("server"))
+                .put("login", sanitizeLogin(login)))
+              if (completedByAccount[unit.accountIndex].incrementAndGet() == expectedByAccount[unit.accountIndex]) accountDone.incrementAndGet()
+              val done = tested.incrementAndGet()
+              if (done == total || done % 12 == 0 || login != null) {
+                writeBulkSnapshot(
+                  done, total, accountDone.get(), accountCount, panelSet.size, matches,
+                  candidate.optString("panelName"), unit.accountIndex,
+                  currentServer = candidate.optString("server"),
+                  accountStatuses = accountStatuses(unit.accountIndex),
+                  mode = "unified",
+                )
+              }
+              if (done % 500 == 0) setProcessSummary(applicationContext, "scan:RUNNING:a$accountCount:d$done:t$total")
+              if (done % 12 == 0 || login != null) getSystemService(NotificationManager::class.java)
+                .notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", done, total))
             }
-            if (done % 12 == 0 || login != null) getSystemService(NotificationManager::class.java)
-              .notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", done, total))
+          } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            if (!cancelled.get()) workerFailure.compareAndSet(null, e)
+          } catch (e: Throwable) {
+            workerFailure.compareAndSet(null, e)
+            recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("mode", "unified")
+              .put("state", "WORKER_FAILED").put("tested", tested.get()).put("total", total)
+              .put("error", "${e.javaClass.simpleName}: ${e.message ?: ""}"))
           }
         }
       }
       pool.shutdown()
       while (!pool.isTerminated) Thread.sleep(100)
+      workerFailure.get()?.let { if (!cancelled.get()) throw it }
       writeBulkSnapshot(
         tested.get(), total, accountDone.get(), accountCount, panelSet.size, matches, "", -1, false,
         currentServer = "", accountStatuses = accountStatuses(-1), mode = "unified"
       )
     } catch (e: Throwable) {
-      writeSnapshot(JSONObject().put("mode","unified").put("running",false).put("error",e.message ?: "Birleşik native panel tarama hatası"))
+      writeSnapshot(JSONObject().put("mode","unified").put("running",false)
+        .put("error", "${e.javaClass.simpleName}: ${e.message ?: "Birleşik native panel tarama hatası"}"))
     } finally {
       val finishedRunId = currentRunId
       finalizeSnapshot("unified")
+      setProcessSummary(applicationContext, if (cancelled.get()) "scan:CANCELLED" else "scan:TERMINAL")
       activeExecutor = null
       activeConnections.clear()
       running = false

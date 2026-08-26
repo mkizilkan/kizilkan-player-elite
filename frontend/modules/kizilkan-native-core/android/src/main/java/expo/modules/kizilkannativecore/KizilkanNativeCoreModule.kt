@@ -996,6 +996,7 @@ class KizilkanNativeCoreModule : Module() {
     val am = context().getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
     return am.getHistoricalProcessExitReasons(context().packageName, 0, maxNum).map { info ->
       val traceAvailable = try { info.traceInputStream?.use { true } ?: false } catch (_: Throwable) { false }
+      val stateSummary = try { info.processStateSummary?.toString(Charsets.UTF_8) ?: "" } catch (_: Throwable) { "" }
       mapOf<String, Any>(
         "reason" to info.reason,
         "reasonLabel" to exitReasonLabel(info.reason),
@@ -1007,6 +1008,7 @@ class KizilkanNativeCoreModule : Module() {
         "pssKb" to info.pss,
         "rssKb" to info.rss,
         "traceAvailable" to traceAvailable,
+        "processStateSummary" to stateSummary,
       )
     }
   }

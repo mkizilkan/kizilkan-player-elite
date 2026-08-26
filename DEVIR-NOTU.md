@@ -106,3 +106,6 @@ TypeScript TS18048 build blocker giderildi: resolveOneBulkAccount ScanExecutionC
 - `tools/check-v15214-hardening.js` standart denetim zincirine bağlandı.
 - Yerel statik/fixture kontroller temiz. Tam tsc/Kotlin/Gradle/APK ve cihaz kabulü yapılmış sayılmaz.
 - Ayrıntı: `00-OKU-BENI-v15.2.14-RC1.md` ve v15.2.14 sürüm/regresyon/paket belgeleri.
+
+## v15.2.17-RC1 — 2026-08-26
+Unified scan büyük Intent/Binder payload yolu app-private staging ile değiştirildi; candidate listeleri deduplicate edildi. ProcessStateSummary + chained Java crash recorder + worker failure telemetry eklendi. MAG endpoint diagnostics HTTP/content-type/redirect/network sınıflarıyla genişletildi. versionCode 150217. CI ve cihaz acceptance bekleniyor.
