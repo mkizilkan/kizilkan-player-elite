@@ -732,3 +732,9 @@ Node v22.16.0 ile tüm hard gate'ler EXIT 0 ve 109 TS/TSX transpile syntax 0 dia
 - JS diagnostics native-first persistence + terminal sync critical journal + AppState/route/player correlation + anomaly export.
 - PlayerHost Media3/VLC/MPV hata/diagnostic olayları genişletildi.
 - Full tsc/Gradle bu geliştirme ortamında dependency/build toolchain eksikliği nedeniyle çalıştırılmadı; CI bekleniyor.
+
+## v15.2.21 RC1 — TS2339 Media3 EngineProfile corrective
+- v15.2.20 verify build GitHub Actions `tsc --noEmit` aşamasında `PlayerHost.tsx` MEDIA3_ERROR telemetrisinde `v2Profile.decoder` nedeniyle TS2339 verdi.
+- EngineProfile media3 varyantında decoder yok; v15.2.21 engine narrowing ile decoder/surface ayrımını yapar.
+- `check-v15221-typescript-media3.js` eklendi ve `denetle.js` ana zincirine bağlandı.
+- Flight Recorder V3 kapsamı azaltılmadı.

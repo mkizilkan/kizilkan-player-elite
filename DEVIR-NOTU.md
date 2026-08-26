@@ -118,3 +118,6 @@ v15.2.18 CI HARD gate patlaması düzeltildi; eski gate'lerin version/string har
 
 ## SON DURUM — v15.2.20-RC1
 Kaynak geliştirme tamamlandı; Node hard-gate zinciri ve v15.2.20 semantic Promise<void> contract geçti. Tam bağımlılıklı `npx tsc --noEmit`, Expo prebuild ve Gradle release henüz bu ortamda çalıştırılmadı. Bir sonraki adım: ZIP re-extract kontrolü -> Termux kontrollü push -> GitHub Actions gerçek TypeScript/Kotlin/Gradle build sonucu -> fiziksel cihaz acceptance.
+
+### v15.2.21
+v15.2.20 Flight Recorder V3 korunarak GitHub verify CI'de görülen PlayerHost EngineProfile TS2339 hatası engine narrowing ile düzeltildi. Yeni semantik gate: `tools/check-v15221-typescript-media3.js`. Tam proje tsc/Gradle doğrulaması verify branch CI ile yapılmalı.

@@ -814,7 +814,8 @@ export default function PlayerHost() {
           error: String(event?.error?.message || event?.error || "Media3 error"),
           phase: v2Phase,
           engine: v2Profile.engine,
-          decoder: v2Profile.decoder,
+          decoder: v2Profile.engine === "media3" ? undefined : v2Profile.decoder,
+          surface: v2Profile.engine === "media3" ? v2Profile.surface : undefined,
           fromSessionMs: Math.max(0, Date.now() - sessionStartedAtRef.current),
           fromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current),
         }, { sessionId: playerDiagnosticSessionRef.current });

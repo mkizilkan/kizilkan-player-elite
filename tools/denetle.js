@@ -36,6 +36,7 @@ const CHECKS = [
   ["check-v15219-corrective.js", "v15.2.19 Corrective gate/test compatibility contract", ""],
   ["check-v15220-flight-recorder.js", "v15.2.20 Flight Recorder v3 / TypeScript corrective contract", ""],
   ["check-v15220-typescript-semantic.js", "v15.2.20 Playlist Promise<void> semantic contract", ""],
+  ["check-v15221-typescript-media3.js", "v15.2.21 Media3 EngineProfile semantic contract", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 

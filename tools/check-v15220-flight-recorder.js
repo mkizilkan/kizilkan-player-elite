@@ -9,8 +9,10 @@ const need = (rel, token, label) => { const s=read(rel); if(!s.includes(token)){
 const forbid = (rel, token, label) => { const s=read(rel); if(s.includes(token)){ console.log(`HATA — ${label}: yasak ${token}`); bad++; } };
 const pkg = JSON.parse(fs.readFileSync(path.join(froot,'package.json'),'utf8'));
 const app = JSON.parse(fs.readFileSync(path.join(froot,'app.json'),'utf8'));
-if(pkg.version !== '15.2.20') { console.log(`HATA — package ${pkg.version}`); bad++; }
-if(app?.expo?.version !== '15.2.20' || Number(app?.expo?.android?.versionCode)!==150220){ console.log('HATA — app version/versionCode 15.2.20/150220 değil'); bad++; }
+const parts=String(pkg.version||'').match(/^(\d+)\.(\d+)\.(\d+)$/);
+const expectedCode=parts ? Number(parts[1])*10000 + Number(parts[2])*100 + Number(parts[3]) : -1;
+if(!parts || expectedCode < 150220) { console.log(`HATA — package ${pkg.version} v15.2.20 altında`); bad++; }
+if(app?.expo?.version !== pkg.version || Number(app?.expo?.android?.versionCode)!==expectedCode){ console.log(`HATA — app/package sürüm tutarsız: ${app?.expo?.version}/${app?.expo?.android?.versionCode} package=${pkg.version}`); bad++; }
 
 // v15.2.19 CI TS2322 kök nedeninin gerçek düzeltmesi: Promise<void> kuyruğu boolean döndürmemeli.
 need('frontend/src/store/PlaylistContext.tsx', '.then(async () => {', 'playlist persist queue void callback');

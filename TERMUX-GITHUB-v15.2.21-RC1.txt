@@ -1,0 +1,3 @@
+KIZILKAN PLAYER ELITE v15.2.21 RC1
+
+Önerilen akış: ZIP'i staging klasörüne aç -> SHA/integrity/version/signing kontrolü -> mevcut repo üzerine signing hariç rsync -> verify-v15.2.21 branch -> staged diff kontrolü -> commit -> yalnız verify branch push -> GitHub Actions tamamen yeşil olmadan main'e taşıma.
