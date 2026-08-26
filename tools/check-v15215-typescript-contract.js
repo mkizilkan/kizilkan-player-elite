@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const ts = require('./_ts');
-const root = process.cwd();
+const root = path.resolve(__dirname, '..', 'frontend');
 const file = path.join(root, 'src/utils/stalker.ts');
 const src = fs.readFileSync(file, 'utf8');
 let problems = 0;

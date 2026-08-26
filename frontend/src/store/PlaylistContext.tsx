@@ -160,6 +160,10 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   // yeni profil state'ini ezmesin. Her yükleme kendi generation kimliğini taşır.
   const profileLoadGeneration = useRef(0);
   const auxLoadGeneration = useRef(0);
+  // v15.2.19: aktif playlist geçişleri üst üste gelirse eski summary/disk yazımı
+  // yeni seçimi ezmesin.
+  const activeSwitchGeneration = useRef(0);
+  const activeSwitchWriteQueue = useRef<Promise<void>>(Promise.resolve());
 
   // Hangi liste id'lerinin ağır verisi belleğe yüklendi (tekrar okumayı önler)
   const loadedHeavy = useRef<Set<string>>(new Set());
@@ -167,6 +171,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   // --- Açılış: metadata oku (+ gerekirse eski veriyi migrate et) -----------
   useEffect(() => {
     const generation = ++profileLoadGeneration.current;
+    activeSwitchGeneration.current += 1;
     const requestedPid = activeProfile?.id || 'default';
     (async () => {
       try {
@@ -510,6 +515,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   }, [persistMeta]);
 
   const setActivePlaylist = useCallback(async (id: string) => {
+    const generation = ++activeSwitchGeneration.current;
     // v15.2.3: önceki listelerde legacy ekranların hydrate ettiği dev diziler
     // RAM'de birikmesin. Hedef liste hariç hepsini metadata-only forma sıkıştır.
     if (KizilkanNativeCore.available) {
@@ -521,17 +527,30 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     const previousId = activeId;
     setActiveId(id);
     setNativeSummary(null);
-    await storage.setItem(activeKey(currentPid()), id);
-    void recordDiagnostic('navigation', 'PLAYLIST_SWITCH', { fromPlaylistId: previousId || '', toPlaylistId: id, nativeCore: KizilkanNativeCore.available });
-    // v15.2.18: hedef liste seçildiği anda görünür ekranın eski listenin native
-    // özetini kullanmasını engelle. Yeni özet/heavy state hedef kimlikle yeniden kurulur.
+    const key = activeKey(currentPid());
+    const persist = activeSwitchWriteQueue.current = activeSwitchWriteQueue.current
+      .catch(() => {})
+      .then(() => storage.setItem(key, id));
+    await persist;
+    if (activeSwitchGeneration.current !== generation) {
+      void recordDiagnostic('navigation', 'PLAYLIST_SWITCH_STALE_DISCARDED', { fromPlaylistId: previousId || '', toPlaylistId: id, stage: 'persisted' });
+      return;
+    }
+    void recordDiagnostic('navigation', 'PLAYLIST_SWITCH', { fromPlaylistId: previousId || '', toPlaylistId: id, nativeCore: KizilkanNativeCore.available, generation });
+    // v15.2.19: summary sonucu yalnız halen aktif olan switch generation'a aitse
+    // uygulanır; hızlı A→B seçiminde A sonucu B ekranını ezemez.
     if (KizilkanNativeCore.available) {
       try {
         const summary = await KizilkanNativeCore.getPlaylistSummary(id);
+        if (activeSwitchGeneration.current !== generation) {
+          void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_STALE_DISCARDED', { playlistId: id, stage: 'summary' });
+          return;
+        }
         setNativeSummary(summary || null);
-        void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_READY', { playlistId: id, channels: summary?.channels || 0, vod: summary?.vod || 0, series: summary?.series || 0 });
+        void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_READY', { playlistId: id, channels: summary?.channels || 0, vod: summary?.vod || 0, series: summary?.series || 0, generation });
       } catch (e:any) {
-        void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_SUMMARY_ERROR', { playlistId: id, error: String(e?.message || e) });
+        if (activeSwitchGeneration.current !== generation) return;
+        void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_SUMMARY_ERROR', { playlistId: id, error: String(e?.message || e), generation });
       }
     }
   }, [activeId]);

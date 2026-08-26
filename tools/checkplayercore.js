@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (v15.2.17 RC1 SCAN TRANSPORT AND MAG CONNECTION DIAGNOSTICS)
+ * GPT KIZILKAN PLAYER ELITE — PLAYER CORE HARD GATE (rolling contract; v15.2.19)
  *
  * Bu denetleyici, gerçek cihazda yaşanmış kritik playback regresyonlarının
  * tekrar paketlenmesini engeller. Genel lint değildir; PlayerHost sözleşmesidir.
@@ -9,12 +9,15 @@ const fs = require('fs');
 const path = require('path');
 const ts = require('./_ts');
 
-const root = process.cwd();
+const projectRootFromTool = path.resolve(__dirname, '..');
+const frontendRootFromTool = path.join(projectRootFromTool, 'frontend');
+const root = fs.existsSync(path.join(process.cwd(), 'app.json')) ? process.cwd() : frontendRootFromTool;
 const player = path.join(root, 'src/player/PlayerHost.tsx');
 const controller = path.join(root, 'src/player/v2/controller.ts');
 const health = path.join(root, 'src/player/v2/health.ts');
 const prefs = path.join(root, 'src/player/v2/preferences.ts');
 const appJson = path.join(root, 'app.json');
+const packageJson = path.join(root, 'package.json');
 const mpvTs = path.join(root, 'modules/mpv-player/index.tsx');
 const mpvView = path.join(root, 'modules/mpv-player/android/src/main/java/expo/modules/kizilkanmpv/KizilkanMpvView.kt');
 const mpvModule = path.join(root, 'modules/mpv-player/android/src/main/java/expo/modules/kizilkanmpv/KizilkanMpvModule.kt');
@@ -25,7 +28,7 @@ function problem(msg) { console.log(`  PLAYER-CORE  ${msg}`); problems++; }
 function requireText(text, needle, label) { if (!text.includes(needle)) problem(`eksik: ${label}`); }
 function forbidText(text, needle, label) { if (text.includes(needle)) problem(`yasak kalıntı: ${label}`); }
 
-for (const f of [player, controller, health, prefs, appJson, mpvTs, mpvView, mpvModule, mpvGradle]) {
+for (const f of [player, controller, health, prefs, appJson, packageJson, mpvTs, mpvView, mpvModule, mpvGradle]) {
   if (!fs.existsSync(f)) problem(`dosya yok: ${path.relative(root, f)}`);
 }
 if (problems) { console.log(`\n${problems} SORUN`); process.exit(1); }
@@ -35,6 +38,10 @@ const ctrl = fs.readFileSync(controller, 'utf8');
 const hlth = fs.readFileSync(health, 'utf8');
 const pref = fs.readFileSync(prefs, 'utf8');
 const app = JSON.parse(fs.readFileSync(appJson, 'utf8'));
+const packageMeta = JSON.parse(fs.readFileSync(packageJson, 'utf8'));
+function versionParts(v) { const m = String(v || '').match(/^(\d+)\.(\d+)\.(\d+)$/); return m ? m.slice(1).map(Number) : null; }
+function versionAtLeast(v, floor) { const a=versionParts(v), b=versionParts(floor); if(!a||!b) return false; for(let i=0;i<3;i++){ if(a[i]>b[i]) return true; if(a[i]<b[i]) return false; } return true; }
+function expectedVersionCode(v) { const p=versionParts(v); return p ? p[0]*10000 + p[1]*100 + p[2] : null; }
 const mpvJs = fs.readFileSync(mpvTs, 'utf8');
 const mpvKt = fs.readFileSync(mpvView, 'utf8');
 const mpvModKt = fs.readFileSync(mpvModule, 'utf8');
@@ -124,13 +131,15 @@ requireText(src, 'resumeAttemptRef', 'resume state/attempt tracking');
 requireText(src, 'Resume seek doğrulanamadı', 'resume position confirmation failure telemetry');
 requireText(src, 'checkpoints = [120, 900, 1900, 3300]', 'resume controlled retries');
 
-if (app?.expo?.version !== '15.2.17') problem(`app version ${app?.expo?.version} (15.2.17 bekleniyor)`);
-if (app?.expo?.android?.versionCode !== 150217) problem(`versionCode ${app?.expo?.android?.versionCode} (150217 bekleniyor)`);
+if (app?.expo?.version !== packageMeta?.version) problem(`app/package version uyumsuz: app=${app?.expo?.version} package=${packageMeta?.version}`);
+if (!versionAtLeast(packageMeta?.version, '15.2.17')) problem(`package version ${packageMeta?.version} v15.2.17 altinda`);
+const expectedCode = expectedVersionCode(packageMeta?.version);
+if (expectedCode === null || Number(app?.expo?.android?.versionCode) !== expectedCode) problem(`versionCode ${app?.expo?.android?.versionCode}; ${packageMeta?.version} icin ${expectedCode} bekleniyor`);
 if (app?.expo?.android?.package !== 'com.gpt.kizilkan.player') problem(`package ${app?.expo?.android?.package} yanlış`);
 
 
 // v15.0.4: release certificate identity must live in GitHub Secrets, never hard-coded.
-const projectRoot = path.resolve(root, '..');
+const projectRoot = projectRootFromTool;
 const workflowPath = path.join(projectRoot, '.github', 'workflows', 'build-apk.yml');
 if (!fs.existsSync(workflowPath)) {
   problem('CI workflow yok: .github/workflows/build-apk.yml');
@@ -526,8 +535,8 @@ try {
   const add = fs.readFileSync(path.join(root, 'app/add-playlist.tsx'), 'utf8');
   const profile = fs.readFileSync(path.join(root, 'src/store/ProfileContext.tsx'), 'utf8');
   const layout = fs.readFileSync(path.join(root, 'app/_layout.tsx'), 'utf8');
-  requireText(pkg, '"version": "15.2.17"', 'v15.2.17 package version');
-  if (Number(app?.expo?.android?.versionCode) !== 150217) problem('v15.2.17 versionCode 150217 degil');
+  if (!versionAtLeast(packageMeta?.version, '15.2.17')) problem('scan/media/backup hardening icin minimum v15.2.17 korunmuyor');
+  if (app?.expo?.version !== packageMeta?.version) problem('package/app version tutarliligi bozuk');
   requireText(panelService, 'activeConnections', 'panel scan active connection registry');
   requireText(panelService, 'shutdownNow()', 'panel scan hard cancellation');
   requireText(panelService, 'conn.disconnect()', 'panel scan socket disconnect');

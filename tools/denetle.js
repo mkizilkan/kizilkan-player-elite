@@ -9,8 +9,13 @@
  */
 const { execSync } = require("child_process");
 const path = require("path");
+const fs = require("fs");
 
 const TOOLS = __dirname;
+const PROJECT_ROOT = path.resolve(TOOLS, "..");
+const FRONTEND_ROOT = path.join(PROJECT_ROOT, "frontend");
+if (!fs.existsSync(path.join(FRONTEND_ROOT, "package.json"))) throw new Error("frontend/package.json bulunamadı");
+if (process.cwd() !== FRONTEND_ROOT) process.chdir(FRONTEND_ROOT);
 // TypeScript artık tools/_ts.js ile taşınabilir şekilde çözülür (sabit yol yok).
 
 const CHECKS = [
@@ -27,6 +32,8 @@ const CHECKS = [
   ["check-v15215-typescript-contract.js", "v15.2.15 Stalker Series TypeScript contract", ""],
   ["check-v15216-diagnostics.js", "v15.2.16 Tanılama/MAG session cache contract", ""],
   ["check-v15217-scan-transport.js", "v15.2.17 Scan transport/crash/MAG connection contract", ""],
+  ["check-v15218-blackbox.js", "v15.2.18 State consistency / Black Box V2 contract", ""],
+  ["check-v15219-corrective.js", "v15.2.19 Corrective gate/test compatibility contract", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 

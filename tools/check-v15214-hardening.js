@@ -8,7 +8,7 @@ const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 const ts = require('./_ts');
-const root = process.cwd();
+const root = path.resolve(__dirname, '..', 'frontend');
 
 function compile(rel) {
   const src = fs.readFileSync(path.join(root, rel), 'utf8');

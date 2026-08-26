@@ -18,6 +18,9 @@ const KEY = 'kizilkan.diagnostics.flightRecorder.v2';
 const LEGACY_KEY = 'kizilkan.diagnostics.flightRecorder.v1';
 const MAX_EVENTS = 1500;
 const MAX_EXPORT_EVENTS = 1500;
+const JOURNAL_NAME = 'kizilkan-blackbox-v2.jsonl';
+const JOURNAL_ARCHIVE_NAME = 'kizilkan-blackbox-v2.1.jsonl';
+const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
 const SENSITIVE_KEY = /(pass(word)?|token|cookie|authorization|secret|pin|device[_-]?id|serial|mac|username|user(name)?)/i;
 
 function shortHash(input: string): string {
@@ -59,6 +62,62 @@ function sanitizeValue(value: any, key = '', depth = 0): any {
   return String(value);
 }
 
+
+function encodeUtf8(text: string): Uint8Array {
+  if (typeof TextEncoder === 'undefined') return new Uint8Array([]);
+  return new TextEncoder().encode(text);
+}
+
+function appendPersistentJournal(item: DiagnosticEvent): void {
+  try {
+    let file = new File(Paths.document, JOURNAL_NAME);
+    if (!file.exists) file.create();
+    if (Number(file.size || 0) >= MAX_JOURNAL_BYTES) {
+      const archive = new File(Paths.document, JOURNAL_ARCHIVE_NAME);
+      if (archive.exists) archive.delete();
+      file.move(archive);
+      file = new File(Paths.document, JOURNAL_NAME);
+      file.create();
+    }
+    const bytes = encodeUtf8(JSON.stringify(item) + '\n');
+    if (!bytes.length) return;
+    const handle = file.open();
+    try {
+      handle.offset = Number(handle.size || file.size || 0);
+      handle.writeBytes(bytes);
+    } finally {
+      handle.close();
+    }
+  } catch {
+    // Journal hiçbir zaman uygulama işlevini bozmaz; AsyncStorage ring yedek yoludur.
+  }
+}
+
+function loadPersistentJournal(limit: number): DiagnosticEvent[] {
+  const out: DiagnosticEvent[] = [];
+  for (const name of [JOURNAL_NAME, JOURNAL_ARCHIVE_NAME]) {
+    try {
+      const file = new File(Paths.document, name);
+      if (!file.exists || !file.size) continue;
+      const lines = file.textSync().split('\n');
+      for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
+        const line = lines[i]?.trim();
+        if (!line) continue;
+        try { const ev = JSON.parse(line); if (ev && ev.event && ev.at) out.push(ev); } catch {}
+      }
+    } catch {}
+    if (out.length >= limit) break;
+  }
+  return out.slice(0, limit);
+}
+
+function journalInfo() {
+  const info = { currentBytes: 0, archiveBytes: 0, maxSegmentBytes: MAX_JOURNAL_BYTES };
+  try { const f = new File(Paths.document, JOURNAL_NAME); if (f.exists) info.currentBytes = Number(f.size || 0); } catch {}
+  try { const f = new File(Paths.document, JOURNAL_ARCHIVE_NAME); if (f.exists) info.archiveBytes = Number(f.size || 0); } catch {}
+  return info;
+}
+
 function parseEvents(raw: string): DiagnosticEvent[] {
   if (!raw) return [];
   try {
@@ -85,6 +144,7 @@ export async function recordDiagnostic(
     data: sanitizeValue(data),
   };
   writeQueue = writeQueue.then(async () => {
+    appendPersistentJournal(item);
     let raw = (await storage.getItem<string>(KEY, '')) || '';
     if (!raw) raw = (await storage.getItem<string>(LEGACY_KEY, '')) || '';
     const prev = parseEvents(raw);
@@ -98,12 +158,17 @@ export async function loadDiagnostics(limit = MAX_EVENTS): Promise<DiagnosticEve
   await writeQueue.catch(() => {});
   let raw = (await storage.getItem<string>(KEY, '')) || '';
   if (!raw) raw = (await storage.getItem<string>(LEGACY_KEY, '')) || '';
-  return parseEvents(raw).slice(0, Math.max(1, Math.min(MAX_EVENTS, limit)));
+  const bounded = Math.max(1, Math.min(MAX_EVENTS, limit));
+  const parsed = parseEvents(raw).slice(0, bounded);
+  return parsed.length ? parsed : loadPersistentJournal(bounded);
 }
 
 export async function clearDiagnostics(): Promise<void> {
   await writeQueue.catch(() => {});
   await Promise.all([storage.removeItem(KEY), storage.removeItem(LEGACY_KEY)]);
+  for (const name of [JOURNAL_NAME, JOURNAL_ARCHIVE_NAME]) {
+    try { const file = new File(Paths.document, name); if (file.exists) file.delete(); } catch {}
+  }
 }
 
 export function summarizePlayerDiagnostics(events: DiagnosticEvent[]) {
@@ -139,12 +204,15 @@ export async function recordBlackBox(event: string, data: Record<string, any> = 
 
 export async function exportDiagnosticReport(extra: Record<string, any> = {}): Promise<string> {
   const events = await loadDiagnostics(MAX_EXPORT_EVENTS);
+  const critical = events.filter((e) => /ERROR|FAILED|CRASH|ANR|STALL|TIMEOUT|ROLLBACK|BLACK_SCREEN/.test(e.event)).slice(0, 250);
   const payload = sanitizeValue({
     format: 'KIZILKAN_BLACK_BOX_V2',
     schemaVersion: 2,
     eventCapacity: MAX_EVENTS,
+    persistentJournal: journalInfo(),
     createdAt: new Date().toISOString(),
     extra,
+    critical,
     events,
   });
   const name = `kizilkan-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;

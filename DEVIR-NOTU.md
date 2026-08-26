@@ -112,3 +112,6 @@ Unified scan büyük Intent/Binder payload yolu app-private staging ile değişt
 
 ### 2026-08-26 / v15.2.18 RC1
 Son kaynak: v15.2.18 / 150218. Test edilmesi gereken P0 akışlar: playlist otomatik görünürlük, seek-spinner, live→VOD eski frame, live sonsuz siyah ekran, scan background→foreground, MAG katalog. Tanılama raporu artık KIZILKAN_BLACK_BOX_V2 ve 1500 olaya kadar saklar.
+
+## NİHAİ DEVAM NOKTASI — v15.2.19-RC1 — 2026-08-26
+v15.2.18 CI HARD gate patlaması düzeltildi; eski gate'lerin version/string hard-code nedenleri gerçek Node ile kanıtlandı. v15.2.18 runtime değişiklikleri yeniden denetlendi ve bulunan stale closure / playlist race / stale native page / buffering-state açıkları v15.2.19'da sertleştirildi. BLACK BOX V2 persistent JSONL journal eklendi. Tüm Node hard gate'leri EXIT 0; tam tsc/Gradle/cihaz testi bekliyor.

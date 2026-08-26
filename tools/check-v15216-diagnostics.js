@@ -15,9 +15,9 @@ const forbid = (file, text, label) => {
   const p = path.join(root, file); if (!fs.existsSync(p)) return;
   if (fs.readFileSync(p,'utf8').includes(text)) { console.log(`HATA — ${label}: yasak '${text}'`); bad++; }
 };
-need('src/utils/diagnostics.ts', 'KIZILKAN_DIAGNOSTICS_V1', 'kalıcı tanılama raporu');
+{ const d=fs.readFileSync(path.join(root,'src/utils/diagnostics.ts'),'utf8'); if(!/KIZILKAN_(?:DIAGNOSTICS_V1|BLACK_BOX_V2)/.test(d)){ console.log('HATA — kalıcı tanılama raporu formatı yok'); bad++; } }
 need('src/utils/diagnostics.ts', 'SENSITIVE_KEY', 'tanılama gizli alan redaksiyonu');
-need('src/utils/diagnostics.ts', 'MAX_EVENTS = 400', 'bounded ring buffer');
+{ const d=fs.readFileSync(path.join(root,'src/utils/diagnostics.ts'),'utf8'); const m=d.match(/MAX_EVENTS\s*=\s*(\d+)/); if(!m || Number(m[1]) < 400){ console.log(`HATA — bounded ring buffer kapasitesi yetersiz: ${m?.[1] || 'yok'}`); bad++; } }
 need('src/player/PlayerHost.tsx', 'CHANNEL_SELECTED', 'player seçim başlangıç telemetrisi');
 need('src/player/PlayerHost.tsx', 'PLAYER_SESSION_START', 'player prepare telemetrisi');
 need('src/player/PlayerHost.tsx', 'totalFromSelectionMs', 'uçtan uca first-frame süresi');

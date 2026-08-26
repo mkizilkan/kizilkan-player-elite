@@ -52,8 +52,10 @@ async function compactFixture(){
 
 const pkg = JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));
 const app = JSON.parse(fs.readFileSync(path.join(root,'app.json'),'utf8'));
-if(pkg.version !== '15.2.17'){ console.log('HATA — package version 15.2.17 değil'); bad++; }
-if(app?.expo?.version !== '15.2.17' || app?.expo?.android?.versionCode !== 150217){ console.log('HATA — app version/versionCode 15.2.17/150217 değil'); bad++; }
+const parts = String(pkg.version || '').split('.').map(Number);
+const expectedCode = parts.length===3 && parts.every(Number.isFinite) ? parts[0]*10000 + parts[1]*100 + parts[2] : null;
+if(app?.expo?.version !== pkg.version){ console.log(`HATA — app/package version uyumsuz: ${app?.expo?.version}/${pkg.version}`); bad++; }
+if(expectedCode===null || Number(app?.expo?.android?.versionCode)!==expectedCode){ console.log(`HATA — versionCode uyumsuz: ${app?.expo?.android?.versionCode}; beklenen ${expectedCode}`); bad++; }
 (async()=>{
   try { await compactFixture(); } catch(e){ console.log('HATA — compact unified fixture:', e.message); bad++; }
   if(bad){ console.log(`\n❌ ${bad} v15.2.17 SCAN TRANSPORT HATASI`); process.exit(1); }

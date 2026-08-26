@@ -381,7 +381,8 @@ export default function PlayerHost() {
     const sub = AppState.addEventListener("change", (state) => {
       const previous = appStateRef.current;
       appStateRef.current = state;
-      void recordBlackBox("APP_STATE", { previous, state, visible, channelId: channel?.id || "", phase: v2Phase, engine: v2Profile.engine, buffering: isBufferingRef.current });
+      const ctx = playerTelemetryContextRef.current;
+      void recordBlackBox("APP_STATE", { previous, state, ...ctx, buffering: isBufferingRef.current });
       // Arka planda Android player/view lifecycle değişebilir. Geri dönüşte
       // stall kronometresini sıfırla; background süresini "donma" sanma.
       if (state === "active") {
@@ -414,6 +415,7 @@ export default function PlayerHost() {
   const playbackDurationRef = useRef(0);
   const lastVlcUiUpdateRef = useRef(0);
   const appStateRef = useRef(AppState.currentState);
+  const playerTelemetryContextRef = useRef({ visible: false, channelId: "", phase: "idle", engine: "media3" });
   const isPlayingRef = useRef(isPlaying);
   const isBufferingRef = useRef(isBuffering);
   const showControlsRef = useRef(showControls);
@@ -455,6 +457,21 @@ export default function PlayerHost() {
   const useMPV = v2Profile.engine === "mpv";
   const activeProfileKeyRef = useRef(v2ProfileKey);
   activeProfileKeyRef.current = v2ProfileKey;
+
+  // v15.2.19: v15.2.18 yalnız spinner renderını gizliyordu; isBuffering=true
+  // state'i içeride yaşayabiliyordu. Aynı başarılı session gerçekten oynuyorsa
+  // bu stale buffering state'idir ve state makinesinden temizlenir.
+  useEffect(() => {
+    if (!isBuffering || !isPlaying || activeSessionId <= 0) return;
+    if (successfulSessionRef.current !== activeSessionId) return;
+    setIsBuffering(false);
+    isBufferingRef.current = false;
+    void recordDiagnostic("player", "STALE_BUFFERING_CLEARED", {
+      engine: v2Profile.engine,
+      phase: v2Phase,
+      activeSessionId,
+    }, { sessionId: playerDiagnosticSessionRef.current });
+  }, [isBuffering, isPlaying, activeSessionId, v2Profile.engine, v2Phase]);
 
   useEffect(() => {
     let alive = true;
@@ -510,6 +527,15 @@ export default function PlayerHost() {
    * Stalker'da create_link ile çözülmüş geçici adres; diğerlerinde
    * kanalın kendi adresi.
    */
+  // v15.2.19: AppState listener tek kez kurulduğu için canlı player bağlamını
+  // ref üzerinden güncel tut. v15.2.18 empty-deps listener eski değerleri kaydedebiliyordu.
+  playerTelemetryContextRef.current = {
+    visible,
+    channelId: String(channel?.id || ""),
+    phase: String(v2Phase),
+    engine: String(v2Profile.engine),
+  };
+
   const playUrl = resolvedUrl || channel?.url || null;
   const basePlaybackRequest = useMemo(() => {
     if (!playUrl || !channel) return null;

@@ -706,3 +706,21 @@ Bu sürüm build/cihazda henüz kanıtlanmış sayılmaz. İlk doğrulama GitHub
 - Başarılı/oynayan player session üzerinde stale buffering spinner overlay bastırılıyor; buffering tanılaması korunuyor.
 - v15.2.17 unified scan app-private staging/Binder koruması korunuyor.
 - APK/fiziksel cihaz testi kaynak paket hazırlanırken yapılmadı.
+
+# 2026-08-26 — v15.2.19-RC1 CORRECTIVE / v15.2.18 YENİDEN DENETİM
+
+v15.2.18 GitHub Actions ilk `denetle.js` HARD gate'te başarısız oldu. Gerçek Node yeniden üretiminde:
+- checkplayercore: eski 15.2.17/150217 hard-code,
+- check-v15216: V1 ve MAX_EVENTS=400 exact string hard-code,
+- check-v15217: eski 15.2.17/150217 hard-code,
+- check-v15218: cwd bağımlı ve denetle.js zincirine hiç bağlı değil
+kanıtlandı.
+
+v15.2.19 / versionCode 150219:
+- gate'ler ileri uyumlu ve cwd bağımsız hale getirildi,
+- v15.2.18 gate ana zincire bağlandı,
+- v15.2.18 runtime değişiklikleri satır satır yeniden incelendi,
+- AppState stale telemetry closure, spinner state temizliği, playlist switch race ve ana ekran stale native page sorunu sertleştirildi,
+- BLACK BOX V2'ye app-private document alanında bounded append-only JSONL persistent journal eklendi.
+
+Node v22.16.0 ile tüm hard gate'ler EXIT 0 ve 109 TS/TSX transpile syntax 0 diagnostic. Tam tsc/Gradle/cihaz henüz kanıtlanmış değildir. `INCELEME-v15.2.18-RC1-SATIR-SATIR.md` ayrıntılı kaynaktır.
