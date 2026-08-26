@@ -27,6 +27,7 @@ export default function StatsScreen() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticEvent[]>([]);
   const [scanDiagnostics, setScanDiagnostics] = useState<any[]>([]);
   const [lastScanCrash, setLastScanCrash] = useState<Record<string, any>>({});
+  const [blackBoxHealth, setBlackBoxHealth] = useState<Record<string, any>>({});
 
   // v15.2.4: İstatistik ekranı yalnız birkaç favori/son kanal için artık
   // on binlerce kanalı hydrate etmez. Native Core varsa ID bazlı Room sorgusu.
@@ -53,6 +54,7 @@ export default function StatsScreen() {
       setExitHistory(KizilkanNativeCore.getExitHistory(5));
       setScanDiagnostics(PanelScan.getDiagnosticEvents().slice(0, 12));
       setLastScanCrash(PanelScan.getLastCrash());
+      setBlackBoxHealth(await KizilkanNativeCore.getBlackBoxHealth?.() || {});
       setDiagnostics(await loadDiagnostics(120));
     })();
     return () => { cancelled = true; };
@@ -70,6 +72,7 @@ export default function StatsScreen() {
         setExitHistory(KizilkanNativeCore.getExitHistory(5));
         setScanDiagnostics(PanelScan.getDiagnosticEvents().slice(0, 12));
         setLastScanCrash(PanelScan.getLastCrash());
+        setBlackBoxHealth(await KizilkanNativeCore.getBlackBoxHealth?.() || {});
       }
     })();
     return () => { live = false; };
@@ -241,6 +244,8 @@ export default function StatsScreen() {
                 <Text key={`exit-${i}`} style={[styles.telemetryLine, { color: colors.onSurfaceTertiary }]}>Önceki {i+2}: {String(x.reasonLabel || x.reason)} · {formatDate(x.timestamp)} · PSS {formatKb(x.pssKb)}{x.traceAvailable ? " · trace var" : ""}</Text>
               ))}
               {exitScanCorrelation ? <Text style={[styles.telemetryLine, { color: colors.brandPrimary }]}>Çıkıştan hemen önce tarama: {String(exitScanCorrelation.state || "?")} · {Number(exitScanCorrelation.tested||0)}/{Number(exitScanCorrelation.total||0)} · PSS {formatKb(exitScanCorrelation.pssKb)}</Text> : null}
+              {blackBoxHealth.initialized ? <Text style={[styles.telemetryLine, { color: colors.brandPrimary }]}>Flight Recorder v{String(blackBoxHealth.schemaVersion || 3)}: {Number(blackBoxHealth.dbEvents || 0)} olay · kritik {Number(blackBoxHealth.dbCriticalEvents || 0)} · ölüm journalı {formatBytes(blackBoxHealth.criticalJournalBytes)} · ANR watchdog {blackBoxHealth.watchdogActive ? "AKTİF" : "PASİF"}</Text> : null}
+              <Text style={[styles.telemetryLine, { color: colors.onSurfaceTertiary }]}>Thread: {String(runtimeMemory.threadCount ?? "—")} · FD: {String(runtimeMemory.fdCount ?? "—")} · Uptime: {runtimeMemory.uptimeMs ? `${Math.round(Number(runtimeMemory.uptimeMs)/1000)} sn` : "—"}</Text>
             </View>
           </>
         )}
@@ -264,10 +269,10 @@ export default function StatsScreen() {
 
         <View style={{ flexDirection: "row", gap: SPACING.sm }}>
           <FocusButton testID="diagnostics-share-btn" style={[styles.diagButton, { backgroundColor: colors.brandPrimary }]} onPress={async () => {
-            try { await exportDiagnosticReport({ runtimeMemory, storageFootprint, exitHistory, scanDiagnostics, lastScanCrash }); }
+            try { await exportDiagnosticReport({ runtimeMemory, storageFootprint, exitHistory, scanDiagnostics, lastScanCrash, blackBoxHealth }); }
             catch (e:any) { Alert.alert("Tanılama", e?.message || "Rapor oluşturulamadı."); }
           }}>
-            <Ionicons name="share-social" size={18} color="#fff" /><Text style={styles.diagButtonText}>Tanılama Raporunu Paylaş</Text>
+            <Ionicons name="share-social" size={18} color="#fff" /><Text style={styles.diagButtonText}>Flight Recorder Raporunu Paylaş</Text>
           </FocusButton>
           <FocusButton testID="diagnostics-clear-btn" style={[styles.diagButton, { borderWidth:1, borderColor: colors.border }]} onPress={() => Alert.alert("Tanılama geçmişi", "Player ve uygulama tanılama geçmişi silinsin mi?", [{text:"Vazgeç",style:"cancel"},{text:"Sil",style:"destructive",onPress:async()=>{await clearDiagnostics();setDiagnostics([]);}}])}>
             <Ionicons name="trash-outline" size={18} color={colors.onSurface} /><Text style={[styles.diagButtonText,{color:colors.onSurface}]}>Geçmişi Temizle</Text>

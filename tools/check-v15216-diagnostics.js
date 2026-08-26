@@ -15,7 +15,7 @@ const forbid = (file, text, label) => {
   const p = path.join(root, file); if (!fs.existsSync(p)) return;
   if (fs.readFileSync(p,'utf8').includes(text)) { console.log(`HATA — ${label}: yasak '${text}'`); bad++; }
 };
-{ const d=fs.readFileSync(path.join(root,'src/utils/diagnostics.ts'),'utf8'); if(!/KIZILKAN_(?:DIAGNOSTICS_V1|BLACK_BOX_V2)/.test(d)){ console.log('HATA — kalıcı tanılama raporu formatı yok'); bad++; } }
+{ const d=fs.readFileSync(path.join(root,'src/utils/diagnostics.ts'),'utf8'); if(!/KIZILKAN_(?:DIAGNOSTICS_V1|BLACK_BOX_V2|FLIGHT_RECORDER_V3)/.test(d)){ console.log('HATA — kalıcı tanılama raporu formatı yok'); bad++; } }
 need('src/utils/diagnostics.ts', 'SENSITIVE_KEY', 'tanılama gizli alan redaksiyonu');
 { const d=fs.readFileSync(path.join(root,'src/utils/diagnostics.ts'),'utf8'); const m=d.match(/MAX_EVENTS\s*=\s*(\d+)/); if(!m || Number(m[1]) < 400){ console.log(`HATA — bounded ring buffer kapasitesi yetersiz: ${m?.[1] || 'yok'}`); bad++; } }
 need('src/player/PlayerHost.tsx', 'CHANNEL_SELECTED', 'player seçim başlangıç telemetrisi');
@@ -30,7 +30,7 @@ need('src/utils/stalker.ts', 'STALKER_PROFILE_VARIANT_ERROR', 'MAG profile asama
 forbid('src/utils/stalker.ts', 'stalkerProfile(cred, session).catch(() => null)', 'sessiz MAG profile hatası');
 need('modules/kizilkan-native-core/index.ts', 'getExitHistory', 'process exit geçmişi bridge');
 need('modules/panel-scan/index.ts', 'getDiagnosticEvents', 'scan flight recorder bridge');
-need('app/stats.tsx', 'Tanılama Raporunu Paylaş', 'tanılama paylaşım UI');
+{ const ui=fs.readFileSync(path.join(root,'app/stats.tsx'),'utf8'); if(!/(?:Tanılama|Flight Recorder) Raporunu Paylaş/.test(ui)){ console.log('HATA — tanılama paylaşım UI yok'); bad++; } }
 need('app/stats.tsx', 'Player Tanılama', 'player tanılama UI');
 need('app/stats.tsx', 'Tarama Tanılama', 'scan tanılama UI');
 const kt = path.join(root, 'modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt');

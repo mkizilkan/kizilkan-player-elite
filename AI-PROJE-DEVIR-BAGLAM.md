@@ -724,3 +724,11 @@ v15.2.19 / versionCode 150219:
 - BLACK BOX V2'ye app-private document alanında bounded append-only JSONL persistent journal eklendi.
 
 Node v22.16.0 ile tüm hard gate'ler EXIT 0 ve 109 TS/TSX transpile syntax 0 diagnostic. Tam tsc/Gradle/cihaz henüz kanıtlanmış değildir. `INCELEME-v15.2.18-RC1-SATIR-SATIR.md` ayrıntılı kaynaktır.
+
+## v15.2.20-RC1 — TypeScript Corrective + Flight Recorder V3
+- v15.2.19 CI TS2322 kök nedeni: `Promise<void>` active playlist write queue içine `storage.setItem()` kaynaklı `Promise<boolean>` döndürülmesi. v15.2.20'de async/await + void completion ile düzeltildi.
+- Native `diagnostic_events` Room/WAL store + schema v3 migration eklendi.
+- Native `NativeBlackBox.kt`: uncaught exception critical journal, ANR öncesi main-thread watchdog, processStateSummary checkpoint, memory/thread/FD snapshot, retention/rotation.
+- JS diagnostics native-first persistence + terminal sync critical journal + AppState/route/player correlation + anomaly export.
+- PlayerHost Media3/VLC/MPV hata/diagnostic olayları genişletildi.
+- Full tsc/Gradle bu geliştirme ortamında dependency/build toolchain eksikliği nedeniyle çalıştırılmadı; CI bekleniyor.

@@ -530,7 +530,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     const key = activeKey(currentPid());
     const persist = activeSwitchWriteQueue.current = activeSwitchWriteQueue.current
       .catch(() => {})
-      .then(() => storage.setItem(key, id));
+      .then(async () => {
+        await storage.setItem(key, id);
+      });
     await persist;
     if (activeSwitchGeneration.current !== generation) {
       void recordDiagnostic('navigation', 'PLAYLIST_SWITCH_STALE_DISCARDED', { fromPlaylistId: previousId || '', toPlaylistId: id, stage: 'persisted' });

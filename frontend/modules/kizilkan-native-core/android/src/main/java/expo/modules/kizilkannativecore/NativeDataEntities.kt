@@ -71,3 +71,31 @@ data class EpgProgramEntity(
   val startTimestamp: Long,
   val stopTimestamp: Long,
 )
+
+
+/** v15.2.20: Uçak kara kutusu — Room/WAL append-only olay kaydı. */
+@Entity(
+  tableName = "diagnostic_events",
+  indices = [
+    Index(value = ["atEpochMs"]),
+    Index(value = ["domain", "atEpochMs"]),
+    Index(value = ["sessionId", "atEpochMs"]),
+    Index(value = ["runId", "atEpochMs"]),
+    Index(value = ["critical", "atEpochMs"]),
+  ],
+)
+data class DiagnosticEventEntity(
+  @PrimaryKey val id: String,
+  val atEpochMs: Long,
+  val elapsedRealtimeMs: Long,
+  val appSessionId: String,
+  val domain: String,
+  val event: String,
+  val severity: String,
+  val sessionId: String,
+  val runId: String,
+  val threadName: String,
+  val processId: Int,
+  val critical: Boolean,
+  val payloadJson: String,
+)

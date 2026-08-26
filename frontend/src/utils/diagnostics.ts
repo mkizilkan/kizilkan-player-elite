@@ -1,8 +1,9 @@
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { storage } from '@/src/utils/storage';
+import { KizilkanNativeCore } from '@/modules/kizilkan-native-core';
 
-export type DiagnosticDomain = 'system' | 'player' | 'scan' | 'catalog' | 'backup' | 'navigation';
+export type DiagnosticDomain = 'system' | 'player' | 'scan' | 'catalog' | 'backup' | 'navigation' | 'network' | 'database' | 'import' | 'lifecycle' | 'mag' | 'xtream';
 
 export type DiagnosticEvent = {
   id: string;
@@ -11,6 +12,8 @@ export type DiagnosticEvent = {
   event: string;
   sessionId?: string;
   runId?: string;
+  severity?: 'info' | 'warn' | 'error' | 'critical';
+  critical?: boolean;
   data?: Record<string, any>;
 };
 
@@ -18,6 +21,9 @@ const KEY = 'kizilkan.diagnostics.flightRecorder.v2';
 const LEGACY_KEY = 'kizilkan.diagnostics.flightRecorder.v1';
 const MAX_EVENTS = 1500;
 const MAX_EXPORT_EVENTS = 1500;
+const SYSTEM_SAMPLE_INTERVAL_MS = 5000;
+const CRITICAL_EVENT_RE = /CRASH|ANR|FATAL|BLACK_SCREEN|ROLLBACK|TIMEOUT|STALL|OOM|LOW_MEMORY|FAILED|ERROR/i;
+const WARN_EVENT_RE = /WARN|STALE|RECOVERY|REBUFFER|SLOW|DROPPED/i;
 const JOURNAL_NAME = 'kizilkan-blackbox-v2.jsonl';
 const JOURNAL_ARCHIVE_NAME = 'kizilkan-blackbox-v2.1.jsonl';
 const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
@@ -29,21 +35,29 @@ function shortHash(input: string): string {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 let writeQueue: Promise<void> = Promise.resolve();
+let nativeInitialized = false;
+let lastSystemSampleAt = 0;
+let appSessionId = `js-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
 
 function redactString(input: string): string {
   let value = String(input || '');
   value = value.replace(/\b(?:[0-9A-F]{2}:){5}[0-9A-F]{2}\b/gi, '[REDACTED-MAC]');
   value = value.replace(/(https?:\/\/)([^\s/@:]+):([^\s/@]+)@/gi, '$1[REDACTED]@');
-  try {
-    if (/^https?:\/\//i.test(value)) {
-      const u = new URL(value);
+  const scrubUrl = (raw: string): string => {
+    try {
+      const u = new URL(raw);
       const queryKeys: string[] = [];
       u.searchParams.forEach((_value, key) => queryKeys.push(key));
       for (const key of queryKeys) if (SENSITIVE_KEY.test(key)) u.searchParams.set(key, '[REDACTED]');
       const hostHash = shortHash(u.host.toLowerCase());
+      u.username = ''; u.password = '';
       u.host = `host-${hostHash}.invalid`;
-      value = u.toString();
-    }
+      return u.toString();
+    } catch { return '[REDACTED-URL]'; }
+  };
+  try {
+    if (/^https?:\/\//i.test(value)) value = scrubUrl(value);
+    else value = value.replace(/https?:\/\/[^\s<>"']+/gi, (url) => scrubUrl(url));
   } catch {}
   return value.slice(0, 1000);
 }
@@ -128,22 +142,88 @@ function parseEvents(raw: string): DiagnosticEvent[] {
   }
 }
 
+function classifySeverity(event: string): DiagnosticEvent['severity'] {
+  if (/CRASH|ANR|FATAL|BLACK_SCREEN|ROLLBACK_FAILED/i.test(event)) return 'critical';
+  if (/ERROR|FAILED|TIMEOUT|STALL|OOM|LOW_MEMORY/i.test(event)) return 'error';
+  if (WARN_EVENT_RE.test(event)) return 'warn';
+  return 'info';
+}
+
+function shouldSampleSystem(domain: DiagnosticDomain, event: string, severity: DiagnosticEvent['severity']): boolean {
+  const now = Date.now();
+  if (severity === 'critical' || severity === 'error') return true;
+  if (!['player','scan','catalog','import','navigation','lifecycle'].includes(domain)) return false;
+  if (now - lastSystemSampleAt < SYSTEM_SAMPLE_INTERVAL_MS) return false;
+  if (!/START|READY|FIRST_FRAME|COMPLETED|FAILED|ERROR|BUFFER|SWITCH|FOREGROUND|BACKGROUND|RESUME|PAUSE/i.test(event)) return false;
+  lastSystemSampleAt = now;
+  return true;
+}
+
+function systemSnapshot(): Record<string, any> {
+  try { return sanitizeValue(KizilkanNativeCore.getRuntimeMemory?.() || {}); } catch { return {}; }
+}
+
+function ensureNativeBlackBox(): Record<string, any> {
+  if (!KizilkanNativeCore.available) return {};
+  if (!nativeInitialized) {
+    try {
+      const health = KizilkanNativeCore.initializeBlackBox?.() || {};
+      nativeInitialized = true;
+      appSessionId = String(health?.appSessionId || appSessionId);
+      return health;
+    } catch {}
+  }
+  return {};
+}
+
+export function initializeDiagnostics(): Record<string, any> {
+  const native = ensureNativeBlackBox();
+  try { KizilkanNativeCore.setBlackBoxCheckpoint?.(`startup;session:${appSessionId}`); } catch {}
+  return { appSessionId, native };
+}
+
+function checkpointSummary(item: DiagnosticEvent): string {
+  const bits = [item.domain, item.event];
+  if (item.sessionId) bits.push(`s:${shortHash(item.sessionId)}`);
+  if (item.runId) bits.push(`r:${shortHash(item.runId)}`);
+  return bits.join(';').slice(0, 120);
+}
+
 export async function recordDiagnostic(
   domain: DiagnosticDomain,
   event: string,
   data: Record<string, any> = {},
   ctx: { sessionId?: string; runId?: string } = {},
 ): Promise<void> {
+  ensureNativeBlackBox();
+  const safeEvent = String(event || 'EVENT').slice(0, 80);
+  const severity = classifySeverity(safeEvent);
+  const critical = severity === 'critical' || severity === 'error' || CRITICAL_EVENT_RE.test(safeEvent);
+  const syncCritical = severity === 'critical' || /CRASH|ANR|FATAL|BLACK_SCREEN|OOM|LOW_MEMORY|ROLLBACK_FAILED|PROCESS_DEATH/i.test(safeEvent);
+  const safeData = sanitizeValue(data);
   const item: DiagnosticEvent = {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     at: Date.now(),
     domain,
-    event: String(event || 'EVENT').slice(0, 80),
+    event: safeEvent,
     sessionId: ctx.sessionId ? String(ctx.sessionId).slice(0, 120) : undefined,
     runId: ctx.runId ? String(ctx.runId).slice(0, 120) : undefined,
-    data: sanitizeValue(data),
+    severity,
+    critical,
+    data: shouldSampleSystem(domain, safeEvent, severity)
+      ? { ...safeData, _system: systemSnapshot(), _appSessionId: appSessionId }
+      : { ...safeData, _appSessionId: appSessionId },
   };
+  if (syncCritical) {
+    // Gerçek terminal/kritik olay, JS promise kuyruğu/crash öncesinde mümkün olduğunca erken
+    // native senkron ölüm-journalına düşer. Native taraf hatayı asla yutmaz/değiştirmez.
+    try { KizilkanNativeCore.appendCriticalBlackBoxEvent?.(JSON.stringify(item)); } catch {}
+  }
   writeQueue = writeQueue.then(async () => {
+    // Native Room/WAL uçuş kaydı ilk kalıcılık katmanıdır. Başarısız olsa bile
+    // JSONL + AsyncStorage geri dönüş yolları uygulama işlevini kesmez.
+    try { await KizilkanNativeCore.appendBlackBoxEvent?.(JSON.stringify(item)); } catch {}
+    try { KizilkanNativeCore.setBlackBoxCheckpoint?.(checkpointSummary(item)); } catch {}
     appendPersistentJournal(item);
     let raw = (await storage.getItem<string>(KEY, '')) || '';
     if (!raw) raw = (await storage.getItem<string>(LEGACY_KEY, '')) || '';
@@ -166,6 +246,7 @@ export async function loadDiagnostics(limit = MAX_EVENTS): Promise<DiagnosticEve
 export async function clearDiagnostics(): Promise<void> {
   await writeQueue.catch(() => {});
   await Promise.all([storage.removeItem(KEY), storage.removeItem(LEGACY_KEY)]);
+  try { await KizilkanNativeCore.clearBlackBox?.(); } catch {}
   for (const name of [JOURNAL_NAME, JOURNAL_ARCHIVE_NAME]) {
     try { const file = new File(Paths.document, name); if (file.exists) file.delete(); } catch {}
   }
@@ -202,17 +283,45 @@ export async function recordBlackBox(event: string, data: Record<string, any> = 
   return recordDiagnostic('system', `BLACKBOX_${event}`, { ...data, appAt: Date.now() }, ctx);
 }
 
+function deriveAnomalies(events: DiagnosticEvent[]) {
+  const out: Array<Record<string, any>> = [];
+  const add = (type: string, e: DiagnosticEvent, evidence: Record<string, any> = {}) => {
+    if (out.length >= 250) return;
+    out.push({ type, at: e.at, domain: e.domain, event: e.event, sessionId: e.sessionId, runId: e.runId, evidence: sanitizeValue(evidence) });
+  };
+  for (const e of events) {
+    if (e.event === 'STALE_BUFFERING_CLEARED') add('PLAYER_STALE_BUFFERING_STATE', e, e.data || {});
+    if (e.event === 'PLAYLIST_SWITCH_STALE_DISCARDED') add('PLAYLIST_STALE_ASYNC_RESULT', e, e.data || {});
+    if (e.event === 'FIRST_FRAME') {
+      const ms = Number(e.data?.totalFromSelectionMs ?? e.data?.firstFrameMs ?? 0);
+      if (Number.isFinite(ms) && ms >= 5000) add('PLAYER_SLOW_FIRST_FRAME', e, { firstFrameMs: ms });
+    }
+    if (/BLACK_SCREEN/i.test(e.event)) add('PLAYER_BLACK_SCREEN', e, e.data || {});
+    if (/ANR|STALL|TIMEOUT|OOM|LOW_MEMORY/i.test(e.event)) add('RUNTIME_STALL_OR_RESOURCE', e, e.data || {});
+    if (e.critical && /ERROR|FAILED|FATAL|CRASH/i.test(e.event)) add('CRITICAL_FAILURE', e, e.data || {});
+  }
+  return out;
+}
+
 export async function exportDiagnosticReport(extra: Record<string, any> = {}): Promise<string> {
+  ensureNativeBlackBox();
   const events = await loadDiagnostics(MAX_EXPORT_EVENTS);
-  const critical = events.filter((e) => /ERROR|FAILED|CRASH|ANR|STALL|TIMEOUT|ROLLBACK|BLACK_SCREEN/.test(e.event)).slice(0, 250);
+  const critical = events.filter((e) => e.critical || CRITICAL_EVENT_RE.test(e.event)).slice(0, 250);
+  let nativeFlightRecorder: Record<string, any> = {};
+  try { nativeFlightRecorder = await KizilkanNativeCore.getBlackBoxSnapshot?.(MAX_EXPORT_EVENTS) || {}; } catch {}
   const payload = sanitizeValue({
-    format: 'KIZILKAN_BLACK_BOX_V2',
-    schemaVersion: 2,
+    format: 'KIZILKAN_FLIGHT_RECORDER_V3',
+    schemaVersion: 3,
     eventCapacity: MAX_EVENTS,
+    appSessionId,
     persistentJournal: journalInfo(),
+    nativeFlightRecorder,
+    processExitHistory: (() => { try { return KizilkanNativeCore.getExitHistory?.(10) || []; } catch { return []; } })(),
+    runtimeAtExport: systemSnapshot(),
     createdAt: new Date().toISOString(),
     extra,
     critical,
+    anomalies: deriveAnomalies(events),
     events,
   });
   const name = `kizilkan-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -221,7 +330,7 @@ export async function exportDiagnosticReport(extra: Record<string, any> = {}): P
   file.create();
   file.write(JSON.stringify(payload, null, 2));
   if (await Sharing.isAvailableAsync()) {
-    await Sharing.shareAsync(file.uri, { mimeType: 'application/json', dialogTitle: 'KIZILKAN Tanılama Raporunu Paylaş' });
+    await Sharing.shareAsync(file.uri, { mimeType: 'application/json', dialogTitle: 'KIZILKAN Flight Recorder Raporunu Paylaş' });
   }
   return file.uri;
 }

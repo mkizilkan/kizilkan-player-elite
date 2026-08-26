@@ -115,3 +115,6 @@ Son kaynak: v15.2.18 / 150218. Test edilmesi gereken P0 akışlar: playlist otom
 
 ## NİHAİ DEVAM NOKTASI — v15.2.19-RC1 — 2026-08-26
 v15.2.18 CI HARD gate patlaması düzeltildi; eski gate'lerin version/string hard-code nedenleri gerçek Node ile kanıtlandı. v15.2.18 runtime değişiklikleri yeniden denetlendi ve bulunan stale closure / playlist race / stale native page / buffering-state açıkları v15.2.19'da sertleştirildi. BLACK BOX V2 persistent JSONL journal eklendi. Tüm Node hard gate'leri EXIT 0; tam tsc/Gradle/cihaz testi bekliyor.
+
+## SON DURUM — v15.2.20-RC1
+Kaynak geliştirme tamamlandı; Node hard-gate zinciri ve v15.2.20 semantic Promise<void> contract geçti. Tam bağımlılıklı `npx tsc --noEmit`, Expo prebuild ve Gradle release henüz bu ortamda çalıştırılmadı. Bir sonraki adım: ZIP re-extract kontrolü -> Termux kontrollü push -> GitHub Actions gerçek TypeScript/Kotlin/Gradle build sonucu -> fiziksel cihaz acceptance.

@@ -121,3 +121,30 @@ interface EpgProgramDao {
   """)
   fun window(playlistId: String, channelIds: List<String>, nowSec: Long, windowEndSec: Long): List<EpgProgramEntity>
 }
+
+@Dao
+interface DiagnosticEventDao {
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  fun insert(item: DiagnosticEventEntity)
+
+  @Query("SELECT * FROM diagnostic_events ORDER BY atEpochMs DESC LIMIT :limit")
+  fun latest(limit: Int): List<DiagnosticEventEntity>
+
+  @Query("SELECT * FROM diagnostic_events WHERE critical = 1 ORDER BY atEpochMs DESC LIMIT :limit")
+  fun latestCritical(limit: Int): List<DiagnosticEventEntity>
+
+  @Query("SELECT COUNT(*) FROM diagnostic_events")
+  fun count(): Int
+
+  @Query("SELECT COUNT(*) FROM diagnostic_events WHERE critical = 1")
+  fun criticalCount(): Int
+
+  @Query("DELETE FROM diagnostic_events WHERE id IN (SELECT id FROM diagnostic_events WHERE critical = 0 ORDER BY atEpochMs ASC LIMIT :count)")
+  fun deleteOldestNormal(count: Int): Int
+
+  @Query("DELETE FROM diagnostic_events WHERE id IN (SELECT id FROM diagnostic_events WHERE critical = 1 ORDER BY atEpochMs ASC LIMIT :count)")
+  fun deleteOldestCritical(count: Int): Int
+
+  @Query("DELETE FROM diagnostic_events")
+  fun clear(): Int
+}

@@ -809,6 +809,15 @@ export default function PlayerHost() {
       }
 
       if (event?.error) {
+        void recordDiagnostic("player", "MEDIA3_ERROR", {
+          status: String(event?.status || ""),
+          error: String(event?.error?.message || event?.error || "Media3 error"),
+          phase: v2Phase,
+          engine: v2Profile.engine,
+          decoder: v2Profile.decoder,
+          fromSessionMs: Math.max(0, Date.now() - sessionStartedAtRef.current),
+          fromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current),
+        }, { sessionId: playerDiagnosticSessionRef.current });
         // v15.2.3: first-frame/playing başarı callback'inden hemen sonra gelen
         // bayat source error çalışan görüntüyü alternatif URL'ye sürüklemesin.
         if (successfulSessionRef.current === sid && Date.now() - successfulSessionAtRef.current < 1800) {
@@ -2485,6 +2494,15 @@ export default function PlayerHost() {
                 const sid = activeSessionId;
                 const profile = v2Profile;
                 const profileKey = v2ProfileKey;
+                void recordDiagnostic("player", "VLC_ERROR_SIGNAL", {
+                  message: String(message || "VLC error"),
+                  phase: v2Phase,
+                  hardwareAccel: effectiveVlcHwAccel,
+                  videoReady: vlcVideoReady,
+                  videoMetaReady: vlcVideoMetaReady,
+                  playing: vlcPlayingRef.current,
+                  fromSessionMs: Math.max(0, Date.now() - sessionStartedAtRef.current),
+                }, { sessionId: playerDiagnosticSessionRef.current });
 
                 void (async () => {
                   if (successfulSessionRef.current === sid && Date.now() - successfulSessionAtRef.current < 1800) {
@@ -2780,6 +2798,18 @@ export default function PlayerHost() {
               onDiagnostic={(e: any) => {
                 if (!sessionGateRef.current.isActive(activeSessionId) || v2Profile.engine !== "mpv") return;
                 const ev = e?.nativeEvent || e || {};
+                if (ev?.event) {
+                  void recordDiagnostic("player", "MPV_NATIVE_DIAGNOSTIC", {
+                    nativeEvent: String(ev.event),
+                    width: Number(ev.width || 0),
+                    height: Number(ev.height || 0),
+                    codec: ev.codec || "",
+                    format: ev.format || "",
+                    hwdec: ev.hwdec || "",
+                    phase: v2Phase,
+                    fromSessionMs: Math.max(0, Date.now() - sessionStartedAtRef.current),
+                  }, { sessionId: playerDiagnosticSessionRef.current });
+                }
                 if (sheetRef.current === "stats" && ev?.event) {
                   setVideoStats(prev => ({
                     ...prev,

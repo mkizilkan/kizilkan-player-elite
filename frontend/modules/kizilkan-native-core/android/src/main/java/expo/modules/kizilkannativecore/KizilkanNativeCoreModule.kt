@@ -176,6 +176,35 @@ class KizilkanNativeCoreModule : Module() {
       exitHistory(maxNum.coerceIn(1, 10))
     }
 
+    // v15.2.20: KIZILKAN Flight Recorder v3 — native Room/WAL + kritik crash/ANR journal.
+    Function("initializeBlackBox") {
+      NativeBlackBox.initialize(context())
+    }
+
+    AsyncFunction("appendBlackBoxEvent") { rawJson: String ->
+      NativeBlackBox.appendJson(context(), rawJson)
+    }
+
+    Function("appendCriticalBlackBoxEvent") { rawJson: String ->
+      NativeBlackBox.appendCriticalJson(context(), rawJson)
+    }
+
+    AsyncFunction("getBlackBoxSnapshot") { limit: Int ->
+      NativeBlackBox.snapshot(context(), limit.coerceIn(1, 2000))
+    }
+
+    AsyncFunction("getBlackBoxHealth") {
+      NativeBlackBox.health(context())
+    }
+
+    Function("setBlackBoxCheckpoint") { summary: String ->
+      NativeBlackBox.setCheckpoint(context(), summary)
+    }
+
+    AsyncFunction("clearBlackBox") {
+      NativeBlackBox.clear(context())
+    }
+
     // v15.2.4 Native Player Session Arbiter Phase 1: player motorlarını henüz
     // Kotlin'e taşımadan generation authority native tarafta tutulur. Böylece
     // React yeniden render/activity restore olsa bile eski callback yeni session'a
@@ -1037,6 +1066,10 @@ class KizilkanNativeCoreModule : Module() {
       "systemTotalMemBytes" to sys.totalMem,
       "systemThresholdBytes" to sys.threshold,
       "systemLowMemory" to sys.lowMemory,
+      "threadCount" to try { Thread.getAllStackTraces().size } catch (_: Throwable) { -1 },
+      "fdCount" to try { File("/proc/self/fd").list()?.size ?: -1 } catch (_: Throwable) { -1 },
+      "uptimeMs" to SystemClock.uptimeMillis(),
+      "elapsedRealtimeMs" to SystemClock.elapsedRealtime(),
     )
   }
 
