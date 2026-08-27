@@ -17,7 +17,8 @@ need('frontend/src/utils/stalker.ts','MAG254-legacy','MAG254 profil fallback');
 need('frontend/src/utils/stalker.ts','STALKER_LIVE_FALLBACK','live ordered-list fallback');
 need('frontend/src/utils/stalker.ts','STALKER_VOD_PARTIAL_FAILURE','VOD partial success');
 need('frontend/src/utils/stalker.ts','STALKER_SERIES_PARTIAL_FAILURE','Series partial success');
-need('frontend/src/utils/stalker.ts','random: primitiveString(data?.js?.random)','handshake random koruma');
+if (!read('frontend/src/utils/stalker.ts').includes('random: primitiveString(data?.js?.random)') &&
+    !read('frontend/src/utils/stalker.ts').includes('random:primitiveString(data?.js?.random)')) { console.error('HATA — handshake random koruma'); bad++; }
 function compile(rel){return ts.transpileModule(fs.readFileSync(path.join(front,rel),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;}
 try{compile('src/utils/diagnostics.ts');compile('src/utils/stalker.ts');compile('app/stats.tsx');}catch(e){console.log('HATA — TS transpile:',e.message);bad++;}
 if(bad){console.log(`\n❌ ${bad} v15.2.22 HARD-GATE HATASI`);process.exit(1);} console.log('TEMIZ — v15.2.22 Flight Recorder V4 + MAG compatibility contract');

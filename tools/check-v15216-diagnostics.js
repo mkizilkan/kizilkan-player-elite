@@ -25,7 +25,10 @@ need('src/utils/stalker.ts', 'stalkerSessionCache', 'MAG session cache');
 need('src/utils/stalker.ts', 'STALKER_RESOLVE_DONE', 'MAG resolve süre telemetrisi');
 need('src/utils/stalker.ts', 'forceFresh: true', '401/403 sonrası fresh login');
 need('src/utils/stalker.ts', 'MAG250-legacy-minimal', 'MAG profile legacy uyumluluk varyanti');
-need('src/utils/stalker.ts', 'MAG250-derived-identity', 'MAG profile derived identity uyumluluk varyanti');
+{
+  const s=fs.readFileSync(path.join(root,'src/utils/stalker.ts'),'utf8');
+  if (!s.includes('MAG250-derived-identity') && !s.includes('`${preferredModel}-derived-identity`')) { console.error('HATA — MAG profile derived identity uyumluluk varyanti'); bad++; }
+}
 need('src/utils/stalker.ts', 'STALKER_PROFILE_VARIANT_ERROR', 'MAG profile asama diagnostigi');
 forbid('src/utils/stalker.ts', 'stalkerProfile(cred, session).catch(() => null)', 'sessiz MAG profile hatası');
 need('modules/kizilkan-native-core/index.ts', 'getExitHistory', 'process exit geçmişi bridge');
@@ -56,7 +59,12 @@ async function sessionCacheFixture(){
     if(q.action==='create_link'){creates++;return response({js:{cmd:'ffmpeg http://stream/'+creates}});}
     throw new Error('Beklenmeyen endpoint '+url);
   };
-  const req=id=>id==='@/src/utils/diagnostics'?{recordDiagnostic:async()=>{}}:require(id);
+  const memoryStore=new Map();
+  const req=id=>{
+    if(id==='@/src/utils/diagnostics') return {recordDiagnostic:async()=>{},markTask:()=>()=>{}};
+    if(id==='@/src/utils/storage') return {storage:{getItem:async(k,f)=>memoryStore.has(k)?memoryStore.get(k):f,setItem:async(k,v)=>{memoryStore.set(k,v);return true;},removeItem:async(k)=>{memoryStore.delete(k);return true;}}};
+    return require(id);
+  };
   const box={module:{exports:{}},exports:{},require:req,console,URL,URLSearchParams,AbortController,setTimeout,clearTimeout,fetch}; box.exports=box.module.exports;
   vm.runInNewContext(js,box,{filename:'stalker.ts'}); const m=box.module.exports;
   const c={portal:'http://portal.test',mac:'00:11:22:33:44:55'};

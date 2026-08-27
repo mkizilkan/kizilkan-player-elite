@@ -28,6 +28,9 @@ interface MediaItemDao {
   @Query("DELETE FROM media_items WHERE playlistId = :playlistId")
   fun deletePlaylist(playlistId: String)
 
+  @Query("DELETE FROM media_items WHERE playlistId = :playlistId AND kind = :kind")
+  fun deleteKind(playlistId: String, kind: String)
+
   /** v15.2.14: backup restore swap için satırları JS'e taşımadan playlist kimliğini değiştir. */
   @Query("UPDATE media_items SET rowKey = :toId || substr(rowKey, length(:fromId) + 1), playlistId = :toId WHERE playlistId = :fromId")
   fun movePlaylist(fromId: String, toId: String): Int

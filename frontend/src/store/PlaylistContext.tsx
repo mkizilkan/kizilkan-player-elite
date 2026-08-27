@@ -113,6 +113,7 @@ interface PlaylistContextValue {
   ensureHeavyLoaded: (id?: string) => Promise<Playlist | null>;
   addPlaylist: (p: Playlist) => Promise<void>;
   addPreparedPlaylist: (p: Playlist) => Promise<void>;
+  enrichPlaylistMedia: (id: string, patch: { vod?: Playlist["vod"]; series?: Playlist["series"] }) => Promise<void>;
   removePlaylist: (id: string) => Promise<void>;
   updatePlaylist: (id: string, patch: Partial<Playlist>) => Promise<void>;
   setActivePlaylist: (id: string) => Promise<void>;
@@ -551,6 +552,77 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     }
   }, [persistMeta, activeId]);
 
+  /**
+   * v15.2.25 RC1 — MAG live-first enrichment.
+   * Native Core varsa mevcut LIVE katalogu JS'e hydrate etmeden yalnız VOD/Series
+   * Room kind'larını atomik değiştirir. Her kind sonrası snapshot doğrulanır;
+   * metadata yalnız doğrulanmış canonical sayılardan publish edilir.
+   */
+  const enrichPlaylistMedia = useCallback(async (id: string, patch: { vod?: Playlist["vod"]; series?: Playlist["series"] }) => {
+    const finishTask = markTask('room:mag-enrichment', { playlistId: id });
+    const startedAt = Date.now();
+    try {
+      const target = playlistsRef.current.find(pl => pl.id === id);
+      if (!target) throw new Error('MAG enrichment hedef playlist bulunamadı.');
+      void recordDiagnostic('database', 'MAG_ENRICH_ROOM_START', {
+        playlistId: id,
+        vod: patch.vod?.length ?? -1,
+        series: patch.series?.length ?? -1,
+      });
+
+      if (KizilkanNativeCore.available) {
+        let summary = await KizilkanNativeCore.getPlaylistSummary(id);
+        if (!summary?.roomIndexed) throw new Error('MAG enrichment öncesi Room snapshot doğrulanamadı.');
+
+        if (patch.vod) {
+          summary = await KizilkanNativeCore.replacePlaylistKindJson(id, 'vod', JSON.stringify(patch.vod));
+          if (!summary?.roomIndexed) throw new Error('MAG VOD Room commit doğrulanamadı.');
+        }
+        if (patch.series) {
+          summary = await KizilkanNativeCore.replacePlaylistKindJson(id, 'series', JSON.stringify(patch.series));
+          if (!summary?.roomIndexed) throw new Error('MAG Series Room commit doğrulanamadı.');
+        }
+
+        const latest = playlistsRef.current;
+        const next = latest.map(pl => pl.id === id ? ({
+          ...pl,
+          channels: [], vod: [], series: [],
+          channelsCount: Number(summary?.channels || pl.channelsCount || 0),
+          vodCount: Number(summary?.vod || 0),
+          seriesCount: Number(summary?.series || 0),
+        } as Playlist) : pl);
+        playlistsRef.current = next;
+        setPlaylists(next);
+        loadedHeavy.current.delete(id);
+        if (activeId === id && summary) setNativeSummary(summary);
+        await persistMeta(next);
+        void recordDiagnostic('database', 'MAG_ENRICH_ROOM_OK', {
+          playlistId: id,
+          elapsedMs: Date.now() - startedAt,
+          channels: summary?.channels || 0,
+          vod: summary?.vod || 0,
+          series: summary?.series || 0,
+        });
+        return;
+      }
+
+      // Web/legacy: ağır katalog zaten JS belleğinde tutulduğu için eski atomik
+      // update yolunu kullanmak güvenlidir.
+      const hydrated = await ensureHeavyLoaded(id);
+      if (!hydrated) throw new Error('MAG enrichment için legacy playlist yüklenemedi.');
+      await updatePlaylist(id, {
+        ...(patch.vod ? { vod: patch.vod } : {}),
+        ...(patch.series ? { series: patch.series } : {}),
+      });
+      void recordDiagnostic('database', 'MAG_ENRICH_ROOM_OK', { playlistId: id, elapsedMs: Date.now() - startedAt, native: false });
+    } catch (e:any) {
+      void recordDiagnostic('database', 'MAG_ENRICH_ROOM_FAIL', { playlistId: id, elapsedMs: Date.now() - startedAt, message: String(e?.message || e) });
+      throw e;
+    } finally {
+      finishTask();
+    }
+  }, [activeId, ensureHeavyLoaded, persistMeta, updatePlaylist]);
+
   const setActivePlaylist = useCallback(async (id: string) => {
     const finishTask = markTask('room:switch-verify', { playlistId: id });
     try {
@@ -670,7 +742,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         playlists, activePlaylist, favorites, recent,
         isLoading: isLoading || loadedProfileId !== profileId,
         loadedProfileId, nativeSummary, ensureHeavyLoaded,
-        addPlaylist, addPreparedPlaylist, removePlaylist, updatePlaylist, setActivePlaylist,
+        addPlaylist, addPreparedPlaylist, enrichPlaylistMedia, removePlaylist, updatePlaylist, setActivePlaylist,
         toggleFavorite, isFavorite, addToRecent, clearRecent,
       }}
     >

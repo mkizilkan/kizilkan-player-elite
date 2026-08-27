@@ -1,7 +1,7 @@
 /**
  * KIZILKAN PLAYER — Stalker / MAG Portal (CİHAZ İÇİ)
  * Dosya  : frontend/src/utils/stalker.ts
- * Sürüm  : v1.0.0 (v9.1.0)
+ * Sürüm  : v1.1.0 (v15.2.25-RC1)
  *
  * ===========================================================================
  * MAC adresiyle çalışan Stalker/MAG portallarına DOĞRUDAN CİHAZDAN bağlanır.
@@ -17,20 +17,24 @@
  * KRİTİK NOKTALAR:
  *   • MAC, Cookie başlığında gider
  *   • Token: Authorization: Bearer <token>, SÜRESİ DOLAR -> yenilenir
- *   • Portal yolu sağlayıcıya göre değişir -> 4 yaygın yol sırayla denenir
- *   • User-Agent MAG kutusunu taklit etmeli, aksi halde portal reddeder
+ *   • v15.2.25: varsayılan cihaz MAG254; MAG250 yalnız uyumluluk fallback'idir
+ *   • Başarılı endpoint/profil öğrenilir; 401/403/429/512 durumunda path fırtınası kesilir
+ *   • Live katalog ilk güvenli commit için ayrı alınabilir; VOD/Series enrichment ayrıdır
+ *   • User-Agent / X-User-Agent / get_profile stb_type aynı cihaz profiliyle tutarlı kalır
  * ===========================================================================
  */
 
 import type { AccountInfo, Channel, SeriesItem, VodItem } from "@/src/types";
 import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
+import { storage } from "@/src/utils/storage";
 
 const startDiagnosticTask = (label: string, meta: Record<string, any> = {}) =>
   typeof markTask === "function" ? markTask(label, meta) : (() => {});
 
-/** MAG250 kimliği. Portallar bunu bekler. */
-const MAG_UA =
+const MAG250_UA =
   "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3";
+const MAG254_UA =
+  "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG254 stbapp ver: 4 rev: 2721 Safari/533.3";
 
 /** Sağlayıcıya göre değişen yaygın endpoint yolları. */
 const PORTAL_PATHS = [
@@ -48,6 +52,7 @@ export interface StalkerCreds {
   mac: string;
   serial?: string;
   deviceId?: string;
+  deviceModel?: "MAG254" | "MAG250";
 }
 
 export interface StalkerSession {
@@ -57,7 +62,7 @@ export interface StalkerSession {
   profileError?: string;
   profileVariant?: string;
   random?: string;
-  compatProfile?: "mag250-raw" | "mag250-encoded" | "mag254-encoded";
+  compatProfile?: "mag254-encoded" | "mag254-raw" | "mag250-encoded" | "mag250-raw";
 }
 
 const SESSION_TTL_MS = 15 * 60 * 1000;
@@ -75,7 +80,12 @@ export type StalkerCatalogProgress = {
   loaded?: number;
   total?: number;
 };
-type StalkerCatalogOptions = { forceFresh?: boolean; onProgress?: (progress: StalkerCatalogProgress) => void };
+type StalkerCatalogOptions = {
+  forceFresh?: boolean;
+  liveOnly?: boolean;
+  signal?: AbortSignal;
+  onProgress?: (progress: StalkerCatalogProgress) => void;
+};
 const stalkerCatalogCache = new Map<string, { result: StalkerCatalogResult; at: number }>();
 const stalkerCatalogInFlight = new Map<string, Promise<StalkerCatalogResult>>();
 
@@ -94,8 +104,8 @@ function invalidateSession(cred: StalkerCreds) {
   stalkerSessionCache.delete(key);
   for (const catalogKey of [...stalkerCatalogCache.keys()]) if (catalogKey.startsWith(key + "|")) stalkerCatalogCache.delete(catalogKey);
 }
-function catalogKey(cred: StalkerCreds, ses: StalkerSession): string {
-  return `${sessionKey(cred)}|${String(ses.endpoint || "").toLowerCase()}`;
+function catalogKey(cred: StalkerCreds, ses: StalkerSession, scope = "full"): string {
+  return `${sessionKey(cred)}|${String(ses.endpoint || "").toLowerCase()}|${scope}`;
 }
 function emitCatalogProgress(opts: StalkerCatalogOptions | undefined, progress: StalkerCatalogProgress) {
   try { opts?.onProgress?.(progress); } catch {}
@@ -163,86 +173,160 @@ function refererFor(cred: StalkerCreds, endpoint?: string): string {
   } catch { return baseOf(cred.portal) + "/c/"; }
 }
 
-type MagCompatProfile = "mag250-raw" | "mag250-encoded" | "mag254-encoded";
-const MAG_COMPAT_PROFILES: MagCompatProfile[] = ["mag250-raw", "mag250-encoded", "mag254-encoded"];
+type MagCompatProfile = "mag254-encoded" | "mag254-raw" | "mag250-encoded" | "mag250-raw";
+const MAG_COMPAT_PROFILES: MagCompatProfile[] = ["mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"];
+const MAG_LEARNED_KEY = "kizilkan.mag.compat.v15225";
 
-function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profile: MagCompatProfile = "mag250-raw"): Record<string, string> {
+type LearnedMagCompat = { endpoint:string; profile:MagCompatProfile; model:"MAG254"|"MAG250"; at:number; failures:number };
+const learnedCompatMemory = new Map<string, LearnedMagCompat>();
+
+function compatModel(profile: MagCompatProfile): "MAG254"|"MAG250" {
+  return profile.startsWith("mag254") ? "MAG254" : "MAG250";
+}
+function compatEncoded(profile: MagCompatProfile): boolean {
+  return profile.endsWith("-encoded");
+}
+function preferredCompatProfiles(cred: StalkerCreds, learned?: LearnedMagCompat | null): MagCompatProfile[] {
+  const ordered: MagCompatProfile[] = cred.deviceModel === "MAG250"
+    ? ["mag250-encoded","mag250-raw","mag254-encoded","mag254-raw"]
+    : ["mag254-encoded","mag254-raw","mag250-encoded","mag250-raw"];
+  if (learned?.profile && ordered.includes(learned.profile)) {
+    return [learned.profile, ...ordered.filter(x => x !== learned.profile)];
+  }
+  return ordered;
+}
+function learnedCompatKey(cred: StalkerCreds): string {
+  return `${baseOf(cred.portal).toLowerCase()}|${normalizeMac(cred.mac)}`;
+}
+async function loadLearnedCompat(cred: StalkerCreds): Promise<LearnedMagCompat | null> {
+  const key=learnedCompatKey(cred);
+  const memory=learnedCompatMemory.get(key);
+  if (memory) return memory;
+  try {
+    const all = (await storage.getItem<Record<string, LearnedMagCompat>>(MAG_LEARNED_KEY, {})) || {};
+    const hit=all[key];
+    if (hit?.endpoint && hit?.profile) { learnedCompatMemory.set(key,hit); return hit; }
+  } catch {}
+  return null;
+}
+async function saveLearnedCompat(cred: StalkerCreds, value: LearnedMagCompat): Promise<void> {
+  const key=learnedCompatKey(cred);
+  learnedCompatMemory.set(key,value);
+  try {
+    const all=(await storage.getItem<Record<string, LearnedMagCompat>>(MAG_LEARNED_KEY, {})) || {};
+    all[key]=value;
+    const entries=Object.entries(all).sort((a,b)=>(b[1]?.at||0)-(a[1]?.at||0)).slice(0,24);
+    await storage.setItem(MAG_LEARNED_KEY,Object.fromEntries(entries));
+  } catch {}
+}
+async function markLearnedFailure(cred: StalkerCreds, learned: LearnedMagCompat | null): Promise<void> {
+  if (!learned) return;
+  const key=learnedCompatKey(cred);
+  const next={...learned,failures:Number(learned.failures||0)+1,at:Date.now()};
+  if (next.failures >= 3) {
+    learnedCompatMemory.delete(key);
+    try {
+      const all=(await storage.getItem<Record<string, LearnedMagCompat>>(MAG_LEARNED_KEY, {})) || {};
+      delete all[key];
+      await storage.setItem(MAG_LEARNED_KEY,all);
+    } catch {}
+  } else await saveLearnedCompat(cred,next);
+}
+
+function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profile: MagCompatProfile = "mag254-encoded"): Record<string, string> {
   const mac = normalizeMac(cred.mac);
   const encodedMac = encodeURIComponent(mac);
+  const model=compatModel(profile);
+  const encoded=compatEncoded(profile);
   const h: Record<string, string> = {
-    "User-Agent": profile === "mag254-encoded"
-      ? "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG254 stbapp ver: 4 rev: 2721 Safari/533.3"
-      : MAG_UA,
+    "User-Agent": model === "MAG254" ? MAG254_UA : MAG250_UA,
     Referer: refererFor(cred, endpoint),
     Accept: "*/*",
-    "X-User-Agent": profile === "mag254-encoded" ? "Model: MAG254; Link: Ethernet" : "Model: MAG250; Link: Ethernet",
-    Cookie: `mac=${profile === "mag250-raw" ? mac : encodedMac}; stb_lang=en; timezone=Europe%2FIstanbul`,
+    "Accept-Language": "en-US,en;q=0.9",
+    "X-User-Agent": `Model: ${model}; Link: Ethernet`,
+    Cookie: `mac=${encoded ? encodedMac : mac}; stb_lang=en; timezone=Europe%2FIstanbul`,
   };
-  if (profile !== "mag250-raw") h["Accept-Encoding"] = "gzip, deflate";
+  if (encoded) h["Accept-Encoding"] = "gzip, deflate";
   if (token) h.Authorization = `Bearer ${token}`;
   return h;
 }
 
-async function req(url: string, headers: Record<string, string>, timeoutMs = 20000): Promise<any> {
+type ReqOptions = { timeoutMs?: number; signal?: AbortSignal; allowNon2xxParsed?: (parsed:any, status:number)=>boolean };
+function parseStalkerBody(text:string): { parsed:any|null; bodyKind:"json"|"html"|"empty"|"other" } {
+  const trimmed=String(text||"").replace(/^\uFEFF/,"").trim();
+  if (!trimmed) return {parsed:null,bodyKind:"empty"};
+  if (/^</.test(trimmed)) return {parsed:null,bodyKind:"html"};
+  try { return {parsed:JSON.parse(trimmed),bodyKind:"json"}; } catch {}
+  const first=trimmed.indexOf("{"), last=trimmed.lastIndexOf("}");
+  if (first>=0 && last>first) {
+    try { return {parsed:JSON.parse(trimmed.slice(first,last+1)),bodyKind:"json"}; } catch {}
+  }
+  return {parsed:null,bodyKind:"other"};
+}
+function sanitizeBodySnippet(text:string): string {
+  return String(text||"").replace(/mac=[^;&\s<]+/ig,"mac=<redacted>").replace(/token["'=:\s]+[^,;}\s<]+/ig,"token=<redacted>").replace(/\s+/g," ").trim().slice(0,128);
+}
+
+async function req(url: string, headers: Record<string, string>, options: number | ReqOptions = 20000): Promise<any> {
+  const opts:ReqOptions=typeof options === "number" ? {timeoutMs:options} : (options || {});
+  const timeoutMs=opts.timeoutMs ?? 20000;
   const c = new AbortController();
+  const abortFromParent=()=>c.abort();
+  if (opts.signal) {
+    if (opts.signal.aborted) c.abort();
+    else opts.signal.addEventListener("abort",abortFromParent,{once:true});
+  }
   const t = setTimeout(() => c.abort(), timeoutMs);
   const startedAt = Date.now();
   const requestMeta = (() => {
     try {
       const u = new URL(url);
-      return {
-        path: u.pathname,
-        type: u.searchParams.get("type") || "",
-        action: u.searchParams.get("action") || "",
-        page: u.searchParams.get("p") || "",
-        host: u.host,
-      };
-    } catch { return { path: "", type: "", action: "", page: "", host: "" }; }
+      return { path:u.pathname,type:u.searchParams.get("type")||"",action:u.searchParams.get("action")||"",page:u.searchParams.get("p")||"",host:u.host };
+    } catch { return { path:"",type:"",action:"",page:"",host:"" }; }
   })();
   try {
-    let res: any;
-    try {
-      res = await fetch(url, { headers, signal: c.signal });
-    } catch (cause: any) {
-      const err: any = new Error(cause?.name === "AbortError" ? `Bağlantı zaman aşımı (${timeoutMs} ms)` : `Network request failed: ${String(cause?.message || cause || "bilinmeyen ağ hatası")}`);
-      err.kind = cause?.name === "AbortError" ? "TIMEOUT" : "NETWORK";
-      err.causeName = String(cause?.name || "");
-      void recordDiagnostic("mag", "STALKER_HTTP_TRANSPORT_ERROR", { ...requestMeta, elapsedMs: Date.now() - startedAt, timeoutMs, kind: err.kind, causeName: err.causeName, message: err.message });
+    let res:any;
+    try { res=await fetch(url,{headers,signal:c.signal}); }
+    catch (cause:any) {
+      const parentAbort=!!opts.signal?.aborted;
+      const err:any=new Error(cause?.name==="AbortError"
+        ? (parentAbort ? "İşlem kullanıcı/üst seviye tarafından iptal edildi" : `Bağlantı zaman aşımı (${timeoutMs} ms)`)
+        : `Network request failed: ${String(cause?.message || cause || "bilinmeyen ağ hatası")}`);
+      err.kind=cause?.name==="AbortError" ? (parentAbort ? "CANCELLED" : "TIMEOUT") : "NETWORK";
+      err.causeName=String(cause?.name||"");
+      void recordDiagnostic("mag","STALKER_HTTP_TRANSPORT_ERROR",{...requestMeta,elapsedMs:Date.now()-startedAt,timeoutMs,kind:err.kind,causeName:err.causeName,message:err.message});
       throw err;
     }
-    const contentType = String(res.headers?.get?.("content-type") || "");
-    const finalUrl = String((res as any).url || url);
-    const redirected = !!(res as any).redirected;
-    const text = await res.text();
-    void recordDiagnostic("mag", "STALKER_HTTP_RESPONSE", {
-      ...requestMeta, status: Number(res.status || 0), ok: !!res.ok, elapsedMs: Date.now() - startedAt,
-      bytes: text.length, contentType: contentType.split(";")[0] || "", redirected,
-      finalPath: (() => { try { return new URL(finalUrl).pathname; } catch { return ""; } })(),
+    const contentType=String(res.headers?.get?.("content-type")||"");
+    const finalUrl=String((res as any).url||url);
+    const redirected=!!(res as any).redirected;
+    const text=await res.text();
+    const decoded=parseStalkerBody(text);
+    void recordDiagnostic("mag","STALKER_HTTP_RESPONSE",{
+      ...requestMeta,status:Number(res.status||0),ok:!!res.ok,elapsedMs:Date.now()-startedAt,
+      bytes:text.length,contentType:contentType.split(";")[0]||"",redirected,parsedJs:!!decoded.parsed?.js,bodyKind:decoded.bodyKind,
+      finalPath:(()=>{try{return new URL(finalUrl).pathname}catch{return""}})(),
     });
+    if (res.ok && decoded.parsed != null) return decoded.parsed;
+    if (!res.ok && decoded.parsed != null && opts.allowNon2xxParsed?.(decoded.parsed,Number(res.status||0))) {
+      void recordDiagnostic("mag","STALKER_HTTP_COMPAT_ACCEPTED",{...requestMeta,status:Number(res.status||0),bodyKind:decoded.bodyKind});
+      return decoded.parsed;
+    }
     if (!res.ok) {
-      const err: any = new Error(`HTTP ${res.status}${contentType ? ` · ${contentType.split(";")[0]}` : ""}`);
-      err.status = res.status; err.kind = "HTTP"; err.contentType = contentType; err.finalUrl = finalUrl; err.redirected = redirected;
+      const err:any=new Error(`HTTP ${res.status}${contentType?` · ${contentType.split(";")[0]}`:""}`);
+      err.status=res.status; err.kind="HTTP"; err.contentType=contentType; err.finalUrl=finalUrl; err.redirected=redirected; err.bodyKind=decoded.bodyKind;
+      err.snippet=sanitizeBodySnippet(text);
+      void recordDiagnostic("mag","STALKER_HTTP_REJECTED",{...requestMeta,status:Number(res.status||0),bodyKind:decoded.bodyKind,snippet:err.snippet});
       throw err;
     }
-    try {
-      return JSON.parse(text.replace(/^\uFEFF/, "").trim());
-    } catch {
-      const trimmed = text.replace(/^\uFEFF/, "").trim();
-      if (!/^</.test(trimmed)) {
-        const first = trimmed.indexOf("{");
-        const last = trimmed.lastIndexOf("}");
-        if (first >= 0 && last > first) {
-          try { return JSON.parse(trimmed.slice(first, last + 1)); } catch {}
-        }
-      }
-      const kind = /^</.test(trimmed) ? "HTML" : "NON_JSON";
-      const err: any = new Error(`Portal JSON değil · HTTP ${res.status}${contentType ? ` · ${contentType.split(";")[0]}` : ""}${redirected ? " · yönlendirme var" : ""}`);
-      err.kind = kind; err.status = res.status; err.contentType = contentType; err.finalUrl = finalUrl; err.redirected = redirected;
-      void recordDiagnostic("mag", "STALKER_HTTP_PARSE_ERROR", { ...requestMeta, elapsedMs: Date.now() - startedAt, status: res.status, kind, bytes: text.length, contentType: contentType.split(";")[0] || "", redirected });
-      throw err;
-    }
+    const kind=decoded.bodyKind==="html" ? "HTML" : "NON_JSON";
+    const err:any=new Error(`Portal JSON değil · HTTP ${res.status}${contentType?` · ${contentType.split(";")[0]}`:""}${redirected?" · yönlendirme var":""}`);
+    err.kind=kind; err.status=res.status; err.contentType=contentType; err.finalUrl=finalUrl; err.redirected=redirected; err.bodyKind=decoded.bodyKind;
+    void recordDiagnostic("mag","STALKER_HTTP_PARSE_ERROR",{...requestMeta,elapsedMs:Date.now()-startedAt,status:res.status,kind,bytes:text.length,contentType:contentType.split(";")[0]||"",redirected});
+    throw err;
   } finally {
     clearTimeout(t);
+    if (opts.signal) opts.signal.removeEventListener("abort",abortFromParent);
   }
 }
 
@@ -251,47 +335,76 @@ function buildUrl(endpoint: string, params: Record<string, string>): string {
   return `${endpoint}?${q}`;
 }
 
-/** 1) HANDSHAKE — portal yolu bilinmediği için yollar sırayla denenir. */
-export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSession> {
-  const finishTask = startDiagnosticTask("mag:handshake", { portal: cred.portal });
-  const errors: string[] = [];
-  try {
+function handshakeRejectedStatus(status:number): boolean { return status===401 || status===403 || status===429 || status===512; }
+function endpointPath(endpoint:string):string { try{return new URL(endpoint).pathname}catch{return endpoint} }
 
-  for (const endpoint of portalCandidates(cred.portal)) {
-    const label = (() => { try { return new URL(endpoint).pathname; } catch { return endpoint; } })();
-    const attemptAt = Date.now();
-    void recordDiagnostic("catalog", "STALKER_ENDPOINT_ATTEMPT", { endpoint, path: label });
-    for (const compatProfile of MAG_COMPAT_PROFILES) {
-      const profileAttemptAt = Date.now();
-      void recordDiagnostic("catalog", "STALKER_COMPAT_ATTEMPT", { endpoint, path: label, compatProfile });
-      try {
-        const data = await req(
-          buildUrl(endpoint, { type: "stb", action: "handshake", token: "", prehash: "0" }),
-          headersFor(cred, undefined, endpoint, compatProfile)
-        );
-        const token = data?.js?.token;
-        if (token) {
-          void recordDiagnostic("catalog", "STALKER_COMPAT_OK", { endpoint, path: label, compatProfile, elapsedMs: Date.now()-profileAttemptAt });
-          void recordDiagnostic("catalog", "STALKER_ENDPOINT_OK", { endpoint, path: label, elapsedMs: Date.now()-attemptAt, compatProfile });
-          return { token, endpoint, random: primitiveString(data?.js?.random), compatProfile };
+async function handshakeAttempt(cred:StalkerCreds, endpoint:string, compatProfile:MagCompatProfile):Promise<StalkerSession|null> {
+  const data=await req(
+    buildUrl(endpoint,{type:"stb",action:"handshake",token:"",prehash:"0"}),
+    headersFor(cred,undefined,endpoint,compatProfile),
+    {timeoutMs:20000},
+  );
+  const token=String(data?.js?.token||"").trim();
+  if (!token) return null;
+  return {token,endpoint,random:primitiveString(data?.js?.random),compatProfile};
+}
+
+/** 1) HANDSHAKE — MAG254 varsayılan, öğrenilmiş endpoint/profil önce, fallback sınırlı. */
+export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSession> {
+  const finishTask=startDiagnosticTask("mag:handshake",{portal:cred.portal});
+  const errors:string[]=[];
+  try {
+    const learned=await loadLearnedCompat(cred);
+    const all=portalCandidates(cred.portal);
+    const plan:string[]=[];
+    const push=(x?:string)=>{if(x && !plan.includes(x)) plan.push(x)};
+    push(learned?.endpoint);
+    push(all[0]);
+    for (const x of all) { if (plan.length>=3) break; push(x); }
+    const profiles=preferredCompatProfiles(cred,learned);
+    void recordDiagnostic("catalog","STALKER_HANDSHAKE_PLAN",{
+      strategy:learned?"learned-first-bounded":"mag254-first-bounded",candidateCount:plan.length,
+      firstPath:endpointPath(plan[0]||""),preferredProfile:profiles[0],defaultModel:cred.deviceModel||"MAG254",
+    });
+
+    for (let ei=0; ei<plan.length; ei++) {
+      const endpoint=plan[ei], label=endpointPath(endpoint), attemptAt=Date.now();
+      void recordDiagnostic("catalog","STALKER_ENDPOINT_ATTEMPT",{endpoint,path:label,index:ei});
+      let endpointRejected=false;
+      for (let pi=0; pi<profiles.length; pi++) {
+        if (pi >= (ei===0 ? 3 : 2)) break;
+        const compatProfile=profiles[pi], profileAttemptAt=Date.now();
+        void recordDiagnostic("catalog","STALKER_COMPAT_ATTEMPT",{endpoint,path:label,compatProfile,model:compatModel(compatProfile)});
+        try {
+          const session=await handshakeAttempt(cred,endpoint,compatProfile);
+          if (session) {
+            await saveLearnedCompat(cred,{endpoint,profile:compatProfile,model:compatModel(compatProfile),at:Date.now(),failures:0});
+            void recordDiagnostic("catalog","STALKER_COMPAT_OK",{endpoint,path:label,compatProfile,elapsedMs:Date.now()-profileAttemptAt});
+            void recordDiagnostic("catalog","STALKER_ENDPOINT_OK",{endpoint,path:label,elapsedMs:Date.now()-attemptAt,compatProfile,model:compatModel(compatProfile)});
+            return session;
+          }
+          errors.push(`${label}/${compatProfile}: token yok`);
+          void recordDiagnostic("catalog","STALKER_COMPAT_ERROR",{endpoint,path:label,compatProfile,elapsedMs:Date.now()-profileAttemptAt,kind:"NO_TOKEN"});
+        } catch (e:any) {
+          errors.push(`${label}/${compatProfile}: ${String(e?.message||e)}`);
+          void recordDiagnostic("catalog","STALKER_COMPAT_ERROR",{endpoint,path:label,compatProfile,elapsedMs:Date.now()-profileAttemptAt,kind:e?.kind,status:e?.status,bodyKind:e?.bodyKind,message:String(e?.message||e)});
+          if (handshakeRejectedStatus(Number(e?.status||0))) {
+            endpointRejected=true;
+            if (pi>=1) break;
+          }
         }
-        errors.push(`${label}/${compatProfile}: token yok`);
-        void recordDiagnostic("catalog", "STALKER_COMPAT_ERROR", { endpoint, path: label, compatProfile, elapsedMs: Date.now()-profileAttemptAt, kind:"NO_TOKEN" });
-      } catch (e: any) {
-        const detail = [e?.message, e?.finalUrl && e.finalUrl !== endpoint ? `final=${String(e.finalUrl)}` : ""].filter(Boolean).join(" · ");
-        errors.push(`${label}/${compatProfile}: ${detail || e}`);
-        void recordDiagnostic("catalog", "STALKER_COMPAT_ERROR", { endpoint, path: label, compatProfile, elapsedMs: Date.now()-profileAttemptAt, kind:e?.kind, status:e?.status, message:String(e?.message || e) });
+      }
+      const learnedEndpoint = endpoint===learned?.endpoint;
+      if (learnedEndpoint && endpointRejected) await markLearnedFailure(cred,learned);
+      // Öğrenilmiş endpoint bayatlamış olabilir; kullanıcı path'ine bir şans ver.
+      // Kullanıcının/primer path'in kendisi reddedilirse aynı hostta geniş taramayı durdur.
+      if (ei===0 && endpointRejected && (!learnedEndpoint || endpoint===all[0])) {
+        void recordDiagnostic("catalog","STALKER_HANDSHAKE_STOPPED",{reason:"HTTP_REJECT",path:label,statusClass:"401/403/429/512"});
+        throw new Error(`Portal bu MAG isteğini reddetti (${errors.at(-1)||"HTTP ret"}). Aynı host üzerinde geniş endpoint taraması güvenlik nedeniyle durduruldu.`);
       }
     }
-  }
-
-  throw new Error(
-    "Portala bağlanılamadı. Denenen yollar:\n" + errors.join("\n") +
-      "\n\nPortal adresini ve MAC'i kontrol edin."
-  );
-  } finally {
-    finishTask();
-  }
+    throw new Error("Portala bağlanılamadı. Sınırlı MAG254/MAG250 uyumluluk planı başarısız:\n"+errors.join("\n")+"\n\nPortal adresini ve MAC'i kontrol edin.");
+  } finally { finishTask(); }
 }
 
 /** 2) GET_PROFILE — portal varyantlarına kontrollü uyumluluk. */
@@ -316,7 +429,7 @@ async function derivedMagIdentity(cred: StalkerCreds): Promise<{sn:string; devic
   };
 }
 
-function baseProfileParams(mac:string, model:"MAG250"|"MAG254"="MAG250"): Record<string,string> {
+function baseProfileParams(mac:string, model:"MAG250"|"MAG254"="MAG254"): Record<string,string> {
   return {
     type: "stb",
     action: "get_profile",
@@ -334,34 +447,40 @@ function baseProfileParams(mac:string, model:"MAG250"|"MAG254"="MAG250"): Record
   };
 }
 
-function initialProfileVariants(cred:StalkerCreds): StalkerProfileVariant[] {
+function initialProfileVariants(cred:StalkerCreds, preferredModel:"MAG254"|"MAG250"="MAG254"): StalkerProfileVariant[] {
   const mac=normalizeMac(cred.mac);
-  const base=baseProfileParams(mac);
   const mag254=baseProfileParams(mac,"MAG254");
-  return [{
-    label:"MAG250-explicit",
-    params:{...base, sn:cred.serial || "", device_id:cred.deviceId || "", device_id2:cred.deviceId || "", client_type:"STB", video_out:"hdmi"},
-  }, {
-    label:"MAG250-legacy-minimal",
-    params:{...base, num_banks:"1", sn:cred.serial || "", device_id:"", device_id2:"", signature:""},
-  }, {
+  const mag250=baseProfileParams(mac,"MAG250");
+  const mag254Variants:StalkerProfileVariant[]=[{
+    label:"MAG254-explicit",
+    params:{...mag254,num_banks:"1",hw_version:"2.6-IB-00",sn:cred.serial||"",device_id:cred.deviceId||"",device_id2:cred.deviceId||"",signature:"",client_type:"STB",video_out:"hdmi"},
+  },{
     label:"MAG254-legacy",
-    params:{...mag254, num_banks:"1", hw_version:"2.6-IB-00", sn:cred.serial || "", device_id:cred.deviceId || "", device_id2:cred.deviceId || "", signature:""},
+    params:{...mag254,num_banks:"1",hw_version:"2.6-IB-00",sn:cred.serial||"",device_id:"",device_id2:"",signature:""},
   }];
+  const mag250Variants:StalkerProfileVariant[]=[{
+    label:"MAG250-explicit",
+    params:{...mag250,sn:cred.serial||"",device_id:cred.deviceId||"",device_id2:cred.deviceId||"",client_type:"STB",video_out:"hdmi"},
+  },{
+    label:"MAG250-legacy-minimal",
+    params:{...mag250,num_banks:"1",sn:cred.serial||"",device_id:"",device_id2:"",signature:""},
+  }];
+  return preferredModel==="MAG250" ? [...mag250Variants,...mag254Variants] : [...mag254Variants,...mag250Variants];
 }
 
-async function derivedProfileVariants(cred:StalkerCreds, random=""): Promise<StalkerProfileVariant[]> {
+async function derivedProfileVariants(cred:StalkerCreds, random="", preferredModel:"MAG254"|"MAG250"="MAG254"): Promise<StalkerProfileVariant[]> {
   try {
     const mac=normalizeMac(cred.mac);
-    const base=baseProfileParams(mac);
+    const base=baseProfileParams(mac,preferredModel);
     const id=await derivedMagIdentity(cred);
-    const metrics=JSON.stringify({mac, sn:id.sn, type:"STB", model:"MAG250", uid:"", random});
+    const metrics=JSON.stringify({mac,sn:id.sn,type:"STB",model:preferredModel,uid:"",random});
+    const hwVersion=preferredModel==="MAG254" ? "2.6-IB-00" : base.hw_version;
     return [{
-      label:"MAG250-derived-identity",
-      params:{...base, sn:id.sn, device_id:id.deviceId, device_id2:id.deviceId2, signature:id.signatureModern, auth_second_step:"1", client_type:"STB", video_out:"hdmi", metrics, hw_version_2:id.hwVersion2, api_signature:"262", prehash:""},
-    }, {
-      label:"MAG250-derived-legacy-signature",
-      params:{...base, sn:id.sn, device_id:id.deviceId, device_id2:id.deviceId2, signature:id.signatureLegacy, auth_second_step:"0"},
+      label:`${preferredModel}-derived-identity`,
+      params:{...base,hw_version:hwVersion,sn:id.sn,device_id:id.deviceId,device_id2:id.deviceId2,signature:id.signatureModern,auth_second_step:"1",client_type:"STB",video_out:"hdmi",metrics,hw_version_2:id.hwVersion2,api_signature:"262",prehash:""},
+    },{
+      label:`${preferredModel}-derived-legacy-signature`,
+      params:{...base,hw_version:hwVersion,sn:id.sn,device_id:id.deviceId,device_id2:id.deviceId2,signature:id.signatureLegacy,auth_second_step:"0"},
     }];
   } catch {
     return [];
@@ -370,8 +489,10 @@ async function derivedProfileVariants(cred:StalkerCreds, random=""): Promise<Sta
 
 function profilePayload(data:any): any {
   const js=data?.js;
-  if (js && typeof js === "object") return js;
-  return null;
+  if (!js || typeof js !== "object" || Array.isArray(js)) return null;
+  // "{}" veya yalnız protokol zarfı cihaz kimliğini doğrulamaz.
+  const meaningfulKeys=["id","mac","login","status","blocked","tariff_plan","expire_billing_date","phone","name","stb_type"];
+  return meaningfulKeys.some(k => js[k] !== undefined && js[k] !== null && String(js[k]) !== "") ? js : null;
 }
 
 /**
@@ -402,9 +523,10 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession): P
   }
   return null;
   };
-  const direct=await tryVariants(initialProfileVariants(cred));
+  const preferredModel=ses.compatProfile ? compatModel(ses.compatProfile) : (cred.deviceModel || "MAG254");
+  const direct=await tryVariants(initialProfileVariants(cred,preferredModel));
   if (direct) return direct;
-  const derived=await tryVariants(await derivedProfileVariants(cred, ses.random || ""));
+  const derived=await tryVariants(await derivedProfileVariants(cred,ses.random || "",preferredModel));
   if (derived) return derived;
   throw new Error("MAG profil doğrulaması başarısız. " + errors.join(" | "));
 }
@@ -429,7 +551,7 @@ export async function stalkerGenres(cred: StalkerCreds, ses: StalkerSession): Pr
 }
 
 /** 4) TÜM KANALLAR */
-export async function stalkerChannels(cred: StalkerCreds, ses: StalkerSession): Promise<Channel[]> {
+export async function stalkerChannels(cred: StalkerCreds, ses: StalkerSession, signal?: AbortSignal): Promise<Channel[]> {
   const genres = await stalkerGenres(cred, ses).catch(() => new Map<string, string>());
   let list:any[]=[];
   let source="get_all_channels";
@@ -437,7 +559,7 @@ export async function stalkerChannels(cred: StalkerCreds, ses: StalkerSession): 
     const data = await req(
       buildUrl(ses.endpoint, { type: "itv", action: "get_all_channels" }),
       headersFor(cred, ses.token, ses.endpoint, ses.compatProfile),
-      60000
+      {timeoutMs:60000,signal}
     );
     list = Array.isArray(data?.js?.data) ? data.js.data : (Array.isArray(data?.js) ? data.js : []);
     if (!list.length) throw Object.assign(new Error("get_all_channels boş"), { kind:"EMPTY" });
@@ -445,19 +567,35 @@ export async function stalkerChannels(cred: StalkerCreds, ses: StalkerSession): 
     source="get_ordered_list";
     void recordDiagnostic("mag", "STALKER_LIVE_FALLBACK", { from:"get_all_channels", to:"get_ordered_list", status:first?.status, kind:first?.kind, message:String(first?.message || first) });
     const seen=new Set<string>();
-    for (let page=0; page<10000; page++) {
-      const data=await req(buildUrl(ses.endpoint,{type:"itv",action:"get_ordered_list",fav:"0",sortby:"number",p:String(page)}),headersFor(cred,ses.token,ses.endpoint,ses.compatProfile),60000);
+    let previousFingerprint="", noNew=0, maxPages=ORDERED_LIST_ABSOLUTE_MAX_PAGES;
+    for (let page=0; page<maxPages; page++) {
+      if (signal?.aborted) break;
+      const data=await req(
+        buildUrl(ses.endpoint,{type:"itv",action:"get_ordered_list",fav:"0",sortby:"number",p:String(page)}),
+        headersFor(cred,ses.token,ses.endpoint,ses.compatProfile),
+        {timeoutMs:60000,signal},
+      );
       const rows=rowsFromListShape(data);
       if (!rows.length) {
-        if (page===0) continue; // bazı portallar p=1 ile başlar
+        if (page===0) continue;
         break;
       }
+      const fingerprint=pageFingerprint(rows);
+      if (fingerprint===previousFingerprint) break;
+      previousFingerprint=fingerprint;
+      const declared=Number(data?.js?.total_items);
+      if (page<=1) maxPages=expectedPageLimit(declared,rows.length);
       let added=0;
-      for (let i=0;i<rows.length;i++) { const row=rows[i]; const key=String(row?.id ?? row?.ch_id ?? `${page}-${i}`); if (!seen.has(key)) { seen.add(key); list.push(row); added++; } await stalkerCatalogYield(i); }
-      void recordDiagnostic("mag", "STALKER_LIVE_PAGE", { page, rows:rows.length, added, total:list.length });
-      await stalkerCatalogYield(page, 1);
-      const total=Number(data?.js?.total_items); if (Number.isFinite(total) && list.length>=total) break;
-      if (!added) break;
+      for (let i=0;i<rows.length;i++) {
+        const row=rows[i], key=String(row?.id ?? row?.ch_id ?? `${page}-${i}`);
+        if (!seen.has(key)) { seen.add(key); list.push(row); added++; }
+        await stalkerCatalogYield(i);
+      }
+      void recordDiagnostic("mag","STALKER_LIVE_PAGE",{page,rows:rows.length,added,total:list.length,maxPages});
+      await stalkerCatalogYield(page,1);
+      if (Number.isFinite(declared) && list.length>=declared) break;
+      noNew=added ? 0 : noNew+1;
+      if (noNew>=ORDERED_LIST_NO_NEW_LIMIT) break;
     }
   }
   void recordDiagnostic("mag", "STALKER_LIVE_CATALOG", { source, count:list.length });
@@ -546,42 +684,76 @@ async function stalkerCategories(cred: StalkerCreds, ses: StalkerSession, type: 
   return out;
 }
 
+const ORDERED_LIST_ABSOLUTE_MAX_PAGES = 120;
+const ORDERED_LIST_NO_NEW_LIMIT = 2;
+function pageFingerprint(rows:any[]):string {
+  if (!rows.length) return "empty";
+  const ids=rows.slice(0,8).map((r:any)=>String(r?.id ?? r?.movie_id ?? r?.series_id ?? r?.ch_id ?? "")).join("|");
+  const tail=rows.slice(-3).map((r:any)=>String(r?.id ?? r?.movie_id ?? r?.series_id ?? r?.ch_id ?? "")).join("|");
+  return `${rows.length}:${ids}:${tail}`;
+}
+function expectedPageLimit(total:number, rowsPerPage:number):number {
+  if (!Number.isFinite(total) || total < 0 || rowsPerPage <= 0) return ORDERED_LIST_ABSOLUTE_MAX_PAGES;
+  return Math.min(ORDERED_LIST_ABSOLUTE_MAX_PAGES, Math.max(4, Math.ceil(total / rowsPerPage) + 3));
+}
+
 async function stalkerOrderedList(
   cred: StalkerCreds,
   ses: StalkerSession,
   type: "vod" | "series",
   extra: Record<string,string> = {},
   onPage?: (page: number, loaded: number, total?: number) => void,
+  signal?: AbortSignal,
 ): Promise<any[]> {
   const out:any[]=[]; const seen=new Set<string>();
-  let total=Number.POSITIVE_INFINITY; let page=0; let firstNonEmptyPage:number|null=null;
-  while (page <= 10000 && out.length < total) {
+  let total=Number.POSITIVE_INFINITY, page=0, firstNonEmptyPage:number|null=null;
+  let maxPages=ORDERED_LIST_ABSOLUTE_MAX_PAGES, consecutiveNoNew=0, previousFingerprint="";
+  let stopReason="TOTAL_OR_END";
+  while (page < maxPages && out.length < total) {
+    if (signal?.aborted) { stopReason="CANCELLED"; break; }
     let data:any;
-    try { data = await req(buildUrl(ses.endpoint, { type, action:"get_ordered_list", p:String(page), ...extra }), headersFor(cred, ses.token, ses.endpoint, ses.compatProfile), 60000); }
-    catch (e:any) { if (unsupportedStatus(e)) throw new StalkerCatalogUnsupportedError(type, `${type} ordered-list endpoint desteklenmiyor`); throw e; }
-    if (!isExplicitListShape(data)) throw new StalkerCatalogUnsupportedError(type, `${type} ordered-list yanıt biçimi desteklenmiyor`);
-    const js=data?.js; const rows=rowsFromListShape(data);
-    const declared=Number(js?.total_items);
-    if (Number.isFinite(declared) && declared >= 0) total=declared;
-    if (!rows.length) {
-      // Gerçek dünyada hem p=0 hem p=1 başlangıç kullanan Ministra/Stalker fork'ları var.
-      if (firstNonEmptyPage === null && page === 0) { page=1; continue; }
-      break;
+    try {
+      data=await req(
+        buildUrl(ses.endpoint,{type,action:"get_ordered_list",p:String(page),...extra}),
+        headersFor(cred,ses.token,ses.endpoint,ses.compatProfile),
+        {timeoutMs:60000,signal},
+      );
+    } catch (e:any) {
+      if (e?.kind==="CANCELLED") { stopReason="CANCELLED"; break; }
+      if (unsupportedStatus(e)) throw new StalkerCatalogUnsupportedError(type,`${type} ordered-list endpoint desteklenmiyor`);
+      throw e;
     }
-    if (firstNonEmptyPage === null) firstNonEmptyPage=page;
+    if (!isExplicitListShape(data)) throw new StalkerCatalogUnsupportedError(type,`${type} ordered-list yanıt biçimi desteklenmiyor`);
+    const js=data?.js, rows=rowsFromListShape(data);
+    const declared=Number(js?.total_items);
+    if (Number.isFinite(declared) && declared>=0) total=declared;
+    if (!rows.length) {
+      if (firstNonEmptyPage===null && page===0) { page=1; continue; }
+      stopReason="EMPTY_PAGE"; break;
+    }
+    if (firstNonEmptyPage===null) firstNonEmptyPage=page;
+    const fingerprint=pageFingerprint(rows);
+    if (fingerprint===previousFingerprint) { stopReason="DUPLICATE_PAGE"; break; }
+    previousFingerprint=fingerprint;
+    if (page===firstNonEmptyPage) maxPages=expectedPageLimit(total,rows.length);
+
     let added=0;
     for (let ri=0; ri<rows.length; ri++) {
-      const row=rows[ri]; const key=String(row?.id ?? row?.movie_id ?? row?.series_id ?? `${page}-${ri}`);
-      if (seen.has(key)) continue; seen.add(key); out.push(row); added++;
+      const row=rows[ri], key=String(row?.id ?? row?.movie_id ?? row?.series_id ?? `${page}-${ri}`);
+      if (seen.has(key)) continue;
+      seen.add(key); out.push(row); added++;
       await stalkerCatalogYield(ri);
     }
-    await stalkerCatalogYield(page, 1);
-    const progressTotal = Number.isFinite(total) ? total : undefined;
-    try { onPage?.(page, out.length, progressTotal); } catch {}
-    if (!added && firstNonEmptyPage === 0 && page === 1) { page=2; continue; }
-    if (!added) break;
+    await stalkerCatalogYield(page,1);
+    const progressTotal=Number.isFinite(total)?total:undefined;
+    try { onPage?.(page,out.length,progressTotal); } catch {}
+    void recordDiagnostic("mag","STALKER_PAGINATION_PAGE",{type,page,rows:rows.length,added,loaded:out.length,total:progressTotal,maxPages});
+    if (!added) consecutiveNoNew++; else consecutiveNoNew=0;
+    if (consecutiveNoNew>=ORDERED_LIST_NO_NEW_LIMIT) { stopReason="NO_NEW_IDS"; break; }
     page++;
   }
+  if (page>=maxPages && out.length<total) stopReason="PAGE_GOVERNOR";
+  void recordDiagnostic("mag","STALKER_PAGINATION_STOP",{type,stopReason,page,loaded:out.length,total:Number.isFinite(total)?total:undefined,maxPages});
   return out;
 }
 
@@ -614,7 +786,7 @@ async function stalkerVodPartition(cred:StalkerCreds, ses:StalkerSession, opts?:
   let cats=new Map<string,string>();
   try { cats=await stalkerCategories(cred,ses,"vod"); } catch (e) { if (!(e instanceof StalkerCatalogUnsupportedError)) throw e; }
   let raw:any[];
-  try { raw=await stalkerOrderedList(cred,ses,"vod",{},(page,loaded,total)=>emitCatalogProgress(opts,{stage:"vod",message:`Film kataloğu yükleniyor · sayfa ${page} · ${loaded}${total != null ? `/${total}` : ""}`,page,loaded,total})); }
+  try { raw=await stalkerOrderedList(cred,ses,"vod",{},(page,loaded,total)=>emitCatalogProgress(opts,{stage:"vod",message:`Film kataloğu yükleniyor · sayfa ${page} · ${loaded}${total != null ? `/${total}` : ""}`,page,loaded,total}),opts?.signal); }
   catch (e) { if (e instanceof StalkerCatalogUnsupportedError) return {vod:[],fallbackSeries:[],supported:false,rawCount:0,seriesFlagged:0}; throw e; }
   const vod:VodItem[]=[]; const fallbackSeries:SeriesItem[]=[];
   for (let i=0; i<raw.length; i++) {
@@ -630,7 +802,7 @@ async function nativeStalkerSeries(cred:StalkerCreds, ses:StalkerSession, opts?:
   let cats=new Map<string,string>();
   try { cats=await stalkerCategories(cred,ses,"series"); } catch (e) { if (!(e instanceof StalkerCatalogUnsupportedError)) throw e; }
   let raw:any[];
-  try { raw=await stalkerOrderedList(cred,ses,"series",{},(page,loaded,total)=>emitCatalogProgress(opts,{stage:"series",message:`Dizi kataloğu yükleniyor · sayfa ${page} · ${loaded}${total != null ? `/${total}` : ""}`,page,loaded,total})); }
+  try { raw=await stalkerOrderedList(cred,ses,"series",{},(page,loaded,total)=>emitCatalogProgress(opts,{stage:"series",message:`Dizi kataloğu yükleniyor · sayfa ${page} · ${loaded}${total != null ? `/${total}` : ""}`,page,loaded,total}),opts?.signal); }
   catch (e) { if (e instanceof StalkerCatalogUnsupportedError) return {items:[],supported:false}; throw e; }
   const items: SeriesItem[] = [];
   for (let i=0; i<raw.length; i++) { items.push(mapSeriesRow(raw[i],i,cats)); await stalkerCatalogYield(i); }
@@ -737,11 +909,24 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
   let channels:Channel[]=[];
   let liveError="";
   const finishLiveTask = startDiagnosticTask("mag:catalog-live");
-  try { channels=await retryCatalogPart("MAG Live",()=>stalkerChannels(cred,ses)); }
+  try { channels=await retryCatalogPart("MAG Live",()=>stalkerChannels(cred,ses,opts.signal)); }
   catch (e:any) { liveError=String(e?.message || e); void recordDiagnostic("mag","STALKER_LIVE_PARTIAL_FAILURE",{message:liveError,status:e?.status,kind:e?.kind}); }
   finally { finishLiveTask(); }
   void recordDiagnostic("catalog","STALKER_CATALOG_STAGE_DONE",{stage:"live",elapsedMs:Date.now()-liveStageStarted,count:channels.length,error:liveError});
   emitCatalogProgress(opts,{stage:"live",message:`Canlı TV tamamlandı · ${channels.length} kanal`,loaded:channels.length,total:channels.length});
+
+  if (opts.liveOnly) {
+    const diagnostics:StalkerCatalogDiagnostics={
+      live:liveError?"ERROR":(channels.length?"OK":"EMPTY"),
+      vod:"EMPTY",seriesNative:"EMPTY",seriesFromVod:0,
+      warnings:[...(liveError?[`Canlı katalog alınamadı: ${liveError}`]:[]),"VOD/Series live-first commit sonrası enrichment işine bırakıldı."],
+    };
+    if (!channels.length && liveError) throw new Error(`MAG Live katalog alınamadı. ${liveError}`);
+    const result={channels,vod:[] as VodItem[],series:[] as SeriesItem[],diagnostics};
+    void recordDiagnostic("catalog","STALKER_LIVE_READY",{elapsedMs:Date.now()-catalogStarted,live:channels.length,endpoint:ses.endpoint});
+    emitCatalogProgress(opts,{stage:"final",message:`Canlı katalog hazır · ${channels.length} kanal · film/dizi sonra tamamlanacak`,loaded:channels.length,total:channels.length});
+    return result;
+  }
 
   emitCatalogProgress(opts,{stage:"vod",message:"Film kataloğu yükleniyor..."});
   const vodStageStarted=Date.now();
@@ -795,10 +980,43 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
   return result;
 }
 
+export type StalkerEnrichmentResult = { vod:VodItem[]; series:SeriesItem[]; diagnostics:StalkerCatalogDiagnostics };
+
+export async function stalkerEnrichment(cred:StalkerCreds, ses:StalkerSession, opts:StalkerCatalogOptions = {}):Promise<StalkerEnrichmentResult> {
+  const finish=startDiagnosticTask("mag:enrichment",{endpoint:ses.endpoint});
+  const started=Date.now();
+  try {
+    emitCatalogProgress(opts,{stage:"vod",message:"Film kataloğu arka planda tamamlanıyor..."});
+    let vodPart:VodPartition, vodError="";
+    try { vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses,opts)); }
+    catch (e:any) { vodError=String(e?.message||e); vodPart={vod:[],fallbackSeries:[],supported:!(e instanceof StalkerCatalogUnsupportedError),rawCount:0,seriesFlagged:0}; }
+
+    emitCatalogProgress(opts,{stage:"series",message:"Dizi kataloğu arka planda tamamlanıyor..."});
+    let nativeSeries:{items:SeriesItem[];supported:boolean}, seriesError="";
+    try { nativeSeries=await retryCatalogPart("MAG Series",()=>nativeStalkerSeries(cred,ses,opts)); }
+    catch (e:any) { seriesError=String(e?.message||e); nativeSeries={items:[],supported:!(e instanceof StalkerCatalogUnsupportedError)}; }
+
+    const merged=new Map<string,SeriesItem>();
+    for (const x of [...nativeSeries.items,...vodPart.fallbackSeries]) {
+      const key=String((x as any).series_id||x.id||x.name); if(!merged.has(key)) merged.set(key,x);
+    }
+    const series=Array.from(merged.values());
+    const warnings:string[]=[];
+    if (!vodPart.supported) warnings.push("Portal VOD ordered-list endpointini desteklemiyor.");
+    if (!nativeSeries.supported) warnings.push("Portal ayrı Series endpointini desteklemiyor; VOD is_series fallback kullanıldı.");
+    if (vodError) warnings.push(`VOD katalog sorunu: ${vodError}`);
+    if (seriesError) warnings.push(`Series katalog sorunu: ${seriesError}`);
+    const diagnostics:StalkerCatalogDiagnostics={live:"EMPTY",vod:!vodPart.supported?"UNSUPPORTED":(vodPart.vod.length?"OK":"EMPTY"),seriesNative:!nativeSeries.supported?"UNSUPPORTED":(nativeSeries.items.length?"OK":"EMPTY"),seriesFromVod:vodPart.fallbackSeries.length,warnings};
+    void recordDiagnostic("catalog","STALKER_ENRICH_DONE",{elapsedMs:Date.now()-started,vod:vodPart.vod.length,series:series.length,warnings});
+    emitCatalogProgress(opts,{stage:"final",message:`Film/dizi tamamlandı · ${vodPart.vod.length} film · ${series.length} dizi`});
+    return {vod:vodPart.vod,series,diagnostics};
+  } finally { finish(); }
+}
+
 export async function stalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: StalkerCatalogOptions = {}): Promise<StalkerCatalogResult> {
   const finishCatalogTask = startDiagnosticTask("mag:catalog", { endpoint: ses.endpoint });
   try {
-  const key=catalogKey(cred,ses);
+  const key=catalogKey(cred,ses,opts.liveOnly?"live":"full");
   const now=Date.now();
   const cached=stalkerCatalogCache.get(key);
   if (!opts.forceFresh && cached && now-cached.at <= CATALOG_CACHE_TTL_MS) {

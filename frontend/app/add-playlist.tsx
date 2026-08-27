@@ -127,7 +127,7 @@ export default function AddPlaylist() {
 
   const router = useRouter();
   const { colors } = useTheme();
-  const { playlists, addPlaylist, addPreparedPlaylist } = usePlaylists();
+  const { playlists, addPlaylist, addPreparedPlaylist, enrichPlaylistMedia } = usePlaylists();
   const playlistServerKeysRef = React.useRef<Set<string>>(new Set());
   const directImportLocksRef = React.useRef<Set<string>>(new Set());
   const restoredImportAdoptedRef = React.useRef<Set<string>>(new Set());
@@ -1390,6 +1390,11 @@ export default function AddPlaylist() {
 
       let id = "";
       let playlist: Playlist;
+      let magEnrichment: null | {
+        cred: any;
+        session: any;
+        run: () => Promise<void>;
+      } = null;
 
       if (method === "m3u_url") {
         if (!m3uUrl.trim()) throw new Error("M3U URL boş olamaz");
@@ -1466,34 +1471,44 @@ export default function AddPlaylist() {
           throw new Error("Bu MAG/Portal hesabı zaten ekli.");
         }
 
-        const { stalkerLogin: stLogin, stalkerCatalog, normalizeMac, normalizeStalkerAccountInfo } = await import("@/src/utils/stalker");
+        const {
+          stalkerLogin: stLogin,
+          stalkerCatalog,
+          stalkerEnrichment,
+          normalizeMac,
+          normalizeStalkerAccountInfo,
+        } = await import("@/src/utils/stalker");
         const cred = {
           portal: stPortal.trim(),
           mac: normalizeMac(stMac.trim()),
           serial: stSerial.trim() || undefined,
+          // v15.2.25 RC1: modern varsayılan cihaz. MAG250 yalnız kontrollü
+          // compatibility fallback olarak stalker.ts içinde korunur.
+          deviceModel: "MAG254" as const,
         };
 
-        setProgress("Portala bağlanılıyor...");
+        setProgress("MAG254 profiliyle portala bağlanılıyor...");
         const { session, profile: prof } = await stLogin(cred);
 
-        setProgress("MAG katalog hazırlığı başlatılıyor...");
+        setProgress("Canlı TV kataloğu alınıyor...");
         let catalog;
         try {
           catalog = await stalkerCatalog(cred, session, {
+            liveOnly: true,
             onProgress: (progress) => setProgress(progress.message),
           });
         }
         catch (e: any) {
-          throw new Error(`MAG katalog yükleme başarısız: ${String(e?.message || e)}${session.profileError ? `\nProfil aşaması: ${session.profileError}` : ""}`);
+          throw new Error(`MAG canlı katalog yükleme başarısız: ${String(e?.message || e)}${session.profileError ? `\nProfil aşaması: ${session.profileError}` : ""}`);
         }
-        if (catalog.channels.length + catalog.vod.length + catalog.series.length === 0) {
+        if (catalog.channels.length === 0) {
           throw new Error(
-            "Portal bağlandı ama kanal listesi BOŞ.\n\n" +
+            "Portal oturumu açıldı ancak Canlı TV listesi BOŞ.\n\n" +
               (session.profileError ? `Profil aşaması: ${session.profileError}\n\n` : "") +
-              "Olası sebepler:\n" +
-              "• MAC adresi bu portalda kayıtlı değil\n" +
+              "MAG254 varsayılan cihaz profili kullanıldı. Olası sebepler:\n" +
+              "• MAC adresi bu portalda yayın yetkisine sahip değil\n" +
               "• Abonelik süresi dolmuş\n" +
-              "• Portal bu cihaz türünü kabul etmiyor"
+              "• Portal farklı cihaz kimliği/SN bekliyor (MAG250 fallback otomatik denenir)"
           );
         }
         const profile = prof || {};
@@ -1502,16 +1517,68 @@ export default function AddPlaylist() {
           stalkerPortal: stPortal.trim(), stalkerMac: stMac.trim().toUpperCase(),
           stalkerSerial: stSerial.trim() || undefined,
           accountInfo: normalizeStalkerAccountInfo(profile),
-          channels: catalog.channels, vod: catalog.vod, series: catalog.series, createdAt: new Date().toISOString(),
+          channels: catalog.channels, vod: [], series: [], createdAt: new Date().toISOString(),
+        };
+
+        // ENRICHMENT addPlaylist/Room verify BAŞARISINDAN ÖNCE başlatılmaz.
+        // Böylece Grok yamasındaki update-before-add race condition oluşmaz.
+        magEnrichment = {
+          cred,
+          session,
+          run: async () => {
+            const startedAt = Date.now();
+            void recordDiagnostic("catalog", "STALKER_ENRICH_START", { playlistId: id });
+            try {
+              const enrich = await stalkerEnrichment(cred, session);
+              await enrichPlaylistMedia(id, { vod: enrich.vod, series: enrich.series });
+              void recordDiagnostic("catalog", "STALKER_ENRICH_COMMIT_OK", {
+                playlistId: id,
+                elapsedMs: Date.now() - startedAt,
+                vod: enrich.vod.length,
+                series: enrich.series.length,
+              });
+            } catch (e:any) {
+              // Live playlist Room'da doğrulanmış olarak kalır; VOD/Series sorunu
+              // çalışan canlı hesabı geri almaz.
+              void recordDiagnostic("catalog", "STALKER_ENRICH_FAIL", {
+                playlistId: id,
+                elapsedMs: Date.now() - startedAt,
+                message: String(e?.message || e),
+                status: e?.status,
+                kind: e?.kind,
+              });
+            }
+          },
         };
       }
 
       const totalItems = (playlist.channels?.length || 0) + (playlist.vod?.length || 0) + (playlist.series?.length || 0);
       if (totalItems === 0) throw new Error("Hiç kanal/film/dizi bulunamadı. Kaynağı kontrol edin.");
       setProgress("Cihaza kaydediliyor...");
+      if (method === "stalker") {
+        void recordDiagnostic("catalog", "STALKER_ADD_COMMIT_START", {
+          playlistId: id,
+          live: playlist.channels?.length || 0,
+          vod: playlist.vod?.length || 0,
+          series: playlist.series?.length || 0,
+        });
+      }
+      const commitStartedAt = Date.now();
       await addPlaylist(playlist);
-      setProgress("Playlist hazır. +18 filtresi arka planda hazırlanıyor...");
+      if (method === "stalker") {
+        void recordDiagnostic("catalog", "STALKER_ADD_COMMIT_OK", {
+          playlistId: id,
+          elapsedMs: Date.now() - commitStartedAt,
+          live: playlist.channels?.length || 0,
+        });
+      }
+      setProgress(method === "stalker"
+        ? "Canlı TV hazır. Film ve diziler arka planda tamamlanacak..."
+        : "Playlist hazır. +18 filtresi arka planda hazırlanıyor...");
       router.replace("/(tabs)");
+
+      // addPlaylist + Room verify başarıyla tamamlandıktan SONRA enrichment.
+      if (magEnrichment) void magEnrichment.run();
     } catch (e: any) {
       const message = e.message || "Bilinmeyen hata";
       if (method === "stalker") void recordDiagnostic("catalog", "STALKER_ADD_ERROR", { message });

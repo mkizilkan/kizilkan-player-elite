@@ -30,6 +30,7 @@ export const KizilkanNativeCore = {
   available: !!native,
   warmPlaylist: async (id: string): Promise<NativePlaylistSummary | null> => native ? native.warmPlaylist(id) : null,
   importPlaylistHeavyJson: async (id: string, json: string): Promise<NativePlaylistSummary | null> => native ? native.importPlaylistHeavyJson(id, json) : null,
+  replacePlaylistKindJson: async (id: string, kind: "live" | "vod" | "series", jsonArray: string): Promise<NativePlaylistSummary | null> => native ? native.replacePlaylistKindJson(id, kind, jsonArray) : null,
   beginChunkedPlaylistImport: async (id: string): Promise<boolean> => native ? !!(await native.beginChunkedPlaylistImport(id)) : false,
   appendPlaylistChunk: async (id: string, kind: "live" | "vod" | "series", jsonArray: string): Promise<number> => native ? Number(await native.appendPlaylistChunk(id, kind, jsonArray)) : 0,
   finishChunkedPlaylistImport: async (id: string): Promise<NativePlaylistSummary | null> => native ? native.finishChunkedPlaylistImport(id) : null,

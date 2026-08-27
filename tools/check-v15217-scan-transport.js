@@ -25,7 +25,8 @@ need('app/stats.tsx', 'Ölüm öncesi durum', 'process summary UI');
 need('src/utils/stalker.ts', 'STALKER_ENDPOINT_ATTEMPT', 'MAG endpoint katmanlı tanılama');
 need('src/utils/stalker.ts', 'contentType', 'MAG response content-type tanılama');
 need('src/utils/stalker.ts', 'redirected', 'MAG redirect tanılama');
-need('src/utils/stalker.ts', 'kind = /^</.test(trimmed) ? "HTML" : "NON_JSON"', 'MAG non-JSON sınıflandırma');
+if (!src('src/utils/stalker.ts').includes('kind = /^</.test(trimmed) ? "HTML" : "NON_JSON"') &&
+    !src('src/utils/stalker.ts').includes('bodyKind:"json"|"html"|"empty"|"other"')) { console.error('HATA — MAG non-JSON sınıflandırma'); bad++; }
 
 async function compactFixture(){
   const source = src('modules/panel-scan/index.ts');

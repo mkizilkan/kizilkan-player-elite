@@ -78,6 +78,47 @@ class KizilkanNativeCoreModule : Module() {
       summary(snapshot, cacheHit = false)
     }
 
+    // v15.2.25 RC1: MAG live-first commit sonrasında VOD/Series enrichment,
+    // mevcut LIVE satırlarını JS'e geri taşımadan yalnız hedef Room kind'ını
+    // transaction içinde atomik değiştirir. Böylece 20k+ live katalog tekrar
+    // stringify edilmez ve updatePlaylist ağır merge yolu tetiklenmez.
+    AsyncFunction("replacePlaylistKindJson") { id: String, kindRaw: String, jsonArray: String ->
+      val kind = normalizeKind(kindRaw)
+      val started = SystemClock.elapsedRealtime()
+      val arr = JSONTokener(jsonArray).nextValue() as? JSONArray
+        ?: throw IllegalStateException("Playlist kind JSON array değil: $id/$kind")
+      val db = database()
+      db.runInTransaction {
+        val dao = db.mediaDao()
+        dao.deleteKind(id, kind)
+        insertCollection(dao, id, kind, arr)
+        val old = db.snapshotDao().get(id)
+          ?: throw IllegalStateException("Room snapshot bulunamadı: $id")
+        val liveCount = if (kind == "live") arr.length() else old.channelsCount
+        val vodCount = if (kind == "vod") arr.length() else old.vodCount
+        val seriesCount = if (kind == "series") arr.length() else old.seriesCount
+        db.snapshotDao().put(old.copy(
+          sourceStamp = 0L,
+          sourceSize = 0L,
+          channelsCount = liveCount,
+          vodCount = vodCount,
+          seriesCount = seriesCount,
+          importedAtEpochMs = System.currentTimeMillis(),
+          importMs = SystemClock.elapsedRealtime() - started,
+        ))
+      }
+      invalidated.remove(id)
+      val snapshot = db.snapshotDao().get(id) ?: throw IllegalStateException("Room snapshot güncellenemedi: $id")
+      updateTelemetry(id, mapOf(
+        "canonicalStore" to "Room/SQLite",
+        "partialKindReplace" to kind,
+        "channels" to snapshot.channelsCount,
+        "vod" to snapshot.vodCount,
+        "series" to snapshot.seriesCount,
+      ))
+      summary(snapshot, cacheHit = false)
+    }
+
     // v15.2.5: Legacy/MAG/compatibility yollarında 50-100 bin kaydı tek bir
     // JSON.stringify ile JS thread'de kilitlememek için chunked staging import.
     // Staging dosyası GEÇİCİDİR; canonical veri yalnız finalize transaction

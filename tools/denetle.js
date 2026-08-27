@@ -45,6 +45,7 @@ const CHECKS = [
   ["check-v15224-rc3-gate-cwd.js", "v15.2.24 RC3 gate CWD invariance self-test", ""],
   ["check-v15224-rc3-tools-audit.js", "v15.2.24 RC3 tools JS syntax / rooted-path audit", ""],
   ["check-v15224-rc3-claude-memory-telemetry.js", "v15.2.24 RC3 Claude memory / telemetry / no-regression contract", ""],
+  ["check-v15225-mag-architecture.js", "v15.2.25 MAG254 learned handshake / live-first / Room enrichment contract", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 

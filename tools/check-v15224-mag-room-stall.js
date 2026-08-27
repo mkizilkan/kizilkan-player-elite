@@ -6,7 +6,8 @@ const need=(r,t,l)=>{if(!read(r).includes(t)){console.log(`HATA — ${l}: ${t}`)
 const order=(r,a,b,l)=>{const s=read(r),ia=s.indexOf(a),ib=s.indexOf(b,Math.max(0,ia)); if(ia<0||ib<0||ia>=ib){console.log(`HATA — ${l}: sıra doğrulanamadı`);bad++;}};
 const pkg=JSON.parse(fs.readFileSync(path.join(front,'package.json'),'utf8'));
 const app=JSON.parse(fs.readFileSync(path.join(front,'app.json'),'utf8'));
-if(pkg.version!=='15.2.24'||app.expo.version!=='15.2.24'||Number(app.expo.android.versionCode)!==150224){console.log('HATA — v15.2.24 sürüm üçlüsü tutarsız');bad++;}
+const verOk = /^15\.2\.(\d+)$/.test(pkg.version) && pkg.version===app.expo.version && Number(app.expo.android.versionCode)===Number(pkg.version.split('.')[0])*10000+Number(pkg.version.split('.')[1])*100+Number(pkg.version.split('.')[2]);
+if(!verOk || Number(pkg.version.split('.')[2])<24){console.log('HATA — v15.2.24+ sürüm üçlüsü tutarsız');bad++;}
 
 // MAG duplicate-download / telemetry / progress
 need('frontend/src/utils/stalker.ts','stalkerCatalogInFlight','MAG single-flight map');
@@ -50,7 +51,12 @@ async function functionalSingleFlightFixture(){
     if((type==='vod'||type==='series')&&action==='get_ordered_list') return http({js:{total_items:0,data:[]}});
     throw new Error('fixture endpoint yok '+url);
   };
-  const req=id=>id==='@/src/utils/diagnostics'?{recordDiagnostic:async()=>{}}:require(id);
+  const memoryStore=new Map();
+  const req=id=>{
+    if(id==='@/src/utils/diagnostics') return {recordDiagnostic:async()=>{},markTask:()=>()=>{}};
+    if(id==='@/src/utils/storage') return {storage:{getItem:async(k,f)=>memoryStore.has(k)?memoryStore.get(k):f,setItem:async(k,v)=>{memoryStore.set(k,v);return true;},removeItem:async(k)=>{memoryStore.delete(k);return true;}}};
+    return require(id);
+  };
   const box={module:{exports:{}},exports:{},require:req,console,URL,URLSearchParams,AbortController,setTimeout,clearTimeout,fetch}; box.exports=box.module.exports;
   vm.runInNewContext(js,box,{filename:'stalker-v15224.ts'}); const m=box.module.exports;
   const cred={portal:'http://p',mac:'00:11:22:33:44:55'}, ses={token:'t',endpoint:'http://p/portal.php'};
