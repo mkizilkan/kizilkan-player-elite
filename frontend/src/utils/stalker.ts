@@ -23,7 +23,10 @@
  */
 
 import type { AccountInfo, Channel, SeriesItem, VodItem } from "@/src/types";
-import { recordDiagnostic } from "@/src/utils/diagnostics";
+import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
+
+const startDiagnosticTask = (label: string, meta: Record<string, any> = {}) =>
+  typeof markTask === "function" ? markTask(label, meta) : (() => {});
 
 /** MAG250 kimliği. Portallar bunu bekler. */
 const MAG_UA =
@@ -54,10 +57,27 @@ export interface StalkerSession {
   profileError?: string;
   profileVariant?: string;
   random?: string;
+  compatProfile?: "mag250-raw" | "mag250-encoded" | "mag254-encoded";
 }
 
 const SESSION_TTL_MS = 15 * 60 * 1000;
 const stalkerSessionCache = new Map<string, { session: StalkerSession; profile: any; at: number }>();
+
+// v15.2.24: Aynı portal/MAC için pahalı MAG katalog indirmesini tek uçuşta birleştir.
+// Telemetride 29 MB get_all_channels yanıtının aynı oturumda tekrar tekrar indirildiği
+// kanıtlandığı için hem eşzamanlı istek deduplication hem kısa ömürlü katalog cache'i kullanılır.
+const CATALOG_CACHE_TTL_MS = 3 * 60 * 1000;
+type StalkerCatalogResult = { channels:Channel[]; vod:VodItem[]; series:SeriesItem[]; diagnostics:StalkerCatalogDiagnostics };
+export type StalkerCatalogProgress = {
+  stage: "live" | "vod" | "series" | "final";
+  message: string;
+  page?: number;
+  loaded?: number;
+  total?: number;
+};
+type StalkerCatalogOptions = { forceFresh?: boolean; onProgress?: (progress: StalkerCatalogProgress) => void };
+const stalkerCatalogCache = new Map<string, { result: StalkerCatalogResult; at: number }>();
+const stalkerCatalogInFlight = new Map<string, Promise<StalkerCatalogResult>>();
 
 function sessionKey(cred: StalkerCreds): string { return `${baseOf(cred.portal).toLowerCase()}|${normalizeMac(cred.mac)}|${cred.serial || ""}|${cred.deviceId || ""}`; }
 function getCachedSession(cred: StalkerCreds): { session: StalkerSession; profile: any } | null {
@@ -69,7 +89,17 @@ function cacheSession(cred: StalkerCreds, session: StalkerSession, profile: any)
   const key = sessionKey(cred); stalkerSessionCache.set(key, { session, profile, at: Date.now() });
   if (stalkerSessionCache.size > 8) { const oldest = [...stalkerSessionCache.entries()].sort((a,b)=>a[1].at-b[1].at)[0]?.[0]; if (oldest) stalkerSessionCache.delete(oldest); }
 }
-function invalidateSession(cred: StalkerCreds) { stalkerSessionCache.delete(sessionKey(cred)); }
+function invalidateSession(cred: StalkerCreds) {
+  const key = sessionKey(cred);
+  stalkerSessionCache.delete(key);
+  for (const catalogKey of [...stalkerCatalogCache.keys()]) if (catalogKey.startsWith(key + "|")) stalkerCatalogCache.delete(catalogKey);
+}
+function catalogKey(cred: StalkerCreds, ses: StalkerSession): string {
+  return `${sessionKey(cred)}|${String(ses.endpoint || "").toLowerCase()}`;
+}
+function emitCatalogProgress(opts: StalkerCatalogOptions | undefined, progress: StalkerCatalogProgress) {
+  try { opts?.onProgress?.(progress); } catch {}
+}
 
 /** MAC'i portalın beklediği biçime getirir: BÜYÜK harf, iki nokta ayraçlı. */
 export function normalizeMac(raw: string): string {
@@ -133,16 +163,22 @@ function refererFor(cred: StalkerCreds, endpoint?: string): string {
   } catch { return baseOf(cred.portal) + "/c/"; }
 }
 
-function headersFor(cred: StalkerCreds, token?: string, endpoint?: string): Record<string, string> {
+type MagCompatProfile = "mag250-raw" | "mag250-encoded" | "mag254-encoded";
+const MAG_COMPAT_PROFILES: MagCompatProfile[] = ["mag250-raw", "mag250-encoded", "mag254-encoded"];
+
+function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profile: MagCompatProfile = "mag250-raw"): Record<string, string> {
   const mac = normalizeMac(cred.mac);
+  const encodedMac = encodeURIComponent(mac);
   const h: Record<string, string> = {
-    "User-Agent": MAG_UA,
+    "User-Agent": profile === "mag254-encoded"
+      ? "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG254 stbapp ver: 4 rev: 2721 Safari/533.3"
+      : MAG_UA,
     Referer: refererFor(cred, endpoint),
     Accept: "*/*",
-    "X-User-Agent": "Model: MAG250; Link: Ethernet",
-    // MAG portalları MAC cookie'sini klasik iki-noktalı biçimde bekler.
-    Cookie: `mac=${mac}; stb_lang=en; timezone=Europe%2FIstanbul`,
+    "X-User-Agent": profile === "mag254-encoded" ? "Model: MAG254; Link: Ethernet" : "Model: MAG250; Link: Ethernet",
+    Cookie: `mac=${profile === "mag250-raw" ? mac : encodedMac}; stb_lang=en; timezone=Europe%2FIstanbul`,
   };
+  if (profile !== "mag250-raw") h["Accept-Encoding"] = "gzip, deflate";
   if (token) h.Authorization = `Bearer ${token}`;
   return h;
 }
@@ -217,28 +253,35 @@ function buildUrl(endpoint: string, params: Record<string, string>): string {
 
 /** 1) HANDSHAKE — portal yolu bilinmediği için yollar sırayla denenir. */
 export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSession> {
+  const finishTask = startDiagnosticTask("mag:handshake", { portal: cred.portal });
   const errors: string[] = [];
+  try {
 
   for (const endpoint of portalCandidates(cred.portal)) {
     const label = (() => { try { return new URL(endpoint).pathname; } catch { return endpoint; } })();
     const attemptAt = Date.now();
     void recordDiagnostic("catalog", "STALKER_ENDPOINT_ATTEMPT", { endpoint, path: label });
-    try {
-      const data = await req(
-        buildUrl(endpoint, { type: "stb", action: "handshake", token: "", prehash: "0" }),
-        headersFor(cred, undefined, endpoint)
-      );
-      const token = data?.js?.token;
-      if (token) {
-        void recordDiagnostic("catalog", "STALKER_ENDPOINT_OK", { endpoint, path: label, elapsedMs: Date.now()-attemptAt });
-        return { token, endpoint, random: primitiveString(data?.js?.random) };
+    for (const compatProfile of MAG_COMPAT_PROFILES) {
+      const profileAttemptAt = Date.now();
+      void recordDiagnostic("catalog", "STALKER_COMPAT_ATTEMPT", { endpoint, path: label, compatProfile });
+      try {
+        const data = await req(
+          buildUrl(endpoint, { type: "stb", action: "handshake", token: "", prehash: "0" }),
+          headersFor(cred, undefined, endpoint, compatProfile)
+        );
+        const token = data?.js?.token;
+        if (token) {
+          void recordDiagnostic("catalog", "STALKER_COMPAT_OK", { endpoint, path: label, compatProfile, elapsedMs: Date.now()-profileAttemptAt });
+          void recordDiagnostic("catalog", "STALKER_ENDPOINT_OK", { endpoint, path: label, elapsedMs: Date.now()-attemptAt, compatProfile });
+          return { token, endpoint, random: primitiveString(data?.js?.random), compatProfile };
+        }
+        errors.push(`${label}/${compatProfile}: token yok`);
+        void recordDiagnostic("catalog", "STALKER_COMPAT_ERROR", { endpoint, path: label, compatProfile, elapsedMs: Date.now()-profileAttemptAt, kind:"NO_TOKEN" });
+      } catch (e: any) {
+        const detail = [e?.message, e?.finalUrl && e.finalUrl !== endpoint ? `final=${String(e.finalUrl)}` : ""].filter(Boolean).join(" · ");
+        errors.push(`${label}/${compatProfile}: ${detail || e}`);
+        void recordDiagnostic("catalog", "STALKER_COMPAT_ERROR", { endpoint, path: label, compatProfile, elapsedMs: Date.now()-profileAttemptAt, kind:e?.kind, status:e?.status, message:String(e?.message || e) });
       }
-      errors.push(`${label}: token yok`);
-      void recordDiagnostic("catalog", "STALKER_ENDPOINT_ERROR", { endpoint, path: label, elapsedMs: Date.now()-attemptAt, kind:"NO_TOKEN", message:"token yok" });
-    } catch (e: any) {
-      const detail = [e?.message, e?.finalUrl && e.finalUrl !== endpoint ? `final=${String(e.finalUrl)}` : ""].filter(Boolean).join(" · ");
-      errors.push(`${label}: ${detail || e}`);
-      void recordDiagnostic("catalog", "STALKER_ENDPOINT_ERROR", { endpoint, path: label, elapsedMs: Date.now()-attemptAt, kind:e?.kind, status:e?.status, contentType:e?.contentType, redirected:e?.redirected, finalUrl:e?.finalUrl, message:String(e?.message || e) });
     }
   }
 
@@ -246,6 +289,9 @@ export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSessi
     "Portala bağlanılamadı. Denenen yollar:\n" + errors.join("\n") +
       "\n\nPortal adresini ve MAC'i kontrol edin."
   );
+  } finally {
+    finishTask();
+  }
 }
 
 /** 2) GET_PROFILE — portal varyantlarına kontrollü uyumluluk. */
@@ -340,7 +386,7 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession): P
   for (const variant of variants) {
     const started=Date.now();
     try {
-      const data=await req(buildUrl(ses.endpoint, variant.params), headersFor(cred, ses.token, ses.endpoint));
+      const data=await req(buildUrl(ses.endpoint, variant.params), headersFor(cred, ses.token, ses.endpoint, ses.compatProfile));
       const profile=profilePayload(data);
       if (profile) {
         ses.profileVariant=variant.label;
@@ -372,7 +418,7 @@ async function stalkerCatalogYield(index: number, every = 300): Promise<void> {
 export async function stalkerGenres(cred: StalkerCreds, ses: StalkerSession): Promise<Map<string, string>> {
   const data = await req(
     buildUrl(ses.endpoint, { type: "itv", action: "get_genres" }),
-    headersFor(cred, ses.token, ses.endpoint)
+    headersFor(cred, ses.token, ses.endpoint, ses.compatProfile)
   );
   const map = new Map<string, string>();
   const list = Array.isArray(data?.js) ? data.js : [];
@@ -390,8 +436,8 @@ export async function stalkerChannels(cred: StalkerCreds, ses: StalkerSession): 
   try {
     const data = await req(
       buildUrl(ses.endpoint, { type: "itv", action: "get_all_channels" }),
-      headersFor(cred, ses.token, ses.endpoint),
-      120000
+      headersFor(cred, ses.token, ses.endpoint, ses.compatProfile),
+      60000
     );
     list = Array.isArray(data?.js?.data) ? data.js.data : (Array.isArray(data?.js) ? data.js : []);
     if (!list.length) throw Object.assign(new Error("get_all_channels boş"), { kind:"EMPTY" });
@@ -400,7 +446,7 @@ export async function stalkerChannels(cred: StalkerCreds, ses: StalkerSession): 
     void recordDiagnostic("mag", "STALKER_LIVE_FALLBACK", { from:"get_all_channels", to:"get_ordered_list", status:first?.status, kind:first?.kind, message:String(first?.message || first) });
     const seen=new Set<string>();
     for (let page=0; page<10000; page++) {
-      const data=await req(buildUrl(ses.endpoint,{type:"itv",action:"get_ordered_list",fav:"0",sortby:"number",p:String(page)}),headersFor(cred,ses.token,ses.endpoint),120000);
+      const data=await req(buildUrl(ses.endpoint,{type:"itv",action:"get_ordered_list",fav:"0",sortby:"number",p:String(page)}),headersFor(cred,ses.token,ses.endpoint,ses.compatProfile),60000);
       const rows=rowsFromListShape(data);
       if (!rows.length) {
         if (page===0) continue; // bazı portallar p=1 ile başlar
@@ -484,7 +530,7 @@ function rowsFromListShape(data:any): any[] {
 
 async function stalkerCategories(cred: StalkerCreds, ses: StalkerSession, type: "vod" | "series"): Promise<Map<string,string>> {
   let data:any;
-  try { data = await req(buildUrl(ses.endpoint, { type, action: "get_categories" }), headersFor(cred, ses.token, ses.endpoint), 60000); }
+  try { data = await req(buildUrl(ses.endpoint, { type, action: "get_categories" }), headersFor(cred, ses.token, ses.endpoint, ses.compatProfile), 30000); }
   catch (e:any) { if (unsupportedStatus(e)) throw new StalkerCatalogUnsupportedError(type, `${type} kategori endpoint desteklenmiyor`); throw e; }
   const js=data?.js;
   const raw = Array.isArray(js) ? js : (Array.isArray(js?.data) ? js.data : []);
@@ -500,12 +546,18 @@ async function stalkerCategories(cred: StalkerCreds, ses: StalkerSession, type: 
   return out;
 }
 
-async function stalkerOrderedList(cred: StalkerCreds, ses: StalkerSession, type: "vod" | "series", extra: Record<string,string> = {}): Promise<any[]> {
+async function stalkerOrderedList(
+  cred: StalkerCreds,
+  ses: StalkerSession,
+  type: "vod" | "series",
+  extra: Record<string,string> = {},
+  onPage?: (page: number, loaded: number, total?: number) => void,
+): Promise<any[]> {
   const out:any[]=[]; const seen=new Set<string>();
   let total=Number.POSITIVE_INFINITY; let page=0; let firstNonEmptyPage:number|null=null;
   while (page <= 10000 && out.length < total) {
     let data:any;
-    try { data = await req(buildUrl(ses.endpoint, { type, action:"get_ordered_list", p:String(page), ...extra }), headersFor(cred, ses.token, ses.endpoint), 120000); }
+    try { data = await req(buildUrl(ses.endpoint, { type, action:"get_ordered_list", p:String(page), ...extra }), headersFor(cred, ses.token, ses.endpoint, ses.compatProfile), 60000); }
     catch (e:any) { if (unsupportedStatus(e)) throw new StalkerCatalogUnsupportedError(type, `${type} ordered-list endpoint desteklenmiyor`); throw e; }
     if (!isExplicitListShape(data)) throw new StalkerCatalogUnsupportedError(type, `${type} ordered-list yanıt biçimi desteklenmiyor`);
     const js=data?.js; const rows=rowsFromListShape(data);
@@ -524,6 +576,8 @@ async function stalkerOrderedList(cred: StalkerCreds, ses: StalkerSession, type:
       await stalkerCatalogYield(ri);
     }
     await stalkerCatalogYield(page, 1);
+    const progressTotal = Number.isFinite(total) ? total : undefined;
+    try { onPage?.(page, out.length, progressTotal); } catch {}
     if (!added && firstNonEmptyPage === 0 && page === 1) { page=2; continue; }
     if (!added) break;
     page++;
@@ -556,11 +610,11 @@ function mapSeriesRow(v:any, i:number, cats:Map<string,string>): SeriesItem {
 }
 
 type VodPartition = { vod:VodItem[]; fallbackSeries:SeriesItem[]; supported:boolean; rawCount:number; seriesFlagged:number };
-async function stalkerVodPartition(cred:StalkerCreds, ses:StalkerSession): Promise<VodPartition> {
+async function stalkerVodPartition(cred:StalkerCreds, ses:StalkerSession, opts?: StalkerCatalogOptions): Promise<VodPartition> {
   let cats=new Map<string,string>();
   try { cats=await stalkerCategories(cred,ses,"vod"); } catch (e) { if (!(e instanceof StalkerCatalogUnsupportedError)) throw e; }
   let raw:any[];
-  try { raw=await stalkerOrderedList(cred,ses,"vod"); }
+  try { raw=await stalkerOrderedList(cred,ses,"vod",{},(page,loaded,total)=>emitCatalogProgress(opts,{stage:"vod",message:`Film kataloğu yükleniyor · sayfa ${page} · ${loaded}${total != null ? `/${total}` : ""}`,page,loaded,total})); }
   catch (e) { if (e instanceof StalkerCatalogUnsupportedError) return {vod:[],fallbackSeries:[],supported:false,rawCount:0,seriesFlagged:0}; throw e; }
   const vod:VodItem[]=[]; const fallbackSeries:SeriesItem[]=[];
   for (let i=0; i<raw.length; i++) {
@@ -572,11 +626,11 @@ async function stalkerVodPartition(cred:StalkerCreds, ses:StalkerSession): Promi
   return {vod,fallbackSeries,supported:true,rawCount:raw.length,seriesFlagged:fallbackSeries.length};
 }
 
-async function nativeStalkerSeries(cred:StalkerCreds, ses:StalkerSession): Promise<{items:SeriesItem[]; supported:boolean}> {
+async function nativeStalkerSeries(cred:StalkerCreds, ses:StalkerSession, opts?: StalkerCatalogOptions): Promise<{items:SeriesItem[]; supported:boolean}> {
   let cats=new Map<string,string>();
   try { cats=await stalkerCategories(cred,ses,"series"); } catch (e) { if (!(e instanceof StalkerCatalogUnsupportedError)) throw e; }
   let raw:any[];
-  try { raw=await stalkerOrderedList(cred,ses,"series"); }
+  try { raw=await stalkerOrderedList(cred,ses,"series",{},(page,loaded,total)=>emitCatalogProgress(opts,{stage:"series",message:`Dizi kataloğu yükleniyor · sayfa ${page} · ${loaded}${total != null ? `/${total}` : ""}`,page,loaded,total})); }
   catch (e) { if (e instanceof StalkerCatalogUnsupportedError) return {items:[],supported:false}; throw e; }
   const items: SeriesItem[] = [];
   for (let i=0; i<raw.length; i++) { items.push(mapSeriesRow(raw[i],i,cats)); await stalkerCatalogYield(i); }
@@ -674,21 +728,40 @@ async function retryCatalogPart<T>(label:string, fn:()=>Promise<T>):Promise<T> {
   const err:any=new Error(`${label} kataloğu alınamadı: ${last?.message || last}`); err.cause=last; err.kind=last?.kind; err.status=last?.status; err.contentType=last?.contentType; err.redirected=last?.redirected; err.finalUrl=last?.finalUrl; throw err;
 }
 
-export async function stalkerCatalog(cred: StalkerCreds, ses: StalkerSession): Promise<{channels:Channel[]; vod:VodItem[]; series:SeriesItem[]; diagnostics:StalkerCatalogDiagnostics}> {
+async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: StalkerCatalogOptions = {}): Promise<StalkerCatalogResult> {
   const catalogStarted = Date.now();
   void recordDiagnostic("catalog", "STALKER_CATALOG_START", { endpoint: ses.endpoint, profileError: ses.profileError || "" });
+
+  emitCatalogProgress(opts,{stage:"live",message:"Canlı TV kataloğu yükleniyor..."});
+  const liveStageStarted=Date.now();
   let channels:Channel[]=[];
   let liveError="";
+  const finishLiveTask = startDiagnosticTask("mag:catalog-live");
   try { channels=await retryCatalogPart("MAG Live",()=>stalkerChannels(cred,ses)); }
   catch (e:any) { liveError=String(e?.message || e); void recordDiagnostic("mag","STALKER_LIVE_PARTIAL_FAILURE",{message:liveError,status:e?.status,kind:e?.kind}); }
+  finally { finishLiveTask(); }
+  void recordDiagnostic("catalog","STALKER_CATALOG_STAGE_DONE",{stage:"live",elapsedMs:Date.now()-liveStageStarted,count:channels.length,error:liveError});
+  emitCatalogProgress(opts,{stage:"live",message:`Canlı TV tamamlandı · ${channels.length} kanal`,loaded:channels.length,total:channels.length});
+
+  emitCatalogProgress(opts,{stage:"vod",message:"Film kataloğu yükleniyor..."});
+  const vodStageStarted=Date.now();
   let vodPart:VodPartition;
   let vodError="";
-  try { vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses)); }
+  const finishVodTask = startDiagnosticTask("mag:catalog-vod");
+  try { vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses,opts)); }
   catch (e:any) { vodError=String(e?.message || e); vodPart={vod:[],fallbackSeries:[],supported:!(e instanceof StalkerCatalogUnsupportedError),rawCount:0,seriesFlagged:0}; void recordDiagnostic("mag","STALKER_VOD_PARTIAL_FAILURE",{message:vodError,status:e?.status,kind:e?.kind}); }
+  finally { finishVodTask(); }
+  void recordDiagnostic("catalog","STALKER_CATALOG_STAGE_DONE",{stage:"vod",elapsedMs:Date.now()-vodStageStarted,count:vodPart.vod.length,seriesFlagged:vodPart.fallbackSeries.length,error:vodError});
+  emitCatalogProgress(opts,{stage:"vod",message:`Film kataloğu tamamlandı · ${vodPart.vod.length} film`,loaded:vodPart.vod.length,total:vodPart.vod.length});
+
+  emitCatalogProgress(opts,{stage:"series",message:"Dizi kataloğu yükleniyor..."});
+  const seriesStageStarted=Date.now();
   let nativeSeries:{items:SeriesItem[];supported:boolean};
   let seriesError="";
-  try { nativeSeries=await retryCatalogPart("MAG Series",()=>nativeStalkerSeries(cred,ses)); }
+  const finishSeriesTask = startDiagnosticTask("mag:catalog-series");
+  try { nativeSeries=await retryCatalogPart("MAG Series",()=>nativeStalkerSeries(cred,ses,opts)); }
   catch (e:any) { seriesError=String(e?.message || e); nativeSeries={items:[],supported:!(e instanceof StalkerCatalogUnsupportedError)}; void recordDiagnostic("mag","STALKER_SERIES_PARTIAL_FAILURE",{message:seriesError,status:e?.status,kind:e?.kind}); }
+  finally { finishSeriesTask(); }
 
   // type=series boş dönse bile VOD is_series/kategori fallback'i HER ZAMAN birleştirilir.
   const merged=new Map<string,SeriesItem>();
@@ -696,6 +769,9 @@ export async function stalkerCatalog(cred: StalkerCreds, ses: StalkerSession): P
     const key=String((x as any).series_id || x.id || x.name); if (!merged.has(key)) merged.set(key,x);
   }
   const series=Array.from(merged.values());
+  void recordDiagnostic("catalog","STALKER_CATALOG_STAGE_DONE",{stage:"series",elapsedMs:Date.now()-seriesStageStarted,count:series.length,nativeCount:nativeSeries.items.length,fromVod:vodPart.fallbackSeries.length,error:seriesError});
+  emitCatalogProgress(opts,{stage:"series",message:`Dizi kataloğu tamamlandı · ${series.length} dizi`,loaded:series.length,total:series.length});
+
   const warnings:string[]=[];
   if (!vodPart.supported) warnings.push("Portal VOD ordered-list endpointini desteklemiyor.");
   if (!nativeSeries.supported) warnings.push("Portal ayrı Series endpointini desteklemiyor; VOD is_series fallback kullanıldı.");
@@ -712,9 +788,45 @@ export async function stalkerCatalog(cred: StalkerCreds, ses: StalkerSession): P
   if (!channels.length && !vodPart.vod.length && !series.length && (liveError || vodError || seriesError)) {
     throw new Error(`MAG katalog alınamadı. ${[liveError,vodError,seriesError].filter(Boolean).join(" | ")}`);
   }
+  const result={channels,vod:vodPart.vod,series,diagnostics};
   console.info('[StalkerCatalog]' , {live:channels.length,vod:vodPart.vod.length,series:series.length,diagnostics});
   void recordDiagnostic("catalog", "STALKER_CATALOG_DONE", { elapsedMs: Date.now()-catalogStarted, live: channels.length, vod: vodPart.vod.length, series: series.length, diagnostics });
-  return {channels,vod:vodPart.vod,series,diagnostics};
+  emitCatalogProgress(opts,{stage:"final",message:`MAG katalog hazır · ${channels.length} kanal · ${vodPart.vod.length} film · ${series.length} dizi`});
+  return result;
+}
+
+export async function stalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: StalkerCatalogOptions = {}): Promise<StalkerCatalogResult> {
+  const finishCatalogTask = startDiagnosticTask("mag:catalog", { endpoint: ses.endpoint });
+  try {
+  const key=catalogKey(cred,ses);
+  const now=Date.now();
+  const cached=stalkerCatalogCache.get(key);
+  if (!opts.forceFresh && cached && now-cached.at <= CATALOG_CACHE_TTL_MS) {
+    void recordDiagnostic("catalog","STALKER_CATALOG_CACHE_HIT",{ageMs:now-cached.at,endpoint:ses.endpoint,live:cached.result.channels.length,vod:cached.result.vod.length,series:cached.result.series.length});
+    emitCatalogProgress(opts,{stage:"final",message:`Önbellekteki MAG katalog kullanılıyor · ${cached.result.channels.length} kanal · ${cached.result.vod.length} film · ${cached.result.series.length} dizi`});
+    return cached.result;
+  }
+  const active=stalkerCatalogInFlight.get(key);
+  if (active) {
+    void recordDiagnostic("catalog","STALKER_CATALOG_SINGLEFLIGHT_JOIN",{endpoint:ses.endpoint,forceFresh:!!opts.forceFresh});
+    emitCatalogProgress(opts,{stage:"live",message:"Aynı MAG katalog isteği zaten çalışıyor; mevcut işleme bağlanılıyor..."});
+    return active;
+  }
+  const promise=runStalkerCatalog(cred,ses,opts)
+    .then(result=>{
+      stalkerCatalogCache.set(key,{result,at:Date.now()});
+      if (stalkerCatalogCache.size>6) {
+        const oldest=[...stalkerCatalogCache.entries()].sort((a,b)=>a[1].at-b[1].at)[0]?.[0];
+        if (oldest) stalkerCatalogCache.delete(oldest);
+      }
+      return result;
+    })
+    .finally(()=>{ stalkerCatalogInFlight.delete(key); });
+  stalkerCatalogInFlight.set(key,promise);
+  return promise;
+  } finally {
+    finishCatalogTask();
+  }
 }
 
 /** 5) CREATE_LINK — oynatma anında gerçek (geçici) adres. */
@@ -735,7 +847,7 @@ export async function stalkerCreateLink(
       disable_ad: "0",
       download: "0",
     }),
-    headersFor(cred, ses.token, ses.endpoint)
+    headersFor(cred, ses.token, ses.endpoint, ses.compatProfile)
   );
 
   const raw = String(data?.js?.cmd || "");

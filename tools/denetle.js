@@ -40,6 +40,11 @@ const CHECKS = [
   ["check-v15222-flight-recorder-mag.js", "v15.2.22 Flight Recorder V4 / MAG compatibility contract", ""],
   ["check-v15223-flight-recorder-mag.js", "v15.2.23 Flight Recorder V5 / total reset / MAG HTTP telemetry", ""],
   ["check-v15223-complete-corrective.js", "v15.2.23 RC2 P0 complete corrective contract", ""],
+  ["check-v15224-mag-room-stall.js", "v15.2.24 MAG single-flight / Room verify / Media3 stall contract", ""],
+  ["check-v15224-rc2-memory-native.js", "v15.2.24 RC2 memory / native paging / MAG compatibility contract", ""],
+  ["check-v15224-rc3-gate-cwd.js", "v15.2.24 RC3 gate CWD invariance self-test", ""],
+  ["check-v15224-rc3-tools-audit.js", "v15.2.24 RC3 tools JS syntax / rooted-path audit", ""],
+  ["check-v15224-rc3-claude-memory-telemetry.js", "v15.2.24 RC3 Claude memory / telemetry / no-regression contract", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 

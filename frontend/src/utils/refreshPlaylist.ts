@@ -18,6 +18,7 @@ import {
 } from "./iptv";
 import type { Playlist } from "@/src/types";
 import { resolveBoundPanel } from "@/src/utils/serverCode";
+import { markTask } from "@/src/utils/diagnostics";
 
 export type RefreshPhase = "dns" | "login" | "content" | "save" | "done" | "error";
 export type RefreshProgress = {
@@ -38,6 +39,7 @@ export interface RefreshResult {
 }
 
 export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: RefreshProgress) => void): Promise<RefreshResult> {
+  const finishTask = markTask(`refresh:${pl.source}:${pl.name || pl.id}`, { playlistId: pl.id, source: pl.source });
   try {
     if (pl.source === "xtream") {
       if (!pl.xtreamServer || !pl.xtreamUsername || !pl.xtreamPassword) {
@@ -173,9 +175,14 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       };
       onProgress?.({ phase: "login", message: "Portal doğrulanıyor..." });
       const { session } = await stalkerLogin(cred);
-      onProgress?.({ phase: "content", message: "Canlı / Film / Dizi katalogları yükleniyor..." });
+      onProgress?.({ phase: "content", message: "MAG katalog hazırlığı başlatılıyor..." });
       let catalog;
-      try { catalog = await stalkerCatalog(cred, session); }
+      try {
+        catalog = await stalkerCatalog(cred, session, {
+          forceFresh: true,
+          onProgress: (progress) => onProgress?.({ phase: progress.stage === "final" ? "save" : "content", message: progress.message }),
+        });
+      }
       catch (e: any) { return { ok: false, message: `MAG katalog yenileme başarısız: ${String(e?.message || e)}${session.profileError ? ` · Profil: ${session.profileError}` : ""}` }; }
       if (catalog.channels.length + catalog.vod.length + catalog.series.length === 0) {
         return { ok: false, message: `Portal bağlandı ama kanal listesi boş.${session.profileError ? ` Profil: ${session.profileError}` : ""}` };
@@ -192,5 +199,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
     const message = e?.message || "Yenileme başarısız.";
     onProgress?.({ phase: "error", message });
     return { ok: false, message };
+  } finally {
+    finishTask();
   }
 }

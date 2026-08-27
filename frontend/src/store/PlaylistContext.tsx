@@ -48,7 +48,7 @@ import { Playlist } from '@/src/types';
 import { useProfiles } from './ProfileContext';
 import { scheduleAdultFlags } from '@/src/utils/adult';
 import { KizilkanNativeCore, type NativePlaylistSummary } from '@/modules/kizilkan-native-core';
-import { recordDiagnostic } from '@/src/utils/diagnostics';
+import { markTask, recordDiagnostic } from '@/src/utils/diagnostics';
 
 /**
  * v5.7.0 — LİSTELER ARTIK PROFİLE ÖZEL
@@ -467,6 +467,8 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     const target = initial.find(pl => pl.id === id);
     if (!target) throw new Error('Güncellenecek playlist bulunamadı.');
     const heavyTouched = 'channels' in patch || 'vod' in patch || 'series' in patch;
+    const finishTask = markTask(heavyTouched ? 'room:commit' : 'playlist:metadata-update', { playlistId: id });
+    try {
 
     // v15.2.23-RC2 — ATOMIC CATALOG PUBLISH:
     // Eski akış React state'i ÖNCE güncelliyor, Room/bigStore commit'i SONRA
@@ -544,10 +546,63 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     playlistsRef.current = next;
     setPlaylists(next);
     await persistMeta(next);
+    } finally {
+      finishTask();
+    }
   }, [persistMeta, activeId]);
 
   const setActivePlaylist = useCallback(async (id: string) => {
+    const finishTask = markTask('room:switch-verify', { playlistId: id });
+    try {
     const generation = ++activeSwitchGeneration.current;
+    const previousId = activeId;
+    let verifiedSummary: NativePlaylistSummary | null = null;
+
+    // v15.2.24 — VERIFIED ACTIVATION:
+    // Native Core kullanılan cihazlarda hedef playlist önce Room tarafında gerçekten
+    // okunabilir/indeksli hale gelmeden activeId ve kalıcı activeKey değiştirilmez.
+    // Böylece "sayı var ama içerik yok" snapshot'ı kullanıcıya aktif liste olarak
+    // yayınlanamaz. Recovery de aynı generation içinde tamamlanmak zorundadır.
+    if (KizilkanNativeCore.available) {
+      const verifyStartedAt = Date.now();
+      void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_VERIFY_START', { fromPlaylistId: previousId || '', toPlaylistId: id, generation });
+      try {
+        try {
+          verifiedSummary = await KizilkanNativeCore.getPlaylistSummary(id);
+        } catch (firstError: any) {
+          void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_INDEX_RECOVERY', {
+            playlistId: id, generation, error: String(firstError?.message || firstError),
+          });
+          verifiedSummary = await KizilkanNativeCore.warmPlaylist(id);
+        }
+        if (activeSwitchGeneration.current !== generation) {
+          void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_STALE_DISCARDED', { playlistId: id, stage: 'verify' });
+          return;
+        }
+        if (!verifiedSummary?.roomIndexed) throw new Error('Playlist Room indeksi hazır değil.');
+        void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_VERIFY_READY', {
+          playlistId: id,
+          generation,
+          elapsedMs: Date.now() - verifyStartedAt,
+          channels: verifiedSummary.channels || 0,
+          vod: verifiedSummary.vod || 0,
+          series: verifiedSummary.series || 0,
+        });
+      } catch (e:any) {
+        if (activeSwitchGeneration.current !== generation) return;
+        void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_VERIFY_FAILED', {
+          playlistId: id,
+          generation,
+          elapsedMs: Date.now() - verifyStartedAt,
+          error: String(e?.message || e),
+        });
+        // Eski aktif playlist aynen korunur. Geçersiz hedefi storage'a yazmayız.
+        return;
+      }
+    }
+
+    if (activeSwitchGeneration.current !== generation) return;
+
     // v15.2.3: önceki listelerde legacy ekranların hydrate ettiği dev diziler
     // RAM'de birikmesin. Hedef liste hariç hepsini metadata-only forma sıkıştır.
     if (KizilkanNativeCore.available) {
@@ -556,9 +611,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       setPlaylists(compacted);
       for (const loadedId of Array.from(loadedHeavy.current)) if (loadedId !== id) loadedHeavy.current.delete(loadedId);
     }
-    const previousId = activeId;
+
     setActiveId(id);
-    setNativeSummary(null);
+    setNativeSummary(verifiedSummary);
     const key = activeKey(currentPid());
     const persist = activeSwitchWriteQueue.current = activeSwitchWriteQueue.current
       .catch(() => {})
@@ -570,37 +625,19 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       void recordDiagnostic('navigation', 'PLAYLIST_SWITCH_STALE_DISCARDED', { fromPlaylistId: previousId || '', toPlaylistId: id, stage: 'persisted' });
       return;
     }
+
     void recordDiagnostic('navigation', 'PLAYLIST_SWITCH', { fromPlaylistId: previousId || '', toPlaylistId: id, nativeCore: KizilkanNativeCore.available, generation });
-    // v15.2.19: summary sonucu yalnız halen aktif olan switch generation'a aitse
-    // uygulanır; hızlı A→B seçiminde A sonucu B ekranını ezemez.
-    if (KizilkanNativeCore.available) {
-      try {
-        let summary: NativePlaylistSummary | null = null;
-        try {
-          summary = await KizilkanNativeCore.getPlaylistSummary(id);
-        } catch (firstError: any) {
-          // v15.2.23-RC2: seçim anında Room index geçici olarak bulunamıyorsa
-          // warmPlaylist/ensureIndexed yoluyla bir kez kontrollü recovery dene.
-          void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_INDEX_RECOVERY', {
-            playlistId: id, generation, error: String(firstError?.message || firstError),
-          });
-          summary = await KizilkanNativeCore.warmPlaylist(id);
-        }
-        if (activeSwitchGeneration.current !== generation) {
-          void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_STALE_DISCARDED', { playlistId: id, stage: 'summary' });
-          return;
-        }
-        if (!summary?.roomIndexed) throw new Error('Playlist Room indeksi hazır değil.');
-        setNativeSummary(summary);
-        void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_READY', { playlistId: id, channels: summary.channels || 0, vod: summary.vod || 0, series: summary.series || 0, generation });
-      } catch (e:any) {
-        if (activeSwitchGeneration.current !== generation) return;
-        setNativeSummary(null);
-        void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_SUMMARY_ERROR', { playlistId: id, error: String(e?.message || e), generation });
-        // UI eski playlist içeriğini göstermesin; legacy veri varsa yalnız hata
-        // recovery yolunda hydrate edilir. Başarısızsa boş/terminal state kalır.
-        try { await ensureHeavyLoadedRef.current(id); } catch {}
-      }
+    if (verifiedSummary) {
+      void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_READY', {
+        playlistId: id,
+        channels: verifiedSummary.channels || 0,
+        vod: verifiedSummary.vod || 0,
+        series: verifiedSummary.series || 0,
+        generation,
+      });
+    }
+    } finally {
+      finishTask();
     }
   }, [activeId]);
 

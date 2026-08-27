@@ -38,7 +38,7 @@ import {
 import { PanelScan, type NativeScanStartResult } from "@/modules/panel-scan";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { storage } from "@/src/utils/storage";
-import { recordDiagnostic } from "@/src/utils/diagnostics";
+import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
 import {
   BULK_ACCOUNT_EXAMPLE,
   bulkAccountFromManual,
@@ -477,6 +477,8 @@ export default function AddPlaylist() {
     subtitle: string,
     cfg: { concurrency:number; timeoutMs:number; accountConcurrency?:number; label:string },
   ): Promise<PanelCredentialMatch[]> => {
+    const finishScanTask = markTask("scan:panel-single", { mode: "single" });
+    try {
     if (!PanelScan.available || Platform.OS !== "android") {
       throw new Error("__NATIVE_SCAN_UNAVAILABLE__");
     }
@@ -546,6 +548,9 @@ export default function AddPlaylist() {
         }
       }, 450);
     });
+    } finally {
+      finishScanTask();
+    }
   };
 
   const submitKnownPanelDiscovery = async () => {
@@ -1016,6 +1021,8 @@ export default function AddPlaylist() {
   };
 
   const runNativeBulkAccounts = async (accounts: BulkAccountInput[], cfg: { concurrency:number; timeoutMs:number; accountConcurrency:number; label:string }, signal?: AbortSignal): Promise<{ found:number; completed:number; cancelled:boolean }> => {
+    const finishScanTask = markTask("scan:panel-unified", { mode: "unified", accounts: accounts.length });
+    try {
     if (!PanelScan.available || Platform.OS !== "android") throw new Error("__NATIVE_SCAN_UNAVAILABLE__");
     const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
     setProgress(`${cfg.label} · Birleşik native panel rehberi hazırlanıyor…`);
@@ -1091,6 +1098,9 @@ export default function AddPlaylist() {
         return { found:raw.length, completed, cancelled:!!snap.cancelled };
       }
       await new Promise(resolve=>setTimeout(resolve,350));
+    }
+    } finally {
+      finishScanTask();
     }
   };
 
@@ -1466,9 +1476,13 @@ export default function AddPlaylist() {
         setProgress("Portala bağlanılıyor...");
         const { session, profile: prof } = await stLogin(cred);
 
-        setProgress("Canlı / Film / Dizi katalogları yükleniyor...");
+        setProgress("MAG katalog hazırlığı başlatılıyor...");
         let catalog;
-        try { catalog = await stalkerCatalog(cred, session); }
+        try {
+          catalog = await stalkerCatalog(cred, session, {
+            onProgress: (progress) => setProgress(progress.message),
+          });
+        }
         catch (e: any) {
           throw new Error(`MAG katalog yükleme başarısız: ${String(e?.message || e)}${session.profileError ? `\nProfil aşaması: ${session.profileError}` : ""}`);
         }

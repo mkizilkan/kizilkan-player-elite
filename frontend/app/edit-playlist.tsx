@@ -209,9 +209,14 @@ export default function EditPlaylist() {
           const { session, profile: prof } = await stalkerLogin(cred);
           const profile = prof || {};
           patch.accountInfo = normalizeStalkerAccountInfo(profile);
-          setProgress("Canlı / Film / Dizi katalogları yükleniyor...");
+          setProgress("MAG katalog hazırlığı başlatılıyor...");
           let catalog;
-          try { catalog = await stalkerCatalog(cred, session); }
+          try {
+            catalog = await stalkerCatalog(cred, session, {
+              forceFresh: true,
+              onProgress: (progress) => setProgress(progress.message),
+            });
+          }
           catch (e: any) { throw new Error(`MAG katalog yenileme başarısız: ${String(e?.message || e)}${session.profileError ? `\nProfil aşaması: ${session.profileError}` : ""}`); }
           if (catalog.channels.length + catalog.vod.length + catalog.series.length === 0) {
             throw new Error(

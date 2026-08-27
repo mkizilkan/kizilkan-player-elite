@@ -169,14 +169,12 @@ function ClassicLiveTvScreen() {
     && KizilkanNativeCore.available
     && tab === "live"
     && !hasAnyCustomGroups
-    && (activePlaylist.channels?.length || 0) === 0
     && Number(nativeSummary?.channels || activePlaylist.channelsCount || 0) > 0;
 
   const nativeLibraryPaged = !!activePlaylist?.id
     && KizilkanNativeCore.available
     && (tab === "vod" || tab === "series")
     && !hasAnyCustomGroups
-    && ((tab === "vod" ? activePlaylist.vod?.length : activePlaylist.series?.length) || 0) === 0
     && Number(tab === "vod" ? (nativeSummary?.vod || activePlaylist.vodCount || 0) : (nativeSummary?.series || activePlaylist.seriesCount || 0)) > 0;
 
   const selectedIsCustomGroup = useMemo(() => {
@@ -204,8 +202,8 @@ function ClassicLiveTvScreen() {
       setNativeLiveHasMore(!!page.hasMore);
       setNativeLiveTotal(Number(page.total || 0));
     } catch (e) {
-      console.warn("[NativeDataCore] canlı sayfa sorgusu başarısız; legacy hydrate", e);
-      await ensureHeavyLoaded(activePlaylist.id);
+      console.warn("[NativeDataCore] canlı Room sorgusu başarısız; tam katalog JS heap'ine hydrate edilmeyecek", e);
+      void recordDiagnostic("database", "NATIVE_LIVE_QUERY_FAILED", { playlistId: activePlaylist.id, error: String((e as any)?.message || e) });
     } finally {
       if (generation === nativePageGeneration.current) nativePageLoadingRef.current = false;
     }
@@ -230,8 +228,8 @@ function ClassicLiveTvScreen() {
       setNativeLibraryHasMore(!!page.hasMore);
       setNativeLibraryTotal(Number(page.total || 0));
     } catch (e) {
-      console.warn("[NativeDataCore] VOD/Series sayfa sorgusu başarısız; legacy hydrate", e);
-      await ensureHeavyLoaded(activePlaylist.id);
+      console.warn("[NativeDataCore] VOD/Series Room sorgusu başarısız; tam katalog JS heap'ine hydrate edilmeyecek", e);
+      void recordDiagnostic("database", "NATIVE_LIBRARY_QUERY_FAILED", { playlistId: activePlaylist.id, kind: tab, error: String((e as any)?.message || e) });
     } finally {
       if (generation === nativePageGeneration.current) nativePageLoadingRef.current = false;
     }
@@ -808,9 +806,12 @@ function ClassicLiveTvScreen() {
     );
   }
 
-  const liveCount = activePlaylist.channels?.length || nativeSummary?.channels || activePlaylist.channelsCount || 0;
-  const vodCount = activePlaylist.vod?.length || nativeSummary?.vod || activePlaylist.vodCount || 0;
-  const seriesCount = activePlaylist.series?.length || nativeSummary?.series || activePlaylist.seriesCount || 0;
+  // v15.2.24-RC2: Android Native Core varken sayaçların canonical kaynağı Room summary
+  // olur. Ağır JS dizilerinin length değeri Room yolunu gölgeleyip tam katalog
+  // hidratasyonunu teşvik etmez. Web/native-core olmayan platformlarda legacy korunur.
+  const liveCount = KizilkanNativeCore.available ? (nativeSummary?.channels || activePlaylist.channelsCount || 0) : (activePlaylist.channels?.length || activePlaylist.channelsCount || 0);
+  const vodCount = KizilkanNativeCore.available ? (nativeSummary?.vod || activePlaylist.vodCount || 0) : (activePlaylist.vod?.length || activePlaylist.vodCount || 0);
+  const seriesCount = KizilkanNativeCore.available ? (nativeSummary?.series || activePlaylist.seriesCount || 0) : (activePlaylist.series?.length || activePlaylist.seriesCount || 0);
   const hasVod = vodCount > 0;
   const hasSeries = seriesCount > 0;
 

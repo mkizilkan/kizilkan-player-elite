@@ -124,3 +124,8 @@ v15.2.20 Flight Recorder V3 korunarak GitHub verify CI'de görülen PlayerHost E
 
 ## v15.2.23-RC1 DEVİR
 Flight Recorder V5 kapasite artışı, PanelScan dahil tam tanı reseti ve MAG/Stalker istek-seviyesi HTTP telemetrisi eklendi. Historical gate'ler V5 ileri uyumluluğu için düzeltildi. Yerel master Node denetim zinciri exit 0; full tsc/Kotlin/Gradle/APK/cihaz testi bekliyor.
+
+
+v15.2.24 RC1: MAG duplicate catalog download single-flight/cache, Room verified activation ve adaptive Media3 timeUpdate hardening eklendi. v15.2.23 RC2 ozellikleri korunmustur.
+
+v15.2.24 RC3: RC2 gate CWD bug fix + JS tools audit + CWD invariance self-test. Uygulama sürümü 15.2.24/150224 korunur.

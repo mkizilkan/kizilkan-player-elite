@@ -7,6 +7,7 @@ export const VOD_SOFT_STALL_MS = 10000;
 export const VOD_HARD_STALL_MS = 20000;
 export const STALL_MIN_ADVANCE_SECONDS = 0.35;
 export const PLAYER_UI_TIME_UPDATE_MS = 1000;
+export const PLAYER_BACKGROUND_TIME_UPDATE_MS = 5000;
 
 export type PlaybackClock = {
   positionSeconds: number;

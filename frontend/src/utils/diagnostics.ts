@@ -51,6 +51,108 @@ let nativeInitialized = false;
 let lastSystemSampleAt = 0;
 let appSessionId = `js-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
 
+
+// v15.2.24-RC3 — Claude telemetry ideas integrated without regressing the
+// existing Flight Recorder V5 persistence path. Task ownership is token-based
+// so overlapping async jobs cannot restore a stale label when they finish out of order.
+type DiagnosticTask = { id: string; label: string; startedAt: number; seq: number; meta?: Record<string, any> };
+export type DiagnosticMemorySample = {
+  at: number;
+  fg: boolean;
+  appState: string;
+  task: string;
+  taskCount: number;
+  javaUsedMb: number;
+  javaCommittedMb: number;
+  javaMaxMb: number;
+  pssMb: number;
+  nativePssMb: number;
+  dalvikPssMb: number;
+  otherPssMb: number;
+  systemAvailMb: number;
+  systemTotalMb: number;
+  systemLowMemory: boolean;
+};
+
+let diagnosticAppState = 'active';
+let diagnosticForeground = true;
+let taskSeq = 0;
+const activeTasks = new Map<string, DiagnosticTask>();
+const memorySeries: DiagnosticMemorySample[] = [];
+const MEMORY_SERIES_MAX = 240; // 30 sn cadence ile yaklaşık 2 saat.
+let memoryTimer: ReturnType<typeof setInterval> | null = null;
+
+function activeTaskSnapshot() {
+  let primary: DiagnosticTask | null = null;
+  for (const task of activeTasks.values()) if (!primary || task.seq > primary.seq) primary = task;
+  return {
+    label: primary?.label || 'idle',
+    startedAt: primary?.startedAt || 0,
+    count: activeTasks.size,
+    labels: Array.from(activeTasks.values()).sort((a,b)=>a.seq-b.seq).slice(-6).map((x)=>x.label),
+  };
+}
+
+/** Existing root AppState listener calls this; no second native listener is created. */
+export function setDiagnosticAppState(state: string): void {
+  diagnosticAppState = String(state || 'unknown').slice(0, 24);
+  diagnosticForeground = diagnosticAppState === 'active';
+}
+
+/**
+ * Marks an expensive async task. Returned disposer is idempotent and removes only
+ * its own token, therefore overlapping refresh/MAG/Room/player/scan tasks are safe.
+ */
+export function markTask(label: string, meta: Record<string, any> = {}): () => void {
+  const safeLabel = String(label || 'task').slice(0, 80);
+  const id = `task-${Date.now().toString(36)}-${(++taskSeq).toString(36)}-${Math.random().toString(36).slice(2,6)}`;
+  activeTasks.set(id, { id, label: safeLabel, startedAt: Date.now(), seq: taskSeq, meta: sanitizeValue(meta) });
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    activeTasks.delete(id);
+  };
+}
+
+export function getActiveTask(): string { return activeTaskSnapshot().label; }
+export function getActiveTasks(): string[] { return activeTaskSnapshot().labels.slice(); }
+export function isAppForeground(): boolean { return diagnosticForeground; }
+
+function bytesToMb(v: any): number { const n = Number(v || 0); return Number.isFinite(n) && n > 0 ? Math.round(n / 1048576) : 0; }
+function kbToMb(v: any): number { const n = Number(v || 0); return Number.isFinite(n) && n > 0 ? Math.round(n / 1024) : 0; }
+
+function captureMemorySample(): void {
+  try {
+    const snap: any = systemSnapshot() || {};
+    const task = activeTaskSnapshot();
+    memorySeries.push({
+      at: Date.now(), fg: diagnosticForeground, appState: diagnosticAppState,
+      task: task.label, taskCount: task.count,
+      javaUsedMb: bytesToMb(snap.javaHeapUsedBytes),
+      javaCommittedMb: bytesToMb(snap.javaHeapCommittedBytes),
+      javaMaxMb: bytesToMb(snap.javaHeapMaxBytes),
+      pssMb: kbToMb(snap.totalPssKb),
+      nativePssMb: kbToMb(snap.nativePssKb),
+      dalvikPssMb: kbToMb(snap.dalvikPssKb),
+      otherPssMb: kbToMb(snap.otherPssKb),
+      systemAvailMb: bytesToMb(snap.systemAvailMemBytes),
+      systemTotalMb: bytesToMb(snap.systemTotalMemBytes),
+      systemLowMemory: !!snap.systemLowMemory,
+    });
+    if (memorySeries.length > MEMORY_SERIES_MAX) memorySeries.splice(0, memorySeries.length - MEMORY_SERIES_MAX);
+  } catch {}
+}
+
+/** Idempotent bounded memory timeline; background samples are retained but explicitly tagged. */
+export function startMemorySampling(intervalMs = 30000): void {
+  if (memoryTimer) return;
+  captureMemorySample();
+  memoryTimer = setInterval(captureMemorySample, Math.max(10000, Number(intervalMs) || 30000));
+}
+
+export function getMemorySeries(): DiagnosticMemorySample[] { return memorySeries.slice(); }
+
 function redactString(input: string): string {
   let value = String(input || '');
   value = value.replace(/\b(?:[0-9A-F]{2}:){5}[0-9A-F]{2}\b/gi, '[REDACTED-MAC]');
@@ -251,9 +353,20 @@ export async function recordDiagnostic(
     runId: ctx.runId ? String(ctx.runId).slice(0, 120) : undefined,
     severity,
     critical,
-    data: shouldSampleSystem(domain, safeEvent, severity)
-      ? { ...safeData, _system: systemSnapshot(), _appSessionId: appSessionId }
-      : { ...safeData, _appSessionId: appSessionId },
+    data: (() => {
+      const task = activeTaskSnapshot();
+      const context = {
+        _appSessionId: appSessionId,
+        _fg: diagnosticForeground,
+        _appState: diagnosticAppState,
+        _task: task.label,
+        _taskCount: task.count,
+        _taskAgeMs: task.startedAt ? Math.max(0, Date.now() - task.startedAt) : 0,
+      };
+      return shouldSampleSystem(domain, safeEvent, severity)
+        ? { ...safeData, _system: systemSnapshot(), ...context }
+        : { ...safeData, ...context };
+    })(),
   };
   if (syncCritical) {
     // Gerçek terminal/kritik olay, JS promise kuyruğu/crash öncesinde mümkün olduğunca erken
@@ -306,6 +419,8 @@ export async function clearDiagnostics(): Promise<void> {
   jsEventCache = [];
   jsDirtyEvents = 0;
   jsJournalSequence = 0;
+  memorySeries.splice(0, memorySeries.length);
+  activeTasks.clear();
   await Promise.all([storage.removeItem(KEY), storage.removeItem(V4_KEY), storage.removeItem(V3_KEY), storage.removeItem(LEGACY_KEY)]);
   try { await KizilkanNativeCore.clearBlackBox?.(); } catch {}
   for (const name of [JOURNAL_NAME, ...JOURNAL_ARCHIVE_NAMES, ...LEGACY_JOURNALS]) {
@@ -358,7 +473,10 @@ function deriveAnomalies(events: DiagnosticEvent[]) {
       if (Number.isFinite(ms) && ms >= 5000) add('PLAYER_SLOW_FIRST_FRAME', e, { firstFrameMs: ms });
     }
     if (/BLACK_SCREEN/i.test(e.event)) add('PLAYER_BLACK_SCREEN', e, e.data || {});
-    if (/ANR|STALL|TIMEOUT|OOM|LOW_MEMORY/i.test(e.event)) add('RUNTIME_STALL_OR_RESOURCE', e, e.data || {});
+    if (/ANR|STALL|TIMEOUT|OOM|LOW_MEMORY/i.test(e.event)) {
+      if (e.data?._fg === false) add('BACKGROUND_STALL_OR_DOZE', e, e.data || {});
+      else add('FOREGROUND_RUNTIME_STALL_OR_RESOURCE', e, e.data || {});
+    }
     if (e.critical && /ERROR|FAILED|FATAL|CRASH/i.test(e.event)) add('CRITICAL_FAILURE', e, e.data || {});
   }
   return out;
@@ -384,6 +502,11 @@ export async function exportDiagnosticReport(extra: Record<string, any> = {}): P
       } catch { return []; }
     })(),
     runtimeAtExport: systemSnapshot(),
+    memorySeries: getMemorySeries(),
+    appStateAtExport: diagnosticAppState,
+    foregroundAtExport: diagnosticForeground,
+    activeTaskAtExport: getActiveTask(),
+    activeTasksAtExport: getActiveTasks(),
     createdAt: new Date().toISOString(),
     extra,
     critical,

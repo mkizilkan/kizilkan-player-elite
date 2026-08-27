@@ -1,0 +1,25 @@
+KIZILKAN PLAYER ELITE v15.2.24 RC1 — GERCEK TEST KAYDI
+
+CALISTIRILDI:
+- node tools/check-v15224-mag-room-stall.js => TEMIZ
+  - TS transpile: stalker.ts, refreshPlaylist.ts, PlaylistContext.tsx, PlayerHost.tsx, add/edit playlist, health.ts
+  - Davranissal fixture: iki eszamanli forceFresh stalkerCatalog => tek get_all_channels
+  - Normal sonraki cagri => cache hit, yeni get_all_channels yok
+  - forceFresh sonraki cagri => yeni get_all_channels
+- v15.2.23 RC2 complete corrective gate => TEMIZ
+- v15.2.23 Flight Recorder V5/MAG gate => TEMIZ
+- checkdefs/checkcalls/checkctx/checkdeps/checkjsx/checktdz/checkhooksrc/checkimports => TEMIZ
+- checkplayercore => TEMIZ
+- v15.2.14, .15, .16, .17, .18, .19, .20, .20 semantic, .21, .22, .23 gate zinciri => TEMIZ
+- checktdzselftest => TEMIZ
+
+NOT:
+Toplu `node tools/denetle.js` bu çalışma ortamının tek komut süre sınırına takildi. Zaman asimina kadar gelen tum kontroller temizdi; kalan kontroller ayrica tek tek calistirilip exit 0 ile dogrulandi.
+
+CALISTIRILMADI / BASARILI SAYILMADI:
+- Tam proje dependency install + TypeScript 5.9.3 `tsc --noEmit`
+- Android Gradle release build
+- GitHub Actions
+- Fiziksel cihaz acceptance
+
+Bunlar verify branch / GitHub Actions / cihaz testinde ayrica yapilmalidir.

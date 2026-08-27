@@ -446,7 +446,13 @@ class PanelScanService : Service() {
     panelName:String,accountIndex:Int,runningValue:Boolean = tested < total && !cancelled.get(),
     currentServer:String = "", accountStatuses:JSONArray? = null, mode:String = "bulk"
   ) {
-    val resultArray=JSONArray(); synchronized(matches){ matches.forEach{ resultArray.put(it) } }
+    val resultArray = JSONArray()
+    // v15.2.24-RC2: periyodik snapshot bütün geçmişi tekrar serialize etmez.
+    // Son 200 sonuç UI/resume için yeterlidir; toplam found ayrı sayaçta korunur.
+    synchronized(matches) {
+      val start = (matches.size - 200).coerceAtLeast(0)
+      for (i in start until matches.size) resultArray.put(matches[i])
+    }
     val snap = JSONObject().put("mode",mode).put("running",runningValue).put("paused",paused.get()).put("cancelled",cancelled.get())
       .put("tested",tested).put("total",total).put("accountTested",accountTested).put("accountTotal",accountTotal).put("panelTotal",panelTotal)
       .put("found",matches.size).put("panelName",panelName).put("currentServer",currentServer).put("accountIndex",accountIndex).put("matches",resultArray)
@@ -499,8 +505,10 @@ class PanelScanService : Service() {
         return if (candidateSets != null && setIndex in 0 until candidateSets.length()) candidateSets.optJSONArray(setIndex) ?: JSONArray() else JSONArray()
       }
 
-      data class Work(val accountIndex: Int, val candidateIndex: Int)
-      val work = ArrayList<Work>()
+      // v15.2.24-RC2: candidate×account kadar Work nesnesi üretme. Büyük taramalarda
+      // bu matris gereksiz heap baskısı oluşturuyordu. Yalnız candidate katmanlarının
+      // kümülatif iş sayısını tutup global cursor -> (account,candidate) eşlemesini
+      // ihtiyaç anında hesaplıyoruz. Bellek O(toplam iş) yerine O(maxCandidate+account).
       val completedByAccount = Array(accountCount) { AtomicInteger(0) }
       val expectedByAccount = IntArray(accountCount)
       val candidateArrays = Array(accountCount) { candidatesFor(it) }
@@ -515,16 +523,32 @@ class PanelScanService : Service() {
           panelSet.add("${c.optString("code")}\u0000${c.optString("panelName")}")
         }
       }
-      // v15.2.11 sözleşmesi korunur: işler hesap bloklarıyla değil candidate→account round-robin sıralanır.
-      // v15.2.17 candidateSets yalnız payload tekrarını kaldırır; tarama adaletini değiştirmez.
+      // v15.2.11 round-robin sırası korunur; fakat Work listesi materialize edilmez.
+      val layerEnds = IntArray(maxCandidates)
+      var total = 0
       for (ci in 0 until maxCandidates) {
-        for (ai in 0 until accountCount) {
-          if (ci < expectedByAccount[ai]) work.add(Work(ai, ci))
-        }
+        for (ai in 0 until accountCount) if (ci < expectedByAccount[ai]) total++
+        layerEnds[ci] = total
       }
-      if (work.isEmpty()) throw IllegalArgumentException("Tarama için aday sunucu yok")
+      if (total == 0) throw IllegalArgumentException("Tarama için aday sunucu yok")
 
-      val total = work.size
+      fun resolveWork(index: Int): Pair<Int, Int> {
+        var lo = 0; var hi = layerEnds.lastIndex
+        while (lo < hi) {
+          val mid = (lo + hi) ushr 1
+          if (index < layerEnds[mid]) hi = mid else lo = mid + 1
+        }
+        val ci = lo
+        val before = if (ci == 0) 0 else layerEnds[ci - 1]
+        var ordinal = index - before
+        for (ai in 0 until accountCount) {
+          if (ci < expectedByAccount[ai]) {
+            if (ordinal == 0) return ai to ci
+            ordinal--
+          }
+        }
+        throw IndexOutOfBoundsException("scan work index=$index")
+      }
       val cursor = AtomicInteger(0)
       val tested = AtomicInteger(0)
       val accountDone = AtomicInteger(expectedByAccount.count { it == 0 })
@@ -574,28 +598,28 @@ class PanelScanService : Service() {
               if (cancelled.get() || workerFailure.get() != null) break
               val wi = cursor.getAndIncrement()
               if (wi >= total) break
-              val unit = work[wi]
-              val account = jobs.getJSONObject(unit.accountIndex)
-              val candidates = candidateArrays[unit.accountIndex]
-              val candidate = candidates.getJSONObject(unit.candidateIndex)
+              val (accountIndex, candidateIndex) = resolveWork(wi)
+              val account = jobs.getJSONObject(accountIndex)
+              val candidates = candidateArrays[accountIndex]
+              val candidate = candidates.getJSONObject(candidateIndex)
               val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
               if (login != null) matches.add(JSONObject()
-                .put("accountIndex", unit.accountIndex)
-                .put("sourceRow", account.optInt("row", unit.accountIndex + 1))
+                .put("accountIndex", accountIndex)
+                .put("sourceRow", account.optInt("row", accountIndex + 1))
                 .put("username", account.optString("username"))
                 .put("name", account.optString("name"))
                 .put("panelName", candidate.optString("panelName"))
                 .put("code", candidate.optString("code"))
                 .put("server", candidate.optString("server"))
                 .put("login", sanitizeLogin(login)))
-              if (completedByAccount[unit.accountIndex].incrementAndGet() == expectedByAccount[unit.accountIndex]) accountDone.incrementAndGet()
+              if (completedByAccount[accountIndex].incrementAndGet() == expectedByAccount[accountIndex]) accountDone.incrementAndGet()
               val done = tested.incrementAndGet()
               if (done == total || done % 12 == 0 || login != null) {
                 writeBulkSnapshot(
                   done, total, accountDone.get(), accountCount, panelSet.size, matches,
-                  candidate.optString("panelName"), unit.accountIndex,
+                  candidate.optString("panelName"), accountIndex,
                   currentServer = candidate.optString("server"),
-                  accountStatuses = accountStatuses(unit.accountIndex),
+                  accountStatuses = accountStatuses(accountIndex),
                   mode = "unified",
                 )
               }

@@ -760,3 +760,14 @@ Node v22.16.0 ile tüm hard gate'ler EXIT 0 ve 109 TS/TSX transpile syntax 0 dia
 
 ### v15.2.23 RC2 final stall hardening addendum
 Xtream Live/VOD/Series büyük katalog normalizasyonu ve MAG/Stalker ordered-list/pagination/normalizasyon döngüleri cooperative event-loop yield kullanacak şekilde güçlendirildi. Bu, Flight Recorder V5'in batched persistence değişikliklerine ek olarak katalog kaynaklı uzun JS-thread bloklarını doğrudan azaltmayı hedefler. `tools/check-v15223-complete-corrective.js` bu davranışı hard-gate kapsamına alır.
+
+
+## v15.2.24 RC1 — telemetry-driven P0 corrective
+- Gercek cihaz telemetry: tekrarlanan buyuk MAG katalog indirmeleri, Room index olmadan playlist aktivasyonu ve Media3 timeUpdate main-thread baskisi hedeflendi.
+- MAG single-flight + 3 dk cache + stage/page progress eklendi.
+- Native playlist aktivasyonu Room verify/recovery sonrasi publish/persist edilir.
+- Media3 timeUpdate normal izleme 5 sn, UI/stats 1 sn adaptif.
+- Yeni hard-gate davranissal single-flight/cache fixture icerir.
+
+## v15.2.24 RC3
+RC2 memory/native gate'in master denetimde CWD-relative path nedeniyle ENOENT vermesi kökten düzeltildi. Gate repo kökünü __dirname üzerinden çözüyor. Repo/frontend/tools CWD invariance self-test ve tüm tools JS syntax/rooted-path audit gate'i eklendi. RC1/RC2 uygulama özellikleri korunmuştur.

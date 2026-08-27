@@ -23,8 +23,11 @@ const compile = rel => ts.transpileModule(fs.readFileSync(path.join(front, rel),
 
 const pkg = JSON.parse(fs.readFileSync(path.join(front, 'package.json'),'utf8'));
 const app = JSON.parse(fs.readFileSync(path.join(front, 'app.json'),'utf8'));
-if (pkg.version !== '15.2.23' || app.expo.version !== '15.2.23' || Number(app.expo.android.versionCode) !== 150223) {
-  console.log('HATA — v15.2.23 sürüm üçlüsü tutarsız'); bad++;
+const patchOf = v => Number(String(v || '').split('.')[2] || 0);
+if (String(pkg.version).split('.').slice(0,2).join('.') !== '15.2' || patchOf(pkg.version) < 23 ||
+    String(app.expo.version).split('.').slice(0,2).join('.') !== '15.2' || patchOf(app.expo.version) < 23 ||
+    Number(app.expo.android.versionCode) < 150223) {
+  console.log('HATA — v15.2.23+ sürüm üçlüsü tutarsız'); bad++;
 }
 
 // P0 gesture/worklet crash

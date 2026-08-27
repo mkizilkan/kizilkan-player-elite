@@ -47,6 +47,7 @@ import {
   VOD_SOFT_STALL_MS,
   VOD_HARD_STALL_MS,
   PLAYER_UI_TIME_UPDATE_MS,
+  PLAYER_BACKGROUND_TIME_UPDATE_MS,
   makePlaybackClock,
   notePlaybackPosition,
   type EngineProfile,
@@ -60,7 +61,7 @@ import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
 import { useLibrary } from "@/src/store/LibraryContext";
-import { recordDiagnostic, recordBlackBox } from "@/src/utils/diagnostics";
+import { markTask, recordDiagnostic, recordBlackBox } from "@/src/utils/diagnostics";
 import { storage } from "@/src/utils/storage";
 import { haptic } from "@/src/utils/haptic";
 import { CastButton } from "@/src/components/CastButton";
@@ -522,6 +523,14 @@ export default function PlayerHost() {
     return activePlaylist?.channels.find(c => c.id === params.id) || null;
   }, [isSynthetic, externalStream, activePlaylist, params.id]);
 
+  // v15.2.24-RC3: Flight Recorder aktif oynatma işini de bilir. Bu görev uzun
+  // ömürlüdür; daha yeni refresh/MAG/scan görevleri token-seq modeliyle öncelik
+  // kazanır, bittiğinde player görevi tekrar görünür.
+  useEffect(() => {
+    if (!visible || !channel?.id) return;
+    return markTask(`player:${v2ProfileKey}`, { channelId: channel.id, sessionId: activeSessionId });
+  }, [visible, channel?.id, v2ProfileKey, activeSessionId]);
+
   /**
    * OYNATILACAK ADRES
    * Stalker'da create_link ile çözülmüş geçici adres; diğerlerinde
@@ -703,7 +712,7 @@ export default function PlayerHost() {
      * (Alanlar expo-video paket tipinden doğrulandı.)
      */
     try {
-      p.timeUpdateEventInterval = PLAYER_UI_TIME_UPDATE_MS / 1000;
+      p.timeUpdateEventInterval = PLAYER_BACKGROUND_TIME_UPDATE_MS / 1000;
       const sec = Math.max(0.25, bufferMs / 1000);
       p.bufferOptions = {
         preferredForwardBufferDuration: sec,
@@ -714,6 +723,30 @@ export default function PlayerHost() {
     } catch { /* eski sürümlerde bu alan olmayabilir */ }
     p.play();
   });
+
+  /**
+   * v15.2.24 — ADAPTIVE MEDIA3 TIME UPDATE.
+   * Flight Recorder telemetrisinde uzun main-thread stall stack'leri
+   * expo-video IntervalUpdateClock -> emitTimeUpdate hattında görüldü.
+   * Kontroller kapalı normal TV izleme sırasında native timeUpdate sıklığını
+   * 1 sn -> 5 sn düşürürüz; kontrol/yayın bilgi paneli açıkken 1 sn hassasiyet
+   * geri gelir. Playback clock/stall watchdog seçilen event cadence ile çalışmayı sürdürür.
+   */
+  useEffect(() => {
+    if (!player) return;
+    const intervalMs = (showControls || sheet === "stats" || isSynthetic)
+      ? PLAYER_UI_TIME_UPDATE_MS
+      : PLAYER_BACKGROUND_TIME_UPDATE_MS;
+    try {
+      (player as any).timeUpdateEventInterval = intervalMs / 1000;
+      void recordDiagnostic("player", "MEDIA3_TIMEUPDATE_INTERVAL", {
+        intervalMs,
+        controls: showControls,
+        sheet: sheet || "",
+        synthetic: isSynthetic,
+      }, { sessionId: playerDiagnosticSessionRef.current });
+    } catch {}
+  }, [player, showControls, sheet, isSynthetic]);
 
   /**
    * TAMPON AYARINI SONRADAN DA UYGULA (v9.5.0)

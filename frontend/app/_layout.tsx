@@ -50,7 +50,7 @@ import { PlayerProvider } from "@/src/player/PlayerContext";
 import PlayerHost from "@/src/player/PlayerHost";
 import { TvProvider, useTv } from "@/src/store/TvContext";
 import { markAppBackground, markAppForeground, persistAppPath } from "@/src/utils/appSession";
-import { initializeDiagnostics, recordDiagnostic } from "@/src/utils/diagnostics";
+import { initializeDiagnostics, recordDiagnostic, setDiagnosticAppState, startMemorySampling } from "@/src/utils/diagnostics";
 
 // Açılış ekranı, fontlar hazır olana kadar ekranda kalsın.
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -120,12 +120,15 @@ export default function RootLayout() {
   useEffect(() => {
     if (!loaded && !error) return;
     const init = initializeDiagnostics();
+    setDiagnosticAppState(AppState.currentState || "active");
+    startMemorySampling(30000);
     void recordDiagnostic("lifecycle", "APP_ROOT_READY", { path: pathnameRef.current, nativeBlackBox: init.native || {} });
   }, [loaded, error]);
 
   useEffect(() => {
     if (!loaded && !error) return;
     const sub = AppState.addEventListener("change", state => {
+      setDiagnosticAppState(state);
       if (state === "background" || state === "inactive") {
         void recordDiagnostic("lifecycle", "APP_BACKGROUND", { state, path: pathnameRef.current });
         void markAppBackground(pathnameRef.current);
