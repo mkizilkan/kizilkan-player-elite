@@ -55,7 +55,7 @@ import {
 } from "@/src/player/v2";
 import * as ScreenOrientation from "expo-screen-orientation";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import Animated, { useSharedValue, runOnJS } from "react-native-reanimated";
+import Animated, { useSharedValue } from "react-native-reanimated";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
@@ -115,7 +115,7 @@ const ENGINE_KEY = "kizilkan.player.engine";   // "auto" | "vlc" | "exo" | "mpv"
  */
 function isTvInitial(): boolean {
   try {
-    const { width, height } = require("react-native").Dimensions.get("window");
+    const { width, height } = Dimensions.get("window");
     // TV ekranları geniş ve yataydır; telefonlar dikey veya dar.
     return width >= 960 && width / height >= 1.6;
   } catch { return false; }
@@ -842,6 +842,16 @@ export default function PlayerHost() {
         }
 
         const decision = fallbackFromError(v2Profile, classified);
+        if (classified.immediateFallback || classified.kind === "unsupported_codec" || classified.kind === "decoder") {
+          void recordDiagnostic("player", "MEDIA3_FATAL_FALLBACK", {
+            errorKind: classified.kind, technical: classified.technical,
+            fromProfile: v2ProfileKey,
+            toProfile: decision.next ? (decision.next.engine === "media3" ? `media3:${decision.next.surface}` : `${decision.next.engine}:${decision.next.decoder}`) : "none",
+            phase: decision.phase,
+          }, { sessionId: playerDiagnosticSessionRef.current });
+          setExoReady(false);
+          setExoFirstFrame(false);
+        }
 
         // 401/403/407/timeout ağ katmanıdır; surface/decoder zinciriyle
         // karıştırılmaz. Teknik hata saklanır, kullanıcıya sade hata gösterilir.
@@ -1686,11 +1696,17 @@ export default function PlayerHost() {
     else revealControls();
   };
 
+  // v15.2.23-RC2: Gesture Handler callback'leri Reanimated kurulu olduğunda
+  // varsayılan olarak UI worklet runtime'ında çalışır. Bu player'daki callback'ler
+  // React state/ref, Dimensions, haptic ve native session API'lerine eriştiği için
+  // JS thread authority altında çalıştırılır. Böylece orientation/gesture sırasında
+  // `CppException: TypeError: undefined is not a function` worklet crash yolu kapanır.
   const tapGesture = Gesture.Tap()
     .enabled(visible && !isTv)
     .maxDuration(200)
+    .runOnJS(true)
     .onEnd(() => {
-      runOnJS(toggleControls)();
+      toggleControls();
     });
 
   // ÇİFT DOKUNUŞ DÜZELTMESİ (P0-5):
@@ -1702,11 +1718,12 @@ export default function PlayerHost() {
     .enabled(visible && !isTv)
     .numberOfTaps(2)
     .maxDuration(300)
+    .runOnJS(true)
     .onEnd((e) => {
-      // Player yatay/dikey olabilir; genişliği o an oku.
-      const w = Dimensions.get("window").width;
-      const isLeft = e.x < w / 2;
-      runOnJS(doubleTapSkip)(isLeft ? "back" : "fwd");
+      // JS thread üzerinde useWindowDimensions değeri kullanılır; UI worklet
+      // runtime'ından React Native Dimensions modülüne doğrudan çağrı yapılmaz.
+      const isLeft = e.x < screenW / 2;
+      doubleTapSkip(isLeft ? "back" : "fwd");
     });
 
   /**
@@ -1741,23 +1758,25 @@ export default function PlayerHost() {
   const volumeGesture = Gesture.Pan()
     .enabled(visible && !isTv)
     .activeOffsetY([-12, 12])       // yatay kaydırmayla çakışmasın
+    .runOnJS(true)
     .onBegin(() => { volumeStartRef.current = volume; })
     .onUpdate((e) => {
       // Yalnızca SAĞ yarıda çalışsın (sol yarı ileride parlaklık için ayrılmıştır)
       if (e.x < screenW / 2) return;
       const delta = -(e.translationY / 300) * 100;   // 300px = tam aralık
-      runOnJS(applyVolume)(volumeStartRef.current + delta);
+      applyVolume(volumeStartRef.current + delta);
     });
 
   const longPressGesture = Gesture.LongPress()
     .enabled(visible && !isTv)
     .minDuration(500)
+    .runOnJS(true)
     .onStart(() => {
-      runOnJS(setPlaybackSpeed)(2.0);
-      runOnJS(flashMessage)("⏩ 2x hız");
+      setPlaybackSpeed(2.0);
+      flashMessage("⏩ 2x hız");
     })
     .onEnd(() => {
-      runOnJS(setPlaybackSpeed)(1.0);
+      setPlaybackSpeed(1.0);
     });
 
   const goBack = async () => {
@@ -2211,10 +2230,56 @@ export default function PlayerHost() {
   ]);
 
   /**
-   * v15: VLC için süreye bağlı otomatik "görüntü yok" watchdog'u kaldırıldı.
-   * libVLC View yalnız gerçek native error veya kullanıcı yenilemesiyle değiştirilir.
+   * v15.2.23-RC2 — VLC VIDEO OUTPUT WATCHDOG
+   * Media3 fatal codec fallback'inden sonra libVLC yalnız ses üretebilir. Eski
+   * davranışta gerçek native error gelmezse spinner sonsuza kadar kalabiliyordu.
+   * Video beklenen oturumda VLC Playing/Buffering sinyali olsa bile doğrulanmış
+   * video-output (track/meta + ilerleyen clock) gelmezse HW -> SW bir kez denenir;
+   * SW de video üretmezse terminal hata verilir. Böylece ses var/siyah ekran
+   * durumunda sonsuz recovery döngüsü oluşmaz.
    */
   const v2ProfileReady = activeSessionId > 0 && profileReadySessionId === activeSessionId;
+  useEffect(() => {
+    if (!visible || !channel || !v2ProfileReady || !playbackRequest?.expectsVideo) return;
+    if (v2Profile.engine !== "vlc" || !useVLC || vlcVideoReady) return;
+    const sid = activeSessionId;
+    const profileKey = v2ProfileKey;
+    const timeoutMs = sessionKind === "live" ? FIRST_FRAME_TIMEOUT_LIVE_MS + 3500 : FIRST_FRAME_TIMEOUT_VOD_MS + 4500;
+    const timer = setTimeout(() => {
+      if (!sessionGateRef.current.isActive(sid) || activeProfileKeyRef.current !== profileKey) return;
+      if (v2Profile.engine !== "vlc" || vlcVideoReady) return;
+      const clock = vlcClockRef.current;
+      void recordDiagnostic("player", "VLC_VIDEO_OUTPUT_TIMEOUT", {
+        decoder: v2Profile.decoder,
+        playing: vlcPlayingRef.current,
+        buffering: isBufferingRef.current,
+        videoMetaReady: vlcVideoMetaReady,
+        lastClockEventAgeMs: Math.max(0, Date.now() - clock.lastEventAt),
+        lastClockAdvanceAgeMs: Math.max(0, Date.now() - clock.lastAdvanceAt),
+        timeoutMs,
+      }, { sessionId: playerDiagnosticSessionRef.current });
+      try { void vlcRef.current?.stop?.(); } catch {}
+      if (v2Profile.decoder === "hw") {
+        setRecoveryMessage("VLC görüntü üretmedi; yazılım decoder deneniyor…");
+        setError(null);
+        setTechnicalError("VLC HW video-output timeout");
+        setV2Phase("switch_engine");
+        setV2Profile({ engine: "vlc", decoder: "sw" });
+        setVlcAutoSoftware(true);
+        setVlcVideoMetaReady(false);
+        setVlcVideoReady(false);
+        setVlcRecoveryGeneration(g => g + 1);
+        setIsBuffering(true);
+      } else {
+        setV2Phase("final_error");
+        setRecoveryMessage(null);
+        setTechnicalError("VLC HW+SW video-output timeout");
+        setError("Yayın sesi alınsa da video görüntüsü oluşturulamadı.");
+        setIsBuffering(false);
+      }
+    }, timeoutMs);
+    return () => clearTimeout(timer);
+  }, [visible, channel?.id, v2ProfileReady, playbackRequest?.expectsVideo, v2Profile, v2ProfileKey, useVLC, vlcVideoReady, vlcVideoMetaReady, activeSessionId, sessionKind]);
 
   /**
    * GPT ELITE v15.0.0 — RUNTIME STALL MONITOR
@@ -2900,7 +2965,7 @@ export default function PlayerHost() {
       {channel && error && (
         <View style={styles.overlayCenter} pointerEvents="box-none">
           <Ionicons name="warning" size={40} color={colors.error} />
-          <Text style={styles.errorText}>{error}</Text>          
+          <Text style={styles.errorText}>{error}</Text>
           {technicalError && (
             <Text style={styles.technicalHint}>Teknik ayrıntı cihaz günlüğüne kaydedildi.</Text>
           )}

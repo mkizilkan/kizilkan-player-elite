@@ -13,7 +13,7 @@ const player = read('frontend/src/player/PlayerHost.tsx');
 const playlist = read('frontend/src/store/PlaylistContext.tsx');
 const checks=[
  ['version-consistency', app?.expo?.version === pkg.version && expectedCode !== null && Number(app?.expo?.android?.versionCode) === expectedCode],
- ['blackbox-v2+', diagnostics.includes('KIZILKAN_BLACK_BOX_V2') || diagnostics.includes('KIZILKAN_FLIGHT_RECORDER_V3')],
+ ['blackbox-v2+', diagnostics.includes('KIZILKAN_BLACK_BOX_V2') || diagnostics.includes('KIZILKAN_FLIGHT_RECORDER_V3') || diagnostics.includes('KIZILKAN_FLIGHT_RECORDER_V4') || diagnostics.includes('KIZILKAN_FLIGHT_RECORDER_V5')],
  ['legacy-reader', diagnostics.includes('LEGACY_KEY')],
  ['capacity>=1500', (()=>{const m=diagnostics.match(/MAX_EVENTS\s*=\s*(\d+)/); return !!m && Number(m[1])>=1500;})()],
  ['playlist-switch-ready', playlist.includes('PLAYLIST_SWITCH_READY')],

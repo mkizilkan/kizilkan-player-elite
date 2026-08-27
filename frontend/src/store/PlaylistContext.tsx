@@ -463,56 +463,88 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   }, [persistMeta, activeId]);
 
   const updatePlaylist = useCallback(async (id: string, patch: Partial<Playlist>) => {
-    const current = playlistsRef.current;
-    const target = current.find(pl => pl.id === id);
+    const initial = playlistsRef.current;
+    const target = initial.find(pl => pl.id === id);
+    if (!target) throw new Error('Güncellenecek playlist bulunamadı.');
     const heavyTouched = 'channels' in patch || 'vod' in patch || 'series' in patch;
-    const next = current.map(pl => {
-      if (pl.id !== id) return pl;
-      const merged = { ...pl, ...patch } as Playlist;
-      if (heavyTouched) {
-        merged.channelsCount = merged.channels?.length || 0;
-        merged.vodCount = merged.vod?.length || 0;
-        merged.seriesCount = merged.series?.length || 0;
-      }
-      return merged;
-    });
-    playlistsRef.current = next;
-    setPlaylists(next);
 
-    // Ağır alanlardan biri güncellendiyse canonical store'u yenile.
-    if (heavyTouched && target) {
+    // v15.2.23-RC2 — ATOMIC CATALOG PUBLISH:
+    // Eski akış React state'i ÖNCE güncelliyor, Room/bigStore commit'i SONRA
+    // yapıyordu. Büyük Xtream refresh sırasında UI yeni sayaçları görürken canonical
+    // Room snapshot henüz hazır olmayabiliyordu. Artık ağır katalog state'e ancak
+    // kalıcı yazım + Room summary doğrulamasından SONRA publish edilir.
+    let committedSummary: NativePlaylistSummary | null = null;
+    let published: Playlist;
+
+    if (heavyTouched) {
       const merged = { ...target, ...patch } as Playlist;
       merged.channelsCount = merged.channels?.length || 0;
       merged.vodCount = merged.vod?.length || 0;
       merged.seriesCount = merged.series?.length || 0;
+      const startedAt = Date.now();
+      void recordDiagnostic('database', 'PLAYLIST_COMMIT_START', {
+        playlistId: id,
+        channels: merged.channelsCount,
+        vod: merged.vodCount,
+        series: merged.seriesCount,
+      });
+
       const ok = await bigStore.write(id, {
         channels: merged.channels || [],
         vod: merged.vod || [],
         series: merged.series || [],
       });
-      if (!ok) throw new Error('Liste içeriği güncellenemedi.');
+      if (!ok) {
+        void recordDiagnostic('database', 'PLAYLIST_COMMIT_FAILED', { playlistId: id, stage: 'bigStore.write' });
+        throw new Error('Liste içeriği güncellenemedi.');
+      }
 
       if (KizilkanNativeCore.available) {
-        // v15.2.4: güncelleme sonrası dev katalogu React state'te bırakma.
-        // Room canonical'dır; metadata sayacı korunur, ağır diziler boşaltılır.
-        const compact = fromMeta(toMeta(merged));
-        const latest = playlistsRef.current.map(pl => pl.id === id ? compact : pl);
-        playlistsRef.current = latest;
-        setPlaylists(latest);
+        committedSummary = await KizilkanNativeCore.getPlaylistSummary(id);
+        if (!committedSummary?.roomIndexed) {
+          void recordDiagnostic('database', 'PLAYLIST_COMMIT_FAILED', { playlistId: id, stage: 'room-summary' });
+          throw new Error('Playlist Room/SQLite commit doğrulanamadı.');
+        }
+        published = fromMeta(toMeta({
+          ...merged,
+          channelsCount: Number(committedSummary.channels ?? merged.channelsCount ?? 0),
+          vodCount: Number(committedSummary.vod ?? merged.vodCount ?? 0),
+          seriesCount: Number(committedSummary.series ?? merged.seriesCount ?? 0),
+        }));
         loadedHeavy.current.delete(id);
       } else {
+        published = merged;
         loadedHeavy.current.add(id);
       }
+
+      // Commit sürerken başka playlist güncellenmiş olabilir. En güncel ref'i
+      // taban al ve yalnız hedef playlist'i atomik biçimde değiştir.
+      const latestBase = playlistsRef.current;
+      const next = latestBase.map(pl => pl.id === id ? { ...pl, ...published } : pl);
+      playlistsRef.current = next;
+      setPlaylists(next);
+      if (activeId === id && committedSummary) setNativeSummary(committedSummary);
+      await persistMeta(next);
+
+      void recordDiagnostic('database', 'PLAYLIST_COMMIT_READY', {
+        playlistId: id,
+        elapsedMs: Date.now() - startedAt,
+        roomIndexed: !!committedSummary?.roomIndexed,
+        channels: published.channelsCount || published.channels?.length || 0,
+        vod: published.vodCount || published.vod?.length || 0,
+        series: published.seriesCount || published.series?.length || 0,
+      });
+
+      if (!KizilkanNativeCore.available) scheduleAdultFlags(merged.channels, merged.vod, merged.series);
+      return;
     }
-    // İki "Tümünü Güncelle" worker'ı aynı anda farklı playlistleri bitirebilir.
-    // Disk yazımı sürerken başka worker ref'i ilerletmişse eski `next` snapshot'ını
-    // metadata'ya geri yazıp diğer güncellemeyi ezmeyelim; daima en güncel ref.
-    await persistMeta(playlistsRef.current);
-    if (heavyTouched && !KizilkanNativeCore.available) {
-      const merged = target ? { ...target, ...patch } : (patch as Playlist);
-      scheduleAdultFlags(merged.channels, merged.vod, merged.series);
-    }
-  }, [persistMeta]);
+
+    // Metadata-only güncelleme ağır store transaction gerektirmez.
+    const next = playlistsRef.current.map(pl => pl.id === id ? ({ ...pl, ...patch } as Playlist) : pl);
+    playlistsRef.current = next;
+    setPlaylists(next);
+    await persistMeta(next);
+  }, [persistMeta, activeId]);
 
   const setActivePlaylist = useCallback(async (id: string) => {
     const generation = ++activeSwitchGeneration.current;
@@ -543,16 +575,31 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     // uygulanır; hızlı A→B seçiminde A sonucu B ekranını ezemez.
     if (KizilkanNativeCore.available) {
       try {
-        const summary = await KizilkanNativeCore.getPlaylistSummary(id);
+        let summary: NativePlaylistSummary | null = null;
+        try {
+          summary = await KizilkanNativeCore.getPlaylistSummary(id);
+        } catch (firstError: any) {
+          // v15.2.23-RC2: seçim anında Room index geçici olarak bulunamıyorsa
+          // warmPlaylist/ensureIndexed yoluyla bir kez kontrollü recovery dene.
+          void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_INDEX_RECOVERY', {
+            playlistId: id, generation, error: String(firstError?.message || firstError),
+          });
+          summary = await KizilkanNativeCore.warmPlaylist(id);
+        }
         if (activeSwitchGeneration.current !== generation) {
           void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_STALE_DISCARDED', { playlistId: id, stage: 'summary' });
           return;
         }
-        setNativeSummary(summary || null);
-        void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_READY', { playlistId: id, channels: summary?.channels || 0, vod: summary?.vod || 0, series: summary?.series || 0, generation });
+        if (!summary?.roomIndexed) throw new Error('Playlist Room indeksi hazır değil.');
+        setNativeSummary(summary);
+        void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_READY', { playlistId: id, channels: summary.channels || 0, vod: summary.vod || 0, series: summary.series || 0, generation });
       } catch (e:any) {
         if (activeSwitchGeneration.current !== generation) return;
+        setNativeSummary(null);
         void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_SUMMARY_ERROR', { playlistId: id, error: String(e?.message || e), generation });
+        // UI eski playlist içeriğini göstermesin; legacy veri varsa yalnız hata
+        // recovery yolunda hydrate edilir. Başarısızsa boş/terminal state kalır.
+        try { await ensureHeavyLoadedRef.current(id); } catch {}
       }
     }
   }, [activeId]);

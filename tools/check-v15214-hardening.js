@@ -51,10 +51,9 @@ async function testStalker() {
     if (x.type==='series'&&x.action==='get_ordered_list') return http({js:{total_items:0,data:[]}});
     return http({js:[]});
   };
-  const m2=load(failFetch); let surfaced=false;
-  try { await m2.stalkerCatalog({portal:'http://p',mac:'00:11:22:33:44:55'},{token:'t',endpoint:'http://p/portal.php'}); }
-  catch(e){ surfaced=/MAG VOD kataloğu alınamadı/.test(String(e?.message)); }
-  if (!surfaced || vodCalls<2) throw new Error('Stalker transient VOD hatası sessizce yutuldu');
+  const m2=load(failFetch);
+  const partial=await m2.stalkerCatalog({portal:'http://p',mac:'00:11:22:33:44:55'},{token:'t',endpoint:'http://p/portal.php'});
+  if (partial.channels.length!==1 || partial.vod.length!==0 || vodCalls<2 || !partial.diagnostics.warnings.some(x=>/VOD katalog sorunu/.test(x))) throw new Error('Stalker transient VOD hatası partial-success olarak yüzeye çıkmadı');
 
   // Ayrı /series endpointi desteklenmeyen portallarda VOD is_series fallback'i çalışmalı.
   const unsupportedSeriesFetch=async url=>{ const x=q(url);

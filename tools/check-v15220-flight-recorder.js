@@ -34,7 +34,7 @@ need('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/k
 need('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeCoreModule.kt', 'getBlackBoxSnapshot', 'native snapshot bridge');
 
 // JS coordinator + privacy + export.
-need('frontend/src/utils/diagnostics.ts', 'KIZILKAN_FLIGHT_RECORDER_V3', 'Flight Recorder V3 export');
+{ const d=read('frontend/src/utils/diagnostics.ts'); if(!d.includes('KIZILKAN_FLIGHT_RECORDER_V3') && !d.includes('KIZILKAN_FLIGHT_RECORDER_V4') && !d.includes('KIZILKAN_FLIGHT_RECORDER_V5')){ console.log('HATA — Flight Recorder V3+ export'); bad++; } }
 need('frontend/src/utils/diagnostics.ts', 'appendBlackBoxEvent', 'native-first persistence');
 need('frontend/src/utils/diagnostics.ts', 'appendCriticalBlackBoxEvent', 'terminal olay sync critical journal');
 need('frontend/src/utils/diagnostics.ts', 'setBlackBoxCheckpoint', 'process checkpoint correlation');

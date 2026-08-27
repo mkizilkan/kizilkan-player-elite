@@ -254,6 +254,11 @@ export function parseM3U(rawContent: string): ParsedM3U {
 /** Tüm ağ çağrılarında kullanılan ortak istemci kimliği. */
 const UA = "VLC/3.0.20 LibVLC/3.0.20";
 
+/** v15.2.23-RC2: büyük katalog normalize döngülerinde JS event-loop'a düzenli kontrol ver. */
+async function catalogYield(index: number, every = 400): Promise<void> {
+  if (index > 0 && index % every === 0) await new Promise<void>(resolve => setTimeout(resolve, 0));
+}
+
 export async function fetchAndParseM3U(url: string, timeoutMs = 120000): Promise<ParsedM3U> {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
@@ -362,27 +367,29 @@ export async function xtreamLiveStreams(cred: XtreamCredentials): Promise<Channe
     xtreamLiveCategories(cred).catch(() => [] as XtreamCategory[]),
   ]);
   const catMap = new Map<string, string>(cats.map(c => [String(c.category_id), c.category_name]));
-  return (streams || []).map((s: any) => ({
-    id: `xt-live-${s.stream_id}`,
-    name: s.name || 'Kanal',
-    group: catMap.get(String(s.category_id)) || 'Genel',
-    logo: s.stream_icon || null,
-    tvg_id: s.epg_channel_id || null,
-    tvg_name: s.name || null,
-    epg_channel_id: s.epg_channel_id || null,
-    url: `${base}/live/${encodeURIComponent(cred.username)}/${encodeURIComponent(cred.password)}/${s.stream_id}.${s.container_extension || 'ts'}`,
-    container_ext: s.container_extension || 'ts',
-    stream_id: String(s.stream_id),
-    // CATCH-UP DÜZELTMESİ (v5.8.0):
-    // tv_archive tipte tanımlıydı ve iki yerde kullanılıyordu (player'daki
-    // Catch-up düğmesi ve uzun-bas menüsü) AMA sunucudan HİÇ ALINMIYORDU.
-    // Bu yüzden Catch-up seçeneği hiçbir kanalda görünmüyordu.
-    tv_archive: Number(s.tv_archive) || 0,
-    tv_archive_duration: Number(s.tv_archive_duration) || 0,
-    // Sağlayıcının verdiği kanal numarası (sıralama/zapping için)
-    num: s.num !== undefined ? Number(s.num) : undefined,
-    source: 'xtream',
-  } as Channel));
+  const out: Channel[] = [];
+  const rows = streams || [];
+  for (let i = 0; i < rows.length; i++) {
+    const s: any = rows[i];
+    out.push({
+      id: `xt-live-${s.stream_id}`,
+      name: s.name || 'Kanal',
+      group: catMap.get(String(s.category_id)) || 'Genel',
+      logo: s.stream_icon || null,
+      tvg_id: s.epg_channel_id || null,
+      tvg_name: s.name || null,
+      epg_channel_id: s.epg_channel_id || null,
+      url: `${base}/live/${encodeURIComponent(cred.username)}/${encodeURIComponent(cred.password)}/${s.stream_id}.${s.container_extension || 'ts'}`,
+      container_ext: s.container_extension || 'ts',
+      stream_id: String(s.stream_id),
+      tv_archive: Number(s.tv_archive) || 0,
+      tv_archive_duration: Number(s.tv_archive_duration) || 0,
+      num: s.num !== undefined ? Number(s.num) : undefined,
+      source: 'xtream',
+    } as Channel);
+    await catalogYield(i);
+  }
+  return out;
 }
 
 export async function xtreamVodCategories(cred: XtreamCredentials): Promise<XtreamCategory[]> {
@@ -398,34 +405,36 @@ export async function xtreamVod(cred: XtreamCredentials): Promise<VodItem[]> {
     xtreamVodCategories(cred).catch(() => [] as XtreamCategory[]),
   ]);
   const catMap = new Map<string, string>(cats.map(c => [String(c.category_id), c.category_name]));
-  return (items || []).map((v: any) => ({
-    id: `xt-vod-${v.stream_id}`,
-    name: v.name || 'Film',
-    group: catMap.get(String(v.category_id)) || 'Genel',
-    poster: v.stream_icon || null,
-    year: v.year || null,
-    rating_5based: v.rating_5based ? Number(v.rating_5based) : null,
-    /**
-     * İÇERİK ZENGİNLEŞTİRME (v7.3.0)
-     * Bu alanlar sunucudan GELİYOR ama alınmıyordu. Detay ekranını
-     * belirgin şekilde zenginleştiriyorlar.
-     */
-    youtube_trailer: v.youtube_trailer || null,    // fragman kimliği/adresi
-    backdrop_path: Array.isArray(v.backdrop_path) ? v.backdrop_path[0] : (v.backdrop_path || null),
-    duration: v.duration || v.episode_run_time || null,
-    age: v.age || null,                             // yaş sınırı
-    added: v.added || null,                         // eklenme zamanı (yeni içerik sıralaması)
-    release_date: v.release_date || v.releaseDate || null,
-    country: v.country || null,
-    rating: v.rating || null,
-    plot: v.plot || null,
-    cast: v.cast || null,
-    director: v.director || null,
-    genre: v.genre || null,
-    container_ext: v.container_extension || 'mp4',
-    stream_id: String(v.stream_id),
-    url: `${base}/movie/${encodeURIComponent(cred.username)}/${encodeURIComponent(cred.password)}/${v.stream_id}.${v.container_extension || 'mp4'}`,
-  } as VodItem));
+  const out: VodItem[] = [];
+  const rows = items || [];
+  for (let i = 0; i < rows.length; i++) {
+    const v: any = rows[i];
+    out.push({
+      id: `xt-vod-${v.stream_id}`,
+      name: v.name || 'Film',
+      group: catMap.get(String(v.category_id)) || 'Genel',
+      poster: v.stream_icon || null,
+      year: v.year || null,
+      rating_5based: v.rating_5based ? Number(v.rating_5based) : null,
+      youtube_trailer: v.youtube_trailer || null,
+      backdrop_path: Array.isArray(v.backdrop_path) ? v.backdrop_path[0] : (v.backdrop_path || null),
+      duration: v.duration || v.episode_run_time || null,
+      age: v.age || null,
+      added: v.added || null,
+      release_date: v.release_date || v.releaseDate || null,
+      country: v.country || null,
+      rating: v.rating || null,
+      plot: v.plot || null,
+      cast: v.cast || null,
+      director: v.director || null,
+      genre: v.genre || null,
+      container_ext: v.container_extension || 'mp4',
+      stream_id: String(v.stream_id),
+      url: `${base}/movie/${encodeURIComponent(cred.username)}/${encodeURIComponent(cred.password)}/${v.stream_id}.${v.container_extension || 'mp4'}`,
+    } as VodItem);
+    await catalogYield(i);
+  }
+  return out;
 }
 
 export async function xtreamSeriesCategories(cred: XtreamCredentials): Promise<XtreamCategory[]> {
@@ -441,27 +450,33 @@ export async function xtreamSeries(cred: XtreamCredentials): Promise<SeriesItem[
     xtreamSeriesCategories(cred).catch(() => [] as XtreamCategory[]),
   ]);
   const catMap = new Map<string, string>(cats.map(c => [String(c.category_id), c.category_name]));
-  return (items || []).map((s: any) => ({
-    id: `xt-series-${s.series_id}`,
-    name: s.name || 'Dizi',
-    group: catMap.get(String(s.category_id)) || 'Genel',
-    poster: s.cover || null,
-    plot: s.plot || null,
-    cast: s.cast || null,
-    director: s.director || null,
-    genre: s.genre || null,
-    rating: s.rating || null,
-    rating_5based: s.rating_5based ? Number(s.rating_5based) : null,
-    year: s.year || s.release_date || null,
-    // İÇERİK ZENGİNLEŞTİRME (v7.3.0) — dizi tarafı
-    youtube_trailer: s.youtube_trailer || null,
-    backdrop_path: Array.isArray(s.backdrop_path) ? s.backdrop_path[0] : (s.backdrop_path || null),
-    duration: s.episode_run_time || null,
-    age: s.age || null,
-    added: s.last_modified || null,
-    release_date: s.release_date || s.releaseDate || null,
-    series_id: String(s.series_id),
-  } as SeriesItem));
+  const out: SeriesItem[] = [];
+  const rows = items || [];
+  for (let i = 0; i < rows.length; i++) {
+    const s: any = rows[i];
+    out.push({
+      id: `xt-series-${s.series_id}`,
+      name: s.name || 'Dizi',
+      group: catMap.get(String(s.category_id)) || 'Genel',
+      poster: s.cover || null,
+      plot: s.plot || null,
+      cast: s.cast || null,
+      director: s.director || null,
+      genre: s.genre || null,
+      rating: s.rating || null,
+      rating_5based: s.rating_5based ? Number(s.rating_5based) : null,
+      year: s.year || s.release_date || null,
+      youtube_trailer: s.youtube_trailer || null,
+      backdrop_path: Array.isArray(s.backdrop_path) ? s.backdrop_path[0] : (s.backdrop_path || null),
+      duration: s.episode_run_time || null,
+      age: s.age || null,
+      added: s.last_modified || null,
+      release_date: s.release_date || s.releaseDate || null,
+      series_id: String(s.series_id),
+    } as SeriesItem);
+    await catalogYield(i);
+  }
+  return out;
 }
 
 export async function xtreamSeriesInfo(cred: XtreamCredentials, series_id: string): Promise<{ info: any; seasons: { season: string; episodes: any[] }[] }> {

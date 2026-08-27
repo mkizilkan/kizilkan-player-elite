@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * KIZILKAN Flight Recorder v3 — native, process-resilient diagnostics core.
+ * KIZILKAN Flight Recorder v5 — native, process-resilient diagnostics core.
  *
  * Tasarım hedefi:
  *  - Normal olaylar Room/WAL içinde append-only tutulur.
@@ -31,10 +31,14 @@ import java.util.concurrent.atomic.AtomicLong
  *  - UncaughtExceptionHandler yalnız kayıt alır; hatayı ASLA yutmaz, önceki handler'a devreder.
  */
 object NativeBlackBox {
-  private const val CRITICAL_FILE = "kizilkan-flight-recorder-critical-v3.jsonl"
-  private const val MAX_NORMAL_EVENTS = 5000
-  private const val MAX_CRITICAL_DB_EVENTS = 500
-  private const val MAX_CRITICAL_FILE_BYTES = 2L * 1024L * 1024L
+  private const val CRITICAL_FILE = "kizilkan-flight-recorder-critical-v5.jsonl"
+  private const val LEGACY_CRITICAL_FILE = "kizilkan-flight-recorder-critical-v4.jsonl"
+  private const val LEGACY_CRITICAL_FILE_V3 = "kizilkan-flight-recorder-critical-v3.jsonl"
+  private const val PREFS = "kizilkan-flight-recorder-v4"
+  private const val CLEAR_EPOCH = "clear_epoch_ms"
+  private const val MAX_NORMAL_EVENTS = 100000
+  private const val MAX_CRITICAL_DB_EVENTS = 10000
+  private const val MAX_CRITICAL_FILE_BYTES = 32L * 1024L * 1024L
   private const val CHECKPOINT_MIN_INTERVAL_MS = 2000L
   private const val WATCHDOG_PERIOD_MS = 1000L
   private const val WATCHDOG_WARN_MS = 4000L
@@ -148,16 +152,17 @@ object NativeBlackBox {
     val app = context.applicationContext
     initialize(app)
     val dao = KizilkanNativeDatabase.get(app).diagnosticDao()
-    val take = limit.coerceIn(1, 2000)
-    val events = try { dao.latest(take).map(::entityToMap) } catch (_: Throwable) { emptyList() }
-    val critical = try { dao.latestCritical(250).map(::entityToMap) } catch (_: Throwable) { emptyList() }
+    val take = limit.coerceIn(1, 50000)
+    val clearEpoch = clearEpoch(app)
+    val events = try { dao.latest(take).filter { it.atEpochMs >= clearEpoch }.map(::entityToMap) } catch (_: Throwable) { emptyList() }
+    val critical = try { dao.latestCritical(1000).filter { it.atEpochMs >= clearEpoch }.map(::entityToMap) } catch (_: Throwable) { emptyList() }
     return mapOf(
-      "schemaVersion" to 3,
+      "schemaVersion" to 5,
       "appSessionId" to appSessionId,
       "health" to health(app),
       "events" to events,
       "critical" to critical,
-      "criticalJournal" to readCriticalFile(app, 120),
+      "criticalJournal" to readCriticalFile(app, 500).filter { (it["at"] as? Number)?.toLong()?.let { at -> at >= clearEpoch } ?: true },
     )
   }
 
@@ -168,11 +173,14 @@ object NativeBlackBox {
     val critical = criticalFile(app)
     return mapOf(
       "initialized" to initialized.get(),
-      "schemaVersion" to 3,
+      "schemaVersion" to 5,
       "appSessionId" to appSessionId,
       "dbEvents" to try { dao.count() } catch (_: Throwable) { 0 },
       "dbCriticalEvents" to try { dao.criticalCount() } catch (_: Throwable) { 0 },
       "criticalJournalBytes" to if (critical.exists()) critical.length() else 0L,
+      "clearEpochMs" to clearEpoch(app),
+      "normalCapacity" to MAX_NORMAL_EVENTS,
+      "criticalCapacity" to MAX_CRITICAL_DB_EVENTS,
       "watchdogActive" to (watchdog?.isShutdown == false),
       "checkpointApi" to (Build.VERSION.SDK_INT >= 30),
       "pid" to Process.myPid(),
@@ -183,10 +191,19 @@ object NativeBlackBox {
     val app = context.applicationContext
     return try {
       KizilkanNativeDatabase.get(app).diagnosticDao().clear()
+      app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong(CLEAR_EPOCH, System.currentTimeMillis()).commit()
       val file = criticalFile(app)
       if (file.exists()) file.delete()
       val old = File(app.filesDir, "$CRITICAL_FILE.old")
       if (old.exists()) old.delete()
+      val legacy = File(app.filesDir, LEGACY_CRITICAL_FILE)
+      if (legacy.exists()) legacy.delete()
+      val legacyOld = File(app.filesDir, "$LEGACY_CRITICAL_FILE.old")
+      if (legacyOld.exists()) legacyOld.delete()
+      val legacyV3 = File(app.filesDir, LEGACY_CRITICAL_FILE_V3)
+      if (legacyV3.exists()) legacyV3.delete()
+      val legacyV3Old = File(app.filesDir, "$LEGACY_CRITICAL_FILE_V3.old")
+      if (legacyV3Old.exists()) legacyV3Old.delete()
       true
     } catch (_: Throwable) { false }
   }
@@ -309,7 +326,7 @@ object NativeBlackBox {
 
   private fun readCriticalFile(context: Context, limit: Int): List<Map<String, Any>> {
     val out = ArrayList<Map<String, Any>>()
-    for (file in listOf(criticalFile(context), File(context.filesDir, "$CRITICAL_FILE.old"))) {
+    for (file in listOf(criticalFile(context), File(context.filesDir, "$CRITICAL_FILE.old"), File(context.filesDir, LEGACY_CRITICAL_FILE), File(context.filesDir, "$LEGACY_CRITICAL_FILE.old"), File(context.filesDir, LEGACY_CRITICAL_FILE_V3), File(context.filesDir, "$LEGACY_CRITICAL_FILE_V3.old"))) {
       if (!file.exists()) continue
       try {
         val lines = file.readLines(Charsets.UTF_8)
@@ -327,6 +344,8 @@ object NativeBlackBox {
     }
     return out
   }
+
+  private fun clearEpoch(context: Context): Long = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(CLEAR_EPOCH, 0L)
 
   private fun criticalFile(context: Context) = File(context.filesDir, CRITICAL_FILE)
 

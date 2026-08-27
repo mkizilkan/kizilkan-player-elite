@@ -37,6 +37,9 @@ const CHECKS = [
   ["check-v15220-flight-recorder.js", "v15.2.20 Flight Recorder v3 / TypeScript corrective contract", ""],
   ["check-v15220-typescript-semantic.js", "v15.2.20 Playlist Promise<void> semantic contract", ""],
   ["check-v15221-typescript-media3.js", "v15.2.21 Media3 EngineProfile semantic contract", ""],
+  ["check-v15222-flight-recorder-mag.js", "v15.2.22 Flight Recorder V4 / MAG compatibility contract", ""],
+  ["check-v15223-flight-recorder-mag.js", "v15.2.23 Flight Recorder V5 / total reset / MAG HTTP telemetry", ""],
+  ["check-v15223-complete-corrective.js", "v15.2.23 RC2 P0 complete corrective contract", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 

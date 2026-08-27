@@ -738,3 +738,25 @@ Node v22.16.0 ile tüm hard gate'ler EXIT 0 ve 109 TS/TSX transpile syntax 0 dia
 - EngineProfile media3 varyantında decoder yok; v15.2.21 engine narrowing ile decoder/surface ayrımını yapar.
 - `check-v15221-typescript-media3.js` eklendi ve `denetle.js` ana zincirine bağlandı.
 - Flight Recorder V3 kapsamı azaltılmadı.
+
+## v15.2.23-RC1 — Flight Recorder V5 / Total Reset / MAG HTTP Telemetry
+- Flight Recorder kapasitesi 50K JS, 100K native normal, 10K native kritik olaya yükseltildi.
+- JSONL journal 8x32 MiB; native kritik journal 32 MiB.
+- İstatistik reseti PanelScan diagnostic events + last crash geçmişini de temizler.
+- MAG/Stalker HTTP action/type/path/status/süre/bytes/content-type/redirect ile transport/parse hata telemetrisi ekledi; hassas kimlik bilgileri recorder sanitization dışında request meta'ya alınmaz.
+- Historical hard gate'ler V5'e forward-compatible yapıldı; v15.2.23 gate master zincire eklendi.
+- Yerel Node master denetim exit 0. Full tsc/Kotlin/Gradle/APK ve cihaz kabulü CI/cihazda bekliyor.
+
+## v15.2.23 RC2 COMPLETE CORRECTIVE — 2026-08-26
+- RC1'in eksik bıraktığı P0'lar aynı v15.2.23 hattında tamamlandı.
+- Gesture/Reanimated crash: Gesture callbacks `.runOnJS(true)` ile JS thread authority; UI worklet içinden React/Dimensions/ref erişimi kaldırıldı.
+- Codec recovery: `MEDIA3_FATAL_FALLBACK` + VLC video-output timeout; HW→SW, sonra terminal error. Sonsuz spinner hedeflenmiştir.
+- Xtream/Room: canonical write+Room summary doğrulanmadan React publish yok; switch index recovery `warmPlaylist`.
+- Main-thread stall: Flight Recorder per-event 50K AsyncStorage parse/stringify kaldırıldı; Native Room primary, JS 5K fallback, 64-event batched flush, sampled JSONL.
+- Tam reset: PanelScan events+crash ve aktif scan yoksa snapshot temizlenir; iki UI temizleme yolu scan/process state'i de sıfırlar.
+- Yeni gate: `tools/check-v15223-complete-corrective.js`; master denetle zincirine ekli.
+- Gerçek lokal gate sonucu: tüm tools JS syntax PASS, v15.2.23 RC1 gate PASS, RC2 gate PASS, master denetle PASS/exit 0.
+- Full tsc/Gradle/APK/device acceptance henüz yapılmadı; verify branch GitHub Actions şart.
+
+### v15.2.23 RC2 final stall hardening addendum
+Xtream Live/VOD/Series büyük katalog normalizasyonu ve MAG/Stalker ordered-list/pagination/normalizasyon döngüleri cooperative event-loop yield kullanacak şekilde güçlendirildi. Bu, Flight Recorder V5'in batched persistence değişikliklerine ek olarak katalog kaynaklı uzun JS-thread bloklarını doğrudan azaltmayı hedefler. `tools/check-v15223-complete-corrective.js` bu davranışı hard-gate kapsamına alır.

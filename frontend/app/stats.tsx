@@ -152,7 +152,7 @@ export default function StatsScreen() {
           onPress={() => {
             Alert.alert(
               "İstatistikleri sıfırla",
-              "İzleme süresi, devam eden içerikler ve son izlenenler SİLİNECEK.\n\n" +
+              "İzleme süresi, devam eden içerikler, son izlenenler ve tüm Flight Recorder/tanılama kayıtları SİLİNECEK.\n\n" +
                 "Favorileriniz, izleme listeniz ve gruplarınız SİLİNMEZ.",
               [
                 { text: "Vazgeç", style: "cancel" },
@@ -160,8 +160,15 @@ export default function StatsScreen() {
                   text: "Sıfırla",
                   style: "destructive",
                   onPress: async () => {
-                    await Promise.all([clearAllProgress(), clearRecent()]);
-                    Alert.alert("Tamam", "İstatistikler ve izleme geçmişi sıfırlandı.");
+                    await Promise.all([clearAllProgress(), clearRecent(), clearDiagnostics()]);
+                    if (PanelScan.available) PanelScan.clearDiagnostics();
+                    setDiagnostics([]);
+                    setScanDiagnostics([]);
+                    setLastScanCrash({});
+                    setLastExitInfo({});
+                    setExitHistory([]);
+                    setBlackBoxHealth(nativeData ? (await KizilkanNativeCore.getBlackBoxHealth?.() || {}) : {});
+                    Alert.alert("Tamam", "İstatistikler, izleme geçmişi, scan tanıları ve Flight Recorder kayıtları tamamen sıfırlandı. Yeni kayıtlar bu andan itibaren temiz bir dönem olarak tutulacak.");
                   },
                 },
               ]
@@ -274,7 +281,16 @@ export default function StatsScreen() {
           }}>
             <Ionicons name="share-social" size={18} color="#fff" /><Text style={styles.diagButtonText}>Flight Recorder Raporunu Paylaş</Text>
           </FocusButton>
-          <FocusButton testID="diagnostics-clear-btn" style={[styles.diagButton, { borderWidth:1, borderColor: colors.border }]} onPress={() => Alert.alert("Tanılama geçmişi", "Player ve uygulama tanılama geçmişi silinsin mi?", [{text:"Vazgeç",style:"cancel"},{text:"Sil",style:"destructive",onPress:async()=>{await clearDiagnostics();setDiagnostics([]);}}])}>
+          <FocusButton testID="diagnostics-clear-btn" style={[styles.diagButton, { borderWidth:1, borderColor: colors.border }]} onPress={() => Alert.alert("Tanılama geçmişi", "Player, uygulama ve tarama tanılama geçmişinin tamamı silinsin mi?", [{text:"Vazgeç",style:"cancel"},{text:"Sil",style:"destructive",onPress:async()=>{
+            await clearDiagnostics();
+            if (PanelScan.available) PanelScan.clearDiagnostics();
+            setDiagnostics([]);
+            setScanDiagnostics([]);
+            setLastScanCrash({});
+            setLastExitInfo({});
+            setExitHistory([]);
+            setBlackBoxHealth(nativeData ? (await KizilkanNativeCore.getBlackBoxHealth?.() || {}) : {});
+          }}])}>
             <Ionicons name="trash-outline" size={18} color={colors.onSurface} /><Text style={[styles.diagButtonText,{color:colors.onSurface}]}>Geçmişi Temizle</Text>
           </FocusButton>
         </View>

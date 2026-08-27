@@ -157,5 +157,20 @@ class PanelScanModule : Module() {
       context.getSharedPreferences(PanelScanService.PREFS, 0)
         .getString(PanelScanService.KEY_LAST_CRASH, "{}") ?: "{}"
     }
+
+    // v15.2.23-RC2: "Geçmişi Temizle" gerçekten bembeyaz başlangıç verir.
+    // Aktif scan varsa çalışma snapshot'ını koruruz; aktif scan YOKSA geçmiş
+    // snapshot da silinir. diagnostic_events + last_crash her durumda temizlenir.
+    Function("clearDiagnostics") {
+      val context = appContext.reactContext ?: return@Function false
+      val prefs = context.getSharedPreferences(PanelScanService.PREFS, 0)
+      val editor = prefs.edit()
+        .remove(PanelScanService.KEY_EVENTS)
+        .remove(PanelScanService.KEY_LAST_CRASH)
+      if (PanelScanService.activeRunId().isBlank()) {
+        editor.remove(PanelScanService.KEY_SNAPSHOT)
+      }
+      editor.commit()
+    }
   }
 }

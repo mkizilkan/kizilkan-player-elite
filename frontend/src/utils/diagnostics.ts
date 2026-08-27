@@ -17,16 +17,25 @@ export type DiagnosticEvent = {
   data?: Record<string, any>;
 };
 
-const KEY = 'kizilkan.diagnostics.flightRecorder.v2';
+const KEY = 'kizilkan.diagnostics.flightRecorder.v5';
+const V4_KEY = 'kizilkan.diagnostics.flightRecorder.v4';
+const V3_KEY = 'kizilkan.diagnostics.flightRecorder.v2';
 const LEGACY_KEY = 'kizilkan.diagnostics.flightRecorder.v1';
-const MAX_EVENTS = 1500;
-const MAX_EXPORT_EVENTS = 1500;
+const MAX_EVENTS = 50000;
+const MAX_EXPORT_EVENTS = 50000;
+// v15.2.23-RC2: AsyncStorage is only a recent fallback cache. The durable full
+// flight recorder is Native Room/WAL (100k) + critical/native journals. Serializing
+// 50k JS events on every event was O(n) main-thread work and could itself create stalls.
+const MAX_JS_FALLBACK_EVENTS = 5000;
+const JS_STORAGE_FLUSH_EVERY = 64;
+const JS_JOURNAL_SAMPLE_EVERY = 16;
 const SYSTEM_SAMPLE_INTERVAL_MS = 5000;
 const CRITICAL_EVENT_RE = /CRASH|ANR|FATAL|BLACK_SCREEN|ROLLBACK|TIMEOUT|STALL|OOM|LOW_MEMORY|FAILED|ERROR/i;
 const WARN_EVENT_RE = /WARN|STALE|RECOVERY|REBUFFER|SLOW|DROPPED/i;
-const JOURNAL_NAME = 'kizilkan-blackbox-v2.jsonl';
-const JOURNAL_ARCHIVE_NAME = 'kizilkan-blackbox-v2.1.jsonl';
-const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
+const JOURNAL_NAME = 'kizilkan-blackbox-v5.jsonl';
+const JOURNAL_ARCHIVE_NAMES = Array.from({ length: 7 }, (_, i) => `kizilkan-blackbox-v5.${i + 1}.jsonl`);
+const LEGACY_JOURNALS = ['kizilkan-blackbox-v4.jsonl', 'kizilkan-blackbox-v4.1.jsonl', 'kizilkan-blackbox-v4.2.jsonl', 'kizilkan-blackbox-v4.3.jsonl', 'kizilkan-blackbox-v2.jsonl', 'kizilkan-blackbox-v2.1.jsonl'];
+const MAX_JOURNAL_BYTES = 32 * 1024 * 1024;
 const SENSITIVE_KEY = /(pass(word)?|token|cookie|authorization|secret|pin|device[_-]?id|serial|mac|username|user(name)?)/i;
 
 function shortHash(input: string): string {
@@ -35,6 +44,9 @@ function shortHash(input: string): string {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 let writeQueue: Promise<void> = Promise.resolve();
+let jsEventCache: DiagnosticEvent[] | null = null;
+let jsDirtyEvents = 0;
+let jsJournalSequence = 0;
 let nativeInitialized = false;
 let lastSystemSampleAt = 0;
 let appSessionId = `js-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
@@ -59,18 +71,18 @@ function redactString(input: string): string {
     if (/^https?:\/\//i.test(value)) value = scrubUrl(value);
     else value = value.replace(/https?:\/\/[^\s<>"']+/gi, (url) => scrubUrl(url));
   } catch {}
-  return value.slice(0, 1000);
+  return value.slice(0, 2000);
 }
 
 function sanitizeValue(value: any, key = '', depth = 0): any {
-  if (depth > 4) return '[TRUNCATED]';
+  if (depth > 8) return '[TRUNCATED]';
   if (SENSITIVE_KEY.test(key)) return '[REDACTED]';
   if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value === 'string') return redactString(value);
-  if (Array.isArray(value)) return value.slice(0, 30).map((v) => sanitizeValue(v, '', depth + 1));
+  if (Array.isArray(value)) return value.slice(0, 80).map((v) => sanitizeValue(v, '', depth + 1));
   if (typeof value === 'object') {
     const out: Record<string, any> = {};
-    for (const [k, v] of Object.entries(value).slice(0, 50)) out[k] = sanitizeValue(v, k, depth + 1);
+    for (const [k, v] of Object.entries(value).slice(0, 80)) out[k] = sanitizeValue(v, k, depth + 1);
     return out;
   }
   return String(value);
@@ -87,9 +99,13 @@ function appendPersistentJournal(item: DiagnosticEvent): void {
     let file = new File(Paths.document, JOURNAL_NAME);
     if (!file.exists) file.create();
     if (Number(file.size || 0) >= MAX_JOURNAL_BYTES) {
-      const archive = new File(Paths.document, JOURNAL_ARCHIVE_NAME);
-      if (archive.exists) archive.delete();
-      file.move(archive);
+      for (let i = JOURNAL_ARCHIVE_NAMES.length - 1; i >= 0; i--) {
+        const dst = new File(Paths.document, JOURNAL_ARCHIVE_NAMES[i]);
+        if (dst.exists) dst.delete();
+        const srcName = i === 0 ? JOURNAL_NAME : JOURNAL_ARCHIVE_NAMES[i - 1];
+        const src = new File(Paths.document, srcName);
+        if (src.exists) src.move(dst);
+      }
       file = new File(Paths.document, JOURNAL_NAME);
       file.create();
     }
@@ -109,7 +125,7 @@ function appendPersistentJournal(item: DiagnosticEvent): void {
 
 function loadPersistentJournal(limit: number): DiagnosticEvent[] {
   const out: DiagnosticEvent[] = [];
-  for (const name of [JOURNAL_NAME, JOURNAL_ARCHIVE_NAME]) {
+  for (const name of [JOURNAL_NAME, ...JOURNAL_ARCHIVE_NAMES, ...LEGACY_JOURNALS]) {
     try {
       const file = new File(Paths.document, name);
       if (!file.exists || !file.size) continue;
@@ -126,9 +142,9 @@ function loadPersistentJournal(limit: number): DiagnosticEvent[] {
 }
 
 function journalInfo() {
-  const info = { currentBytes: 0, archiveBytes: 0, maxSegmentBytes: MAX_JOURNAL_BYTES };
+  const info = { currentBytes: 0, archiveBytes: 0, segments: 1 + JOURNAL_ARCHIVE_NAMES.length, maxSegmentBytes: MAX_JOURNAL_BYTES };
   try { const f = new File(Paths.document, JOURNAL_NAME); if (f.exists) info.currentBytes = Number(f.size || 0); } catch {}
-  try { const f = new File(Paths.document, JOURNAL_ARCHIVE_NAME); if (f.exists) info.archiveBytes = Number(f.size || 0); } catch {}
+  for (const name of JOURNAL_ARCHIVE_NAMES) { try { const f = new File(Paths.document, name); if (f.exists) info.archiveBytes += Number(f.size || 0); } catch {} }
   return info;
 }
 
@@ -140,6 +156,31 @@ function parseEvents(raw: string): DiagnosticEvent[] {
   } catch {
     return [];
   }
+}
+
+async function ensureJsEventCache(): Promise<DiagnosticEvent[]> {
+  if (jsEventCache) return jsEventCache;
+  let raw = (await storage.getItem<string>(KEY, '')) || '';
+  if (!raw) raw = (await storage.getItem<string>(V4_KEY, '')) || '';
+  if (!raw) raw = (await storage.getItem<string>(V3_KEY, '')) || '';
+  if (!raw) raw = (await storage.getItem<string>(LEGACY_KEY, '')) || '';
+  jsEventCache = parseEvents(raw).slice(0, MAX_JS_FALLBACK_EVENTS);
+  return jsEventCache;
+}
+
+function nativeSnapshotEvents(snapshot: Record<string, any>): DiagnosticEvent[] {
+  const rows = Array.isArray(snapshot?.events) ? snapshot.events : [];
+  return rows.map((row: any) => ({
+    id: String(row?.id || `${row?.at || Date.now()}-${Math.random().toString(36).slice(2,8)}`),
+    at: Number(row?.at || 0),
+    domain: String(row?.domain || 'system') as DiagnosticDomain,
+    event: String(row?.event || 'EVENT'),
+    sessionId: row?.sessionId ? String(row.sessionId) : undefined,
+    runId: row?.runId ? String(row.runId) : undefined,
+    severity: row?.severity || undefined,
+    critical: !!row?.critical,
+    data: row?.data && typeof row.data === 'object' ? row.data : {},
+  })).filter((x: DiagnosticEvent) => x.at > 0);
 }
 
 function classifySeverity(event: string): DiagnosticEvent['severity'] {
@@ -221,33 +262,53 @@ export async function recordDiagnostic(
   }
   writeQueue = writeQueue.then(async () => {
     // Native Room/WAL uçuş kaydı ilk kalıcılık katmanıdır. Başarısız olsa bile
-    // JSONL + AsyncStorage geri dönüş yolları uygulama işlevini kesmez.
+    // sampled JSONL + küçük AsyncStorage recent-cache geri dönüş yolu kalır.
     try { await KizilkanNativeCore.appendBlackBoxEvent?.(JSON.stringify(item)); } catch {}
     try { KizilkanNativeCore.setBlackBoxCheckpoint?.(checkpointSummary(item)); } catch {}
-    appendPersistentJournal(item);
-    let raw = (await storage.getItem<string>(KEY, '')) || '';
-    if (!raw) raw = (await storage.getItem<string>(LEGACY_KEY, '')) || '';
-    const prev = parseEvents(raw);
-    const next = [item, ...prev].slice(0, MAX_EVENTS);
-    await storage.setItem(KEY, JSON.stringify(next));
+
+    // JS thread üzerinde her eventte senkron dosya append + 50k JSON stringify
+    // yapılmaz. Kritik/error/warn olaylar daima; normal olaylar örneklemeli journal'a
+    // gider. Tam normal geçmiş native Room'da 100k kapasiteyle korunur.
+    jsJournalSequence += 1;
+    if (critical || severity === 'warn' || jsJournalSequence % JS_JOURNAL_SAMPLE_EVERY === 0) {
+      appendPersistentJournal(item);
+    }
+
+    const prev = await ensureJsEventCache();
+    jsEventCache = [item, ...prev].slice(0, MAX_JS_FALLBACK_EVENTS);
+    jsDirtyEvents += 1;
+    if (critical || jsDirtyEvents >= JS_STORAGE_FLUSH_EVERY) {
+      await storage.setItem(KEY, JSON.stringify(jsEventCache));
+      jsDirtyEvents = 0;
+    }
   }).catch(() => {});
   await writeQueue;
 }
 
 export async function loadDiagnostics(limit = MAX_EVENTS): Promise<DiagnosticEvent[]> {
   await writeQueue.catch(() => {});
-  let raw = (await storage.getItem<string>(KEY, '')) || '';
-  if (!raw) raw = (await storage.getItem<string>(LEGACY_KEY, '')) || '';
   const bounded = Math.max(1, Math.min(MAX_EVENTS, limit));
-  const parsed = parseEvents(raw).slice(0, bounded);
-  return parsed.length ? parsed : loadPersistentJournal(bounded);
+  // Android'de tam geçmişin authority'si Room/WAL'dır. Böylece 50k event yüklemek
+  // için her record sırasında dev AsyncStorage blob'u yeniden yazılmaz.
+  if (KizilkanNativeCore.available) {
+    try {
+      const snapshot = await KizilkanNativeCore.getBlackBoxSnapshot?.(bounded) || {};
+      const nativeEvents = nativeSnapshotEvents(snapshot).slice(0, bounded);
+      if (nativeEvents.length) return nativeEvents;
+    } catch {}
+  }
+  const cached = (await ensureJsEventCache()).slice(0, bounded);
+  return cached.length ? cached : loadPersistentJournal(bounded);
 }
 
 export async function clearDiagnostics(): Promise<void> {
   await writeQueue.catch(() => {});
-  await Promise.all([storage.removeItem(KEY), storage.removeItem(LEGACY_KEY)]);
+  jsEventCache = [];
+  jsDirtyEvents = 0;
+  jsJournalSequence = 0;
+  await Promise.all([storage.removeItem(KEY), storage.removeItem(V4_KEY), storage.removeItem(V3_KEY), storage.removeItem(LEGACY_KEY)]);
   try { await KizilkanNativeCore.clearBlackBox?.(); } catch {}
-  for (const name of [JOURNAL_NAME, JOURNAL_ARCHIVE_NAME]) {
+  for (const name of [JOURNAL_NAME, ...JOURNAL_ARCHIVE_NAMES, ...LEGACY_JOURNALS]) {
     try { const file = new File(Paths.document, name); if (file.exists) file.delete(); } catch {}
   }
 }
@@ -310,13 +371,18 @@ export async function exportDiagnosticReport(extra: Record<string, any> = {}): P
   let nativeFlightRecorder: Record<string, any> = {};
   try { nativeFlightRecorder = await KizilkanNativeCore.getBlackBoxSnapshot?.(MAX_EXPORT_EVENTS) || {}; } catch {}
   const payload = sanitizeValue({
-    format: 'KIZILKAN_FLIGHT_RECORDER_V3',
-    schemaVersion: 3,
+    format: 'KIZILKAN_FLIGHT_RECORDER_V5',
+    schemaVersion: 5,
     eventCapacity: MAX_EVENTS,
     appSessionId,
     persistentJournal: journalInfo(),
     nativeFlightRecorder,
-    processExitHistory: (() => { try { return KizilkanNativeCore.getExitHistory?.(10) || []; } catch { return []; } })(),
+    processExitHistory: (() => {
+      try {
+        const clearEpoch = Number(nativeFlightRecorder?.health?.clearEpochMs || 0);
+        return (KizilkanNativeCore.getExitHistory?.(10) || []).filter((x:any) => Number(x?.timestamp || 0) >= clearEpoch);
+      } catch { return []; }
+    })(),
     runtimeAtExport: systemSnapshot(),
     createdAt: new Date().toISOString(),
     extra,

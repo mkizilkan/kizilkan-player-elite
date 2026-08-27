@@ -1,0 +1,7 @@
+cd /sdcard/Download/gpt-kizilkan-player-elite || exit 1
+git switch -c verify-v15.2.22
+git add .
+git diff --cached --check || exit 1
+node tools/denetle.js || exit 1
+git commit -m "feat: KIZILKAN PLAYER ELITE v15.2.22 RC1 Flight Recorder V4 and MAG compatibility hardening"
+git push -u origin verify-v15.2.22

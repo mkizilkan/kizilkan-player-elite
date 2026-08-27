@@ -176,7 +176,7 @@ class KizilkanNativeCoreModule : Module() {
       exitHistory(maxNum.coerceIn(1, 10))
     }
 
-    // v15.2.20: KIZILKAN Flight Recorder v3 — native Room/WAL + kritik crash/ANR journal.
+    // v15.2.22: KIZILKAN Flight Recorder v4 — native Room/WAL + kritik crash/ANR journal.
     Function("initializeBlackBox") {
       NativeBlackBox.initialize(context())
     }
@@ -190,7 +190,7 @@ class KizilkanNativeCoreModule : Module() {
     }
 
     AsyncFunction("getBlackBoxSnapshot") { limit: Int ->
-      NativeBlackBox.snapshot(context(), limit.coerceIn(1, 2000))
+      NativeBlackBox.snapshot(context(), limit.coerceIn(1, 50000))
     }
 
     AsyncFunction("getBlackBoxHealth") {
