@@ -1,0 +1,18 @@
+KIZILKAN PLAYER ELITE v15.2.12-RC1 PAKET DOGRULAMA
+
+- Surum: 15.2.12
+- Android versionCode: 150212
+- Kök neden: resolveOneBulkAccount içindeki ScanExecutionControl opsiyonel tanımlandığı için TypeScript TS18048 control possibly undefined hatası.
+- Düzeltme: control parametresi zorunlu hale getirildi; mevcut çağrı yolu zaten her zaman gerçek ScanExecutionControl sağlıyor.
+- Regresyon koruması: tools/checkplayercore.js bu parametrenin yeniden opsiyonel yapılmasını HARD gate ile reddeder.
+- v15.2.11 tarama terminal/cancellation/parser/profile düzeltmeleri korunmuştur.
+- Gerçek Android release build bu paketleme ortamında çalıştırılmamıştır; GitHub Actions kanıtlamalıdır.
+
+GERCEK PAKETLEME ONCESI KONTROLLER
+- denetle.js: 3/3 temiz
+- checkplayercore.js: 3/3 temiz
+- TS/TSX parser: 107 dosya / 0 parse hatasi
+- AST control contract: resolveOneBulkAccount control optional=false, type=ScanExecutionControl
+- package.json/app.json JSON: temiz
+- GitHub Actions YAML: temiz
+- Tam npx tsc --noEmit: bu ortamda node_modules olmadigi icin calistirilmadi; GitHub Actions HARD gate kanitlayacaktir.

@@ -1,7 +1,0 @@
-cd /sdcard/Download/kizilkan-player
-git status
-git add .
-git commit -m "fix: Kızılkan Player v9.5.0 TV, odak ve VLC düzeltmeleri"
-git tag -a v9.5.0 -m "Kızılkan Player v9.5.0"
-git push origin HEAD
-git push origin v9.5.0

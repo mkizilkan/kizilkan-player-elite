@@ -161,8 +161,9 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   sheet: {
-    borderTopLeftRadius: RADIUS.xl ?? 20,
-    borderTopRightRadius: RADIUS.xl ?? 20,
+    // v15.0.1 BUILD FIX: eski `xl ?? 20` fiilen 20 idi; geçerli lg tokenı da 20, görsel davranış değişmez.
+    borderTopLeftRadius: RADIUS.lg,
+    borderTopRightRadius: RADIUS.lg,
     borderWidth: 1,
     paddingBottom: SPACING.xl,
     maxHeight: "80%",

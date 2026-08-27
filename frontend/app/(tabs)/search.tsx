@@ -17,18 +17,29 @@ import { fuzzySearch, normalize } from "@/src/utils/fuzzy";
 import { haptic } from "@/src/utils/haptic";
 import type { Channel, VodItem, SeriesItem } from "@/src/types";
 import { FocusButton } from "@/src/components/FocusButton";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 type Scope = "all" | "live" | "vod" | "series";
 
 export default function SearchTab() {
   const router = useRouter();
   const { colors } = useTheme();
-  const { activePlaylist, toggleFavorite, isFavorite, addToRecent, favorites, recent } = usePlaylists();
+  const { activePlaylist, toggleFavorite, isFavorite, addToRecent, favorites, recent, ensureHeavyLoaded } = usePlaylists();
+
+  // v15.2.4: Android'de arama Room/SQLite üzerinde yapılır; bütün katalogu
+  // JS/Hermes belleğine hydrate etme. Web/legacy fallback eski yolu korur.
+  useEffect(() => {
+    if (!KizilkanNativeCore.available && activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
+  }, [activePlaylist?.id, ensureHeavyLoaded]);
   const { searchHistory, pushSearch, clearSearchHistory, isItemHidden, isGroupHidden, hiddenModeUnlocked } = useLibrary();
   const { settings: parental, isCategoryLocked, isUnlockedInSession } = useParental();
   const { activeProfile } = useProfiles();
   const [q, setQ] = useState("");
   const [scope, setScope] = useState<Scope>("all");
+  const [nativeLiveResults, setNativeLiveResults] = useState<Channel[]>([]);
+  const [nativeVodResults, setNativeVodResults] = useState<VodItem[]>([]);
+  const [nativeSeriesResults, setNativeSeriesResults] = useState<SeriesItem[]>([]);
+  const [nativeTrending, setNativeTrending] = useState<Channel[]>([]);
 
   const requiresPin = (group?: string | null) => {
     if (!group) return false;
@@ -81,6 +92,46 @@ export default function SearchTab() {
     return () => clearTimeout(t);
   }, [q]);
 
+  useEffect(() => {
+    if (!KizilkanNativeCore.available || !activePlaylist?.id) return;
+    let cancelled = false;
+    const needle = debouncedQ.trim();
+    if (!needle) {
+      setNativeLiveResults([]); setNativeVodResults([]); setNativeSeriesResults([]);
+      return;
+    }
+    (async () => {
+      const wantLive = scope === "all" || scope === "live";
+      const wantVod = scope === "all" || scope === "vod";
+      const wantSeries = scope === "all" || scope === "series";
+      const [livePage, vodPage, seriesPage] = await Promise.all([
+        wantLive ? KizilkanNativeCore.queryItems<Channel>(activePlaylist.id, "live", { search: needle, limit: 180 }) : Promise.resolve({items:[]}),
+        wantVod ? KizilkanNativeCore.queryItems<VodItem>(activePlaylist.id, "vod", { search: needle, limit: 180 }) : Promise.resolve({items:[]}),
+        wantSeries ? KizilkanNativeCore.queryItems<SeriesItem>(activePlaylist.id, "series", { search: needle, limit: 180 }) : Promise.resolve({items:[]}),
+      ]);
+      if (cancelled) return;
+      setNativeLiveResults(applyBaseFilter((livePage as any).items || []) as Channel[]);
+      setNativeVodResults(applyBaseFilter((vodPage as any).items || []) as VodItem[]);
+      setNativeSeriesResults(applyBaseFilter((seriesPage as any).items || []) as SeriesItem[]);
+    })().catch(e => console.warn("[Search] Native Room query failed", e));
+    return () => { cancelled = true; };
+  // applyBaseFilter intentionally reads current parental/library state.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePlaylist?.id, debouncedQ, scope, activeProfile?.isKids, hiddenModeUnlocked, parental.adultHidden]);
+
+  useEffect(() => {
+    if (!KizilkanNativeCore.available || !activePlaylist?.id) return;
+    let cancelled = false;
+    const ids = Array.from(new Set([...favorites, ...recent])).slice(0, 8);
+    if (!ids.length) { setNativeTrending([]); return; }
+    KizilkanNativeCore.getItemsByIds<Channel>(activePlaylist.id, "live", ids).then(items => {
+      if (cancelled) return;
+      const map = new Map(items.map(c => [c.id, c]));
+      setNativeTrending(ids.map(id => map.get(id)).filter(Boolean) as Channel[]);
+    }).catch(e => console.warn("[Search] trending Room query failed", e));
+    return () => { cancelled = true; };
+  }, [activePlaylist?.id, favorites, recent]);
+
   /** Hızlı ön eleme: bulanık aramadan önce adayları daraltır.
    * v9.13.0 DÜZELTME: v9.12'de subsequence yapılmıştı; çok gevşek olduğu için
    * "sakin" → "Şaka Bi' Yana" gibi ALAKASIZ sonuçlar çıkıyordu (kullanıcı
@@ -101,23 +152,33 @@ export default function SearchTab() {
     return out;
   }, [debouncedQ]);
 
-  const liveResults = useMemo(() => {
+  // v15.2.6: Room sorguları doğrudan item döndürürken legacy fuzzySearch
+  // FuzzyResult<T> döndürüyordu. UI'ya iki farklı shape taşımak hem tip
+  // regresyonuna hem de native/legacy davranış farkına yol açıyordu. Buradan
+  // itibaren üç sonuç kümesi de yalnız gerçek item dizisidir.
+  const liveResults = useMemo<Channel[]>(() => {
+    if (KizilkanNativeCore.available) return nativeLiveResults.slice(0, 60);
     if (!debouncedQ.trim() || (scope !== "all" && scope !== "live")) return [];
-    const cand = preFilter(liveChannels, (c: any) => [c.name, c.group, c.tvg_name]);
-    return fuzzySearch(cand, debouncedQ, (c) => [c.name, c.group, c.tvg_name], 60);
-  }, [liveChannels, debouncedQ, scope, preFilter]);
+    const cand = preFilter(liveChannels, (c: Channel) => [c.name, c.group, c.tvg_name]);
+    return fuzzySearch(cand, debouncedQ, (c) => [c.name, c.group, c.tvg_name], 60)
+      .map(result => result.item);
+  }, [nativeLiveResults, liveChannels, debouncedQ, scope, preFilter]);
 
-  const vodResults = useMemo(() => {
+  const vodResults = useMemo<VodItem[]>(() => {
+    if (KizilkanNativeCore.available) return nativeVodResults.slice(0, 60);
     if (!debouncedQ.trim() || (scope !== "all" && scope !== "vod")) return [];
-    const cand = preFilter(vodItems, (v: any) => [v.name, v.group, String(v.year || "")]);
-    return fuzzySearch(cand, debouncedQ, (v) => [v.name, v.group, String(v.year || "")], 60);
-  }, [vodItems, debouncedQ, scope, preFilter]);
+    const cand = preFilter(vodItems, (v: VodItem) => [v.name, v.group, String(v.year || "")]);
+    return fuzzySearch(cand, debouncedQ, (v) => [v.name, v.group, String(v.year || "")], 60)
+      .map(result => result.item);
+  }, [nativeVodResults, vodItems, debouncedQ, scope, preFilter]);
 
-  const seriesResults = useMemo(() => {
+  const seriesResults = useMemo<SeriesItem[]>(() => {
+    if (KizilkanNativeCore.available) return nativeSeriesResults.slice(0, 60);
     if (!debouncedQ.trim() || (scope !== "all" && scope !== "series")) return [];
-    const cand = preFilter(seriesItems, (x: any) => [x.name, x.group, x.cast, x.director, x.genre]);
-    return fuzzySearch(cand, debouncedQ, (s) => [s.name, s.group, s.cast, s.director, s.genre], 60);
-  }, [seriesItems, debouncedQ, scope, preFilter]);
+    const cand = preFilter(seriesItems, (x: SeriesItem) => [x.name, x.group, x.cast, x.director, x.genre]);
+    return fuzzySearch(cand, debouncedQ, (s) => [s.name, s.group, s.cast, s.director, s.genre], 60)
+      .map(result => result.item);
+  }, [nativeSeriesResults, seriesItems, debouncedQ, scope, preFilter]);
 
   const totalResults = liveResults.length + vodResults.length + seriesResults.length;
 
@@ -142,12 +203,13 @@ export default function SearchTab() {
   };
 
   const trending = useMemo(() => {
+    if (KizilkanNativeCore.available) return nativeTrending;
     // top favorites first, then recent
     if (!activePlaylist) return [] as Channel[];
     const map = new Map(activePlaylist.channels.map(c => [c.id, c]));
     const ids = Array.from(new Set([...favorites, ...recent])).slice(0, 8);
     return ids.map(id => map.get(id)).filter(Boolean) as Channel[];
-  }, [activePlaylist, favorites, recent]);
+  }, [activePlaylist, favorites, recent, nativeTrending]);
 
   const commitSearch = useCallback(() => {
     if (q.trim()) pushSearch(q);
@@ -295,11 +357,11 @@ export default function SearchTab() {
                   <SectionHeader icon="tv" label={`Kanallar (${liveResults.length})`} />
                   {liveResults.map(r => (
                     <ChannelRow
-                      key={r.item.id}
-                      channel={r.item}
-                      isFavorite={isFavorite(r.item.id)}
-                      onToggleFavorite={() => { haptic.soft(); toggleFavorite(r.item.id); }}
-                      onPress={() => openChannel(r.item)}
+                      key={r.id}
+                      channel={r}
+                      isFavorite={isFavorite(r.id)}
+                      onToggleFavorite={() => { haptic.soft(); toggleFavorite(r.id); }}
+                      onPress={() => openChannel(r)}
                     />
                   ))}
                 </>
@@ -309,13 +371,13 @@ export default function SearchTab() {
                   <SectionHeader icon="film" label={`Filmler (${vodResults.length})`} />
                   {vodResults.map(r => (
                     <SearchPosterRow
-                      key={r.item.id}
-                      testID={`search-vod-${r.item.id}`}
-                      poster={r.item.poster}
-                      name={r.item.name}
-                      meta={[r.item.year && String(r.item.year), r.item.group].filter(Boolean).join(" • ")}
-                      rating={r.item.rating_5based}
-                      onPress={() => openDetail(r.item, "vod")}
+                      key={r.id}
+                      testID={`search-vod-${r.id}`}
+                      poster={r.poster}
+                      name={r.name}
+                      meta={[r.year && String(r.year), r.group].filter(Boolean).join(" • ")}
+                      rating={r.rating_5based}
+                      onPress={() => openDetail(r, "vod")}
                     />
                   ))}
                 </>
@@ -325,13 +387,13 @@ export default function SearchTab() {
                   <SectionHeader icon="albums" label={`Diziler (${seriesResults.length})`} />
                   {seriesResults.map(r => (
                     <SearchPosterRow
-                      key={r.item.id}
-                      testID={`search-series-${r.item.id}`}
-                      poster={r.item.poster}
-                      name={r.item.name}
-                      meta={[r.item.genre, r.item.director].filter(Boolean).join(" • ")}
-                      rating={r.item.rating_5based}
-                      onPress={() => openDetail(r.item, "series")}
+                      key={r.id}
+                      testID={`search-series-${r.id}`}
+                      poster={r.poster}
+                      name={r.name}
+                      meta={[r.genre, r.director].filter(Boolean).join(" • ")}
+                      rating={r.rating_5based}
+                      onPress={() => openDetail(r, "series")}
                     />
                   ))}
                 </>

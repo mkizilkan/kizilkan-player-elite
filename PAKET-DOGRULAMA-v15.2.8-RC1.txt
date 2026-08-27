@@ -1,0 +1,8 @@
+KIZILKAN PLAYER ELITE v15.2.8-RC1
+versionCode=150208
+RunId lifecycle: required
+Endpoint diagnostics: required
+Live VLC soft pause/play: forbidden
+Canonical duplicate guard: required
+Legacy cleanup after verified Room read: required
+ApplicationExitInfo telemetry: Android 11+

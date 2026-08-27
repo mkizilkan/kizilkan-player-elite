@@ -9,7 +9,8 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as Clipboard from "expo-clipboard";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
-import { createBackup, restoreBackup, BackupPayload, isKizilkanBackup } from "@/src/utils/backup";
+import { createBackupMetadata, restoreBackup, restoreBackupMetadata, BackupPayload, isKizilkanBackup, type BackupScope } from "@/src/utils/backup";
+import { exportFullBackupV3, restoreFullBackupV3, isFullBackupV3Name } from "@/src/utils/backupV3";
 import { authenticateGoogleDrive, uploadJsonToDrive, isGoogleDriveConfigured } from "@/src/utils/googleDrive";
 
 export default function BackupScreen() {
@@ -17,58 +18,69 @@ export default function BackupScreen() {
   const { colors } = useTheme();
   const [busy, setBusy] = useState<"export" | "import" | null>(null);
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [scope, setScope] = useState<BackupScope>("quick");
+  const [progress, setProgress] = useState("");
+  const exportAbortRef = React.useRef<AbortController | null>(null);
 
   const doExport = async () => {
-    setBusy("export"); setMsg(null);
+    setBusy("export"); setMsg(null); setProgress("");
+    const abort = new AbortController(); exportAbortRef.current = abort;
     try {
-      const payload = await createBackup();
-      const json = JSON.stringify(payload, null, 2);
-      const fileName = `kizilkan-player-elite-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      if (scope === "full" && Platform.OS !== "web") {
+        const result = await exportFullBackupV3({
+          signal: abort.signal,
+          onProgress: p => setProgress(p.message),
+        });
+        const canShare = await Sharing.isAvailableAsync();
+        if (!canShare) throw new Error("Bu cihazda dosya paylaşımı kullanılamıyor.");
+        await Sharing.shareAsync(result.uri, { mimeType: "application/x-ndjson", dialogTitle: "KIZILKAN PLAYER ELITE Tam Yedeğini Paylaş" });
+        setMsg({ type:"ok", text:`Tam yedek hazır: ${result.playlists} playlist · ${result.items} medya kaydı · ${(result.bytes/1024/1024).toFixed(1)} MB.` });
+        return;
+      }
+      const effectiveScope: BackupScope = scope === "full" ? "quick" : scope;
+      const payload = await createBackupMetadata(effectiveScope);
+      const json = JSON.stringify(payload);
+      const label = effectiveScope === "personal" ? "personal" : "quick";
+      const fileName = `kizilkan-player-elite-${label}-${new Date().toISOString().slice(0,10)}.json`;
       if (Platform.OS === "web") {
         await Clipboard.setStringAsync(json);
-        setMsg({ type: "ok", text: `Yedek panoya kopyalandı (${Math.round(json.length / 1024)} KB) · ${payload.summary?.playlists || 0} playlist dahil.` });
+        setMsg({ type:"ok", text:`${effectiveScope === "personal" ? "Kişisel" : "Hızlı"} yedek panoya kopyalandı (${Math.round(json.length/1024)} KB).` });
       } else {
         const uri = (FileSystem as any).cacheDirectory + fileName;
         await (FileSystem as any).writeAsStringAsync(uri, json);
-        const canShare = await Sharing.isAvailableAsync();
-        if (canShare) {
-          await Sharing.shareAsync(uri, { mimeType: "application/json", dialogTitle: "KIZILKAN PLAYER ELITE Yedeğini Paylaş" });
-          setMsg({ type: "ok", text: `Yedek dosyası hazırlandı: ${payload.summary?.playlists || 0} playlist · ${payload.summary?.profiles || 0} profil dahil.` });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(uri, { mimeType:"application/json", dialogTitle:"KIZILKAN PLAYER ELITE Yedeğini Paylaş" });
+          setMsg({ type:"ok", text:`Yedek hazır: ${payload.summary?.playlists || 0} playlist tanımı · ${payload.summary?.profiles || 0} profil.` });
         } else {
-          await Clipboard.setStringAsync(json);
-          setMsg({ type: "ok", text: "Paylaşım kullanılamıyor - yedek panoya kopyalandı." });
+          await Clipboard.setStringAsync(json); setMsg({type:"ok", text:"Paylaşım kullanılamıyor; küçük yedek panoya kopyalandı."});
         }
       }
-    } catch (e: any) {
-      setMsg({ type: "err", text: "Yedek oluşturulamadı: " + e.message });
-    } finally {
-      setBusy(null);
-    }
+    } catch (e:any) {
+      setMsg({ type:"err", text:"Yedek oluşturulamadı: " + (e?.message || e) });
+    } finally { exportAbortRef.current=null; setBusy(null); setProgress(""); }
   };
 
   const doImport = async () => {
-    setBusy("import"); setMsg(null);
+    setBusy("import"); setMsg(null); setProgress("");
     try {
-      const res = await DocumentPicker.getDocumentAsync({ type: "application/json", copyToCacheDirectory: true });
+      const res = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true });
       if (res.canceled || !res.assets?.[0]) { setBusy(null); return; }
       const asset = res.assets[0];
-      const response = await fetch(asset.uri);
-      const text = await response.text();
-      let payload: BackupPayload;
-      try { payload = JSON.parse(text); }
-      catch { throw new Error("Geçersiz JSON dosyası"); }
+      if (isFullBackupV3Name(asset.name)) {
+        const result = await restoreFullBackupV3(asset, { onProgress:p=>setProgress(p.message) });
+        setMsg({ type:"ok", text:`Tam yedek geri yüklendi: ${result.playlists} playlist · ${result.heavyPlaylists} katalog · ${result.profiles} profil.\n\nUygulamayı yeniden başlatın.` });
+        return;
+      }
+      const response = await fetch(asset.uri); const text = await response.text();
+      let payload: BackupPayload; try { payload=JSON.parse(text); } catch { throw new Error("Geçersiz JSON dosyası"); }
       if (!isKizilkanBackup(payload)) throw new Error("Bu bir KIZILKAN PLAYER ELITE yedek dosyası değil");
-      const result = await restoreBackup(payload);
+      const result = String(payload.version || '').startsWith('2.1') || String(payload.version || '').includes('meta')
+        ? await restoreBackupMetadata(payload)
+        : await restoreBackup(payload);
       const warningText = result.warnings.length ? `\n\n⚠️ ${result.warnings.join("\n⚠️ ")}` : "";
-      setMsg({
-        type: "ok",
-        text: `Yedek geri yüklendi: ${result.playlists} playlist · ${result.profiles} profil · ${result.restored} ayar/kayıt · ${result.heavyPlaylists} playlist içerik dosyası.${warningText}\n\nDeğişikliklerin tam etkin olması için uygulamayı yeniden başlatın.`,
-      });
-    } catch (e: any) {
-      setMsg({ type: "err", text: e.message || "Yedek yüklenemedi" });
-    } finally {
-      setBusy(null);
-    }
+      setMsg({ type:"ok", text:`Yedek geri yüklendi: ${result.playlists} playlist · ${result.profiles} profil · ${result.restored} ayar/kayıt · ${result.heavyPlaylists} playlist içerik dosyası.${warningText}\n\nUygulamayı yeniden başlatın.` });
+    } catch (e:any) { setMsg({type:"err", text:e?.message || "Yedek yüklenemedi"}); }
+    finally { setBusy(null); setProgress(""); }
   };
 
   return (
@@ -87,9 +99,16 @@ export default function BackupScreen() {
           </View>
           <Text style={[styles.cardTitle, { color: colors.onSurface }]}>Yedek Oluştur</Text>
           <Text style={[styles.cardText, { color: colors.onSurfaceSecondary }]}>
-            Playlist hesaplarıyla birlikte kanal/film/dizi içerik verileri, profiller, favoriler, tema ve PIN ayarları JSON dosyasına yedeklenir.
-            Yedek tamamlanmadan önce playlist dosyaları doğrulanır; eksik playlist varsa uygulama başarı mesajı vermez.
+            Hızlı yedek hesap/playlist tanımlarını katalogları tekrar indirilebilir biçimde saklar. Kişisel yedek profil/favori/ayarları saklar. Tam yedek kanal/film/dizi kataloglarını 200 kayıtlık parçalarla Room üzerinden akış halinde yazar; tek dev JSON string oluşturmaz.
           </Text>
+          <View style={styles.scopeRow}>
+            {([['quick','Hızlı'],['personal','Kişisel'],['full','Tam']] as const).map(([k,label]) => (
+              <TouchableOpacity key={k} testID={`backup-scope-${k}`} disabled={busy!==null} onPress={()=>setScope(k)} style={[styles.scopeBtn,{borderColor:scope===k?colors.brandPrimary:colors.border,backgroundColor:scope===k?colors.brandPrimary+'22':colors.surface}]}>
+                <Text style={{color:scope===k?colors.brandPrimary:colors.onSurface,fontWeight:FONT.weight.bold}}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {!!progress && <Text style={[styles.cardText,{color:colors.brandPrimary}]}>{progress}</Text>}
           <TouchableOpacity
             testID="do-export-btn"
             onPress={doExport}
@@ -103,6 +122,11 @@ export default function BackupScreen() {
               </>
             )}
           </TouchableOpacity>
+          {busy === "export" && scope === "full" && (
+            <TouchableOpacity testID="backup-cancel-btn" onPress={()=>exportAbortRef.current?.abort()} style={[styles.action,{borderWidth:1,borderColor:colors.error}]}>
+              <Text style={[styles.actionText,{color:colors.error}]}>Yedeklemeyi Durdur</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <View style={[styles.card, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
@@ -141,7 +165,7 @@ export default function BackupScreen() {
             <Text style={[styles.driveTitle, { color: colors.onSurface }]}>Google Drive Yedeği</Text>
             <Text style={[styles.driveSub, { color: colors.onSurfaceSecondary }]}>
               {isGoogleDriveConfigured()
-                ? "Yedeği doğrudan Google Drive'ınıza yükleyin."
+                ? "Hızlı (katalogsuz) yedeği doğrudan Google Drive'ınıza yükleyin."
                 : "Aktif etmek için Publish sonrası Deployment → Secrets bölümüne EXPO_PUBLIC_GOOGLE_CLIENT_ID ekleyin."}
             </Text>
           </View>
@@ -152,8 +176,8 @@ export default function BackupScreen() {
               setBusy("export"); setMsg(null);
               try {
                 const auth = await authenticateGoogleDrive();
-                const payload = await createBackup();
-                const json = JSON.stringify(payload, null, 2);
+                const payload = await createBackupMetadata("quick");
+                const json = JSON.stringify(payload);
                 const fileName = `kizilkan-player-elite-backup-${new Date().toISOString().slice(0, 10)}.json`;
                 const uploaded = await uploadJsonToDrive(auth.accessToken, fileName, json);
                 setMsg({ type: "ok", text: `Drive'a yüklendi: ${uploaded.name}` });
@@ -184,6 +208,8 @@ const styles = StyleSheet.create({
   iconWrap: { width: 56, height: 56, borderRadius: 28, borderWidth: 2, alignItems: "center", justifyContent: "center" },
   cardTitle: { fontSize: FONT.size.lg, fontWeight: FONT.weight.bold },
   cardText: { fontSize: FONT.size.sm, lineHeight: 20 },
+  scopeRow: { flexDirection:"row", gap:SPACING.sm, flexWrap:"wrap" },
+  scopeBtn: { paddingHorizontal:SPACING.md, height:40, borderRadius:RADIUS.pill, borderWidth:1, alignItems:"center", justifyContent:"center" },
   action: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: SPACING.sm,
     height: 52, borderRadius: RADIUS.pill,

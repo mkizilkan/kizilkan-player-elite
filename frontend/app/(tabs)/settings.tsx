@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import Constants from "expo-constants";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { THEMES, THEME_LABELS, ThemeName, SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { useProfiles } from "@/src/store/ProfileContext";
 import { useParental } from "@/src/store/ParentalContext";
 import { useLibrary } from "@/src/store/LibraryContext";
@@ -42,6 +43,7 @@ export default function SettingsTab() {
   const router = useRouter();
   const { colors, themeName, setTheme } = useTheme();
   const { playlists, activePlaylist, setActivePlaylist, removePlaylist, updatePlaylist } = usePlaylists();
+  const [nativeGroups, setNativeGroups] = useState<string[]>([]);
   const { profiles, activeProfile, switchProfile, removeProfile, setPin: setProfPin, verifyAdminPin, adminHasPin } = useProfiles();
   const { settings: parental, setPin, clearPin, toggleCategoryLock, setAdultHidden, verifyPinAsync, isCategoryLocked } = useParental();
   const [epgInput, setEpgInput] = useState<string>(activePlaylist?.epgUrl || "");
@@ -224,14 +226,32 @@ export default function SettingsTab() {
     );
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!activePlaylist?.id || !KizilkanNativeCore.available) { setNativeGroups([]); return; }
+    (async () => {
+      try {
+        const [live, vod, series] = await Promise.all([
+          KizilkanNativeCore.getCategories(activePlaylist.id, "live"),
+          KizilkanNativeCore.getCategories(activePlaylist.id, "vod"),
+          KizilkanNativeCore.getCategories(activePlaylist.id, "series"),
+        ]);
+        if (cancelled) return;
+        setNativeGroups(Array.from(new Set([...live, ...vod, ...series].map((x:any) => String(x?.name || "")).filter(Boolean))).sort());
+      } catch { if (!cancelled) setNativeGroups([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [activePlaylist?.id]);
+
   const uniqueGroups = React.useMemo(() => {
     if (!activePlaylist) return [] as string[];
+    if (nativeGroups.length) return nativeGroups;
     const s = new Set<string>();
     activePlaylist.channels.forEach(c => { if (c.group) s.add(c.group); });
     (activePlaylist.vod || []).forEach(c => { if (c.group) s.add(c.group); });
     (activePlaylist.series || []).forEach(c => { if (c.group) s.add(c.group); });
     return Array.from(s).sort();
-  }, [activePlaylist]);
+  }, [activePlaylist, nativeGroups]);
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top"]} testID="settings-screen">
@@ -731,15 +751,23 @@ export default function SettingsTab() {
               <Text style={[styles.rowTitle, { color: colors.onSurface }]}>+18 içeriği gizle</Text>
               <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>{parental.adultHidden ? "Gizli · Açmak için PIN gerekir" : "Görünür"}</Text>
             </View>
+            {/* v15.0.1 BUILD FIX: React Native CSS `order` desteklemez; knob/text sırası gerçek child sırasıyla korunur. */}
             <View
               accessibilityRole="switch"
               accessibilityState={{ checked: !!parental.adultHidden }}
               style={[styles.adultSwitch, { backgroundColor: parental.adultHidden ? colors.brandPrimary : colors.surface, borderColor: parental.adultHidden ? colors.brandPrimary : colors.border }]}
             >
-              <View style={[styles.adultSwitchKnob, parental.adultHidden ? styles.adultSwitchKnobOn : styles.adultSwitchKnobOff]} />
-              <Text style={[styles.adultSwitchText, { color: parental.adultHidden ? colors.onBrandPrimary : colors.onSurfaceSecondary }]}>
-                {parental.adultHidden ? "AÇIK" : "KAPALI"}
-              </Text>
+              {parental.adultHidden ? (
+                <>
+                  <Text style={[styles.adultSwitchText, { color: colors.onBrandPrimary }]}>AÇIK</Text>
+                  <View style={styles.adultSwitchKnob} />
+                </>
+              ) : (
+                <>
+                  <View style={styles.adultSwitchKnob} />
+                  <Text style={[styles.adultSwitchText, { color: colors.onSurfaceSecondary }]}>KAPALI</Text>
+                </>
+              )}
             </View>
           </FocusButton>
 
@@ -828,7 +856,7 @@ export default function SettingsTab() {
         {/* Player V2 — genel canlı tampon ayarı */}
         <SectionTitle text="OYNATICI" />
         <View style={{ paddingHorizontal: SPACING.lg }}>
-          <View style={[styles.linkBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, alignItems: "flex-start", flexDirection: "column" }]}>
+          <View style={[styles.settingsPanelCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm }}>
               <Ionicons name="speedometer-outline" size={20} color={colors.brandPrimary} />
               <View style={{ flex: 1 }}>
@@ -937,7 +965,7 @@ export default function SettingsTab() {
                       <Text style={{ color: typeColor, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>{playlistTypeLabel(pl)}</Text>
                     </View>
                     <Text style={[styles.plMeta, { color: colors.onSurfaceSecondary, flex: 1 }]} numberOfLines={1}>
-                      {pl.channels.length} kanal{pl.vod?.length ? ` • ${pl.vod.length} film` : ""}{pl.series?.length ? ` • ${pl.series.length} dizi` : ""}
+                      {pl.channelsCount ?? pl.channels.length} kanal{(pl.vodCount ?? pl.vod?.length ?? 0) ? ` • ${pl.vodCount ?? pl.vod?.length ?? 0} film` : ""}{(pl.seriesCount ?? pl.series?.length ?? 0) ? ` • ${pl.seriesCount ?? pl.series?.length ?? 0} dizi` : ""}
                     </Text>
                   </View>
                   {pl.serverCodeBinding && (
@@ -1659,7 +1687,10 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
   };
 
   const d = daysLeft();
-  const isActive = (acc.status || "").toLowerCase() === "active" || d === null || (d !== null && d > 0);
+  const normalizedStatus = String(acc.status ?? "").trim().toLowerCase();
+  const explicitlyActive = ["active", "1", "true", "enabled"].includes(normalizedStatus);
+  const explicitlyInactive = ["disabled", "blocked", "expired", "inactive", "0", "false"].includes(normalizedStatus);
+  const isActive = explicitlyActive ? true : explicitlyInactive ? false : (isXtream ? (d === null || d > 0) : true);
 
   return (
     <View style={[cardStyles.card, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]} testID="account-info-card">
@@ -1845,7 +1876,12 @@ const styles = StyleSheet.create({
   pAction: { padding: SPACING.xs },
   linkBtn: {
     flexDirection: "row", alignItems: "center", gap: SPACING.md,
-    height: 52, borderRadius: RADIUS.md, borderWidth: 1, paddingHorizontal: SPACING.lg,
+    minHeight: 56, borderRadius: RADIUS.md, borderWidth: 1, paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
+  },
+  settingsPanelCard: {
+    width: "100%", borderRadius: RADIUS.md, borderWidth: 1,
+    paddingHorizontal: SPACING.lg, paddingVertical: SPACING.lg,
+    alignItems: "stretch", marginBottom: SPACING.sm,
   },
   linkText: { flex: 1, fontSize: FONT.size.base, fontWeight: FONT.weight.semibold },
   rowCard: {
@@ -1856,7 +1892,7 @@ const styles = StyleSheet.create({
   rowSub: { fontSize: FONT.size.sm, marginTop: 2 },
   smallBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingHorizontal: SPACING.sm, paddingVertical: SPACING.xs },
   smallBtnText: { fontSize: FONT.size.sm, fontWeight: FONT.weight.bold },
-  plCard: { flexDirection: "row", alignItems: "center", padding: SPACING.md, borderRadius: RADIUS.md, borderWidth: 1.5, marginBottom: SPACING.sm },
+  plCard: { flexDirection: "row", alignItems: "center", minHeight: 88, padding: SPACING.md, borderRadius: RADIUS.md, borderWidth: 1.5, marginBottom: SPACING.sm },
   plName: { fontSize: FONT.size.lg, fontWeight: FONT.weight.bold },
   plMeta: { fontSize: FONT.size.sm, marginTop: 2 },
   addBtn: {
@@ -1885,7 +1921,5 @@ const styles = StyleSheet.create({
 
   adultSwitch: { minWidth: 88, height: 38, borderWidth: 1, borderRadius: 19, flexDirection: "row", alignItems: "center", paddingHorizontal: 6, gap: 5 },
   adultSwitchKnob: { width: 24, height: 24, borderRadius: 12, backgroundColor: "#fff" },
-  adultSwitchKnobOn: { order: 2 },
-  adultSwitchKnobOff: { order: 0 },
   adultSwitchText: { flex: 1, textAlign: "center", fontSize: 10, fontWeight: "800" },
 });

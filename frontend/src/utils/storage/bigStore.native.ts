@@ -37,6 +37,7 @@
  */
 
 import type { BigStore } from "./bigStore.types";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 // Legacy API — dinamik require ile: modül yoksa uygulama açılışta çökmesin,
 // sadece bu depo kullanılmaya çalışılınca anlaşılır hata versin.
@@ -99,9 +100,38 @@ export const bigStore: BigStore = {
    */
   async write(id: string, data: unknown): Promise<boolean> {
     try {
+      // v15.2.5: Native Core mevcutsa dev channels/vod/series objesini TEK
+      // JSON.stringify ile JS thread'de kilitleme. 500'lük parçalar native staging
+      // dosyasına akar; parçalar arasında event-loop'a kontrol verilir. Room ancak
+      // finish transaction başarıyla tamamlanınca canonical store olarak değişir.
+      if (KizilkanNativeCore.available) {
+        const heavy: any = data || {};
+        const groups: Array<["live" | "vod" | "series", any[]]> = [
+          ["live", Array.isArray(heavy.channels) ? heavy.channels : []],
+          ["vod", Array.isArray(heavy.vod) ? heavy.vod : []],
+          ["series", Array.isArray(heavy.series) ? heavy.series : []],
+        ];
+        const chunkSize = 500;
+        await KizilkanNativeCore.beginChunkedPlaylistImport(id);
+        try {
+          for (const [kind, items] of groups) {
+            for (let offset = 0; offset < items.length; offset += chunkSize) {
+              const jsonChunk = JSON.stringify(items.slice(offset, offset + chunkSize));
+              await KizilkanNativeCore.appendPlaylistChunk(id, kind, jsonChunk);
+              await new Promise<void>(resolve => setTimeout(resolve, 0));
+            }
+          }
+          const summary = await KizilkanNativeCore.finishChunkedPlaylistImport(id);
+          if (!summary?.roomIndexed) throw new Error("Room/SQLite chunk import doğrulanamadı");
+          return true;
+        } catch (nativeError) {
+          try { await KizilkanNativeCore.cancelChunkedPlaylistImport(id); } catch {}
+          throw nativeError;
+        }
+      }
+      const json = JSON.stringify(data);
       await ensureDir();
       const f = fs();
-      const json = JSON.stringify(data);
       await f.writeAsStringAsync(fileFor(id), json, {
         encoding: f.EncodingType?.UTF8 ?? "utf8",
       });
@@ -117,13 +147,41 @@ export const bigStore: BigStore = {
    */
   async read<T>(id: string, fallback: T): Promise<T> {
     try {
+      // v15.2.4 canonical rule: önce Room. Legacy dosya yalnız migration/fallback.
+      if (KizilkanNativeCore.available) {
+        try {
+          const hasIndex = await KizilkanNativeCore.hasPlaylistIndex(id);
+          if (hasIndex) {
+            const nativeValue = await KizilkanNativeCore.readPlaylistHeavy<T>(id);
+            if (nativeValue !== null && nativeValue !== undefined) {
+              // v15.2.8: Room snapshot gerçekten okunabiliyorsa önceki sürümlerden
+              // kalan duplicate legacy heavy dosyayı güvenle temizle.
+              try { await KizilkanNativeCore.deleteLegacyPlaylistFile(id); } catch {}
+              return nativeValue as T;
+            }
+          }
+        } catch (nativeError) {
+          console.warn("[bigStore.read] Native Core fallback:", id, nativeError);
+        }
+      }
       const f = fs();
       const path = fileFor(id);
       const info = await f.getInfoAsync(path);
       if (!info.exists) return fallback;
-      const raw = await f.readAsStringAsync(path, {
-        encoding: f.EncodingType?.UTF8 ?? "utf8",
-      });
+      // Eski kurulum: native warm/read çağrısı legacy dosyayı Room'a migrate edebilir.
+      if (KizilkanNativeCore.available) {
+        try {
+          await KizilkanNativeCore.warmPlaylist(id);
+          const nativeValue = await KizilkanNativeCore.readPlaylistHeavy<T>(id);
+          if (nativeValue !== null && nativeValue !== undefined) {
+            try { await KizilkanNativeCore.deleteLegacyPlaylistFile(id); } catch {}
+            return nativeValue as T;
+          }
+        } catch (migrationError) {
+          console.warn("[bigStore.read] legacy->Room migration fallback:", id, migrationError);
+        }
+      }
+      const raw = await f.readAsStringAsync(path, { encoding: f.EncodingType?.UTF8 ?? "utf8" });
       if (!raw) return fallback;
       return JSON.parse(raw) as T;
     } catch (e) {
@@ -141,6 +199,7 @@ export const bigStore: BigStore = {
       if (info.exists) {
         await f.deleteAsync(path, { idempotent: true });
       }
+      try { await KizilkanNativeCore.removePlaylistIndex(id); } catch {}
       return true;
     } catch (e) {
       console.warn("[bigStore.remove] başarısız:", id, e);
@@ -151,6 +210,7 @@ export const bigStore: BigStore = {
   /** Bir listenin dosyasının var olup olmadığını söyler. */
   async exists(id: string): Promise<boolean> {
     try {
+      if (KizilkanNativeCore.available && await KizilkanNativeCore.hasPlaylistIndex(id)) return true;
       const f = fs();
       const info = await f.getInfoAsync(fileFor(id));
       return !!info.exists;

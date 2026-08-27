@@ -1,0 +1,23 @@
+KIZILKAN PLAYER ELITE v15.2.11-RC1
+versionCode=150211
+
+P0 CONTRACTS
+- cancellable directory preparation: YES
+- native hard cancel: YES
+- terminal CANCELLED snapshot finalizer: YES
+- one-shot stop UI: YES
+- pause/resume runId scoped: YES
+- unified account round-robin scheduling: YES
+- explicit user selection before import: YES
+- same subscription DNS grouping: YES
+- user:pass quick parser: YES
+- profile PIN route gate retained: YES
+
+STATIC CHECKS
+- denetle.js x3: PASS
+- checkplayercore.js: PASS (run again before packaging)
+- whitespace/diff: PASS
+- TS/TSX parse: 107 files / 0 parse errors
+- quick parser functional test: 4/4 PASS
+- JSON/YAML parse: PASS
+- Android release build: NOT RUN IN THIS ENVIRONMENT

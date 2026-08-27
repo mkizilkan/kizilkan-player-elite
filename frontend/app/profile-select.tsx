@@ -21,13 +21,14 @@ import { isValidPinFormat, ensureRecoveryCode } from "@/src/utils/pin";
 import { FocusButton } from "@/src/components/FocusButton";
 import { useTv } from "@/src/store/TvContext";
 import { usePlaylists } from "@/src/store/PlaylistContext";
+import { haptic } from "@/src/utils/haptic"; // v15.0.1 BUILD FIX: eksik haptic bağını gerçek utility ile tamamla.
 
 export default function ProfileSelect() {
   // PDF Bulgu 5: TV'de klavye otomatik açılmamalı, odağı kaçırıyor.
   const { isTv } = useTv();
   const router = useRouter();
   const { colors } = useTheme();
-  const { profiles, activeProfile, switchProfile, addProfile, setPin, verifyPinAsync, verifyAdminPin, adminHasPin } = useProfiles();
+  const { profiles, activeProfile, switchProfile, addProfile, setPin, verifyPinAsync, verifyAdminPin, adminHasPin, authorizeProfileSession } = useProfiles();
   const { isLoading: playlistsLoading, loadedProfileId } = usePlaylists();
   const [pinFor, setPinFor] = useState<string | null>(null);
   const [pinInput, setPinInput] = useState("");
@@ -82,8 +83,9 @@ export default function ProfileSelect() {
       setPinError(null);
       return;
     }
-    setPendingNavigation({ profileId: pid, to: "/playlist-select" });
     await switchProfile(pid);
+    authorizeProfileSession(pid);
+    setPendingNavigation({ profileId: pid, to: "/playlist-select" });
   };
 
   const submitPin = async () => {
@@ -97,8 +99,9 @@ export default function ProfileSelect() {
         setPinError("Yanlış PIN");
         return;
       }
-      setPendingNavigation({ profileId: pinFor, to: "/playlist-select" });
       await switchProfile(pinFor);
+      authorizeProfileSession(pinFor);
+      setPendingNavigation({ profileId: pinFor, to: "/playlist-select" });
     } catch (e: any) {
       setPendingNavigation(null);
       setPinError(`PIN doğrulanamadı: ${String(e?.message || e)}`);
@@ -135,8 +138,9 @@ export default function ProfileSelect() {
         try { await ensureRecoveryCode(); } catch { /* kurtarma kodu kritik değil */ }
       }
       setNewPin("");
-      setPendingNavigation({ profileId: p.id, to: "/add-playlist" });
       await switchProfile(p.id);
+      authorizeProfileSession(p.id);
+      setPendingNavigation({ profileId: p.id, to: "/add-playlist" });
     } catch (e: any) {
       Alert.alert(
         "Profil oluşturulamadı",

@@ -1,0 +1,6 @@
+KIZILKAN PLAYER ELITE v15.2.24 RC3
+version=15.2.24
+versionCode=150224
+RC=3
+Signing/secret dosyalari ZIP'e dahil edilmeyecek.
+ZIP SHA256 paketleme sonrasinda hesaplanacak.

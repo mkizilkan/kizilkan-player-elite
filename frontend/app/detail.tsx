@@ -24,6 +24,7 @@ import { xtreamSeriesInfo as xtSeriesInfoLocal, xtreamVodInfo as xtVodInfoLocal 
 import { storage } from "@/src/utils/storage";
 import { haptic } from "@/src/utils/haptic";
 import { FocusButton } from "@/src/components/FocusButton";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 const EPISODE_URL_KEY = "kizilkan.episode.url.";
 
@@ -31,7 +32,13 @@ export default function DetailScreen() {
   const router = useRouter();
   const { colors } = useTheme();
   const params = useLocalSearchParams<{ type: string; id: string }>();
-  const { activePlaylist, addToRecent } = usePlaylists();
+  const { activePlaylist, addToRecent, ensureHeavyLoaded } = usePlaylists();
+
+  // v15.2.4: detay ekranı bütün VOD/Series koleksiyonunu hydrate etmez.
+  // Native Core varsa seçili öğeyi doğrudan Room'dan ister.
+  useEffect(() => {
+    if (!KizilkanNativeCore.available && activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
+  }, [activePlaylist?.id, ensureHeavyLoaded]);
   const { toggleWatchlist, inWatchlist, watchProgress, toggleHiddenItem, isItemHidden } = useLibrary();
   const { add: addDownload, isDownloaded, getLocalUri } = useDownloads();
 
@@ -42,6 +49,7 @@ export default function DetailScreen() {
   const [error, setError] = useState<string | null>(null);
   const [dlDialog, setDlDialog] = useState(false);
   const [dlDefaultTarget, setDlDefaultTarget] = useState<SaveTarget>("app");
+  const [nativeItem, setNativeItem] = useState<any>(null);
 
   // Kayıtlı varsayılan indirme hedefini oku.
   useEffect(() => {
@@ -51,31 +59,49 @@ export default function DetailScreen() {
   }, []);
 
   const isSeries = params.type === "series";
+  useEffect(() => {
+    if (!KizilkanNativeCore.available || !activePlaylist?.id || !params.id) { setNativeItem(null); return; }
+    let cancelled = false;
+    KizilkanNativeCore.getItem(activePlaylist.id, isSeries ? "series" : "vod", params.id)
+      .then(value => { if (!cancelled) setNativeItem(value); })
+      .catch(e => console.warn("[Detail] Room getItem failed", e));
+    return () => { cancelled = true; };
+  }, [activePlaylist?.id, params.id, isSeries]);
+
   const item = useMemo(() => {
+    if (KizilkanNativeCore.available) return nativeItem;
     if (!activePlaylist) return null;
     const list = isSeries ? (activePlaylist.series || []) : (activePlaylist.vod || []);
     return list.find(x => x.id === params.id) || null;
-  }, [activePlaylist, params.id, isSeries]);
+  }, [activePlaylist, params.id, isSeries, nativeItem]);
 
   useEffect(() => {
     if (!activePlaylist || !item) { setLoading(false); return; }
-    if (activePlaylist.source !== "xtream") { setLoading(false); return; }
-    setLoading(true);
-    const { xtreamServer, xtreamUsername, xtreamPassword } = activePlaylist;
-    const cred = { server: xtreamServer!, username: xtreamUsername!, password: xtreamPassword! };
-    // CİHAZ-İÇİ: Artık backend proxy (emergent) YOK. Doğrudan sağlayıcının
-    // Xtream API'sine bağlanıyoruz. Böylece dizi sezon/bölüm listesi ve film
-    // bilgisi backend olmadan gelir; "backend'e ulaşılamıyor" hatası biter.
-    const call = isSeries
-      ? xtSeriesInfoLocal(cred, String((item as any).series_id))
-      : xtVodInfoLocal(cred, String((item as any).stream_id));
-    call
-      .then((res: any) => {
+    if (activePlaylist.source === "xtream") {
+      setLoading(true);
+      const { xtreamServer, xtreamUsername, xtreamPassword } = activePlaylist;
+      const cred = { server: xtreamServer!, username: xtreamUsername!, password: xtreamPassword! };
+      const call = isSeries
+        ? xtSeriesInfoLocal(cred, String((item as any).series_id))
+        : xtVodInfoLocal(cred, String((item as any).stream_id));
+      call.then((res: any) => {
         setInfo(res.info || {});
         if (isSeries) setSeasons(res.seasons || []);
-      })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
+      }).catch(e => setError(e.message)).finally(() => setLoading(false));
+      return;
+    }
+    if (activePlaylist.source === "stalker" && isSeries && (item as any).series_id) {
+      setLoading(true);
+      (async () => {
+        const { stalkerLogin, stalkerSeriesInfo, normalizeMac } = await import("@/src/utils/stalker");
+        const cred = { portal: activePlaylist.stalkerPortal!, mac: normalizeMac(activePlaylist.stalkerMac || ""), serial: activePlaylist.stalkerSerial };
+        const { session } = await stalkerLogin(cred);
+        return stalkerSeriesInfo(cred, session, String((item as any).series_id));
+      })().then(res => { setInfo(res.info || {}); setSeasons(res.seasons || []); })
+        .catch(e => setError(e.message)).finally(() => setLoading(false));
+      return;
+    }
+    setLoading(false);
   }, [activePlaylist, item, isSeries]);
 
   if (!item) {
@@ -98,6 +124,26 @@ export default function DetailScreen() {
     (item as any).backdrop_path ||
     null;
 
+  const chooseResumePosition = async (progress: any): Promise<number> => {
+    const current = Math.max(0, Number(progress?.current || 0));
+    const duration = Math.max(0, Number(progress?.duration || 0));
+    // İlk birkaç saniye anlamlı bir "kaldığın yer" değildir.
+    if (current < 10 || duration <= 0 || current / duration >= 0.95) return 0;
+    const mm = Math.floor(current / 60);
+    const ss = Math.floor(current % 60);
+    return await new Promise<number>((resolve) => {
+      Alert.alert(
+        "İzlemeye nasıl devam edilsin?",
+        `Kayıtlı konum: ${mm}:${String(ss).padStart(2, "0")}`,
+        [
+          { text: "Baştan izle", style: "cancel", onPress: () => resolve(0) },
+          { text: "Kaldığın yerden devam et", onPress: () => resolve(current) },
+        ],
+        { cancelable: true, onDismiss: () => resolve(0) },
+      );
+    });
+  };
+
   const handlePlayVod = async () => {
     if (!("url" in item) || !item.url) return;
     // Store movie URL under a synthetic channel id and navigate to player
@@ -108,8 +154,9 @@ export default function DetailScreen() {
       group: "Film",
       container_ext: (item as any).container_ext || "mp4",
     }));
+    const resumeAt = await chooseResumePosition(watchProgress[item.id]);
     addToRecent(item.id);
-    router.push({ pathname: "/player", params: { id: syntheticId, ext: "true" } });
+    router.push({ pathname: "/player", params: { id: syntheticId, ext: "true", ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}) } });
   };
 
   const handlePlayEpisode = async (ep: any) => {
@@ -120,8 +167,9 @@ export default function DetailScreen() {
       group: "Dizi",
       container_ext: ep.container_ext || "mp4",
     }));
+    const resumeAt = await chooseResumePosition(watchProgress[String(ep.id)]);
     addToRecent(item.id);
-    router.push({ pathname: "/player", params: { id: syntheticId, ext: "true" } });
+    router.push({ pathname: "/player", params: { id: syntheticId, ext: "true", ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}) } });
   };
 
   return (
@@ -379,6 +427,21 @@ export default function DetailScreen() {
               {info?.country ? <DetailRow label="Ülke" value={info.country} /> : null}
               {info?.rating || (item as any).rating ? <DetailRow label="Puan" value={String(info?.rating || (item as any).rating)} /> : null}
             </View>
+
+            {isSeries && seasons.length === 0 && (item as any).url ? (
+              <FocusButton testID="play-series-direct-btn" onPress={async () => {
+                const syntheticId = `seriesplay-${item.id}`;
+                await storage.setItem(EPISODE_URL_KEY + syntheticId, JSON.stringify({
+                  url: (item as any).url, name: item.name, group: "Dizi", container_ext: (item as any).container_ext || "mp4",
+                }));
+                const resumeAt = await chooseResumePosition(watchProgress[item.id]);
+                addToRecent(item.id);
+                router.push({ pathname: "/player", params: { id: syntheticId, ext: "true", ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}) } });
+              }} focusable style={[styles.playBtn, { backgroundColor: colors.brandPrimary }]}>
+                <Ionicons name="play" size={20} color={colors.onBrandPrimary} />
+                <Text style={[styles.playBtnText, { color: colors.onBrandPrimary }]}>Oynat</Text>
+              </FocusButton>
+            ) : null}
 
             {isSeries && seasons.length > 0 && (
               <View style={{ marginTop: SPACING.xl }}>

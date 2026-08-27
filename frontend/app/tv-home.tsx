@@ -53,6 +53,8 @@ import { useFocusScroll } from "@/src/hooks/useFocusScroll";
 import { useRemoteKeys } from "@/src/hooks/useRemoteKeys";
 import { haptic } from "@/src/utils/haptic";
 import { normalize } from "@/src/utils/fuzzy";
+import { KizilkanNativeCore, type NativePlaylistSummary } from "@/modules/kizilkan-native-core";
+import { recordDiagnostic } from "@/src/utils/diagnostics";
 
 /**
  * TVFocusGuideView (v9.12.0) — yalnızca react-native-tvos fork'unda vardır.
@@ -105,14 +107,28 @@ export function TvHomeContent() {
    * çökertiyordu. Bu yüzden sütunlu arayüz hiç açılamıyordu.
    */
   const {
-    playlists, activePlaylist, setActivePlaylist, isLoading,
+    playlists, activePlaylist, setActivePlaylist, isLoading, ensureHeavyLoaded,
     favorites, toggleFavorite, isFavorite, addToRecent,
   } = usePlaylists();
+
+  // v15.2.24-RC3: Android/Room mevcutken TV ana ekranı ağır Live/VOD/Series
+  // dizilerini JS heap'e taşımamalı. Native Core olmayan platformlarda legacy davranış korunur.
+  useEffect(() => {
+    if (!KizilkanNativeCore.available && activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
+  }, [activePlaylist?.id, ensureHeavyLoaded]);
 
   const [tab, setTab] = useState<Tab>("live");
   const [selectedCat, setSelectedCat] = useState<string>(ALL);
   const [search, setSearch] = useState("");
   const [highlighted, setHighlighted] = useState<any>(null);
+  const [nativeSummary, setNativeSummary] = useState<NativePlaylistSummary | null>(null);
+  const [nativeCategories, setNativeCategories] = useState<Array<{ name: string; count: number }>>([]);
+  const [nativeItems, setNativeItems] = useState<any[]>([]);
+  const [nativeHasMore, setNativeHasMore] = useState(false);
+  const nativeOffsetRef = useRef(0);
+  const nativeLoadRef = useRef(false);
+  const nativeGenerationRef = useRef(0);
+  const nativeMode = !!activePlaylist?.id && KizilkanNativeCore.available;
 
   /**
    * EKRAN ODAK DURUMU (v9.7.0 — çift ses / şerit düzeltmesi)
@@ -151,18 +167,90 @@ export function TvHomeContent() {
    */
   const tooNarrow = screenW < 800;
 
-  /** Aktif listedeki, seçili sekmeye ait tüm öğeler. */
+  // v15.2.24-RC3 — TV Native paging. Bu ekran daha önce Room mevcutken bile
+  // bütün katalogları activePlaylist.* üzerinden istiyordu. Artık kategori/sayfa
+  // sorguları doğrudan Room'dan gelir; yalnız Native Core yoksa legacy diziler kullanılır.
+  useEffect(() => {
+    if (!nativeMode || !activePlaylist?.id) { setNativeSummary(null); setNativeCategories([]); return; }
+    let cancelled = false;
+    const id = activePlaylist.id;
+    (async () => {
+      try {
+        let summary = await KizilkanNativeCore.getPlaylistSummary(id);
+        if (!summary?.roomIndexed) summary = await KizilkanNativeCore.warmPlaylist(id);
+        if (!cancelled) setNativeSummary(summary || null);
+        const cats = await KizilkanNativeCore.getCategories(id, tab);
+        if (!cancelled) setNativeCategories(Array.isArray(cats) ? cats.map((x:any)=>({ name:String(x?.name || "Diğer"), count:Number(x?.count || 0) })) : []);
+      } catch (e:any) {
+        if (!cancelled) { setNativeSummary(null); setNativeCategories([]); }
+        void recordDiagnostic("database", "TV_HOME_NATIVE_SUMMARY_FAILED", { playlistId:id, kind:tab, error:String(e?.message || e) });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [nativeMode, activePlaylist?.id, tab]);
+
+  const loadNativePage = useCallback(async (reset: boolean) => {
+    if (!nativeMode || !activePlaylist?.id || nativeLoadRef.current) return;
+    const generation = reset ? ++nativeGenerationRef.current : nativeGenerationRef.current;
+    nativeLoadRef.current = true;
+    const id = activePlaylist.id;
+    try {
+      if (reset) { nativeOffsetRef.current = 0; setNativeItems([]); setNativeHasMore(false); }
+      let items:any[] = [];
+      let hasMore = false;
+      let nextOffset = nativeOffsetRef.current;
+      if (selectedCat === FAV) {
+        // Favoriler kullanıcı tarafından sınırlı bir kümedir; yalnız seçili playlistte
+        // var olan kimlikler native Room'dan alınır, tam katalog hydrate edilmez.
+        const favIds = Array.from(new Set((favorites || []).map(String)));
+        items = favIds.length ? await KizilkanNativeCore.getItemsByIds(id, tab, favIds) : [];
+        const q = normalize(search.trim());
+        if (q) items = items.filter((x:any) => normalize(String(x?.name || "")).includes(q) || normalize(String(x?.group || "")).includes(q));
+        hasMore = false;
+        nextOffset = items.length;
+      } else {
+        const page = await KizilkanNativeCore.queryItems<any>(id, tab, {
+          group: selectedCat === ALL ? "__all__" : selectedCat,
+          search: search.trim(),
+          offset: reset ? 0 : nativeOffsetRef.current,
+          limit: 250,
+        });
+        items = Array.isArray(page?.items) ? page.items : [];
+        hasMore = !!page?.hasMore;
+        nextOffset = Number(page?.offset || 0) + Number(page?.returned || items.length);
+      }
+      if (parental.adultHidden) items = items.filter((x:any)=>!isAdultContent(x));
+      if (generation !== nativeGenerationRef.current) return;
+      nativeOffsetRef.current = nextOffset;
+      setNativeItems(prev => reset ? items : [...prev, ...items.filter((x:any)=>!prev.some((p:any)=>String(p?.id)===String(x?.id)))]);
+      setNativeHasMore(hasMore);
+    } catch (e:any) {
+      if (generation === nativeGenerationRef.current) setNativeHasMore(false);
+      void recordDiagnostic("database", "TV_HOME_NATIVE_QUERY_FAILED", { playlistId:id, kind:tab, group:selectedCat, reset, error:String(e?.message || e) });
+    } finally {
+      nativeLoadRef.current = false;
+    }
+  }, [nativeMode, activePlaylist?.id, tab, selectedCat, search, favorites, parental.adultHidden]);
+
+  useEffect(() => {
+    if (!nativeMode) { setNativeItems([]); nativeOffsetRef.current = 0; return; }
+    void loadNativePage(true);
+  }, [nativeMode, activePlaylist?.id, tab, selectedCat, search, parental.adultHidden, loadNativePage]);
+
+  /** Aktif listedeki, seçili sekmeye ait görünür/native sayfa öğeleri. */
   const baseList = useMemo(() => {
     if (!activePlaylist) return [] as any[];
+    if (nativeMode) return nativeItems;
     let list:any[];
     if (tab === "vod") list = (activePlaylist.vod || []) as any[];
     else if (tab === "series") list = (activePlaylist.series || []) as any[];
     else list = (activePlaylist.channels || []) as any[];
     return parental.adultHidden ? list.filter(x => !isAdultContent(x)) : list;
-  }, [activePlaylist, tab, parental.adultHidden]);
+  }, [activePlaylist, nativeMode, nativeItems, tab, parental.adultHidden]);
 
   /** Kategoriler + sayıları (tek geçiş — büyük listelerde hızlı). */
   const categories = useMemo(() => {
+    if (nativeMode) return nativeCategories.slice().sort((a,b)=>a.name.localeCompare(b.name, "tr"));
     const counts = new Map<string, number>();
     for (const it of baseList) {
       const g = it.group || "Diğer";
@@ -171,7 +259,7 @@ export function TvHomeContent() {
     return Array.from(counts.entries())
       .sort((a, b) => a[0].localeCompare(b[0], "tr"))
       .map(([name, count]) => ({ name, count }));
-  }, [baseList]);
+  }, [baseList, nativeMode, nativeCategories]);
 
   /** Sol sütunun nihai içeriği (liste ağacı veya düz kategoriler). */
   /**
@@ -182,11 +270,11 @@ export function TvHomeContent() {
   const sectionRows = useMemo(() => {
     if (!activePlaylist) return [];
     return [
-      { key: "live" as Tab, label: "CANLI KANALLAR", count: activePlaylist.channels?.length || 0, icon: "tv" as const },
-      { key: "vod" as Tab, label: "FİLMLER", count: activePlaylist.vod?.length || 0, icon: "film" as const },
-      { key: "series" as Tab, label: "DİZİLER", count: activePlaylist.series?.length || 0, icon: "albums" as const },
+      { key: "live" as Tab, label: "CANLI KANALLAR", count: nativeMode ? Number(nativeSummary?.channels ?? activePlaylist.channelsCount ?? 0) : Number(activePlaylist.channelsCount ?? activePlaylist.channels?.length ?? 0), icon: "tv" as const },
+      { key: "vod" as Tab, label: "FİLMLER", count: nativeMode ? Number(nativeSummary?.vod ?? activePlaylist.vodCount ?? 0) : Number(activePlaylist.vodCount ?? activePlaylist.vod?.length ?? 0), icon: "film" as const },
+      { key: "series" as Tab, label: "DİZİLER", count: nativeMode ? Number(nativeSummary?.series ?? activePlaylist.seriesCount ?? 0) : Number(activePlaylist.seriesCount ?? activePlaylist.series?.length ?? 0), icon: "albums" as const },
     ];
-  }, [activePlaylist]);
+  }, [activePlaylist, nativeMode, nativeSummary]);
 
   const sideItems = useMemo<SideItem[]>(() => {
     const favCount = baseList.filter(x => (favorites || []).includes(x.id)).length;
@@ -218,7 +306,8 @@ export function TvHomeContent() {
         id: pl.id,
         name: pl.name,
         open,
-        count: pl.channelCount ?? (pl.channels?.length || 0),
+        // v15.0.1 BUILD FIX: Playlist runtime sözleşmesinde channelCount yok; yüklenmiş kanal dizisi tek gerçek kaynaktır.
+        count: pl.channels?.length || 0,
       });
       if (open && isActive) {
         out.push(...head);
@@ -237,6 +326,7 @@ export function TvHomeContent() {
 
   /** Orta sütun: seçili kategoriye ve aramaya göre süzülmüş kanallar. */
   const channels = useMemo(() => {
+    if (nativeMode) return baseList;
     let list = baseList;
     if (selectedCat === FAV) list = list.filter(x => (favorites || []).includes(x.id));
     else if (selectedCat !== ALL) list = list.filter(x => (x.group || "Diğer") === selectedCat);
@@ -247,7 +337,7 @@ export function TvHomeContent() {
       normalize(String(x.group || "")).includes(q)
     );
     return list;
-  }, [baseList, selectedCat, favorites, search]);
+  }, [baseList, selectedCat, favorites, search, nativeMode]);
 
   const openItem = useCallback((item: any) => {
     haptic.light();
@@ -507,6 +597,8 @@ export function TvHomeContent() {
               key="vodgrid"
               initialNumToRender={8}
               windowSize={5}
+              onEndReached={() => { if (nativeMode && nativeHasMore) void loadNativePage(false); }}
+              onEndReachedThreshold={0.45}
               contentContainerStyle={{ padding: 6 }}
               ListEmptyComponent={
                 <Text style={{ color: colors.onSurfaceSecondary, padding: SPACING.md }}>
@@ -545,6 +637,8 @@ export function TvHomeContent() {
             getItemLayout={(_, index) => ({ length: CHAN_ROW_H, offset: CHAN_ROW_H * index, index })}
             initialNumToRender={14}
             windowSize={9}
+            onEndReached={() => { if (nativeMode && nativeHasMore) void loadNativePage(false); }}
+            onEndReachedThreshold={0.45}
             ListEmptyComponent={
               <Text style={{ color: colors.onSurfaceSecondary, padding: SPACING.md }}>
                 {search ? "Sonuç yok" : "Bu kategoride içerik yok"}

@@ -1,0 +1,38 @@
+KIZILKAN PLAYER ELITE v15.1.0-RC1 — PAKET DOGRULAMA
+
+Uygulama: 15.1.0
+Android versionCode: 150100
+Player Engine: 1.0.0-RC
+libmpv-android: 1.0.0
+ZIP root: gpt-kizilkan-player-elite/
+
+GERCEKTEN CALISTIRILAN YEREL KONTROLLER:
+- denetle.js: 3/3 temiz
+- checkplayercore.js: temiz
+- package.json/app.json parse: temiz
+- build-apk.yml YAML parse: temiz
+- checkplayercore.js Node syntax: temiz
+- aktif MPV modulunde 0.5.1 dependency yok
+- eski static MPV runtime cagrilari yok
+- signing/private material pakette yok
+
+BU ORTAMDA CALISTIRILMAYAN / GITHUB'DA ZORUNLU:
+- npx tsc --noEmit (gercek node_modules dependency graph yok)
+- Expo clean prebuild
+- :mpv-player:compileReleaseKotlin (libmpv 1.0.0)
+- assembleRelease
+- APK signing/package/fingerprint/artifact
+- gercek cihaz 4K/ZAP/resume/seek/VLC/scan/UI testleri
+
+Basari simulasyonu yapilmaz. GitHub full build ve cihaz kabul testi sonucuna gore devam edilir.
+
+KRITIK DOSYA SHA-256:
+bbfc696c0e59173566ba0c619f10443d66b250a35a280efdd9db644f37dea887  frontend/src/player/PlayerHost.tsx
+de1ba75be6b952c6b1677699f122c1a4c6c41c8df5453798b24851f5a430c00f  frontend/modules/mpv-player/android/src/main/java/expo/modules/kizilkanmpv/KizilkanMpvView.kt
+941a4fe398e9fe864f9dd2808f6fec3bd620f396be6f3ebaf3b285e11d80f7b7  frontend/modules/mpv-player/android/build.gradle
+6d59ecfda614b915c7c55440a02c03627d7690e5193afd4046e2d0a4fe9afd5f  frontend/app/add-playlist.tsx
+140ada1c77964db35c4e34dc733e17d9dc8b64c5eed29ed676e3894f8b63d659  frontend/src/utils/serverCode.ts
+c7f7539ddda43df619855380ab7d4245251b1e0ad8c11f9d9d35a82d0c007e77  frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt
+e766a87163db08d30b8d6d415616688053546e9a37d7458f36b0dbf4c5fbfe10  frontend/app/(tabs)/settings.tsx
+0a46b1cd282d2822f467b89650be54ab2decf276a508549407236717fde7aef5  AI-PROJE-DEVIR-BAGLAM.md
+d95482aa32dbf9d0bb61d59974677548a5411e781a663caf9d376e18c5b379c7  tools/checkplayercore.js

@@ -98,8 +98,9 @@ export default function WelcomeScreen() {
     }
   };
 
+  // v15.0.1 BUILD FIX: ThemePalette ana zemin tokenı `surface`.
   return (
-    <SafeAreaView style={[styles.root, { backgroundColor: colors.background, padding: SPACING.lg + overscan }]}>
+    <SafeAreaView style={[styles.root, { backgroundColor: colors.surface, padding: SPACING.lg + overscan }]}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={{ paddingBottom: SPACING.xxxl }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           {/* Marka + adım göstergesi */}

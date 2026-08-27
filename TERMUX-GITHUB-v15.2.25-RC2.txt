@@ -1,0 +1,8 @@
+cd /sdcard/Download/gpt-kizilkan-player-elite || exit 1
+node tools/check-v15225-rc2-storage-contract.js || exit 1
+node tools/check-v15225-mag-architecture.js || exit 1
+node tools/check-v15225-rc2-typescript-build.js || exit 1
+node tools/denetle.js || exit 1
+git diff --cached --check || exit 1
+git commit -m "fix: KIZILKAN PLAYER ELITE v15.2.25 RC2 TypeScript storage contract" || exit 1
+git push -u origin verify-v15.2.25 || exit 1

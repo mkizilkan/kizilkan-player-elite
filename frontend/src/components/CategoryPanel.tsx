@@ -100,7 +100,8 @@ export function CategoryPanel({
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} statusBarTranslucent>
-      <View style={[styles.root, { backgroundColor: colors.background }]}>
+      {/* v15.0.1 BUILD FIX: panel zemini geçerli ThemePalette.surface tokenına bağlıdır. */}
+      <View style={[styles.root, { backgroundColor: colors.surface }]}>
         {/* Başlık */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <Text style={[styles.title, { color: colors.onSurface }]}>Kategoriler</Text>

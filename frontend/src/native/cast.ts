@@ -1,9 +1,10 @@
 /**
- * KIZILKAN PLAYER v9.12.2 — TypeScript resolver bridge for Google Cast.
+ * KIZILKAN PLAYER — Google Cast platform facade (TypeScript + non-Metro fallback)
+ * v15.0.2 BUILD FIX
  *
- * Metro selects cast.native.ts on Android/iOS and cast.web.ts on web.
- * TypeScript's default resolver does not understand React Native platform
- * suffixes, so this base file exposes the same public symbols for typecheck.
- * It is not the runtime implementation on native/web builds.
+ * Metro native'de cast.native.ts, web'de cast.web.ts dosyasını seçer. Bu dosya
+ * `tsc --noEmit` için suffix'siz çözümleme hedefidir ve native paketi require
+ * etmez; böylece web/static type-check zincirine native modül sızmaz.
  */
-export { GoogleCast, NativeCastButton } from "./cast.native";
+export const GoogleCast: any = null;
+export const NativeCastButton: any = null;

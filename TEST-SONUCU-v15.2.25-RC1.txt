@@ -1,0 +1,9 @@
+KIZILKAN PLAYER ELITE v15.2.25 RC1
+Kaynak tarafı doğrulama özeti:
+- v15.2.25 MAG architecture functional fixtures: PASS
+- v15.2.24 MAG single-flight fixture: PASS
+- v15.2.24 RC2 memory/native gate: PASS
+- v15.2.24 RC3 memory/telemetry gate: PASS
+- Master tools/denetle.js: PASS (container TypeScript 5.8.3 ile semantic/transpile kontrolleri)
+- JS gate zinciri: PASS
+- Android Kotlin gerçek APK build: kullanıcı Termux/Android build aşamasında doğrulanacak; bu dosyada yapılmış gibi iddia edilmez.

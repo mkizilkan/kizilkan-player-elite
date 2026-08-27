@@ -18,6 +18,7 @@ import {
 } from "./iptv";
 import type { Playlist } from "@/src/types";
 import { resolveBoundPanel } from "@/src/utils/serverCode";
+import { markTask } from "@/src/utils/diagnostics";
 
 export type RefreshPhase = "dns" | "login" | "content" | "save" | "done" | "error";
 export type RefreshProgress = {
@@ -38,6 +39,7 @@ export interface RefreshResult {
 }
 
 export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: RefreshProgress) => void): Promise<RefreshResult> {
+  const finishTask = markTask(`refresh:${pl.source}:${pl.name || pl.id}`, { playlistId: pl.id, source: pl.source });
   try {
     if (pl.source === "xtream") {
       if (!pl.xtreamServer || !pl.xtreamUsername || !pl.xtreamPassword) {
@@ -111,15 +113,19 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
         state.series = "done"; state.seriesCount = value.length; emit(); return value;
       }).catch((e) => { state.series = "error"; emit(); throw e; });
       const [chRes, vodRes, serRes] = await Promise.allSettled([livePromise, vodPromise, seriesPromise]);
-      const channels = chRes.status === "fulfilled" ? chRes.value : [];
-      const vod = vodRes.status === "fulfilled" ? vodRes.value : [];
-      const series = serRes.status === "fulfilled" ? serRes.value : [];
-
-      if (chRes.status === "rejected" && vod.length === 0 && series.length === 0) {
-        return { ok: false, message: "Sunucuya ulaşılamadı veya içerik alınamadı." };
+      if (chRes.status === "rejected" || vodRes.status === "rejected" || serRes.status === "rejected") {
+        const failed = [
+          chRes.status === "rejected" ? `Canlı: ${String(chRes.reason?.message || chRes.reason)}` : "",
+          vodRes.status === "rejected" ? `Film: ${String(vodRes.reason?.message || vodRes.reason)}` : "",
+          serRes.status === "rejected" ? `Dizi: ${String(serRes.reason?.message || serRes.reason)}` : "",
+        ].filter(Boolean).join(" · ");
+        return { ok: false, message: `Xtream yenileme eksik kaldı; mevcut playlist korunuyor. ${failed}` };
       }
+      const channels = chRes.value;
+      const vod = vodRes.value;
+      const series = serRes.value;
 
-      onProgress?.({ phase: "save", message: "İndirilen içerik kayda hazırlanıyor...", live: chRes.status === "fulfilled" ? "done" : "error", vod: vodRes.status === "fulfilled" ? "done" : "error", series: serRes.status === "fulfilled" ? "done" : "error", liveCount: channels.length, vodCount: vod.length, seriesCount: series.length });
+      onProgress?.({ phase: "save", message: "Üç katalog da doğrulandı; kayda hazırlanıyor...", live: "done", vod: "done", series: "done", liveCount: channels.length, vodCount: vod.length, seriesCount: series.length });
       return {
         ok: true,
         patch: {
@@ -161,7 +167,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       if (!pl.stalkerPortal || !pl.stalkerMac) {
         return { ok: false, message: "Portal/MAC bilgisi eksik." };
       }
-      const { stalkerLogin, stalkerChannels, normalizeMac } = await import("@/src/utils/stalker");
+      const { stalkerLogin, stalkerCatalog, normalizeMac } = await import("@/src/utils/stalker");
       const cred = {
         portal: pl.stalkerPortal,
         mac: normalizeMac(pl.stalkerMac),
@@ -169,15 +175,22 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       };
       onProgress?.({ phase: "login", message: "Portal doğrulanıyor..." });
       const { session } = await stalkerLogin(cred);
-      onProgress?.({ phase: "content", message: "Kanallar yükleniyor..." });
-      const channels = await stalkerChannels(cred, session);
-      if (channels.length === 0) {
-        return { ok: false, message: "Portal bağlandı ama kanal listesi boş." };
+      onProgress?.({ phase: "content", message: "MAG katalog hazırlığı başlatılıyor..." });
+      let catalog;
+      try {
+        catalog = await stalkerCatalog(cred, session, {
+          forceFresh: true,
+          onProgress: (progress) => onProgress?.({ phase: progress.stage === "final" ? "save" : "content", message: progress.message }),
+        });
+      }
+      catch (e: any) { return { ok: false, message: `MAG katalog yenileme başarısız: ${String(e?.message || e)}${session.profileError ? ` · Profil: ${session.profileError}` : ""}` }; }
+      if (catalog.channels.length + catalog.vod.length + catalog.series.length === 0) {
+        return { ok: false, message: `Portal bağlandı ama kanal listesi boş.${session.profileError ? ` Profil: ${session.profileError}` : ""}` };
       }
       return {
         ok: true,
-        patch: { channels },
-        message: `${channels.length} kanal güncellendi`,
+        patch: { channels: catalog.channels, vod: catalog.vod, series: catalog.series },
+        message: `${catalog.channels.length} kanal • ${catalog.vod.length} film • ${catalog.series.length} dizi güncellendi`,
       };
     }
 
@@ -186,5 +199,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
     const message = e?.message || "Yenileme başarısız.";
     onProgress?.({ phase: "error", message });
     return { ok: false, message };
+  } finally {
+    finishTask();
   }
 }

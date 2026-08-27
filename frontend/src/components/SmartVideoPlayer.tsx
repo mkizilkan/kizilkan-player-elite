@@ -19,7 +19,8 @@
 import React, { useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from "react";
 import { View, StyleSheet, Platform, Text } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
-import { VLCPlayer } from "@/src/native/vlc";
+// v15.0.1 BUILD FIX: legacy wrapper, güncel VlcPlayerView prop sözleşmesine bağlanır; component truthiness capability olarak kullanılmaz.
+import { VLCPlayer, VLC_AVAILABLE, type VlcFirstPlayInfo } from "@/src/native/vlc";
 
 export type Engine = "exo" | "vlc";
 
@@ -76,7 +77,7 @@ export const SmartVideoPlayer = forwardRef<SmartVideoRef, Props>(function SmartV
         const msg = String(event.error?.message || event.error);
         setExoError(msg);
         // Auto-fallback to VLC if the module is present
-        if (VLCPlayer && engine === "exo") {
+        if (VLC_AVAILABLE && engine === "exo") {
           console.log("[SmartVideoPlayer] ExoPlayer failed → switching to VLC:", msg);
           setEngine("vlc");
           // Also stop the exo player to free resources
@@ -116,7 +117,7 @@ export const SmartVideoPlayer = forwardRef<SmartVideoRef, Props>(function SmartV
   useImperativeHandle(ref, () => ({
     play: () => {
       if (engine === "exo") { try { exoPlayer?.play(); } catch {} }
-      else { try { vlcRef.current?.resume?.(); } catch {} }
+      else { try { vlcRef.current?.play?.(); } catch {} }
     },
     pause: () => {
       if (engine === "exo") { try { exoPlayer?.pause(); } catch {} }
@@ -142,22 +143,24 @@ export const SmartVideoPlayer = forwardRef<SmartVideoRef, Props>(function SmartV
     currentTime: () => engine === "exo" ? ((exoPlayer as any)?.currentTime || 0) : vlcCurrentTime,
     duration: () => engine === "exo" ? ((exoPlayer as any)?.duration || 0) : vlcDuration,
     currentEngine: () => engine,
-    switchToVLC: () => { if (VLCPlayer) setEngine("vlc"); },
+    switchToVLC: () => { if (VLC_AVAILABLE) setEngine("vlc"); },
     replay: () => {
       if (engine === "exo") {
         try { (exoPlayer as any).currentTime = 0; exoPlayer?.play(); } catch {}
       } else {
-        try { vlcRef.current?.seek?.(0); vlcRef.current?.resume?.(); } catch {}
+        try { vlcRef.current?.seek?.(0); vlcRef.current?.play?.(); } catch {}
       }
     },
   }), [engine, exoPlayer, vlcCurrentTime, vlcDuration]);
 
-  // VLC resize mode mapping
-  const vlcResize = useMemo(() => {
-    if (contentFit === "cover") return 3;   // AspectFill
-    if (contentFit === "fill") return 2;    // Fill
-    return 0;                                // Aspect fit
-  }, [contentFit]);
+  const vlcUserAgent = useMemo(() => {
+    const entry = Object.entries(headers || {}).find(([key]) => key.toLowerCase() === "user-agent");
+    return entry?.[1];
+  }, [headers]);
+  const vlcReferrer = useMemo(() => {
+    const entry = Object.entries(headers || {}).find(([key]) => ["referer", "referrer"].includes(key.toLowerCase()));
+    return entry?.[1];
+  }, [headers]);
 
   return (
     <View style={[styles.container, style]}>
@@ -172,29 +175,25 @@ export const SmartVideoPlayer = forwardRef<SmartVideoRef, Props>(function SmartV
         />
       )}
 
-      {engine === "vlc" && VLCPlayer && (
+      {engine === "vlc" && VLC_AVAILABLE && (
         <VLCPlayer
           ref={vlcRef}
-          source={{ uri: source, ...(headers ? { headers } : {}) }}
-          style={StyleSheet.absoluteFill}
-          autoplay={autoplay}
-          resizeMode={vlcResize}
+          uri={source}
+          userAgent={vlcUserAgent}
+          extraOptions={vlcReferrer ? [`--http-referrer=${vlcReferrer}`] : undefined}
+          paused={!autoplay}
+          contentFit={contentFit}
           rate={vlcRate}
-          onProgress={(e: any) => {
-            const cur = (e?.currentTime || 0) / 1000; // ms → sec
-            const dur = (e?.duration || 0) / 1000;
+          onTimeChanged={(ms: number) => {
+            const cur = Math.max(0, ms) / 1000;
             setVlcCurrentTime(cur);
-            if (dur > 0 && dur !== vlcDuration) setVlcDuration(dur);
-            if (dur > 0) onProgress?.(cur, dur);
+            if (vlcDuration > 0) onProgress?.(cur, vlcDuration);
           }}
-          onError={(e: any) => {
-            const msg = String(e?.errorString || e || "VLC oynatma hatası");
-            onError?.(msg);
-          }}
-          onLoad={(e: any) => {
-            const dur = (e?.duration || 0) / 1000;
+          onError={(msg: string) => onError?.(msg || "VLC oynatma hatası")}
+          onFirstPlay={(info: VlcFirstPlayInfo) => {
+            const dur = Math.max(0, info.length || 0) / 1000;
             setVlcDuration(dur);
-            onLoad?.({ duration: dur });
+            onLoad?.({ duration: dur, width: info.width, height: info.height });
             onPlayingChange?.(true);
           }}
           onPlaying={() => onPlayingChange?.(true)}

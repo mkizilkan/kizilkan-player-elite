@@ -1,5 +1,5 @@
-import React, { useMemo } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, Alert } from "react-native";
+import React, { useEffect, useMemo, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, Image, Alert, Platform } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -9,11 +9,85 @@ import { usePlaylists } from "@/src/store/PlaylistContext";
 import { useLibrary } from "@/src/store/LibraryContext";
 import { useProfiles } from "@/src/store/ProfileContext";
 import { FocusButton } from "@/src/components/FocusButton";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
+import { PanelScan } from "@/modules/panel-scan";
+import { clearDiagnostics, exportDiagnosticReport, loadDiagnostics, summarizePlayerDiagnostics, type DiagnosticEvent } from "@/src/utils/diagnostics";
 
 export default function StatsScreen() {
   const router = useRouter();
   const { colors } = useTheme();
-  const { activePlaylist, favorites, recent, clearRecent } = usePlaylists();
+  const { activePlaylist, favorites, recent, clearRecent, ensureHeavyLoaded } = usePlaylists();
+  const nativeData = Platform.OS === "android" && KizilkanNativeCore.available;
+  const [nativeFavs, setNativeFavs] = useState<any[]>([]);
+  const [nativeRecent, setNativeRecent] = useState<any[]>([]);
+  const [storageFootprint, setStorageFootprint] = useState<Record<string, any>>({});
+  const [runtimeMemory, setRuntimeMemory] = useState<Record<string, any>>({});
+  const [lastExitInfo, setLastExitInfo] = useState<Record<string, any>>({});
+  const [exitHistory, setExitHistory] = useState<Record<string, any>[]>([]);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticEvent[]>([]);
+  const [scanDiagnostics, setScanDiagnostics] = useState<any[]>([]);
+  const [lastScanCrash, setLastScanCrash] = useState<Record<string, any>>({});
+  const [blackBoxHealth, setBlackBoxHealth] = useState<Record<string, any>>({});
+
+  // v15.2.4: İstatistik ekranı yalnız birkaç favori/son kanal için artık
+  // on binlerce kanalı hydrate etmez. Native Core varsa ID bazlı Room sorgusu.
+  useEffect(() => {
+    let cancelled = false;
+    if (!activePlaylist?.id) { setNativeFavs([]); setNativeRecent([]); return; }
+    if (!nativeData) { void ensureHeavyLoaded(activePlaylist.id); return; }
+    void (async () => {
+      const [favRows, recentRows, footprint] = await Promise.all([
+        KizilkanNativeCore.getItemsByIds(activePlaylist.id, "live", favorites.slice(0, 5)),
+        KizilkanNativeCore.getItemsByIds(activePlaylist.id, "live", recent.slice(0, 5)),
+        KizilkanNativeCore.getStorageFootprint(),
+      ]);
+      if (cancelled) return;
+      const orderBy = (ids: string[], rows: any[]) => {
+        const map = new Map(rows.map((r: any) => [String(r.id), r]));
+        return ids.map(id => map.get(id)).filter(Boolean);
+      };
+      setNativeFavs(orderBy(favorites.slice(0, 5), favRows));
+      setNativeRecent(orderBy(recent.slice(0, 5), recentRows));
+      setStorageFootprint(footprint || {});
+      setRuntimeMemory(KizilkanNativeCore.getRuntimeMemory());
+      setLastExitInfo(KizilkanNativeCore.getLastExitInfo());
+      setExitHistory(KizilkanNativeCore.getExitHistory(5));
+      setScanDiagnostics(PanelScan.getDiagnosticEvents().slice(0, 12));
+      setLastScanCrash(PanelScan.getLastCrash());
+      setBlackBoxHealth(await KizilkanNativeCore.getBlackBoxHealth?.() || {});
+      setDiagnostics(await loadDiagnostics(120));
+    })();
+    return () => { cancelled = true; };
+  }, [activePlaylist?.id, ensureHeavyLoaded, favorites, nativeData, recent]);
+
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      const d = await loadDiagnostics(120);
+      if (!live) return;
+      setDiagnostics(d);
+      if (nativeData) {
+        setRuntimeMemory(KizilkanNativeCore.getRuntimeMemory());
+        setLastExitInfo(KizilkanNativeCore.getLastExitInfo());
+        setExitHistory(KizilkanNativeCore.getExitHistory(5));
+        setScanDiagnostics(PanelScan.getDiagnosticEvents().slice(0, 12));
+        setLastScanCrash(PanelScan.getLastCrash());
+        setBlackBoxHealth(await KizilkanNativeCore.getBlackBoxHealth?.() || {});
+      }
+    })();
+    return () => { live = false; };
+  }, [nativeData]);
+
+  const playerDiag = useMemo(() => summarizePlayerDiagnostics(diagnostics), [diagnostics]);
+  const exitScanCorrelation = useMemo(() => {
+    const exitAt = Number(lastExitInfo.timestamp || 0);
+    if (!exitAt) return null;
+    return scanDiagnostics.find((x:any) => {
+      const at = Number(x?.at || 0);
+      return at > 0 && at <= exitAt && exitAt - at <= 120000;
+    }) || null;
+  }, [lastExitInfo.timestamp, scanDiagnostics]);
+
   const { watchProgress, watchlist, clearAllProgress } = useLibrary();
   const { activeProfile } = useProfiles();
 
@@ -26,13 +100,14 @@ export default function StatsScreen() {
     // top favorites (by name)
     const topFavs = (() => {
       if (!activePlaylist) return [];
+      if (nativeData) return nativeFavs;
       const map = new Map(activePlaylist.channels.map(c => [c.id, c]));
       return favorites.slice(0, 5).map(id => map.get(id)).filter(Boolean) as any[];
     })();
 
-    // top recent (also viewed count intrinsically)
     const topRecent = (() => {
       if (!activePlaylist) return [];
+      if (nativeData) return nativeRecent;
       const map = new Map(activePlaylist.channels.map(c => [c.id, c]));
       return recent.slice(0, 5).map(id => map.get(id)).filter(Boolean) as any[];
     })();
@@ -48,7 +123,7 @@ export default function StatsScreen() {
       topFavs,
       topRecent,
     };
-  }, [activePlaylist, favorites, recent, watchProgress, watchlist]);
+  }, [activePlaylist, favorites, nativeData, nativeFavs, nativeRecent, recent, watchProgress, watchlist]);
 
   const StatCard = ({ icon, label, value, color }: { icon: any; label: string; value: string | number; color: string }) => (
     <View style={[styles.statCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
@@ -77,7 +152,7 @@ export default function StatsScreen() {
           onPress={() => {
             Alert.alert(
               "İstatistikleri sıfırla",
-              "İzleme süresi, devam eden içerikler ve son izlenenler SİLİNECEK.\n\n" +
+              "İzleme süresi, devam eden içerikler, son izlenenler ve tüm Flight Recorder/tanılama kayıtları SİLİNECEK.\n\n" +
                 "Favorileriniz, izleme listeniz ve gruplarınız SİLİNMEZ.",
               [
                 { text: "Vazgeç", style: "cancel" },
@@ -85,8 +160,15 @@ export default function StatsScreen() {
                   text: "Sıfırla",
                   style: "destructive",
                   onPress: async () => {
-                    await Promise.all([clearAllProgress(), clearRecent()]);
-                    Alert.alert("Tamam", "İstatistikler ve izleme geçmişi sıfırlandı.");
+                    await Promise.all([clearAllProgress(), clearRecent(), clearDiagnostics()]);
+                    if (PanelScan.available) PanelScan.clearDiagnostics();
+                    setDiagnostics([]);
+                    setScanDiagnostics([]);
+                    setLastScanCrash({});
+                    setLastExitInfo({});
+                    setExitHistory([]);
+                    setBlackBoxHealth(nativeData ? (await KizilkanNativeCore.getBlackBoxHealth?.() || {}) : {});
+                    Alert.alert("Tamam", "İstatistikler, izleme geçmişi, scan tanıları ve Flight Recorder kayıtları tamamen sıfırlandı. Yeni kayıtlar bu andan itibaren temiz bir dönem olarak tutulacak.");
                   },
                 },
               ]
@@ -116,9 +198,9 @@ export default function StatsScreen() {
           <StatCard icon="play-circle" label="Devam Eden" value={stats.inProgressCount} color="#7C4DFF" />
           <StatCard icon="heart" label="Favori Kanal" value={stats.favoritesCount} color="#E91E63" />
           <StatCard icon="bookmark" label="İzleyeceğim" value={stats.watchlistCount} color="#00C853" />
-          <StatCard icon="tv" label="Toplam Kanal" value={activePlaylist?.channels.length || 0} color="#2196F3" />
-          <StatCard icon="film" label="Toplam Film" value={activePlaylist?.vod?.length || 0} color="#FF6D00" />
-          <StatCard icon="albums" label="Toplam Dizi" value={activePlaylist?.series?.length || 0} color="#00BCD4" />
+          <StatCard icon="tv" label="Toplam Kanal" value={activePlaylist?.channelsCount ?? activePlaylist?.channels.length ?? 0} color="#2196F3" />
+          <StatCard icon="film" label="Toplam Film" value={activePlaylist?.vodCount ?? activePlaylist?.vod?.length ?? 0} color="#FF6D00" />
+          <StatCard icon="albums" label="Toplam Dizi" value={activePlaylist?.seriesCount ?? activePlaylist?.series?.length ?? 0} color="#00BCD4" />
           <StatCard icon="hourglass" label="Son İzlenen" value={stats.recentCount} color="#9E9E9E" />
         </View>
 
@@ -152,12 +234,88 @@ export default function StatsScreen() {
           </>
         )}
 
+        {nativeData && (Object.keys(storageFootprint).length > 0 || Object.keys(runtimeMemory).length > 0) && (
+          <>
+            <SectionTitle icon="hardware-chip" label="Native Core Telemetri" />
+            <View style={[styles.telemetry, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+              <Text style={[styles.telemetryLine, { color: colors.onSurface }]}>RAM PSS: {formatKb(runtimeMemory.totalPssKb)}</Text>
+              <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>Native: {formatKb(runtimeMemory.nativePssKb)} · ART/Java: {formatKb(runtimeMemory.dalvikPssKb)}</Text>
+              <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>Room DB: {formatBytes(storageFootprint.databaseBytes)} · WAL: {formatBytes(storageFootprint.walBytes)}</Text>
+              <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>Legacy playlist: {formatBytes(storageFootprint.legacyPlaylistBytes)} ({storageFootprint.legacyPlaylistFiles || 0} dosya)</Text>
+              <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>Sistem RAM: {formatBytes(runtimeMemory.systemAvailMemBytes)} boş / {formatBytes(runtimeMemory.systemTotalMemBytes)} · Düşük bellek: {runtimeMemory.systemLowMemory ? "EVET" : "Hayır"}</Text>
+              {lastExitInfo.reasonLabel ? (
+                <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>Son süreç çıkışı: {String(lastExitInfo.reasonLabel)} · {lastExitInfo.description ? String(lastExitInfo.description) : `kod ${String(lastExitInfo.reason)}`} · status {String(lastExitInfo.status ?? "—")} · PSS {formatKb(lastExitInfo.pssKb)} · RSS {formatKb(lastExitInfo.rssKb)} · {formatDate(lastExitInfo.timestamp)}</Text>
+              ) : null}
+              {lastExitInfo.processStateSummary ? <Text style={[styles.telemetryLine, { color: colors.brandPrimary }]}>Ölüm öncesi durum: {String(lastExitInfo.processStateSummary)}</Text> : null}
+              {exitHistory.slice(1,5).map((x:any, i:number) => (
+                <Text key={`exit-${i}`} style={[styles.telemetryLine, { color: colors.onSurfaceTertiary }]}>Önceki {i+2}: {String(x.reasonLabel || x.reason)} · {formatDate(x.timestamp)} · PSS {formatKb(x.pssKb)}{x.traceAvailable ? " · trace var" : ""}</Text>
+              ))}
+              {exitScanCorrelation ? <Text style={[styles.telemetryLine, { color: colors.brandPrimary }]}>Çıkıştan hemen önce tarama: {String(exitScanCorrelation.state || "?")} · {Number(exitScanCorrelation.tested||0)}/{Number(exitScanCorrelation.total||0)} · PSS {formatKb(exitScanCorrelation.pssKb)}</Text> : null}
+              {blackBoxHealth.initialized ? <Text style={[styles.telemetryLine, { color: colors.brandPrimary }]}>Flight Recorder v{String(blackBoxHealth.schemaVersion || 3)}: {Number(blackBoxHealth.dbEvents || 0)} olay · kritik {Number(blackBoxHealth.dbCriticalEvents || 0)} · ölüm journalı {formatBytes(blackBoxHealth.criticalJournalBytes)} · ANR watchdog {blackBoxHealth.watchdogActive ? "AKTİF" : "PASİF"}</Text> : null}
+              <Text style={[styles.telemetryLine, { color: colors.onSurfaceTertiary }]}>Thread: {String(runtimeMemory.threadCount ?? "—")} · FD: {String(runtimeMemory.fdCount ?? "—")} · Uptime: {runtimeMemory.uptimeMs ? `${Math.round(Number(runtimeMemory.uptimeMs)/1000)} sn` : "—"}</Text>
+            </View>
+          </>
+        )}
+
+        <SectionTitle icon="speedometer" label="Player Tanılama" />
+        <View style={[styles.telemetry, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+          <Text style={[styles.telemetryLine, { color: colors.onSurface }]}>İlk görüntü örneği: {playerDiag.firstFrameCount} · Ortalama: {playerDiag.avgFirstFrameMs ? `${playerDiag.avgFirstFrameMs} ms` : "—"}</Text>
+          <Text style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>MAG çözümleme ort.: {playerDiag.avgStalkerResolveMs ? `${playerDiag.avgStalkerResolveMs} ms` : "—"} · Player hatası: {playerDiag.errors} · Rebuffer: {playerDiag.rebuffers}</Text>
+          {diagnostics.filter(x => x.domain === "player").slice(0,6).map((x) => (
+            <Text key={x.id} style={[styles.telemetryLine, { color: colors.onSurfaceTertiary }]}>{formatTime(x.at)} · {x.event}{x.data?.totalFromSelectionMs ? ` · ${x.data.totalFromSelectionMs} ms` : ""}{x.data?.errorKind ? ` · ${x.data.errorKind}` : ""}</Text>
+          ))}
+        </View>
+
+        <SectionTitle icon="pulse" label="Tarama Tanılama" />
+        <View style={[styles.telemetry, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+          {lastScanCrash?.exception ? <Text style={[styles.telemetryLine, { color: colors.error }]}>Son Java crash: {String(lastScanCrash.exception)} · {String(lastScanCrash.thread || "?")} · PSS {formatKb(lastScanCrash.pssKb)}{lastScanCrash.message ? ` · ${String(lastScanCrash.message)}` : ""}</Text> : null}
+          {scanDiagnostics.length ? scanDiagnostics.slice(0,6).map((x:any, i:number) => (
+            <Text key={`scan-${i}`} style={[styles.telemetryLine, { color: colors.onSurfaceSecondary }]}>{formatTime(x.at)} · {x.state || "?"} · {x.tested || 0}/{x.total || 0} · PSS {formatKb(x.pssKb)}{x.error ? ` · ${x.error}` : ""}</Text>
+          )) : <Text style={[styles.telemetryLine, { color: colors.onSurfaceTertiary }]}>Henüz kalıcı tarama olayı yok.</Text>}
+        </View>
+
+        <View style={{ flexDirection: "row", gap: SPACING.sm }}>
+          <FocusButton testID="diagnostics-share-btn" style={[styles.diagButton, { backgroundColor: colors.brandPrimary }]} onPress={async () => {
+            try { await exportDiagnosticReport({ runtimeMemory, storageFootprint, exitHistory, scanDiagnostics, lastScanCrash, blackBoxHealth }); }
+            catch (e:any) { Alert.alert("Tanılama", e?.message || "Rapor oluşturulamadı."); }
+          }}>
+            <Ionicons name="share-social" size={18} color="#fff" /><Text style={styles.diagButtonText}>Flight Recorder Raporunu Paylaş</Text>
+          </FocusButton>
+          <FocusButton testID="diagnostics-clear-btn" style={[styles.diagButton, { borderWidth:1, borderColor: colors.border }]} onPress={() => Alert.alert("Tanılama geçmişi", "Player, uygulama ve tarama tanılama geçmişinin tamamı silinsin mi?", [{text:"Vazgeç",style:"cancel"},{text:"Sil",style:"destructive",onPress:async()=>{
+            await clearDiagnostics();
+            if (PanelScan.available) PanelScan.clearDiagnostics();
+            setDiagnostics([]);
+            setScanDiagnostics([]);
+            setLastScanCrash({});
+            setLastExitInfo({});
+            setExitHistory([]);
+            setBlackBoxHealth(nativeData ? (await KizilkanNativeCore.getBlackBoxHealth?.() || {}) : {});
+          }}])}>
+            <Ionicons name="trash-outline" size={18} color={colors.onSurface} /><Text style={[styles.diagButtonText,{color:colors.onSurface}]}>Geçmişi Temizle</Text>
+          </FocusButton>
+        </View>
+
         <Text style={[styles.footer, { color: colors.onSurfaceTertiary }]}>
           İstatistikler sadece cihazınızda saklanır. Profile göre değişir.
         </Text>
       </ScrollView>
     </SafeAreaView>
   );
+}
+
+function formatTime(value: any): string { const n=Number(value||0); if(!n) return "—"; try{return new Date(n).toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});}catch{return "—";} }
+function formatDate(value: any): string { const n=Number(value||0); if(!n) return "—"; try{return new Date(n).toLocaleString("tr-TR");}catch{return "—";} }
+
+function formatBytes(value: any): string {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return "0 MB";
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatKb(value: any): string {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return "0 MB";
+  return `${(n / 1024).toFixed(1)} MB`;
 }
 
 function SectionTitle({ icon, label }: { icon: any; label: string }) {
@@ -200,5 +358,9 @@ const styles = StyleSheet.create({
   rank: { fontSize: FONT.size.lg, fontWeight: FONT.weight.black, width: 40, textAlign: "center" },
   chLogo: { width: 36, height: 36, borderRadius: RADIUS.sm, overflow: "hidden", alignItems: "center", justifyContent: "center" },
   chName: { flex: 1, fontSize: FONT.size.base, fontWeight: FONT.weight.semibold },
+  telemetry: { padding: SPACING.md, borderWidth: 1, borderRadius: RADIUS.md, gap: 5 },
+  telemetryLine: { fontSize: FONT.size.sm },
+  diagButton: { flex: 1, minHeight: 46, borderRadius: RADIUS.md, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 7, paddingHorizontal: SPACING.sm },
+  diagButtonText: { color: "#fff", fontWeight: FONT.weight.bold, fontSize: FONT.size.xs, textAlign: "center" },
   footer: { textAlign: "center", fontSize: FONT.size.xs, marginTop: SPACING.lg },
 });

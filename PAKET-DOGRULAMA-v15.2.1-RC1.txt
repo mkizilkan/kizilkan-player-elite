@@ -1,0 +1,36 @@
+KIZILKAN PLAYER ELITE v15.2.1-RC1 — PAKET DOGRULAMA
+
+Hedef: Room/SQLite Native Data Core Phase 1
+Sürüm: 15.2.1
+versionCode: 150201
+Room: androidx.room 2.8.3
+MPV: dev.jdtech.mpv:libmpv:1.0.0
+ZIP kökü: gpt-kizilkan-player-elite/
+
+Zorunlu kontroller:
+- denetle.js üç tur
+- TS/TSX parse/transpile
+- JSON/YAML/JS syntax
+- Room build.gradle KSP/runtime/compiler tokenları
+- Room entity/DAO/database/native bridge hard gate
+- signing/private material yok
+- ZIP bütünlük
+
+Gerçek GitHub tsc/KSP/Kotlin/Gradle/APK build bu ortamda yapılmış sayılmaz; CI ile kanıtlanacaktır.
+
+BU OTURUMDA GERCEKTEN CALISTIRILANLAR:
+- denetle.js: 3/3 temiz
+- checkplayercore.js: temiz
+- TS/TSX parse: 0 syntax error
+- package.json/app.json parse: OK
+- build-apk.yml YAML parse: OK
+- checkplayercore.js node syntax: OK
+- Room/KSP/schema/paging token hard checks: OK
+- signing/private material taraması: temiz
+
+BU OTURUMDA CALISTIRILAMAYANLAR:
+- npx tsc --noEmit (node_modules yok)
+- Expo prebuild
+- Room KSP/Kotlin Gradle compile
+- APK assemble/signing
+Bunlar GitHub Actions ile kanıtlanacaktır.

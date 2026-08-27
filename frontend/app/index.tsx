@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { View, StyleSheet, Platform, useWindowDimensions } from "react-native";
 import { useRouter } from "expo-router";
-import { storage } from "@/src/utils/storage";
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, withSequence, Easing, withDelay,
 } from "react-native-reanimated";
@@ -10,6 +9,7 @@ import { usePlaylists } from "@/src/store/PlaylistContext";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { useProfiles } from "@/src/store/ProfileContext";
 import { KizilkanLogo } from "@/src/components/KizilkanLogo";
+import { getRecentResumePath } from "@/src/utils/appSession";
 
 export default function Index() {
   const router = useRouter();
@@ -20,7 +20,7 @@ export default function Index() {
   const ambientSize = Math.max(160, Math.min(safeDiameter / 1.3, Platform.isTV ? 440 : 300));
   const { isLoading, playlists } = usePlaylists();
   const { colors, isLoading: themeLoading } = useTheme();
-  const { profiles, isLoading: profilesLoading } = useProfiles();
+  const { profiles, activeProfile, isLoading: profilesLoading } = useProfiles();
 
   const scale = useSharedValue(0.6);
   const opacity = useSharedValue(0);
@@ -45,6 +45,11 @@ export default function Index() {
     if (isLoading || themeLoading || profilesLoading) return;
     const t = setTimeout(async () => {
       /**
+       * v15.2.3 FAST START / SESSION RESTORE
+       * Kısa background/process recreation sonrası kullanıcıyı tekrar profil
+       * seçimine atma. Son güvenli route 15 dakika içinde ise restore edilir.
+       * İlk kurulum ve gerçekten uzun cold-start davranışı eski güvenli akışta.
+       *
        * TEK YÖNLENDİRİCİ (v6.0.0) — akış baştan tutarlı kuruldu.
        *
        * Eski akışta profile-setup / onboarding / add-playlist gevşek bağlıydı
@@ -61,18 +66,23 @@ export default function Index() {
       const hasPlaylist = playlists.length > 0;
 
       if (!hasProfile) {
-        // Uygulama ilk kez açılıyor (veya profiller sıfırlandı).
         router.replace("/welcome");
+      } else if (profiles.length > 1 || activeProfile.hasPin) {
+        // v15.2.10 P0 SECURITY: process yeniden oluştuğunda aktif profil bilgisi
+        // "yetkilendirildi" anlamına gelmez. Çok profil veya PIN varsa her cold
+        // process başlangıcında profil/PIN kapısı zorunludur; son route restore
+        // bu kapıyı asla atlayamaz.
+        router.replace("/profile-select");
       } else if (!hasPlaylist) {
-        // Profil var ama hiç liste yok -> liste ekleme adımı.
         router.replace("/onboarding");
       } else {
-        // Her şey hazır -> "Kim izliyor?" ekranı.
-        router.replace("/profile-select");
+        // Tek ve PIN'siz profilde kısa process recreation konforu korunur.
+        const resume = await getRecentResumePath();
+        router.replace((resume || "/profile-select") as any);
       }
-    }, 1200);
+    }, 80);
     return () => clearTimeout(t);
-  }, [isLoading, themeLoading, profilesLoading, profiles.length, playlists.length, router]);
+  }, [isLoading, themeLoading, profilesLoading, profiles.length, activeProfile.hasPin, playlists.length, router]);
 
   const logoStyle = useAnimatedStyle(() => ({
     opacity: opacity.value,

@@ -1,0 +1,38 @@
+# KIZILKAN PLAYER ELITE v15.2.16-RC1 — Termux GitHub güvenli aktarım
+cd /sdcard/Download
+rm -rf kizilkan-v15.2.16-stage
+mkdir -p kizilkan-v15.2.16-stage
+unzip -q KIZILKAN-PLAYER-ELITE-v15.2.16-RC1-DIAGNOSTICS-MAG-SESSION-HARDENING.zip -d kizilkan-v15.2.16-stage
+
+rsync -av --delete \
+  --exclude='.git/' \
+  --exclude='frontend/kizilkan-player-elite-release.jks' \
+  --exclude='frontend/kizilkan-player-elite-release.jks.base64' \
+  --exclude='frontend/kizilkan-player-elite-release-GITHUB.txt' \
+  /sdcard/Download/kizilkan-v15.2.16-stage/gpt-kizilkan-player-elite/ \
+  /sdcard/Download/gpt-kizilkan-player-elite/
+
+cd /sdcard/Download/gpt-kizilkan-player-elite
+git status --short
+grep -n '"version"' frontend/package.json | head
+grep -n '"versionCode"' frontend/app.json
+git diff --check
+git diff --stat
+git diff --name-status
+
+git add .
+git diff --cached --check
+git diff --cached --stat
+git status --short
+
+git commit -m "feat: KIZILKAN PLAYER ELITE v15.2.16 RC1 diagnostics and MAG session hardening"
+git fetch origin
+git log --oneline HEAD..origin/main
+git log --oneline origin/main..HEAD
+git push origin main
+
+git fetch origin
+git status
+git log -1 --oneline --decorate
+echo "LOCAL : $(git rev-parse HEAD)"
+echo "REMOTE: $(git rev-parse origin/main)"

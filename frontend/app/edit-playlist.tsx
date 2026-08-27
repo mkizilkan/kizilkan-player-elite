@@ -21,6 +21,8 @@ import {
   xtreamLogin as xtLoginLocal,
   xtreamLiveStreams, xtreamVod as xtVodLocal, xtreamSeries as xtSeriesLocal,
 } from "@/src/utils/iptv";
+import { DEFAULT_CODE_SOURCE, resolveServerCode } from "@/src/utils/serverCode";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 export default function EditPlaylist() {
   const router = useRouter();
@@ -42,6 +44,8 @@ export default function EditPlaylist() {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [serverCode, setServerCode] = useState(pl?.serverCodeBinding?.code || "");
+  const [serverCodeAutoResolve, setServerCodeAutoResolve] = useState(pl?.serverCodeBinding?.autoResolve ?? true);
 
   useEffect(() => {
     if (!pl) {
@@ -61,17 +65,57 @@ export default function EditPlaylist() {
       if (pl.source === "m3u_url") {
         if (m3uUrl.trim() !== pl.m3uUrl) patch.m3uUrl = m3uUrl.trim();
         if (reloadContent) {
-          // CİHAZ-İÇİ: backend yerine doğrudan indir + ayrıştır.
-          setProgress("Kanallar yeniden yükleniyor...");
-          const res = await fetchAndParseM3U((m3uUrl.trim() || pl.m3uUrl)!);
-          patch.channels = res.channels;
-          patch.vod = res.vod;
-          patch.series = res.series;
+          const targetUrl = (m3uUrl.trim() || pl.m3uUrl)!;
+          if (Platform.OS === "android" && KizilkanNativeCore.available) {
+            setProgress("M3U Native Core ile yenileniyor ve Room'a indeksleniyor...");
+            const summary = await KizilkanNativeCore.fetchAndImportM3u(pl.id, targetUrl);
+            const total = Number(summary?.channels || 0) + Number(summary?.vod || 0) + Number(summary?.series || 0);
+            if (!summary?.roomIndexed || total === 0) throw new Error("M3U yenilemede içerik bulunamadı.");
+            patch.channelsCount = Number(summary.channels || 0);
+            patch.vodCount = Number(summary.vod || 0);
+            patch.seriesCount = Number(summary.series || 0);
+          } else {
+            // Web/legacy fallback.
+            setProgress("Kanallar yeniden yükleniyor...");
+            const res = await fetchAndParseM3U(targetUrl);
+            patch.channels = res.channels; patch.vod = res.vod; patch.series = res.series;
+          }
         }
       } else if (pl.source === "xtream") {
         patch.xtreamServer = xtServer.trim() || pl.xtreamServer;
         patch.xtreamUsername = xtUser.trim() || pl.xtreamUsername;
         patch.xtreamPassword = xtPass.trim() || pl.xtreamPassword;
+
+        // v15.2.4: Sunucu kodu kullanıcı tarafından değiştirilebilsin; fakat
+        // doğrulanmamış kod çalışan hesabın binding'ini bozmasın. Yeni kod önce
+        // rehberde çözülür ve mevcut kullanıcı/şifre ile gerçek Xtream auth yapılır.
+        const requestedCode = serverCode.trim();
+        const currentCode = pl.serverCodeBinding?.code || "";
+        if (requestedCode && requestedCode !== currentCode) {
+          setProgress(`Sunucu kodu ${requestedCode} doğrulanıyor...`);
+          const resolved = await resolveServerCode(
+            pl.serverCodeBinding?.codeSource || DEFAULT_CODE_SOURCE,
+            requestedCode,
+            patch.xtreamUsername!,
+            patch.xtreamPassword!,
+          );
+          patch.xtreamServer = resolved.server;
+          patch.accountInfo = resolved.login.user_info as any;
+          patch.serverInfo = resolved.login.server_info || null;
+          patch.serverCodeBinding = {
+            code: requestedCode,
+            panelName: resolved.panelName,
+            codeSource: pl.serverCodeBinding?.codeSource || DEFAULT_CODE_SOURCE,
+            autoResolve: serverCodeAutoResolve,
+            preferredServer: resolved.server,
+            validatedHosts: Array.from(new Set([resolved.server, ...resolved.hosts])),
+            lastResolvedServer: resolved.server,
+            lastResolvedAt: new Date().toISOString(),
+          };
+          setXtServer(resolved.server);
+        } else if (pl.serverCodeBinding) {
+          patch.serverCodeBinding = { ...pl.serverCodeBinding, autoResolve: serverCodeAutoResolve };
+        }
 
         // GPT v10.5.1: Sunucu Kodu ile bağlı bir listeyi kullanıcı elle farklı
         // DNS'e çevirirse bir sonraki yenilemede Firebase'in eski panel bağı
@@ -79,40 +123,68 @@ export default function EditPlaylist() {
         // kapatılır; panel kimliği geçmiş/teşhis bilgisi olarak korunur.
         if (
           pl.serverCodeBinding &&
+          requestedCode === currentCode &&
           patch.xtreamServer &&
           patch.xtreamServer !== pl.xtreamServer
         ) {
           patch.serverCodeBinding = {
-            ...pl.serverCodeBinding,
+            ...(patch.serverCodeBinding || pl.serverCodeBinding),
             autoResolve: false,
             lastResolvedServer: patch.xtreamServer,
             lastResolvedAt: new Date().toISOString(),
           };
+          setServerCodeAutoResolve(false);
         }
         if (reloadContent) {
-          // CİHAZ-İÇİ + PARALEL (emergent backend YOK).
-          const cred = {
-            server: patch.xtreamServer!,
-            username: patch.xtreamUsername!,
-            password: patch.xtreamPassword!,
-          };
-          setProgress("Kimlik doğrulanıyor...");
-          const login = await xtLoginLocal(cred);
-          patch.accountInfo = login.user_info as any;
-          (patch as any).serverInfo = login.server_info || null;
-
-          setProgress("Kanallar, filmler ve diziler paralel yükleniyor...");
-          const [chRes, vodRes, serRes] = await Promise.allSettled([
-            xtreamLiveStreams(cred),
-            xtVodLocal(cred),
-            xtSeriesLocal(cred),
-          ]);
-          patch.channels = chRes.status === "fulfilled" ? chRes.value : [];
-          patch.vod = vodRes.status === "fulfilled" ? vodRes.value : [];
-          patch.series = serRes.status === "fulfilled" ? serRes.value : [];
-
-          if (chRes.status === "rejected" && (patch.vod?.length || 0) === 0 && (patch.series?.length || 0) === 0) {
-            throw new Error("İçerik yüklenemedi. Sunucu veya bilgileri kontrol edin.");
+          const cred = { server: patch.xtreamServer!, username: patch.xtreamUsername!, password: patch.xtreamPassword! };
+          if (Platform.OS === "android" && KizilkanNativeCore.available) {
+            const existingJob = KizilkanNativeCore.getBulkImportSnapshot();
+            if (existingJob?.running) throw new Error("Başka bir native playlist ekleme/yenileme işi çalışıyor. Bitmesini bekleyin veya durdurun.");
+            const jobKey = `edit-${pl.id}-${Date.now()}`;
+            setProgress("Xtream Native Core ile doğrulanıyor ve Room'a yenileniyor...");
+            const importRunId = await KizilkanNativeCore.startBulkImport([{
+              jobKey, playlistId: pl.id, displayName: patch.name || pl.name,
+              server: cred.server, username: cred.username, password: cred.password,
+            }], 1);
+            if (!importRunId) throw new Error("Native Xtream yenileme işi başlatılamadı.");
+            let finalRow: any = null;
+            const deadline = Date.now() + 12 * 60 * 1000;
+            while (Date.now() < deadline) {
+              const snap = KizilkanNativeCore.getBulkImportSnapshot();
+              if (snap?.runId !== importRunId) { await new Promise(resolve => setTimeout(resolve, 120)); continue; }
+              const row = Array.isArray(snap?.jobs) ? snap.jobs.find((j:any) => String(j.jobKey) === jobKey) : null;
+              if (row) {
+                setProgress(String(row.message || "Xtream yenileniyor..."));
+                if (row.state === "failed") throw new Error(String(row.message || "Xtream yenileme başarısız"));
+                if (row.state === "completed") { finalRow = row; break; }
+              }
+              await new Promise(resolve => setTimeout(resolve, 450));
+            }
+            if (!finalRow) throw new Error("Xtream native yenileme zaman aşımına uğradı.");
+            patch.channelsCount = Number(finalRow.channels || 0);
+            patch.vodCount = Number(finalRow.vod || 0);
+            patch.seriesCount = Number(finalRow.series || 0);
+            patch.accountInfo = finalRow.userInfo || patch.accountInfo || pl.accountInfo;
+            patch.serverInfo = finalRow.serverInfo || patch.serverInfo || pl.serverInfo;
+          } else {
+            // Web/legacy fallback: cihaz içi paralel API çağrıları korunur.
+            setProgress("Kimlik doğrulanıyor...");
+            const login = await xtLoginLocal(cred);
+            patch.accountInfo = login.user_info as any;
+            patch.serverInfo = login.server_info || null;
+            setProgress("Kanallar, filmler ve diziler paralel yükleniyor...");
+            const [chRes, vodRes, serRes] = await Promise.allSettled([xtreamLiveStreams(cred), xtVodLocal(cred), xtSeriesLocal(cred)]);
+            if (chRes.status === "rejected" || vodRes.status === "rejected" || serRes.status === "rejected") {
+              const failed = [
+                chRes.status === "rejected" ? `Canlı: ${String(chRes.reason?.message || chRes.reason)}` : "",
+                vodRes.status === "rejected" ? `Film: ${String(vodRes.reason?.message || vodRes.reason)}` : "",
+                serRes.status === "rejected" ? `Dizi: ${String(serRes.reason?.message || serRes.reason)}` : "",
+              ].filter(Boolean).join(" · ");
+              throw new Error(`Xtream yenileme eksik kaldı; mevcut katalog korunuyor. ${failed}`);
+            }
+            patch.channels = chRes.value;
+            patch.vod = vodRes.value;
+            patch.series = serRes.value;
           }
         }
       } else if (pl.source === "stalker") {
@@ -127,7 +199,7 @@ export default function EditPlaylist() {
         patch.stalkerMac = (stMac.trim().toUpperCase()) || pl.stalkerMac;
         patch.stalkerSerial = stSerial.trim() || pl.stalkerSerial;
         if (reloadContent) {
-          const { stalkerLogin, stalkerChannels, normalizeMac } = await import("@/src/utils/stalker");
+          const { stalkerLogin, stalkerCatalog, normalizeMac, normalizeStalkerAccountInfo } = await import("@/src/utils/stalker");
           const cred = {
             portal: (patch.stalkerPortal || "").trim(),
             mac: normalizeMac((patch.stalkerMac || "").trim()),
@@ -136,21 +208,27 @@ export default function EditPlaylist() {
           setProgress("Portal doğrulanıyor...");
           const { session, profile: prof } = await stalkerLogin(cred);
           const profile = prof || {};
-          patch.accountInfo = {
-            username: profile.login, status: profile.status, mac: profile.mac,
-            phone: profile.phone, tariff_plan: profile.tariff_plan,
-            tariff_expired_date: profile.tariff_expired_date || profile.exp_billing_date,
-          };
-          setProgress("Kanallar yükleniyor...");
-          const chans = await stalkerChannels(cred, session);
-          if (chans.length === 0) {
+          patch.accountInfo = normalizeStalkerAccountInfo(profile);
+          setProgress("MAG katalog hazırlığı başlatılıyor...");
+          let catalog;
+          try {
+            catalog = await stalkerCatalog(cred, session, {
+              forceFresh: true,
+              onProgress: (progress) => setProgress(progress.message),
+            });
+          }
+          catch (e: any) { throw new Error(`MAG katalog yenileme başarısız: ${String(e?.message || e)}${session.profileError ? `\nProfil aşaması: ${session.profileError}` : ""}`); }
+          if (catalog.channels.length + catalog.vod.length + catalog.series.length === 0) {
             throw new Error(
               "Portal bağlandı ama kanal listesi BOŞ.\n\n" +
+                (session.profileError ? `Profil aşaması: ${session.profileError}\n\n` : "") +
                 "• MAC bu portalda kayıtlı olmayabilir\n" +
                 "• Abonelik süresi dolmuş olabilir"
             );
           }
-          patch.channels = chans;
+          patch.channels = catalog.channels;
+          patch.vod = catalog.vod;
+          patch.series = catalog.series;
         }
       }
 
@@ -219,6 +297,33 @@ export default function EditPlaylist() {
 
           {pl.source === "xtream" && (
             <>
+              {pl.serverCodeBinding && (
+                <>
+                  <Label text="SUNUCU KODU" mt />
+                  <TextInput
+                    testID="edit-server-code-input"
+                    value={serverCode}
+                    onChangeText={setServerCode}
+                    autoCapitalize="none" autoCorrect={false}
+                    placeholder="Örn. 042"
+                    placeholderTextColor={colors.onSurfaceTertiary}
+                    style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+                  />
+                  <TouchableOpacity
+                    testID="edit-server-code-auto-resolve"
+                    onPress={() => setServerCodeAutoResolve(v => !v)}
+                    style={[styles.tag, { marginTop: SPACING.sm, backgroundColor: serverCodeAutoResolve ? colors.brandPrimary + "18" : colors.surfaceSecondary, borderColor: serverCodeAutoResolve ? colors.brandPrimary : colors.border }]}
+                  >
+                    <Ionicons name={serverCodeAutoResolve ? "sync-circle" : "pause-circle-outline"} size={18} color={serverCodeAutoResolve ? colors.brandPrimary : colors.onSurfaceSecondary} />
+                    <Text style={[styles.tagText, { color: colors.onSurface, flex: 1 }]}>
+                      DNS otomatik güncelle: {serverCodeAutoResolve ? "Açık" : "Kapalı"}
+                    </Text>
+                  </TouchableOpacity>
+                  <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: 6 }}>
+                    Kod değişirse yeni panel/DNS mevcut kullanıcı adı ve şifreyle doğrulanmadan kaydedilmez.
+                  </Text>
+                </>
+              )}
               <Label text="SUNUCU" mt />
               <TextInput testID="edit-xt-server-input" value={xtServer} onChangeText={setXtServer}
                 autoCapitalize="none" autoCorrect={false} keyboardType="url"

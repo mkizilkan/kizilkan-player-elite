@@ -129,15 +129,26 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
   const notifyRef = useRef(onConnectionChange);
   notifyRef.current = onConnectionChange;
   const sessionRef = useRef<any>(null);
-  useEffect(() => { sourceRef.current = source; }, [source]);
+  const connectedRef = useRef(false);
+  const lastSourceKeyRef = useRef("");
+  const lastLoadedKeyRef = useRef("");
+  const loadGenerationRef = useRef(0);
+
+  const sourceKey = (src?: CastSource) => {
+    if (!src?.url) return "";
+    return `${toCastableUrl(src.url)}\u0000${src.isLive ? "live" : "buffered"}`;
+  };
 
   /** Bağlı oturuma medyayı yükler. */
-  const loadInto = async (session: any) => {
+  const loadInto = async (session: any, opts: { reason?: string; force?: boolean } = {}) => {
     const src = sourceRef.current;
     if (!session || !src?.url) return;
 
     // Canlı yayınlarda .ts -> .m3u8 (HLS) çevirimi; Chromecast HLS oynatır.
     const castUrl = toCastableUrl(src.url);
+    const key = sourceKey(src);
+    if (!opts.force && key && lastLoadedKeyRef.current === key) return;
+    const generation = ++loadGenerationRef.current;
 
     try {
       const client = session.client || session.getClient?.();
@@ -175,6 +186,10 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
           ? { startTime: Math.floor(src.startTimeSec) }
           : {}),
       });
+      // Daha yeni bir source load başladıysa eski tamamlanma callback'i state'i
+      // değiştirmesin.
+      if (generation !== loadGenerationRef.current) return;
+      lastLoadedKeyRef.current = key;
       haptic.success();
 
       // MKV/AVI ise kullanıcıyı bilgilendir (engellemiyoruz, sadece uyarıyoruz).
@@ -190,21 +205,46 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
     }
   };
 
+  useEffect(() => {
+    sourceRef.current = source;
+    const nextKey = sourceKey(source);
+    const previousKey = lastSourceKeyRef.current;
+    lastSourceKeyRef.current = nextKey;
+
+    // v15.2.5: Cast oturumu zaten bağlıyken kullanıcı kanal/film değiştirirse
+    // receiver eski medyada kalmamalı. İlk mount/rebind burada yükleme yapmaz;
+    // yalnız GERÇEK source değişimi remote load tetikler.
+    if (connectedRef.current && sessionRef.current && previousKey && nextKey && previousKey !== nextKey) {
+      void loadInto(sessionRef.current, { reason: "source-change", force: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source?.url, source?.isLive]);
+
   // Oturum olaylarını dinle: bağlanınca YÜKLE (eski kodun atladığı adım).
   useEffect(() => {
     if (!GoogleCast || Platform.OS === "web") return;
     let subStart: any = null;
     let subEnd: any = null;
+    let subResume: any = null;
     let subState: any = null;
     try {
       const sm = GoogleCast.getSessionManager?.();
-      subStart = sm?.onSessionStarted?.((session: any) => {
+      const bindSession = (session: any, loadCurrent: boolean) => {
         setConnected(true);
+        connectedRef.current = true;
         sessionRef.current = session;
         notifyRef.current?.(true, session);
-        loadInto(session);
+        if (loadCurrent) void loadInto(session, { reason: "session-start", force: true });
+      };
+      subStart = sm?.onSessionStarted?.((session: any) => bindSession(session, true));
+      subResume = sm?.onSessionResumed?.((session: any) => bindSession(session, false));
+      subEnd = sm?.onSessionEnded?.(() => {
+        setConnected(false);
+        connectedRef.current = false;
+        sessionRef.current = null;
+        lastLoadedKeyRef.current = "";
+        notifyRef.current?.(false, null);
       });
-      subEnd = sm?.onSessionEnded?.(() => { setConnected(false); sessionRef.current = null; notifyRef.current?.(false, null); });
       subState = GoogleCast.onCastStateChanged?.((state: any) => {
         setConnected(String(state || "").toLowerCase().includes("connected"));
       });
@@ -223,7 +263,15 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
       (async () => {
         try {
           const current = await sm?.getCurrentCastSession?.();
-          if (current) { setConnected(true); sessionRef.current = current; notifyRef.current?.(true, current); await loadInto(current); }
+          if (current) {
+            // v15.2.5: background/activity recreation sonrası mevcut receiver
+            // medyasını yeniden LOAD ETME. Sadece session'a yeniden bağlan; remote
+            // status PlayerHost tarafından okunup UI senkronlanır.
+            setConnected(true);
+            connectedRef.current = true;
+            sessionRef.current = current;
+            notifyRef.current?.(true, current);
+          }
         } catch (e) {
           console.warn("[Cast] mevcut oturum alınamadı:", e);
         }
@@ -232,7 +280,7 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
       console.warn("[Cast] oturum dinleyicileri kurulamadı:", e);
     }
     return () => {
-      try { subStart?.remove?.(); subEnd?.remove?.(); subState?.remove?.(); } catch {}
+      try { subStart?.remove?.(); subResume?.remove?.(); subEnd?.remove?.(); subState?.remove?.(); } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

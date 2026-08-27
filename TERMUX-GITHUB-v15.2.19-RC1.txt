@@ -1,0 +1,5 @@
+# Önce staging ZIP'i doğrulayın; doğrudan commit etmeyin.
+# Sürüm beklenen: 15.2.19 / 150219
+# Signing dosyaları rsync exclude ile korunacak.
+# Commit önerisi:
+# git commit -m "fix: KIZILKAN PLAYER ELITE v15.2.19 RC1 hard-gate and state consistency corrective"

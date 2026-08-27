@@ -1,98 +1,111 @@
-# GitHub'a Telefondan Yükleme ve APK Alma
+# 2026-08-25 — GÜNCEL v15.2.13-RC1 DEVAM NOTU
 
-Bu zip GitHub'a yüklenmeye HAZIR, eksiksiz projedir. emergent.sh ile ilgisi yoktur — tertemiz bir başlangıçtır.
+> **Bu bölüm dosyanın eski başlıklarından üstündür.** v15.2.13-RC1 / versionCode 150213, v15.2.12-RC1 `be124f0` tabanı üzerinde cihazda bulunan bulk scan kontrol görünürlüğü, MAG AccountInfo crash, MAG/Xtream/M3U Live-VOD-Series ve büyük backup sorunlarını düzeltmek üzere hazırlanmıştır. Kaynak değişiklikleri paketleme çalışma kopyasında uygulanmıştır. Henüz GitHub commit/push, tam CI build veya v15.2.13 cihaz acceptance yapılmış değildir; bunlar yapılmış gibi kabul edilmemelidir. Signing/keystore pakete eklenmemelidir.
 
----
+# GÜNCEL DURUM — KIZILKAN PLAYER ELITE v15.2.3-RC1
 
-## 1. GitHub hesabı ve repo (bir kez)
+**Native Core Migration Phase 1 başladı.** Ağır playlist JSON parse Android Kotlin Native Core'a, panel bilinmiyor çoklu hesap taraması foreground native service'e taşındı. React Native UI korunuyor. MPV dependency 1.0.0 olarak korunuyor.
 
-1. github.com → Sign up (ücretsiz)
-2. Sağ üst **"+"** → **New repository**
-3. İsim: `kizilkan-player`
-4. **Public** seç (Actions sınırsız ücretsiz olur; Private'ta ayda 2000 dk)
-5. **Create repository**
+Kritik amaç: playlist seçimi sonrası 5–10 dakika Pressable/navigation kilitlenmesini ve uygulama background'a alınınca çoklu hesap taramasının durmasını kökten gidermek. Bu sürüm gerçek cihaz/GitHub build ile doğrulanmadan stabil sayılmaz.
 
 ---
 
-## 2. Dosyaları yükleme (telefondan) — 3 yol
+# KIZILKAN PLAYER ELITE v15.1.1-RC1 — GitHub / Termux Yükleme
 
-### Yol C — Termux (EN KOLAY, önerilen)
+Repo: `https://github.com/mkizilkan/kizilkan-player-elite.git`
+Telefon çalışma klasörü: `/sdcard/Download/gpt-kizilkan-player-elite`
 
-F-Droid'den **Termux** kur (ücretsiz), sonra:
+## Güvenlik
+
+`.git` ve yerel signing materyali korunur. Şunlar Git'e kesinlikle girmez:
+
+- `*.jks`
+- `*.keystore`
+- `*.base64`
+- `*-release-GITHUB.txt`
+
+GitHub Actions secret isimleri:
+
+- `ANDROID_KEYSTORE_BASE64`
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
+- `ANDROID_CERT_SHA256`
+
+## ZIP senkronu
+
+Yeni ZIP'in kökü `gpt-kizilkan-player-elite/` olmalıdır. Geçici klasöre açıldıktan sonra örnek güvenli senkron:
 
 ```bash
-pkg update && pkg install git
-cd /sdcard/Download/kizilkan-player    # zip'i açtığın klasör
-git init
-git add -A
-git commit -m "KIZILKAN v4.3.1 FAZ A"
-git branch -M main
-git remote add origin https://github.com/KULLANICI_ADIN/kizilkan-player.git
-git push -u origin main
+rsync -av --delete \
+  --exclude='.git' \
+  --exclude='frontend/kizilkan-player-elite-release.jks' \
+  --exclude='frontend/kizilkan-player-elite-release.jks.base64' \
+  --exclude='frontend/kizilkan-player-elite-release-GITHUB.txt' \
+  /sdcard/Download/<TEMP>/gpt-kizilkan-player-elite/ \
+  /sdcard/Download/gpt-kizilkan-player-elite/
 ```
 
-> Şifre sorulunca GitHub şifresi DEĞİL, **Personal Access Token** gir:
-> GitHub → Settings → Developer settings → Personal access tokens →
-> Tokens (classic) → Generate new token → `repo` yetkisi ver → kopyala.
+## Push öncesi
 
-### Yol A — GitHub web arayüzü
+```bash
+cd /sdcard/Download/gpt-kizilkan-player-elite
+git status --short
+git diff --check
+git diff --stat
+```
 
-Yeni repoda **"uploading an existing file"** linkine bas. Bu zip'i telefonda
-aç, klasörleri tek tek sürükle. Tarayıcıyı "masaüstü site" moduna alırsan kolaylaşır.
-(Çok dosya olduğu için Termux'tan daha zahmetli.)
+Signing dosyası görünüyorsa DUR.
 
-### Yol B — GitHub mobil uygulaması
+Daha sonra:
 
-GitHub uygulamasını kur, repoda "Add file" ile dosyaları ekle. Küçük
-değişiklikler için pratik, ilk toplu yükleme için değil.
+```bash
+git add .
+git diff --cached --check
+git status
+git commit -m "feat: KIZILKAN PLAYER ELITE v15.2.3 RC1 lifecycle unified discovery native core"
+git push origin main
+```
 
----
+GitHub Actions sonucu olmadan `tsc`, Kotlin, Gradle veya APK başarılı sayılmaz. Özellikle `:mpv-player:compileReleaseKotlin` libmpv 1.0.0 migration'ın ilk native kapısıdır.
 
-## 3. APK derleme (telefondan tek dokunuş)
+## v15.2.4-RC1
+Sürüm 15.2.4 / versionCode 150204. GitHub Actions build sonunda APK yanında `APK-BOYUT-RAPORU-v15.2.4.txt` artifact'i de üretilir. Signing dosyaları ve secret metinleri commit edilmez.
 
-1. Repo → **Actions** sekmesi
-2. Sol menüden **"KIZILKAN APK Derle"**
-3. Sağda **"Run workflow"** butonu
-4. Seçenekler:
-   - **Yeni Mimari**: `true` bırak (build patlarsa `false` yapıp tekrar çalıştır)
-   - **Build tipi**: `release`
-   - **Release oluştur**: işaretli
-5. Yeşil **"Run workflow"** butonuna bas
+## v15.2.5-RC1
+GitHub Actions bu sürüm için `15.2.5 / versionCode 150205` görmelidir. Gerçek `tsc --noEmit`, Expo prebuild, Room/KSP/Kotlin ve Gradle release sonucu CI tarafından kanıtlanmadan sürüm stabil kabul edilmez.
 
-20–40 dk sürer (sonraki build'ler 8–15 dk). İlerlemeyi Actions'tan izleyebilirsin.
 
----
+## v15.2.6-RC1
+GitHub Actions `15.2.6 / versionCode 150206` görmelidir. Özellikle `npx tsc --noEmit` gate'in Search TS2339 ve add-playlist TS2367 hatalarını artık üretmemesi ilk kabul kapısıdır; ardından Expo/Room-KSP/Kotlin/Gradle doğrulanır.
 
-## 4. APK'yı indirme ve kurma
 
-Build bitince:
+## v15.2.7-RC1
+GitHub Kotlin chunked staging writer API-signature düzeltmesi; ayrıntı için `AI-PROJE-DEVIR-BAGLAM.md` ve `SURUM-NOTU-GPT-ELITE-v15.2.7-RC1.md` okunmalıdır.
 
-1. Repo → **Releases** (sağ tarafta)
-2. En üstteki sürüme tıkla
-3. **KIZILKAN-Player-v4.3.1-buildN.apk** linkine bas → iner
-4. **ÖNEMLİ:** Kurmadan önce **eski uygulamayı kaldır** (paket adı değişti)
-5. APK'yı aç → "Bilinmeyen kaynaklara izin ver" → kur
 
-TV Box için: APK linkini `Downloader` uygulamasına yapıştır veya USB ile taşı.
+## v15.2.8-RC1 — Job Lifecycle / Discovery / Player Health Hardening
+- Scan ve bulk import için runId/generation sahipliği eklendi; stale snapshot yeni işi tamamlayamaz.
+- Discovery AUTH başarısı ile import başarısı ayrıldı; endpoint hataları artık sessizce [] yapılmıyor.
+- Live VLC soft stall pause/play müdahalesi kaldırıldı; canlı VLC health son native event + advance sinyaliyle değerlendirilir.
+- M3U/MAG canonical duplicate koruması, doğrulanmış Room sonrası legacy cleanup ve Android process-exit telemetrisi eklendi.
 
----
+## v15.2.9-RC1
+GitHub Actions `15.2.9 / versionCode 150209` görmelidir. İlk kapılar `npx tsc --noEmit`, Expo prebuild, `:panel-scan:compileReleaseKotlin`, `:kizilkan-native-core:compileReleaseKotlin` ve release APK'dır. Signing dosyaları commit edilmez. Cihaz kabulünde Sunucu Kodu üç yolu ayrı ayrı test edilmelidir.
 
-## 5. Kurunca test et
 
-| # | Test | Beklenen |
-|---|---|---|
-| 1 | `http://` bir kanal aç | **Görüntü gelmeli** (asıl düzeltme) |
-| 2 | `https://` bir kanal aç | Eskisi gibi çalışmalı |
-| 3 | TV Box ana ekranı | Uygulama görünmeli |
-| 4 | Aç-kapa | Beyaz ekran yok |
+## v15.2.10-RC1
+- Panel taraması gerçek ağ bağlantısı iptali + worker shutdown ile durdurulur.
+- Analiz UI tarama başında açılır; progress/pause/resume/stop ve explicit selection zorunludur.
+- PIN’li profil process restart/session restore ile atlanamaz; runtime profile-session gate eklendi.
 
----
+## v15.2.11-RC1 — Scan Terminal Cancellation / Selection / Quick Parser Hardening
+- v15.2.10 cihaz testinde hazırlık aşamasında `Durdur`un yalnız mesaj üretmesi kökten düzeltildi: katalog REST çağrıları harici AbortSignal ile kesilir.
+- PanelScan native job finalization artık her çıkışta terminal snapshot yazar; CANCELLING/STARTING kalıcı olamaz.
+- Tekli/çoklu Durdur tek basışta `Durduruluyor…` kilidine girer; tekrar cancel spam'i yoktur.
+- Unified hesap taraması round-robin dağıtılır; hesaplar paralel ilerleme görür.
+- Discovery sonucundan playlist importuna geçiş kullanıcı seçimine bağlı kalır; aynı aboneliğin DNS alias'ları tek playlist/validatedHosts olarak gruplanır.
+- Hızlı yapıştırmada `user:pass` ve `user:password` geçerli hesap çiftleridir.
 
-## 6. Build patlarsa
-
-Actions'ta build kırmızı olursa:
-
-1. Önce **Yeni Mimari = false** ile tekrar dene (en olası çözüm)
-2. Hâlâ patlıyorsa: build log'unun **son ekranını** al, geliştiricine gönder
-3. Manifest doğrulaması build'in 8. adımında çıkar — "Summary" sayfasında
-   http düzeltmesinin uygulanıp uygulanmadığını PC'siz görebilirsin
+## v15.2.12-RC1
+TypeScript TS18048 build blocker giderildi: resolveOneBulkAccount ScanExecutionControl parametresi zorunlu hale getirildi; v15.2.11 davranışları korunur.

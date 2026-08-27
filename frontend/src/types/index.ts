@@ -17,9 +17,10 @@ export interface Channel {
   isAdult?: boolean;
 }
 
+// v15.0.1 BUILD FIX: M3U kaynaklarında sağlayıcı stream/series ID doğal olarak null olabilir; model gerçek veriyi kapsar.
 export interface VodItem {
   id: string;
-  stream_id: number | string;
+  stream_id: number | string | null;
   name: string;
   poster?: string | null;
   rating?: string | number | null;
@@ -28,7 +29,6 @@ export interface VodItem {
   group?: string | null;
   url: string;
   container_ext?: string | null;
-  added?: string | null;
   /** İçerik zenginleştirme (v7.3.0) — sunucudan gelen ek alanlar */
   youtube_trailer?: string | null;   // fragman
   backdrop_path?: string | null;     // geniş arka plan görseli
@@ -43,7 +43,7 @@ export interface VodItem {
 
 export interface SeriesItem {
   id: string;
-  series_id: number | string;
+  series_id: number | string | null;
   name: string;
   poster?: string | null;
   plot?: string | null;
@@ -60,7 +60,6 @@ export interface SeriesItem {
   duration?: string | number | null; // süre
   age?: string | number | null;      // yaş sınırı
   added?: string | null;             // eklenme zamanı
-  release_date?: string | null;
   country?: string | null;
   /** GPT ELITE v12.5.0: +18 filtresi için önceden hesaplanan hızlı bayrak. */
   isAdult?: boolean;
@@ -167,6 +166,10 @@ export interface Playlist {
   channels: Channel[];
   vod?: VodItem[];
   series?: SeriesItem[];
+  /** v15.2 Native Core: tam dizi JS'e alınmadan metadata sayaçları. */
+  channelsCount?: number;
+  vodCount?: number;
+  seriesCount?: number;
   epgUrl?: string;
   createdAt: string;
 }

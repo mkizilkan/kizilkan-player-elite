@@ -1,5 +1,6 @@
 import React, { forwardRef, useImperativeHandle, useRef } from "react";
-import { Platform, requireNativeViewManager, ViewProps } from "react-native";
+import { Platform, type ViewProps } from "react-native";
+import { requireNativeViewManager } from "expo-modules-core"; // v15.0.1 BUILD FIX: Expo native view API doğru paketten alınır.
 
 export type KizilkanMpvSource = {
   url: string;
@@ -32,6 +33,7 @@ export type KizilkanMpvProps = ViewProps & {
   onVideoReady?: (event: any) => void;
   onTracks?: (event: any) => void;
   onError?: (event: any) => void;
+  onDiagnostic?: (event: any) => void;
 };
 
 let NativeMpvView: any = null;

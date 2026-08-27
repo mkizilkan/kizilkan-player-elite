@@ -1,0 +1,22 @@
+KIZILKAN PLAYER ELITE v15.2.19-RC1 PAKET DOGRULAMA
+version=15.2.19
+versionCode=150219
+
+GERCEK NODE KONTROLLERI (Node v22.16.0):
+PASS checkplayercore.js
+PASS check-v15214-hardening.js
+PASS check-v15215-typescript-contract.js
+PASS check-v15216-diagnostics.js
+PASS check-v15217-scan-transport.js
+PASS check-v15218-blackbox.js
+PASS check-v15219-corrective.js
+PASS denetle.js
+PASS TS/TSX transpile syntax: 109 dosya / 0 diagnostic
+
+YAPILMADI / SONRAKI KAPI:
+- full npx tsc --noEmit (node_modules yok)
+- Expo prebuild
+- Kotlin/Gradle release APK
+- fiziksel cihaz acceptance
+
+Signing/keystore ZIP'e dahil edilmemelidir.

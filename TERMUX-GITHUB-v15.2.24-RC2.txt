@@ -1,0 +1,23 @@
+cd /sdcard/Download/gpt-kizilkan-player-elite || exit 1
+
+echo '=== VERSION ==='
+grep -n '"version"' frontend/package.json | head -1
+grep -n '"versionCode"' frontend/app.json
+
+echo '=== RC1 + RC2 HARD GATES ==='
+node tools/check-v15224-mag-room-stall.js || exit 1
+node tools/check-v15224-rc2-memory-native.js || exit 1
+
+echo '=== MASTER ==='
+node tools/denetle.js || exit 1
+
+echo '=== DIFF ==='
+git diff --check || exit 1
+
+echo '=== SECRET ==='
+git status --short | grep -Ei '\.(jks|keystore|p12|pfx|pem|base64)$|release-GITHUB\.txt$' && exit 1 || true
+
+git add .
+git diff --cached --check || exit 1
+git commit -m 'fix: KIZILKAN PLAYER ELITE v15.2.24 RC2 memory native MAG corrective' || exit 1
+git push -u origin verify-v15.2.24

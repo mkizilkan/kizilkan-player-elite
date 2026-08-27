@@ -75,8 +75,9 @@ export default function ProfileSetupScreen() {
     }
   };
 
+  // v15.0.1 BUILD FIX: ThemePalette sözleşmesinin ana zemini `surface`; tanımsız `background` kullanılmaz.
   return (
-    <SafeAreaView style={[styles.root, { backgroundColor: colors.background, padding: SPACING.lg + overscan }]}>
+    <SafeAreaView style={[styles.root, { backgroundColor: colors.surface, padding: SPACING.lg + overscan }]}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={{ paddingBottom: SPACING.xxxl }} showsVerticalScrollIndicator={false}>
           <View style={styles.header}>

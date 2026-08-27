@@ -37,6 +37,7 @@
 
 import { bigStore } from "./storage/bigStore";
 import { storage } from "./storage";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 export interface EpgProgram {
   title: string;
@@ -155,6 +156,14 @@ export async function fetchAndCacheEpg(url: string, playlistId: string): Promise
    * EPG indirmede de aynısını kullanmak reddedilme riskini azaltır.
    */
   const { DEFAULT_USER_AGENT } = await import("./streamTest");
+  // v15.2.4 Android: XMLTV indirme + parse + indeksleme tamamen native worker
+  // üzerinde ve Room'da. Kanal ekranı artık 10MB+ XML'i JS regex ile işlemez.
+  if (KizilkanNativeCore.available) {
+    const result = await KizilkanNativeCore.fetchAndCacheEpg(url, playlistId, DEFAULT_USER_AGENT);
+    if (!result) throw new Error("Native EPG Core yanıt vermedi.");
+    await storage.setItem(EPG_META_PREFIX + playlistId, JSON.stringify({ url, fetchedAt: Date.now(), native: true }));
+    return { count: Number(result.count || 0) };
+  }
   const res = await fetch(url, {
     headers: { "User-Agent": DEFAULT_USER_AGENT, Accept: "*/*" },
   });
@@ -204,6 +213,10 @@ export async function getChannelPrograms(
   epgUrl?: string
 ): Promise<{ programs: EpgProgram[] }> {
   if (epgUrl) await ensureFresh(epgUrl, playlistId);
+  if (KizilkanNativeCore.available) {
+    const programs = await KizilkanNativeCore.getEpgChannelPrograms(playlistId, channelId);
+    return { programs: (programs || []) as EpgProgram[] };
+  }
   const byChannel = await bigStore.read<Record<string, EpgProgram[]>>(EPG_DATA_PREFIX + playlistId, {});
   return { programs: byChannel[channelId] || [] };
 }
@@ -215,8 +228,12 @@ export async function getNowNext(
   epgUrl?: string
 ): Promise<{ data: Record<string, NowNext> }> {
   if (epgUrl) await ensureFresh(epgUrl, playlistId);
-  const byChannel = await bigStore.read<Record<string, EpgProgram[]>>(EPG_DATA_PREFIX + playlistId, {});
   const nowSec = Math.floor(Date.now() / 1000);
+  if (KizilkanNativeCore.available) {
+    const data = await KizilkanNativeCore.getEpgNowNext(playlistId, channelIds, nowSec);
+    return { data: (data || {}) as Record<string, NowNext> };
+  }
+  const byChannel = await bigStore.read<Record<string, EpgProgram[]>>(EPG_DATA_PREFIX + playlistId, {});
   const data: Record<string, NowNext> = {};
 
   for (const chId of channelIds) {

@@ -40,6 +40,13 @@ export interface VlcTracks {
   subtitle: VlcTrack[];
 }
 
+export interface VlcFirstPlayInfo {
+  width: number;
+  height: number;
+  length: number;
+  seekable: boolean;
+}
+
 export interface VlcPlayerHandle {
   play: () => void;
   pause: () => void;
@@ -81,7 +88,7 @@ interface Props {
   /** Snapshot gerçekten oluşturulduğunda native dosya yolu. */
   onSnapshotTaken?: (e: { path: string }) => void;
   /** İlk oynatmada medya bilgisi (boyut, süre). */
-  onFirstPlay?: (info: { width: number; height: number; length: number; seekable: boolean }) => void;
+  onFirstPlay?: (info: VlcFirstPlayInfo) => void;
 }
 
 /**

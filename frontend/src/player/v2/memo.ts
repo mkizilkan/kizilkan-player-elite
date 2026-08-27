@@ -1,5 +1,6 @@
 import { storage } from "@/src/utils/storage";
 import type { EngineProfile, PlaybackErrorKind, PlaybackTelemetry } from "./types";
+import { recordDiagnostic } from "@/src/utils/diagnostics";
 
 const key = (channelId: string) => `kizilkan.playerV2.profile.${channelId}`;
 const logKey = (channelId: string) => `kizilkan.playerV2.telemetry.${channelId}`;
@@ -32,6 +33,7 @@ export async function recordEngineSuccess(channelId: string, profile: EngineProf
   };
   await storage.setItem(key(channelId), JSON.stringify(next));
   await appendTelemetry(channelId, { channelId, profile, firstFrameMs, success: true, at: Date.now() });
+  await recordDiagnostic("player", "ENGINE_SUCCESS", { channelId, engine: profile.engine, profile, firstFrameMs }, { sessionId: channelId });
 }
 
 export async function recordEngineFailure(channelId: string, profile: EngineProfile, errorKind: PlaybackErrorKind, technical?: string) {
@@ -44,6 +46,7 @@ export async function recordEngineFailure(channelId: string, profile: EngineProf
     await storage.setItem(key(channelId), JSON.stringify({ ...prev, confidence, failures: prev.failures + 1, lastFailure: Date.now() }));
   }
   await appendTelemetry(channelId, { channelId, profile, success: false, errorKind, technical, at: Date.now() });
+  await recordDiagnostic("player", "ENGINE_ERROR", { channelId, engine: profile.engine, profile, errorKind, technical }, { sessionId: channelId });
 }
 
 async function appendTelemetry(channelId: string, item: PlaybackTelemetry) {

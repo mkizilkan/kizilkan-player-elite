@@ -1,7 +1,7 @@
 # ============================================================================
 # KIZILKAN PLAYER — GitHub Actions APK Derleyici
 # Dosya   : .github/workflows/build-apk.yml   (DEPO KÖKÜNE, frontend'in içine DEĞİL)
-# Sürüm   : v1.3.0 (GPT v10.6.6 Build Tools uyumlu sertifika doğrulama + kalıcı signing)
+# Sürüm   : v1.4.3 (v15.2.4 footprint telemetry + v15.0.4: kalıcı sertifika SHA-256 secret HARD gate; v15.0.3 MPV 0.5.1 API fix korunur) (GPT v10.6.6 Build Tools uyumlu sertifika doğrulama + kalıcı signing)
 # Faz     : FAZ A / test altyapısı
 # ============================================================================
 #
@@ -70,6 +70,7 @@ jobs:
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ANDROID_CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
 
     steps:
       # ---------------------------------------------------------------- 1
@@ -78,16 +79,16 @@ jobs:
 
       # ---------------------------------------------------------------- 2
       - name: JDK 17 kur
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
       # ---------------------------------------------------------------- 3
-      - name: Node.js 20 kur
-        uses: actions/setup-node@v4
+      - name: Node.js 22 kur
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           cache: yarn
           cache-dependency-path: frontend/yarn.lock
 
@@ -141,7 +142,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for v in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+          for v in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD ANDROID_CERT_SHA256; do
             if [ -z "${!v:-}" ]; then
               echo "::error::Eksik GitHub Secret: $v"
               missing=1
@@ -153,7 +154,7 @@ jobs:
               echo ""
               echo "v10.5.2 release APK, kalici imza olmadan uretilmez."
               echo "Repository → Settings → Secrets and variables → Actions altina"
-              echo "ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD ekleyin."
+              echo "ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD ve ANDROID_CERT_SHA256 ekleyin."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -401,12 +402,24 @@ jobs:
             exit 1
           fi
 
-          EXPECTED_CERT_SHA256="91C840EF9A2D22996E9A547D1F8C61E295D117C0D7F6F1CE5D65CC86278D8BC3"
+          # v15.0.4: sertifika parmak izi artik kaynak koduna gomulu degildir.
+          # Kalici release kimligi Repository Secret ANDROID_CERT_SHA256 ile kilitlenir.
+          # Secret hem 80:22:... biciminde hem de ayiricisiz 8022... biciminde girilebilir.
           NORMALIZED_CERT_SHA=$(printf '%s' "$CERT_SHA" | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')
+          EXPECTED_CERT_SHA256=$(printf '%s' "${ANDROID_CERT_SHA256:-}" | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')
+
+          if [ -z "$EXPECTED_CERT_SHA256" ]; then
+            echo "::error::ANDROID_CERT_SHA256 GitHub Secret bos veya tanimsiz"
+            exit 1
+          fi
+          if ! printf '%s' "$EXPECTED_CERT_SHA256" | grep -Eq '^[0-9A-F]{64}$'; then
+            echo "::error::ANDROID_CERT_SHA256 gecersiz; SHA-256 64 hex karakter olmali"
+            exit 1
+          fi
           if [ "$NORMALIZED_CERT_SHA" != "$EXPECTED_CERT_SHA256" ]; then
-            echo "::error::APK imzasi resmi GPT KIZILKAN release sertifikasi ile eslesmiyor"
-            echo "::error::Beklenen SHA-256: $EXPECTED_CERT_SHA256"
-            echo "::error::Gelen SHA-256   : $NORMALIZED_CERT_SHA"
+            echo "::error::APK imzasi Repository Secret ile kilitli resmi GPT KIZILKAN release sertifikasi ile eslesmiyor"
+            echo "::error::Gelen SHA-256: $NORMALIZED_CERT_SHA"
+            echo "::error::Beklenen fingerprint guvenlik nedeniyle loga yazilmadi"
             exit 1
           fi
 
@@ -464,12 +477,30 @@ jobs:
             echo "| Sertifika SHA-256 | `${{ steps.apkverify.outputs.cert_sha256 }}` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ---------------------------------------------------------------- 11b
+      - name: APK ABI ve native boyut raporu
+        run: |
+          node ../tools/analyze-apk.js \
+            "../${{ steps.apk.outputs.path }}" \
+            "../artifacts/APK-BOYUT-RAPORU-v${{ steps.apk.outputs.version }}.txt"
+
+          {
+            echo ""
+            echo "## 📊 APK Footprint"
+            echo ""
+            echo '```text'
+            sed -n '1,45p' "../artifacts/APK-BOYUT-RAPORU-v${{ steps.apk.outputs.version }}.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # ---------------------------------------------------------------- 12
       - name: Artifact olarak yukle
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.apk.outputs.name }}
-          path: artifacts/*.apk
+          path: |
+            artifacts/*.apk
+            artifacts/APK-BOYUT-RAPORU-*.txt
           retention-days: 30
           if-no-files-found: error
 

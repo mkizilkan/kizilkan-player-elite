@@ -3,14 +3,19 @@
  * KIZILKAN PLAYER — TÜM DENETİMLERİ ÇALIŞTIR
  * Kullanım:  cd frontend && node ../tools/denetle.js
  *
- * Bu betik 10 statik denetleyiciyi sırayla çalıştırır. Her biri, geliştirme
+ * Bu betik kritik statik/fonksiyonel denetleyicileri sırayla çalıştırır. Her biri, geliştirme
  * sırasında GERÇEKTEN YAŞANMIŞ bir çökme/hata sınıfından sonra yazıldı.
  * Derleme öncesi çalıştırılırsa o hatalar bir daha kullanıcıya ulaşmaz.
  */
 const { execSync } = require("child_process");
 const path = require("path");
+const fs = require("fs");
 
 const TOOLS = __dirname;
+const PROJECT_ROOT = path.resolve(TOOLS, "..");
+const FRONTEND_ROOT = path.join(PROJECT_ROOT, "frontend");
+if (!fs.existsSync(path.join(FRONTEND_ROOT, "package.json"))) throw new Error("frontend/package.json bulunamadı");
+if (process.cwd() !== FRONTEND_ROOT) process.chdir(FRONTEND_ROOT);
 // TypeScript artık tools/_ts.js ile taşınabilir şekilde çözülür (sabit yol yok).
 
 const CHECKS = [
@@ -23,6 +28,27 @@ const CHECKS = [
   ["checkhooksrc.js",  "Yanlış hook kaynağı",                   ""],
   ["checkimports.js",  "Eksik nokta-import (Modal/Alert/…)",    ""],
   ["checkplayercore.js", "Player Core v15 kritik regresyon kapisi", ""],
+  ["check-v15214-hardening.js", "v15.2.14 Stalker/Backup fonksiyonel fixture", ""],
+  ["check-v15215-typescript-contract.js", "v15.2.15 Stalker Series TypeScript contract", ""],
+  ["check-v15216-diagnostics.js", "v15.2.16 Tanılama/MAG session cache contract", ""],
+  ["check-v15217-scan-transport.js", "v15.2.17 Scan transport/crash/MAG connection contract", ""],
+  ["check-v15218-blackbox.js", "v15.2.18 State consistency / Black Box V2 contract", ""],
+  ["check-v15219-corrective.js", "v15.2.19 Corrective gate/test compatibility contract", ""],
+  ["check-v15220-flight-recorder.js", "v15.2.20 Flight Recorder v3 / TypeScript corrective contract", ""],
+  ["check-v15220-typescript-semantic.js", "v15.2.20 Playlist Promise<void> semantic contract", ""],
+  ["check-v15221-typescript-media3.js", "v15.2.21 Media3 EngineProfile semantic contract", ""],
+  ["check-v15222-flight-recorder-mag.js", "v15.2.22 Flight Recorder V4 / MAG compatibility contract", ""],
+  ["check-v15223-flight-recorder-mag.js", "v15.2.23 Flight Recorder V5 / total reset / MAG HTTP telemetry", ""],
+  ["check-v15223-complete-corrective.js", "v15.2.23 RC2 P0 complete corrective contract", ""],
+  ["check-v15224-mag-room-stall.js", "v15.2.24 MAG single-flight / Room verify / Media3 stall contract", ""],
+  ["check-v15224-rc2-memory-native.js", "v15.2.24 RC2 memory / native paging / MAG compatibility contract", ""],
+  ["check-v15224-rc3-gate-cwd.js", "v15.2.24 RC3 gate CWD invariance self-test", ""],
+  ["check-v15224-rc3-tools-audit.js", "v15.2.24 RC3 tools JS syntax / rooted-path audit", ""],
+  ["check-v15224-rc3-claude-memory-telemetry.js", "v15.2.24 RC3 Claude memory / telemetry / no-regression contract", ""],
+  ["check-v15225-mag-architecture.js", "v15.2.25 MAG254 learned handshake / live-first / Room enrichment contract", ""],
+  ["check-v15225-rc2-storage-contract.js", "v15.2.25 RC2 learned MAG storage TypeScript contract", ""],
+  ["check-v15225-rc2-typescript-build.js", "v15.2.25 RC2 full TypeScript --noEmit build gate", ""],
+  ["check-v15225-rc3-typescript-project.js", "v15.2.25 RC3 tsconfig-bound TypeScript project gate", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 
@@ -55,3 +81,5 @@ console.log(
     : `\n❌ ${failed} DENETİM BAŞARISIZ — düzeltmeden paketleme`
 );
 process.exit(failed === 0 ? 0 : 1);
+
+try { require('child_process').execFileSync('node', [require('path').join(__dirname, 'check-v15226-rc1-lockfile.js')], { stdio: 'inherit' }); } catch (e) { process.exitCode = 1; }

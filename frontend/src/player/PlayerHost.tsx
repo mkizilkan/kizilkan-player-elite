@@ -47,6 +47,7 @@ import {
   VOD_SOFT_STALL_MS,
   VOD_HARD_STALL_MS,
   PLAYER_UI_TIME_UPDATE_MS,
+  PLAYER_BACKGROUND_TIME_UPDATE_MS,
   makePlaybackClock,
   notePlaybackPosition,
   type EngineProfile,
@@ -55,11 +56,12 @@ import {
 } from "@/src/player/v2";
 import * as ScreenOrientation from "expo-screen-orientation";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import Animated, { useSharedValue, runOnJS } from "react-native-reanimated";
+import Animated, { useSharedValue } from "react-native-reanimated";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
 import { useLibrary } from "@/src/store/LibraryContext";
+import { markTask, recordDiagnostic, recordBlackBox } from "@/src/utils/diagnostics";
 import { storage } from "@/src/utils/storage";
 import { haptic } from "@/src/utils/haptic";
 import { CastButton } from "@/src/components/CastButton";
@@ -71,12 +73,13 @@ import { useRemoteKeys } from "@/src/hooks/useRemoteKeys";
 import { testStream, DEFAULT_USER_AGENT } from "@/src/utils/streamTest";
 import { loadOverrides, type OverrideMap } from "@/src/utils/overrides";
 import { BackHandler } from "react-native";
-import { VLCPlayer as VLCPlayerLib } from "@/src/native/vlc";
+import { VLCPlayer as VLCPlayerLib, VLC_AVAILABLE } from "@/src/native/vlc";
 import { KizilkanMpvView, KIZILKAN_MPV_AVAILABLE, type KizilkanMpvHandle } from "@/modules/mpv-player";
 
 const EPISODE_URL_KEY = "kizilkan.episode.url.";
 type Fit = "contain" | "cover" | "fill";
-type SheetType = "sleep" | "audio" | "subtitle" | "speed" | "stats" | "buffer" | "engine" | "audiodelay" | "jump" | null;
+// v15.0.1 BUILD FIX: kayıt hedefi UI zaten mevcut; union gerçek ekran durumunu eksiksiz kapsar.
+type SheetType = "sleep" | "audio" | "subtitle" | "speed" | "stats" | "buffer" | "engine" | "audiodelay" | "jump" | "recordTarget" | null;
 
 /** Ağ tamponu seçenekleri (ms). Yüksek = daha az takılma, daha geç açılış. */
 /**
@@ -113,7 +116,7 @@ const ENGINE_KEY = "kizilkan.player.engine";   // "auto" | "vlc" | "exo" | "mpv"
  */
 function isTvInitial(): boolean {
   try {
-    const { width, height } = require("react-native").Dimensions.get("window");
+    const { width, height } = Dimensions.get("window");
     // TV ekranları geniş ve yataydır; telefonlar dikey veya dar.
     return width >= 960 && width / height >= 1.6;
   } catch { return false; }
@@ -188,10 +191,16 @@ export default function PlayerHost() {
     id: string;
     ext?: string;
     kind?: "live" | "vod" | "series" | "catchup" | "external";
+    resumeAt?: number;
   };
   const sessionKind = params.kind ?? (params.ext === "true" ? "external" : "live");
   const isSynthetic = sessionKind !== "live";
-  const { activePlaylist, toggleFavorite, isFavorite } = usePlaylists();
+  const { activePlaylist, toggleFavorite, isFavorite, ensureHeavyLoaded } = usePlaylists();
+
+  // v15.2 Native Core: legacy ekran tam koleksiyon ister.
+  useEffect(() => {
+    if (activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
+  }, [activePlaylist?.id, ensureHeavyLoaded]);
   const { setProgress: setLibProgress } = useLibrary();
 
   const [externalStream, setExternalStream] = useState<{ url: string; name: string; group: string; container_ext: string; poster?: string | null } | null>(null);
@@ -286,7 +295,7 @@ export default function PlayerHost() {
   const [recordFlash, setRecordFlash] = useState<string | null>(null);
   const [speed, setSpeed] = useState<number>(1.0);
   const [gestureFlash, setGestureFlash] = useState<string | null>(null);
-  const [videoStats, setVideoStats] = useState<{ width?: number; height?: number; duration?: number; currentTime?: number; position?: number }>({});
+  const [videoStats, setVideoStats] = useState<{ width?: number; height?: number; duration?: number; currentTime?: number; position?: number; mpvCodec?: string; mpvFormat?: string; mpvHwdec?: string; mpvEvent?: string }>({});
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sleepTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -309,6 +318,10 @@ export default function PlayerHost() {
   const [mpvVideoReady, setMpvVideoReady] = useState(false);
   const [mpvVideoMetaReady, setMpvVideoMetaReady] = useState(false);
   const [mpvRecoveryGeneration, setMpvRecoveryGeneration] = useState(0);
+  // v15.1 RC — 4K/HEVC first-frame recovery. MPV once hardware path
+  // produces audio/clock but no verified video, a FRESH native instance is
+  // remounted with software decoding. We never mutate a broken decoder in place.
+  const [mpvForceSoftware, setMpvForceSoftware] = useState(false);
   const [memoSurfaceOverride, setMemoSurfaceOverride] = useState<"surfaceView" | "textureView" | null>(null);
   /**
    * KANAL BAŞINA AYARLAR (v7.3.0)
@@ -358,10 +371,19 @@ export default function PlayerHost() {
    * Bağlıyken bu komutlar artık TV'deki oynatıcıya gönderiliyor.
    */
   const [castSession, setCastSession] = useState<any>(null);
+  // v15.2.5 Cast authority state: remote receiver bağlıyken son gerçek remote
+  // konum/capability burada tutulur. Session kapanınca local player bu konumdan
+  // devralır; React render gecikmesine güvenilmez.
+  const castRemotePositionRef = useRef(0);
+  const castLiveSeekableRangeRef = useRef<{ startTime: number; endTime: number } | null>(null);
+  const castRemotePlayerStateRef = useRef("");
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
+      const previous = appStateRef.current;
       appStateRef.current = state;
+      const ctx = playerTelemetryContextRef.current;
+      void recordBlackBox("APP_STATE", { previous, state, ...ctx, buffering: isBufferingRef.current });
       // Arka planda Android player/view lifecycle değişebilir. Geri dönüşte
       // stall kronometresini sıfırla; background süresini "donma" sanma.
       if (state === "active") {
@@ -394,6 +416,7 @@ export default function PlayerHost() {
   const playbackDurationRef = useRef(0);
   const lastVlcUiUpdateRef = useRef(0);
   const appStateRef = useRef(AppState.currentState);
+  const playerTelemetryContextRef = useRef({ visible: false, channelId: "", phase: "idle", engine: "media3" });
   const isPlayingRef = useRef(isPlaying);
   const isBufferingRef = useRef(isBuffering);
   const showControlsRef = useRef(showControls);
@@ -404,13 +427,21 @@ export default function PlayerHost() {
   showControlsRef.current = showControls;
   sheetRef.current = sheet;
   const stallRecoveryRef = useRef<{ sid: number; profileKey: string; softDone: boolean; hardDone: boolean; softAt?: number }>({ sid: 0, profileKey: "", softDone: false, hardDone: false });
+  // Kullanıcı seek'i / resume seek'i sonrası watchdog'a kısa bir bağışıklık penceresi.
+  // Seek sırasında clock'un doğal olarak durması "stall" sayılmamalı.
+  const userSeekGraceUntilRef = useRef(0);
+  const appliedResumeKeyRef = useRef("");
+  const resumeAttemptRef = useRef<{ key: string; target: number; attempts: number; confirmed: boolean }>({ key: "", target: 0, attempts: 0, confirmed: false });
   // GPT ELITE v14.0.0 — Player V2 session/controller state.
   const sessionGateRef = useRef(new PlaybackSessionGate());
   const sessionStartedAtRef = useRef(Date.now());
+  const playerSelectionStartedAtRef = useRef(Date.now());
+  const playerDiagnosticSessionRef = useRef("");
   const transitioningSessionRef = useRef<number | null>(null);
   // Aynı kanalın alternatif .ts/.m3u8 URL'sine geçerken aktif motoru koru.
   const nextSessionProfileRef = useRef<EngineProfile | null>(null);
   const successfulSessionRef = useRef<number | null>(null);
+  const successfulSessionAtRef = useRef(0);
   const [activeSessionId, setActiveSessionId] = useState(0);
   const [profileReadySessionId, setProfileReadySessionId] = useState(0);
   const [v2Profile, setV2Profile] = useState<EngineProfile>({ engine: "media3", surface: "surfaceView" });
@@ -427,6 +458,21 @@ export default function PlayerHost() {
   const useMPV = v2Profile.engine === "mpv";
   const activeProfileKeyRef = useRef(v2ProfileKey);
   activeProfileKeyRef.current = v2ProfileKey;
+
+  // v15.2.19: v15.2.18 yalnız spinner renderını gizliyordu; isBuffering=true
+  // state'i içeride yaşayabiliyordu. Aynı başarılı session gerçekten oynuyorsa
+  // bu stale buffering state'idir ve state makinesinden temizlenir.
+  useEffect(() => {
+    if (!isBuffering || !isPlaying || activeSessionId <= 0) return;
+    if (successfulSessionRef.current !== activeSessionId) return;
+    setIsBuffering(false);
+    isBufferingRef.current = false;
+    void recordDiagnostic("player", "STALE_BUFFERING_CLEARED", {
+      engine: v2Profile.engine,
+      phase: v2Phase,
+      activeSessionId,
+    }, { sessionId: playerDiagnosticSessionRef.current });
+  }, [isBuffering, isPlaying, activeSessionId, v2Profile.engine, v2Phase]);
 
   useEffect(() => {
     let alive = true;
@@ -477,11 +523,28 @@ export default function PlayerHost() {
     return activePlaylist?.channels.find(c => c.id === params.id) || null;
   }, [isSynthetic, externalStream, activePlaylist, params.id]);
 
+  // v15.2.24-RC3: Flight Recorder aktif oynatma işini de bilir. Bu görev uzun
+  // ömürlüdür; daha yeni refresh/MAG/scan görevleri token-seq modeliyle öncelik
+  // kazanır, bittiğinde player görevi tekrar görünür.
+  useEffect(() => {
+    if (!visible || !channel?.id) return;
+    return markTask(`player:${v2ProfileKey}`, { channelId: channel.id, sessionId: activeSessionId });
+  }, [visible, channel?.id, v2ProfileKey, activeSessionId]);
+
   /**
    * OYNATILACAK ADRES
    * Stalker'da create_link ile çözülmüş geçici adres; diğerlerinde
    * kanalın kendi adresi.
    */
+  // v15.2.19: AppState listener tek kez kurulduğu için canlı player bağlamını
+  // ref üzerinden güncel tut. v15.2.18 empty-deps listener eski değerleri kaydedebiliyordu.
+  playerTelemetryContextRef.current = {
+    visible,
+    channelId: String(channel?.id || ""),
+    phase: String(v2Phase),
+    engine: String(v2Profile.engine),
+  };
+
   const playUrl = resolvedUrl || channel?.url || null;
   const basePlaybackRequest = useMemo(() => {
     if (!playUrl || !channel) return null;
@@ -517,6 +580,14 @@ export default function PlayerHost() {
     headers: playbackRequest.headers,
     contentType: playbackRequest.contentType || "auto",
   } : null, [playbackRequest]);
+
+  useEffect(() => {
+    if (!visible || !channel?.id) return;
+    const started = Date.now();
+    playerSelectionStartedAtRef.current = started;
+    playerDiagnosticSessionRef.current = `${String(channel.id)}-${started}`;
+    void recordDiagnostic("player", "CHANNEL_SELECTED", { channelId: String(channel.id), source: activePlaylist?.source || "", contentType: channel?.stream_type || "live" }, { sessionId: playerDiagnosticSessionRef.current });
+  }, [visible, channel?.id, activePlaylist?.source]);
 
   useEffect(() => {
     // Stalker değilse çözüme gerek yok
@@ -562,9 +633,12 @@ export default function PlayerHost() {
     setProfileReadySessionId(0);
     transitioningSessionRef.current = null;
     successfulSessionRef.current = null;
+    successfulSessionAtRef.current = 0;
+    resumeAttemptRef.current = { key: "", target: 0, attempts: 0, confirmed: false };
     vlcPlayingRef.current = false;
     mpvPlayingRef.current = false;
     sessionStartedAtRef.current = Date.now();
+    void recordDiagnostic("player", "PLAYER_SESSION_START", { channelId: String(channel.id), engine: v2Profile.engine, fromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current) }, { sessionId: playerDiagnosticSessionRef.current });
     const sessionNow = Date.now();
     media3ClockRef.current = makePlaybackClock(sessionNow);
     vlcClockRef.current = makePlaybackClock(sessionNow);
@@ -582,6 +656,7 @@ export default function PlayerHost() {
     setVlcVideoMetaReady(false);
     setMpvVideoReady(false);
     setMpvVideoMetaReady(false);
+    setMpvForceSoftware(false);
 
     let alive = true;
     (async () => {
@@ -637,7 +712,7 @@ export default function PlayerHost() {
      * (Alanlar expo-video paket tipinden doğrulandı.)
      */
     try {
-      p.timeUpdateEventInterval = PLAYER_UI_TIME_UPDATE_MS / 1000;
+      p.timeUpdateEventInterval = PLAYER_BACKGROUND_TIME_UPDATE_MS / 1000;
       const sec = Math.max(0.25, bufferMs / 1000);
       p.bufferOptions = {
         preferredForwardBufferDuration: sec,
@@ -648,6 +723,30 @@ export default function PlayerHost() {
     } catch { /* eski sürümlerde bu alan olmayabilir */ }
     p.play();
   });
+
+  /**
+   * v15.2.24 — ADAPTIVE MEDIA3 TIME UPDATE.
+   * Flight Recorder telemetrisinde uzun main-thread stall stack'leri
+   * expo-video IntervalUpdateClock -> emitTimeUpdate hattında görüldü.
+   * Kontroller kapalı normal TV izleme sırasında native timeUpdate sıklığını
+   * 1 sn -> 5 sn düşürürüz; kontrol/yayın bilgi paneli açıkken 1 sn hassasiyet
+   * geri gelir. Playback clock/stall watchdog seçilen event cadence ile çalışmayı sürdürür.
+   */
+  useEffect(() => {
+    if (!player) return;
+    const intervalMs = (showControls || sheet === "stats" || isSynthetic)
+      ? PLAYER_UI_TIME_UPDATE_MS
+      : PLAYER_BACKGROUND_TIME_UPDATE_MS;
+    try {
+      (player as any).timeUpdateEventInterval = intervalMs / 1000;
+      void recordDiagnostic("player", "MEDIA3_TIMEUPDATE_INTERVAL", {
+        intervalMs,
+        controls: showControls,
+        sheet: sheet || "",
+        synthetic: isSynthetic,
+      }, { sessionId: playerDiagnosticSessionRef.current });
+    } catch {}
+  }, [player, showControls, sheet, isSynthetic]);
 
   /**
    * TAMPON AYARINI SONRADAN DA UYGULA (v9.5.0)
@@ -728,6 +827,14 @@ export default function PlayerHost() {
 
     const statusSub = player.addListener("statusChange", (event: any) => {
       if (!stillMine()) return;
+      if (event?.status) {
+        void recordDiagnostic("player", "MEDIA3_STATUS", {
+          status: String(event.status),
+          fromSessionMs: Math.max(0, Date.now() - sessionStartedAtRef.current),
+          fromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current),
+          rebuffer: successfulSessionRef.current === sid && (event.status === "loading" || event.status === "buffering"),
+        }, { sessionId: playerDiagnosticSessionRef.current });
+      }
 
       if (event?.status === "loading" || event?.status === "buffering") {
         setV2Phase("preparing");
@@ -735,6 +842,22 @@ export default function PlayerHost() {
       }
 
       if (event?.error) {
+        void recordDiagnostic("player", "MEDIA3_ERROR", {
+          status: String(event?.status || ""),
+          error: String(event?.error?.message || event?.error || "Media3 error"),
+          phase: v2Phase,
+          engine: v2Profile.engine,
+          decoder: v2Profile.engine === "media3" ? undefined : v2Profile.decoder,
+          surface: v2Profile.engine === "media3" ? v2Profile.surface : undefined,
+          fromSessionMs: Math.max(0, Date.now() - sessionStartedAtRef.current),
+          fromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current),
+        }, { sessionId: playerDiagnosticSessionRef.current });
+        // v15.2.3: first-frame/playing başarı callback'inden hemen sonra gelen
+        // bayat source error çalışan görüntüyü alternatif URL'ye sürüklemesin.
+        if (successfulSessionRef.current === sid && Date.now() - successfulSessionAtRef.current < 1800) {
+          setRecoveryMessage(null);
+          return;
+        }
         const classified = classifyPlaybackError(event.error);
 
         // Xtream bazı panellerde aynı stream'i yalnız .ts veya yalnız .m3u8
@@ -752,6 +875,16 @@ export default function PlayerHost() {
         }
 
         const decision = fallbackFromError(v2Profile, classified);
+        if (classified.immediateFallback || classified.kind === "unsupported_codec" || classified.kind === "decoder") {
+          void recordDiagnostic("player", "MEDIA3_FATAL_FALLBACK", {
+            errorKind: classified.kind, technical: classified.technical,
+            fromProfile: v2ProfileKey,
+            toProfile: decision.next ? (decision.next.engine === "media3" ? `media3:${decision.next.surface}` : `${decision.next.engine}:${decision.next.decoder}`) : "none",
+            phase: decision.phase,
+          }, { sessionId: playerDiagnosticSessionRef.current });
+          setExoReady(false);
+          setExoFirstFrame(false);
+        }
 
         // 401/403/407/timeout ağ katmanıdır; surface/decoder zinciriyle
         // karıştırılmaz. Teknik hata saklanır, kullanıcıya sade hata gösterilir.
@@ -826,7 +959,9 @@ export default function PlayerHost() {
         setIsBuffering(false);
         if (successfulSessionRef.current !== sid) {
           successfulSessionRef.current = sid;
+          successfulSessionAtRef.current = Date.now();
           recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
+          recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
         }
       }
     });
@@ -963,6 +1098,7 @@ export default function PlayerHost() {
   /** Belirli bir saniyeye atlar (her iki motorda da çalışır). */
   const seekTo = (seconds: number) => {
     const target = Math.max(0, Math.floor(seconds));
+    void recordDiagnostic("player", "SEEK_REQUEST", { target, engine: v2Profile.engine, phase: v2Phase, buffering: isBufferingRef.current }, { sessionId: playerDiagnosticSessionRef.current });
     if (v2Profile.engine === "mpv") {
       if (!isSeekable && !isSynthetic) { flashMessage("Bu yayında ileri/geri alınamaz"); return; }
       void mpvRef.current?.seekTo(target);
@@ -972,9 +1108,69 @@ export default function PlayerHost() {
     } else {
       try { (player as any).currentTime = target; } catch {}
     }
+    const now = Date.now();
+    userSeekGraceUntilRef.current = now + (isSynthetic ? 8000 : 5000);
+    const resetClock = (clock: any) => ({ ...clock, positionSeconds: target, lastEventAt: now, lastAdvanceAt: now });
+    if (v2Profile.engine === "vlc") vlcClockRef.current = resetClock(vlcClockRef.current);
+    else if (v2Profile.engine === "mpv") mpvClockRef.current = resetClock(mpvClockRef.current);
+    else media3ClockRef.current = resetClock(media3ClockRef.current);
+    stallRecoveryRef.current = { sid: activeSessionId, profileKey: v2ProfileKey, softDone: false, hardDone: false };
     setVideoStats(prev => ({ ...prev, position: target }));
     revealControls();
   };
+
+  // v15.1.0-RC1 — Resume artık "seek komutunu gönderdim = başarı" saymaz.
+  // Hedef pozisyon playback clock üzerinden doğrulanır; source/player geç hazırlandıysa
+  // aynı session içinde kontrollü olarak yeniden denenir.
+  useEffect(() => {
+    const resumeAt = Math.max(0, Number(params.resumeAt || 0));
+    if (!visible || !isSynthetic || !channel || resumeAt < 10 || v2Phase !== "playing" || activeSessionId <= 0) return;
+    const key = `${activeSessionId}:${String(channel.id)}:${Math.floor(resumeAt)}`;
+    if (appliedResumeKeyRef.current === key) return;
+
+    const readPosition = () => {
+      if (v2Profile.engine === "vlc") return Number(vlcClockRef.current.positionSeconds || 0);
+      if (v2Profile.engine === "mpv") return Number(mpvClockRef.current.positionSeconds || 0);
+      return Number(media3ClockRef.current.positionSeconds || (player as any)?.currentTime || 0);
+    };
+    const sendResumeSeek = () => {
+      if (!sessionGateRef.current.isActive(activeSessionId)) return;
+      if (v2Profile.engine === "mpv") void mpvRef.current?.seekTo(resumeAt);
+      else if (v2Profile.engine === "vlc") {
+        try { vlcRef.current?.seek(resumeAt * 1000, "time"); } catch {}
+      } else {
+        // expo-video public API currentTime setter Android'de Media3 seek'e gider.
+        // Public JS API Media3 availableCommands'ı expose etmediği için başarı
+        // aşağıdaki gerçek position callback'i ile doğrulanır; sessiz başarı varsayılmaz.
+        try { (player as any).currentTime = resumeAt; } catch {}
+      }
+      const now = Date.now();
+      userSeekGraceUntilRef.current = now + 10000;
+      resumeAttemptRef.current = { key, target: resumeAt, attempts: resumeAttemptRef.current.attempts + 1, confirmed: false };
+    };
+
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const checkpoints = [120, 900, 1900, 3300];
+    checkpoints.forEach((delay, index) => {
+      timers.push(setTimeout(() => {
+        if (!sessionGateRef.current.isActive(activeSessionId) || appliedResumeKeyRef.current === key) return;
+        const pos = readPosition();
+        const tolerance = Math.max(4, Math.min(12, resumeAt * 0.02));
+        if (Math.abs(pos - resumeAt) <= tolerance || pos >= resumeAt - tolerance) {
+          appliedResumeKeyRef.current = key;
+          resumeAttemptRef.current = { key, target: resumeAt, attempts: resumeAttemptRef.current.attempts, confirmed: true };
+          return;
+        }
+        if (index < 3) sendResumeSeek();
+        else {
+          setTechnicalError(`Resume seek doğrulanamadı · motor=${v2Profile.engine} · hedef=${Math.floor(resumeAt)}s · gerçek=${Math.floor(pos)}s`);
+        }
+      }, delay));
+    });
+    // İlk komutu source PLAYING olduktan hemen sonra gönder.
+    sendResumeSeek();
+    return () => timers.forEach(clearTimeout);
+  }, [visible, isSynthetic, channel?.id, params.resumeAt, v2Phase, activeSessionId, v2ProfileKey, v2Profile.engine, player]);
 
   const lastExoUrlRef = useRef<string | null>(null);
 
@@ -988,6 +1184,15 @@ export default function PlayerHost() {
    */
   const haltPlaybackForExit = () => {
     try {
+      // Cast bağlıyken Player'daki "geri/çıkış" local stop ile aynı semantiğe
+      // sahip olmalı: remote media durur fakat Cast session zorla kapatılmaz.
+      // Böylece kullanıcı isterse yeni içeriği aynı cihaza gönderebilir.
+      if (castSession) {
+        try {
+          const remote = castSession.client || castSession.getClient?.();
+          remote?.stop?.();
+        } catch {}
+      }
       if (v2Profile.engine === "mpv") {
         void mpvRef.current?.stop?.();
       } else if (v2Profile.engine === "vlc") {
@@ -1085,20 +1290,36 @@ export default function PlayerHost() {
       const client = castSession.client || castSession.getClient?.();
       if (!client?.onMediaStatusUpdated) return;
 
-      sub = client.onMediaStatusUpdated((st: any) => {
+      const applyRemoteStatus = (st: any) => {
         if (!st) return;
-        // playerState: "playing" | "paused" | "buffering" | "idle" | "loading"
+        // Remote receiver playback authority'dir. Telefon UI'sı optimistic toggle
+        // yerine bu doğrulanmış state'i izler.
         const ps = String(st.playerState || "").toLowerCase();
+        castRemotePlayerStateRef.current = ps;
         if (ps === "playing") { setIsPlaying(true); setIsBuffering(false); }
-        else if (ps === "paused") { setIsPlaying(false); setIsBuffering(false); }
+        else if (ps === "paused" || ps === "idle") { setIsPlaying(false); setIsBuffering(false); }
         else if (ps === "buffering" || ps === "loading") { setIsBuffering(true); }
 
-        // Konum (saniye) -> ilerleme çubuğu TV ile aynı yeri göstersin.
-        // videoStats.currentTime saniye cinsindendir (yerel oynatıcıyla aynı ölçek).
         if (typeof st.streamPosition === "number" && st.streamPosition >= 0) {
+          castRemotePositionRef.current = st.streamPosition;
           setVideoStats(prev => ({ ...prev, currentTime: st.streamPosition }));
         }
-      });
+        const range = st.liveSeekableRange;
+        castLiveSeekableRangeRef.current = range && Number.isFinite(range.startTime) && Number.isFinite(range.endTime)
+          ? { startTime: Number(range.startTime), endTime: Number(range.endTime) }
+          : null;
+        if (typeof st.volume === "number" && Number.isFinite(st.volume)) {
+          setVolume(st.isMuted ? 0 : Math.round(Math.max(0, Math.min(1, st.volume)) * 100));
+        }
+      };
+
+      sub = client.onMediaStatusUpdated(applyRemoteStatus);
+      // Rebind edilen mevcut session'da yeni event gelmesini bekleme; mevcut
+      // receiver state'ini hemen çek. API yoksa listener tek başına çalışır.
+      try {
+        const currentStatus = client.getMediaStatus?.();
+        if (currentStatus?.then) currentStatus.then(applyRemoteStatus).catch(() => {});
+      } catch {}
     } catch { /* dinleyici kurulamazsa tek yönlü çalışmaya devam eder */ }
 
     return () => { try { sub?.remove?.(); } catch {} };
@@ -1326,7 +1547,8 @@ export default function PlayerHost() {
         const client = castSession.client || castSession.getClient?.();
         if (client) {
           if (isPlaying) client.pause?.(); else client.play?.();
-          setIsPlaying(!isPlaying);
+          // Cast receiver authoritative: isPlaying yalnız MEDIA_STATUS_UPDATED
+          // ile değişir. Komut reddedilirse telefon sahte state göstermez.
           revealControls();
           return;
         }
@@ -1350,22 +1572,30 @@ export default function PlayerHost() {
   };
 
   const seekBy = (delta: number) => {
+    void recordDiagnostic("player", "SEEK_RELATIVE_REQUEST", { delta, engine: v2Profile.engine, phase: v2Phase, buffering: isBufferingRef.current }, { sessionId: playerDiagnosticSessionRef.current });
     /**
      * YAYIN SIRASINDA SARMA (v7.4.0, v8.1.0'da iyileştirildi)
      * CANLI yayında sarma yapılamaz (kayıtlı içerik değil) — kullanıcıya
      * sessizce hiçbir şey olmuyormuş gibi görünmesin diye açıkça söylüyoruz.
      */
-    if (castSession && !isSynthetic) {
-      flashMessage("Canlı yayında ileri/geri alınamaz");
-      return;
-    }
     if (castSession) {
       try {
         const client = castSession.client || castSession.getClient?.();
         if (client) {
-          // Paket tipinden doğrulandı: MediaSeekOptions { position, relative }
-          // relative:true -> mevcut konuma GÖRE saniye cinsinden kaydır.
-          client.seek?.({ position: delta, relative: true });
+          if (!isSynthetic) {
+            // Cast live stream DVR destekliyorsa MediaStatus.liveSeekableRange
+            // gerçek capability'dir. Yoksa seek kapalı kalır.
+            const range = castLiveSeekableRangeRef.current;
+            if (!range) {
+              flashMessage("Bu canlı yayında ileri/geri alınamaz");
+              return;
+            }
+            const current = castRemotePositionRef.current || range.endTime;
+            const target = Math.max(range.startTime, Math.min(range.endTime, current + delta));
+            client.seek?.({ position: target, relative: false });
+          } else {
+            client.seek?.({ position: delta, relative: true });
+          }
           revealControls();
           return;
         }
@@ -1499,11 +1729,17 @@ export default function PlayerHost() {
     else revealControls();
   };
 
+  // v15.2.23-RC2: Gesture Handler callback'leri Reanimated kurulu olduğunda
+  // varsayılan olarak UI worklet runtime'ında çalışır. Bu player'daki callback'ler
+  // React state/ref, Dimensions, haptic ve native session API'lerine eriştiği için
+  // JS thread authority altında çalıştırılır. Böylece orientation/gesture sırasında
+  // `CppException: TypeError: undefined is not a function` worklet crash yolu kapanır.
   const tapGesture = Gesture.Tap()
     .enabled(visible && !isTv)
     .maxDuration(200)
+    .runOnJS(true)
     .onEnd(() => {
-      runOnJS(toggleControls)();
+      toggleControls();
     });
 
   // ÇİFT DOKUNUŞ DÜZELTMESİ (P0-5):
@@ -1515,11 +1751,12 @@ export default function PlayerHost() {
     .enabled(visible && !isTv)
     .numberOfTaps(2)
     .maxDuration(300)
+    .runOnJS(true)
     .onEnd((e) => {
-      // Player yatay/dikey olabilir; genişliği o an oku.
-      const w = Dimensions.get("window").width;
-      const isLeft = e.x < w / 2;
-      runOnJS(doubleTapSkip)(isLeft ? "back" : "fwd");
+      // JS thread üzerinde useWindowDimensions değeri kullanılır; UI worklet
+      // runtime'ından React Native Dimensions modülüne doğrudan çağrı yapılmaz.
+      const isLeft = e.x < screenW / 2;
+      doubleTapSkip(isLeft ? "back" : "fwd");
     });
 
   /**
@@ -1554,23 +1791,25 @@ export default function PlayerHost() {
   const volumeGesture = Gesture.Pan()
     .enabled(visible && !isTv)
     .activeOffsetY([-12, 12])       // yatay kaydırmayla çakışmasın
+    .runOnJS(true)
     .onBegin(() => { volumeStartRef.current = volume; })
     .onUpdate((e) => {
       // Yalnızca SAĞ yarıda çalışsın (sol yarı ileride parlaklık için ayrılmıştır)
       if (e.x < screenW / 2) return;
       const delta = -(e.translationY / 300) * 100;   // 300px = tam aralık
-      runOnJS(applyVolume)(volumeStartRef.current + delta);
+      applyVolume(volumeStartRef.current + delta);
     });
 
   const longPressGesture = Gesture.LongPress()
     .enabled(visible && !isTv)
     .minDuration(500)
+    .runOnJS(true)
     .onStart(() => {
-      runOnJS(setPlaybackSpeed)(2.0);
-      runOnJS(flashMessage)("⏩ 2x hız");
+      setPlaybackSpeed(2.0);
+      flashMessage("⏩ 2x hız");
     })
     .onEnd(() => {
-      runOnJS(setPlaybackSpeed)(1.0);
+      setPlaybackSpeed(1.0);
     });
 
   const goBack = async () => {
@@ -1807,7 +2046,8 @@ export default function PlayerHost() {
     url: playbackRequest.url,
     headers: playbackRequest.headers,
     bufferMs,
-  } : null, [playbackRequest, bufferMs, mpvRecoveryGeneration]);
+    softwareDecode: mpvForceSoftware,
+  } : null, [playbackRequest, bufferMs, mpvRecoveryGeneration, mpvForceSoftware]);
 
   const activeEngineLabel =
     v2Profile.engine === "media3" ? "Media3"
@@ -1823,6 +2063,16 @@ export default function PlayerHost() {
    * metadata/track + ilerleyen playback clock olaylarının birleşiminden türetilir.
    * HW -> SW geçişi yalnız gerçek native onError olayında yapılır.
    */
+  const recordFirstFrameDiagnostic = React.useCallback((profile: EngineProfile, firstFrameMs: number) => {
+    void recordDiagnostic("player", "FIRST_FRAME", {
+      channelId: String(channel?.id || ""),
+      source: activePlaylist?.source || "",
+      engine: profile.engine,
+      firstFrameMs,
+      totalFromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current),
+    }, { sessionId: playerDiagnosticSessionRef.current });
+  }, [channel?.id, activePlaylist?.source]);
+
   const markVlcHealthy = React.useCallback((
     sid: number,
     profile: EngineProfile,
@@ -1845,7 +2095,9 @@ export default function PlayerHost() {
     setIsBuffering(false);
     if (successfulSessionRef.current !== sid) {
       successfulSessionRef.current = sid;
+          successfulSessionAtRef.current = Date.now();
       recordEngineSuccess(String(channel?.id || ""), profile, firstFrameMs).catch(() => {});
+      recordFirstFrameDiagnostic(profile, firstFrameMs);
     }
     return true;
   }, [channel?.id]);
@@ -1908,8 +2160,9 @@ export default function PlayerHost() {
         setUseVLC(false);
         setMpvVideoMetaReady(false);
         setMpvVideoReady(false);
+        setMpvForceSoftware(false);
         setMpvRecoveryGeneration(g => g + 1);
-      } else if (engine === "auto" && VLCPlayerLib && Platform.OS !== "web") {
+      } else if (engine === "auto" && VLC_AVAILABLE && Platform.OS !== "web") {
         setRecoveryMessage("Media3 görüntü üretmedi; VLC donanım motoru deneniyor…");
         setV2Phase("switch_engine");
         setV2Profile({ engine: "vlc", decoder: "hw" });
@@ -1931,10 +2184,135 @@ export default function PlayerHost() {
   }, [visible, channel?.id, activeSessionId, sessionKind, playbackRequest?.expectsVideo, useVLC, v2Profile, exoReady, exoFirstFrame, exoRecoveryStep, engine, surfaceMode, player]);
 
   /**
-   * v15: VLC için süreye bağlı otomatik "görüntü yok" watchdog'u kaldırıldı.
-   * libVLC View yalnız gerçek native error veya kullanıcı yenilemesiyle değiştirilir.
+   * v15.1 RC — MPV FIRST-FRAME / 4K RECOVERY
+   *
+   * Gerçek cihazda 4K yayında ses/clock ilerlerken görüntünün hiç gelmediği veya
+   * kısa süre sonra kaybolduğu görüldü. mpv-android tarafında MediaCodec geçiş ve
+   * cihaz-spesifik hwdec sorunları bilinen bir sınıftır. İlk frame doğrulanmazsa
+   * aynı bozuk decoder üzerinde option değiştirmek yerine yeni native MPV instance
+   * software decode ile remount edilir. Software denemesi de frame üretmezse AUTO
+   * zinciri VLC'ye devam eder.
+   */
+  useEffect(() => {
+    if (
+      !visible || !channel || playbackRequest?.expectsVideo === false ||
+      v2Profile.engine !== "mpv" || !useMPV || mpvVideoReady ||
+      v2Phase !== "waiting_first_frame"
+    ) return;
+
+    const sid = activeSessionId;
+    const timeoutMs = (sessionKind === "live" ? FIRST_FRAME_TIMEOUT_LIVE_MS : FIRST_FRAME_TIMEOUT_VOD_MS) + 1800;
+    const t = setTimeout(() => {
+      if (
+        !sessionGateRef.current.isActive(sid) ||
+        activeProfileKeyRef.current !== v2ProfileKey ||
+        v2Profile.engine !== "mpv" || mpvVideoReady
+      ) return;
+      if (transitioningSessionRef.current === sid) return;
+      transitioningSessionRef.current = sid;
+
+      if (!mpvForceSoftware) {
+        recordEngineFailure(
+          String(channel.id), v2Profile, "decoder",
+          "MPV hardware decode profili doğrulanmış first-frame üretmedi; temiz software instance deneniyor",
+        ).catch(() => {});
+        try { void mpvRef.current?.stop?.(); } catch {}
+        setRecoveryMessage("MPV donanım decode görüntü üretmedi; temiz FFmpeg yazılım decoder deneniyor…");
+        setTechnicalError("MPV HW first-frame timeout → fresh software instance");
+        setMpvForceSoftware(true);
+        setMpvVideoMetaReady(false);
+        setMpvVideoReady(false);
+        setV2Phase("preparing");
+        setIsBuffering(true);
+        setMpvRecoveryGeneration(g => g + 1);
+        setTimeout(() => { if (sessionGateRef.current.isActive(sid)) transitioningSessionRef.current = null; }, 100);
+        return;
+      }
+
+      recordEngineFailure(
+        String(channel.id), v2Profile, "decoder",
+        "MPV software decode profili de doğrulanmış first-frame üretmedi",
+      ).catch(() => {});
+      try { void mpvRef.current?.stop?.(); } catch {}
+
+      if (engine === "auto" && VLC_AVAILABLE && Platform.OS !== "web") {
+        setRecoveryMessage("MPV donanım ve yazılım görüntü üretmedi; VLC motoru deneniyor…");
+        setTechnicalError("MPV HW+SW first-frame timeout");
+        setV2Phase("switch_engine");
+        setV2Profile({ engine: "vlc", decoder: "hw" });
+        setUseVLC(true);
+        setVlcAutoSoftware(false);
+        setVlcVideoMetaReady(false);
+        setVlcVideoReady(false);
+        setVlcRecoveryGeneration(g => g + 1);
+        setIsBuffering(true);
+      } else {
+        setRecoveryMessage(null);
+        setTechnicalError("MPV HW ve software decoder first-frame üretmedi.");
+        setError("MPV görüntü oluşturamadı.");
+        setV2Phase("final_error");
+        setIsBuffering(false);
+      }
+      setTimeout(() => { if (sessionGateRef.current.isActive(sid)) transitioningSessionRef.current = null; }, 100);
+    }, timeoutMs);
+
+    return () => clearTimeout(t);
+  }, [
+    visible, channel?.id, activeSessionId, sessionKind, playbackRequest?.expectsVideo,
+    v2Profile, v2ProfileKey, useMPV, mpvVideoReady, mpvForceSoftware, v2Phase, engine,
+  ]);
+
+  /**
+   * v15.2.23-RC2 — VLC VIDEO OUTPUT WATCHDOG
+   * Media3 fatal codec fallback'inden sonra libVLC yalnız ses üretebilir. Eski
+   * davranışta gerçek native error gelmezse spinner sonsuza kadar kalabiliyordu.
+   * Video beklenen oturumda VLC Playing/Buffering sinyali olsa bile doğrulanmış
+   * video-output (track/meta + ilerleyen clock) gelmezse HW -> SW bir kez denenir;
+   * SW de video üretmezse terminal hata verilir. Böylece ses var/siyah ekran
+   * durumunda sonsuz recovery döngüsü oluşmaz.
    */
   const v2ProfileReady = activeSessionId > 0 && profileReadySessionId === activeSessionId;
+  useEffect(() => {
+    if (!visible || !channel || !v2ProfileReady || !playbackRequest?.expectsVideo) return;
+    if (v2Profile.engine !== "vlc" || !useVLC || vlcVideoReady) return;
+    const sid = activeSessionId;
+    const profileKey = v2ProfileKey;
+    const timeoutMs = sessionKind === "live" ? FIRST_FRAME_TIMEOUT_LIVE_MS + 3500 : FIRST_FRAME_TIMEOUT_VOD_MS + 4500;
+    const timer = setTimeout(() => {
+      if (!sessionGateRef.current.isActive(sid) || activeProfileKeyRef.current !== profileKey) return;
+      if (v2Profile.engine !== "vlc" || vlcVideoReady) return;
+      const clock = vlcClockRef.current;
+      void recordDiagnostic("player", "VLC_VIDEO_OUTPUT_TIMEOUT", {
+        decoder: v2Profile.decoder,
+        playing: vlcPlayingRef.current,
+        buffering: isBufferingRef.current,
+        videoMetaReady: vlcVideoMetaReady,
+        lastClockEventAgeMs: Math.max(0, Date.now() - clock.lastEventAt),
+        lastClockAdvanceAgeMs: Math.max(0, Date.now() - clock.lastAdvanceAt),
+        timeoutMs,
+      }, { sessionId: playerDiagnosticSessionRef.current });
+      try { void vlcRef.current?.stop?.(); } catch {}
+      if (v2Profile.decoder === "hw") {
+        setRecoveryMessage("VLC görüntü üretmedi; yazılım decoder deneniyor…");
+        setError(null);
+        setTechnicalError("VLC HW video-output timeout");
+        setV2Phase("switch_engine");
+        setV2Profile({ engine: "vlc", decoder: "sw" });
+        setVlcAutoSoftware(true);
+        setVlcVideoMetaReady(false);
+        setVlcVideoReady(false);
+        setVlcRecoveryGeneration(g => g + 1);
+        setIsBuffering(true);
+      } else {
+        setV2Phase("final_error");
+        setRecoveryMessage(null);
+        setTechnicalError("VLC HW+SW video-output timeout");
+        setError("Yayın sesi alınsa da video görüntüsü oluşturulamadı.");
+        setIsBuffering(false);
+      }
+    }, timeoutMs);
+    return () => clearTimeout(timer);
+  }, [visible, channel?.id, v2ProfileReady, playbackRequest?.expectsVideo, v2Profile, v2ProfileKey, useVLC, vlcVideoReady, vlcVideoMetaReady, activeSessionId, sessionKind]);
 
   /**
    * GPT ELITE v15.0.0 — RUNTIME STALL MONITOR
@@ -1969,7 +2347,15 @@ export default function PlayerHost() {
           : v2Profile.engine === "mpv" ? mpvClockRef.current
           : media3ClockRef.current;
       const now = Date.now();
-      const stalledFor = now - clock.lastAdvanceAt;
+      if (now < userSeekGraceUntilRef.current) return;
+      // v15.2.8: canlı VLC'de media-time her streamde düzenli ilerlemez.
+      // Native time eventleri gelmeye devam ediyorsa yayın sağlığı var kabul edilir;
+      // yalnız playback position'a bakmak false-stall üretip sağlıklı yayını
+      // pause/play ile bizzat bozuyordu. VOD ve diğer motorlarda advance esas kalır.
+      const healthAt = sessionKind === "live" && v2Profile.engine === "vlc"
+        ? Math.max(clock.lastAdvanceAt, clock.lastEventAt)
+        : clock.lastAdvanceAt;
+      const stalledFor = now - healthAt;
       const softMs = sessionKind === "live" ? LIVE_SOFT_STALL_MS : VOD_SOFT_STALL_MS;
       const hardMs = sessionKind === "live" ? LIVE_HARD_STALL_MS : VOD_HARD_STALL_MS;
 
@@ -1977,35 +2363,8 @@ export default function PlayerHost() {
         rec.softDone = true;
         rec.softAt = now;
         stallRecoveryRef.current = rec;
-        setRecoveryMessage("Yayın kısa süre ilerlemedi; aynı motor yeniden senkronlanıyor…");
-
-        try {
-          if (v2Profile.engine === "vlc") {
-            void vlcRef.current?.pause?.();
-            setTimeout(() => {
-              if (sessionGateRef.current.isActive(sid) && activeProfileKeyRef.current === profileKey) {
-                void vlcRef.current?.play?.();
-              }
-            }, 180);
-          } else if (v2Profile.engine === "mpv") {
-            void mpvRef.current?.pause?.();
-            setTimeout(() => {
-              if (sessionGateRef.current.isActive(sid) && activeProfileKeyRef.current === profileKey) {
-                void mpvRef.current?.play?.();
-              }
-            }, 180);
-          } else {
-            player?.pause?.();
-            setTimeout(() => {
-              if (sessionGateRef.current.isActive(sid) && activeProfileKeyRef.current === profileKey) player?.play?.();
-            }, 180);
-          }
-        } catch {}
-
-        const reset = { ...clock, lastEventAt: now, lastAdvanceAt: now };
-        if (v2Profile.engine === "vlc") vlcClockRef.current = reset;
-        else if (v2Profile.engine === "mpv") mpvClockRef.current = reset;
-        else media3ClockRef.current = reset;
+        // Soft eşik artık gözlem-only. Decoder'a pause/play enjekte edilmez.
+        // Kullanıcıya da false-positive recovery mesajı gösterilmez.
         return;
       }
 
@@ -2141,12 +2500,14 @@ export default function PlayerHost() {
                 setIsBuffering(false);
                 if (successfulSessionRef.current !== activeSessionId) {
                   successfulSessionRef.current = activeSessionId;
+                  successfulSessionAtRef.current = Date.now();
                   recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
+                  recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
                 }
               }}
             />
           )}
-          {v2ProfileReady && useVLC && VLCPlayerLib && channel && (
+          {v2ProfileReady && useVLC && VLC_AVAILABLE && channel && (
             <VLCPlayerLib
               key={`vlc-${channel.id}-${effectiveVlcHwAccel ? "hw" : "sw"}-${vlcRecoveryGeneration}`}
               ref={vlcRef}
@@ -2189,7 +2550,9 @@ export default function PlayerHost() {
                   setIsBuffering(false);
                   if (successfulSessionRef.current !== activeSessionId) {
                     successfulSessionRef.current = activeSessionId;
+                  successfulSessionAtRef.current = Date.now();
                     recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
+                    recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
                   }
                 }
               }}
@@ -2212,7 +2575,9 @@ export default function PlayerHost() {
                   !useVLC
                 ) return;
                 const buffering = progress < 100;
+                const wasBuffering = isBufferingRef.current;
                 isBufferingRef.current = buffering;
+                if (wasBuffering !== buffering) void recordDiagnostic("player", buffering ? "VLC_BUFFERING_START" : "VLC_BUFFERING_END", { progress, afterFirstFrame: successfulSessionRef.current === activeSessionId }, { sessionId: playerDiagnosticSessionRef.current });
                 setIsBuffering(prev => prev === buffering ? prev : buffering);
                 if (buffering && v2Phase !== "preparing") setV2Phase("preparing");
                 else if (!buffering && !vlcVideoReady && v2Phase !== "waiting_first_frame") setV2Phase("waiting_first_frame");
@@ -2228,8 +2593,21 @@ export default function PlayerHost() {
                 const sid = activeSessionId;
                 const profile = v2Profile;
                 const profileKey = v2ProfileKey;
+                void recordDiagnostic("player", "VLC_ERROR_SIGNAL", {
+                  message: String(message || "VLC error"),
+                  phase: v2Phase,
+                  hardwareAccel: effectiveVlcHwAccel,
+                  videoReady: vlcVideoReady,
+                  videoMetaReady: vlcVideoMetaReady,
+                  playing: vlcPlayingRef.current,
+                  fromSessionMs: Math.max(0, Date.now() - sessionStartedAtRef.current),
+                }, { sessionId: playerDiagnosticSessionRef.current });
 
                 void (async () => {
+                  if (successfulSessionRef.current === sid && Date.now() - successfulSessionAtRef.current < 1800) {
+                    setRecoveryMessage(null);
+                    return;
+                  }
                   // Playing geldiği halde Vout/track/time eventleri birkaç yüz ms sonra
                   // gelebilir. Bu kısa pencere spurious EncounteredError olayının çalışan
                   // görüntüyü kapatmasını engeller; snapshot/probe kullanılmaz.
@@ -2375,7 +2753,7 @@ export default function PlayerHost() {
 
           {v2ProfileReady && useMPV && KIZILKAN_MPV_AVAILABLE && channel && mpvSource && (
             <KizilkanMpvView
-              key="kizilkan-mpv-core"
+              key={`kizilkan-mpv-core-${activeSessionId}-${mpvRecoveryGeneration}`}
               ref={mpvRef}
               style={StyleSheet.absoluteFill}
               source={mpvSource}
@@ -2403,6 +2781,10 @@ export default function PlayerHost() {
                 isPlayingRef.current = playing;
                 setIsPlaying(prev => prev === playing ? prev : playing);
 
+                if (playing && playbackRequest?.expectsVideo !== false && !mpvVideoReady) {
+                  setV2Phase("waiting_first_frame");
+                }
+
                 if (playing && playbackRequest && !playbackRequest.expectsVideo) {
                   const firstFrameMs = Math.max(0, Date.now() - sessionStartedAtRef.current);
                   setV2Phase("playing");
@@ -2412,7 +2794,9 @@ export default function PlayerHost() {
                   setIsBuffering(false);
                   if (successfulSessionRef.current !== activeSessionId) {
                     successfulSessionRef.current = activeSessionId;
+                  successfulSessionAtRef.current = Date.now();
                     recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
+                    recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
                   }
                 }
               }}
@@ -2423,7 +2807,9 @@ export default function PlayerHost() {
                   v2Profile.engine !== "mpv"
                 ) return;
                 const buffering = !!e?.nativeEvent?.isBuffering || !!e?.isBuffering;
+                const wasBuffering = isBufferingRef.current;
                 isBufferingRef.current = buffering;
+                if (wasBuffering !== buffering) void recordDiagnostic("player", buffering ? "MPV_BUFFERING_START" : "MPV_BUFFERING_END", { afterFirstFrame: successfulSessionRef.current === activeSessionId }, { sessionId: playerDiagnosticSessionRef.current });
                 setIsBuffering(prev => prev === buffering ? prev : buffering);
                 if (buffering) setV2Phase("preparing");
                 else if (!mpvVideoReady) setV2Phase("waiting_first_frame");
@@ -2470,7 +2856,9 @@ export default function PlayerHost() {
                   setIsBuffering(false);
                   if (successfulSessionRef.current !== activeSessionId) {
                     successfulSessionRef.current = activeSessionId;
+                  successfulSessionAtRef.current = Date.now();
                     recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
+                    recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
                   }
                 }
               }}
@@ -2506,6 +2894,33 @@ export default function PlayerHost() {
                   setSelectedSubtitleTrack(selectedS.id);
                 }
               }}
+              onDiagnostic={(e: any) => {
+                if (!sessionGateRef.current.isActive(activeSessionId) || v2Profile.engine !== "mpv") return;
+                const ev = e?.nativeEvent || e || {};
+                if (ev?.event) {
+                  void recordDiagnostic("player", "MPV_NATIVE_DIAGNOSTIC", {
+                    nativeEvent: String(ev.event),
+                    width: Number(ev.width || 0),
+                    height: Number(ev.height || 0),
+                    codec: ev.codec || "",
+                    format: ev.format || "",
+                    hwdec: ev.hwdec || "",
+                    phase: v2Phase,
+                    fromSessionMs: Math.max(0, Date.now() - sessionStartedAtRef.current),
+                  }, { sessionId: playerDiagnosticSessionRef.current });
+                }
+                if (sheetRef.current === "stats" && ev?.event) {
+                  setVideoStats(prev => ({
+                    ...prev,
+                    width: Number(ev.width || 0) || prev.width,
+                    height: Number(ev.height || 0) || prev.height,
+                    mpvCodec: ev.codec || (prev as any).mpvCodec,
+                    mpvFormat: ev.format || (prev as any).mpvFormat,
+                    mpvHwdec: ev.hwdec || (prev as any).mpvHwdec,
+                    mpvEvent: ev.event,
+                  }));
+                }
+              }}
               onError={(e: any) => {
                 if (
                   !sessionGateRef.current.isActive(activeSessionId) ||
@@ -2532,7 +2947,7 @@ export default function PlayerHost() {
 
                 // AUTO modunda MPV gerçekten fatal hata verdiyse VLC hâlâ
                 // farklı HTTP/surface/decoder stack'i olarak denenir.
-                if (engine === "auto" && VLCPlayerLib && Platform.OS !== "web") {
+                if (engine === "auto" && VLC_AVAILABLE && Platform.OS !== "web") {
                   setRecoveryMessage("MPV/FFmpeg yayını açamadı; VLC donanım motoru deneniyor…");
                   setError(null);
                   setTechnicalError(classified.technical);
@@ -2583,7 +2998,7 @@ export default function PlayerHost() {
       {channel && error && (
         <View style={styles.overlayCenter} pointerEvents="box-none">
           <Ionicons name="warning" size={40} color={colors.error} />
-          <Text style={styles.errorText}>{error}</Text>          
+          <Text style={styles.errorText}>{error}</Text>
           {technicalError && (
             <Text style={styles.technicalHint}>Teknik ayrıntı cihaz günlüğüne kaydedildi.</Text>
           )}
@@ -2615,7 +3030,7 @@ export default function PlayerHost() {
             * fallback dener. Buna rağmen hata ekranına düşülmüşse kullanıcıya
             * aynı ekrandan gerçek ikinci motoru deneme olanağı ver.
             */}
-          {v2Profile.engine !== "vlc" && VLCPlayerLib && Platform.OS !== "web" && (
+          {v2Profile.engine !== "vlc" && VLC_AVAILABLE && Platform.OS !== "web" && (
             <FocusButton
               testID="player-try-vlc-btn"
               focusable
@@ -2759,15 +3174,30 @@ export default function PlayerHost() {
                   setCastSession(conn ? session : null);
                   try {
                     if (conn) {
+                      // REMOTE authority: local decoder yalnız duraklatılır; Cast
+                      // receiver tek playback otoritesi olur.
                       if (v2Profile.engine === "mpv") void mpvRef.current?.pause();
                       else if (v2Profile.engine === "vlc") vlcRef.current?.pause();
                       else player?.pause();
-                      setIsPlaying(false);
                     } else {
-                      if (v2Profile.engine === "mpv") void mpvRef.current?.play();
-                      else if (v2Profile.engine === "vlc") vlcRef.current?.play();
-                      else player?.play();
-                      setIsPlaying(true);
+                      // Player görünür değilse Cast session kapanışı local sesi
+                      // gizlice yeniden başlatmamalı.
+                      if (!visible) {
+                        castLiveSeekableRangeRef.current = null;
+                        return;
+                      }
+                      // REMOTE -> LOCAL handoff: film/dizide TV'nin son gerçek
+                      // konumunu local player'a taşı, sonra oynat. Canlıda seek yok.
+                      const remotePos = castRemotePositionRef.current;
+                      if (isSynthetic && remotePos > 1) seekTo(remotePos);
+                      setTimeout(() => {
+                        try {
+                          if (v2Profile.engine === "mpv") void mpvRef.current?.play();
+                          else if (v2Profile.engine === "vlc") vlcRef.current?.play();
+                          else player?.play();
+                        } catch {}
+                      }, isSynthetic && remotePos > 1 ? 160 : 0);
+                      castLiveSeekableRangeRef.current = null;
                     }
                   } catch { /* oynatıcı hazır değilse sorun değil */ }
                 }}
@@ -3005,7 +3435,7 @@ export default function PlayerHost() {
 
       {channel && !error && (
         <View style={styles.spinnerOverlay} pointerEvents="none">
-          {isBuffering && <ActivityIndicator size="large" color={colors.brandPrimary} />}
+          {isBuffering && !(successfulSessionRef.current === activeSessionId && isPlaying) && <ActivityIndicator size="large" color={colors.brandPrimary} />}
         </View>
       )}
 

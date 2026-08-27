@@ -1,0 +1,13 @@
+# RC3 kaynak ZIP'i once verify branch'e aktarilacak.
+# Commit/push oncesi exact TypeScript 5.9.3 ile:
+node tools/check-v15224-rc3-gate-cwd.js
+node tools/check-v15224-rc3-tools-audit.js
+node tools/check-v15224-rc2-memory-native.js
+node tools/check-v15224-mag-room-stall.js
+node tools/denetle.js
+# Tum exit code'lar 0 olmadan commit/push YOK.
+
+# FINAL RC3 ek kapı (push öncesi):
+# node tools/check-v15224-rc3-claude-memory-telemetry.js
+# node tools/denetle.js
+# Her ikisi de 0 olmadan commit/push yapılmamalı.

@@ -55,10 +55,11 @@ export async function registerQuickActions() {
       }
     });
     // Handle case where app was launched from a quick action
-    const initial = QuickActions.initial;
-    if (initial?.params?.href) {
+    // v15.0.1 BUILD FIX: async callback öncesi href sabitlenir; nullable params narrowing kaybolmaz.
+    const initialHref = QuickActions.initial?.params?.href as string | undefined;
+    if (initialHref) {
       setTimeout(() => {
-        try { router.push(initial.params.href as any); } catch {}
+        try { router.push(initialHref as any); } catch {}
       }, 500);
     }
   } catch {

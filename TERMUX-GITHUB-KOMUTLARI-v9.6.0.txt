@@ -1,8 +1,0 @@
-cd /sdcard/Download/kizilkan-player
-
-git status
-git add .
-git commit -m "KIZILKAN PLAYER v9.6.0: TiviMate TV arayüzü ve kararlılık düzeltmeleri"
-git tag -a v9.6.0 -m "KIZILKAN PLAYER v9.6.0"
-git push origin main
-git push origin v9.6.0

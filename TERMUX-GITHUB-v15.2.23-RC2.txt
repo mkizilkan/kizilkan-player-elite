@@ -1,0 +1,18 @@
+# KIZILKAN PLAYER ELITE v15.2.23 RC2 — VERIFY FIRST
+# Main'e doğrudan push YOK.
+cd /sdcard/Download/gpt-kizilkan-player-elite || exit 1
+
+git status --short
+git branch --show-current
+git diff --check || exit 1
+
+# Dependency kuruluysa hard-gate:
+cd frontend || exit 1
+node ../tools/check-v15223-complete-corrective.js
+node ../tools/denetle.js
+cd ..
+
+# Önce verify-v15.2.23 üzerinde commit/push ve GitHub Actions full build.
+# CI tamamen yeşil olmadan main'e taşımayın.
+
+# RC2 final note: Xtream/MAG cooperative catalog-yield hardening is included; verify branch build must pass before main merge.

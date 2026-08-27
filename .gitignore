@@ -86,3 +86,9 @@ android-sdk/
 credentials.json
 *.key
 .credentials
+
+# Android release signing - NEVER COMMIT
+*.jks
+*.keystore
+*.base64
+*-release-GITHUB.txt

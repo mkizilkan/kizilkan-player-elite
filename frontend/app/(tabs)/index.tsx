@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Modal,
   Pressable,
   Image,
+  InteractionManager,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -50,6 +51,8 @@ import { FocusButton } from "@/src/components/FocusButton";
 import { useTv } from "@/src/store/TvContext";
 import { useFocusScroll } from "@/src/hooks/useFocusScroll";
 import { TvHomeContent } from "@/app/tv-home";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
+import { recordDiagnostic } from "@/src/utils/diagnostics";
 
 const ALL = "__all__";
 type Tab = "live" | "vod" | "series";
@@ -85,7 +88,7 @@ function ClassicLiveTvScreen() {
   const { listRef, onItemFocus, onScrollToIndexFailed } = useFocusScroll<any>();
   const router = useRouter();
   const { colors } = useTheme();
-  const { activePlaylist, playlists, toggleFavorite, isFavorite, addToRecent, updatePlaylist } = usePlaylists();
+  const { activePlaylist, playlists, toggleFavorite, isFavorite, addToRecent, updatePlaylist, ensureHeavyLoaded, nativeSummary } = usePlaylists();
   const { activeProfile } = useProfiles();
   const { settings: parental, isCategoryLocked, isUnlockedInSession, toggleCategoryLock } = useParental();
   const { isItemHidden, isGroupHidden, hiddenModeUnlocked, toggleHiddenItem, toggleHiddenGroup, toggleWatchlist, inWatchlist } = useLibrary();
@@ -134,6 +137,149 @@ function ClassicLiveTvScreen() {
     }
   };
   const [selectedCat, setSelectedCat] = useState<string>(ALL);
+
+  /**
+   * v15.2.1 Native Data Core / Room:
+   * Ana Canlı ekranı artık sırf mount oldu diye 10-50 bin kanalı JS belleğine
+   * hydrate ETMEZ. Android/Room mevcutsa yalnız görünür sayfa istenir. Film/dizi
+   * ve legacy özellikler gerektiğinde ensureHeavyLoaded ile eski sözleşmeye geri
+   * dönebilir; hiçbir özellik kaldırılmaz.
+   */
+  const nativePageGeneration = useRef(0);
+  const nativePageLoadingRef = useRef(false);
+  const nativeLiveOffsetRef = useRef(0);
+  const [nativeLiveItems, setNativeLiveItems] = useState<any[]>([]);
+  const [nativeLiveHasMore, setNativeLiveHasMore] = useState(false);
+  const [nativeLiveTotal, setNativeLiveTotal] = useState(0);
+  const [nativeCategoryRows, setNativeCategoryRows] = useState<Array<{ name: string; count: number }>>([]);
+  const nativeLibraryOffsetRef = useRef(0);
+  const [nativeLibraryItems, setNativeLibraryItems] = useState<any[]>([]);
+  const [nativeLibraryHasMore, setNativeLibraryHasMore] = useState(false);
+  const [nativeLibraryTotal, setNativeLibraryTotal] = useState(0);
+  const [nativeLibraryCategoryRows, setNativeLibraryCategoryRows] = useState<Array<{ name: string; count: number }>>([]);
+  // v15.2.19: native sayfa state'inin hangi playlist'e ait olduğunu açıkça taşı.
+  // Active playlist değiştiği renderda eski listenin item'ları bir frame bile gösterilmez.
+  const [nativePageOwnerId, setNativePageOwnerId] = useState<string | null>(null);
+
+  const hasAnyCustomGroups = useMemo(() =>
+    Object.values(overrides || {}).some((o: any) => Array.isArray(o?.groups) && o.groups.length > 0),
+  [overrides]);
+
+  const nativeLivePaged = !!activePlaylist?.id
+    && KizilkanNativeCore.available
+    && tab === "live"
+    && !hasAnyCustomGroups
+    && Number(nativeSummary?.channels || activePlaylist.channelsCount || 0) > 0;
+
+  const nativeLibraryPaged = !!activePlaylist?.id
+    && KizilkanNativeCore.available
+    && (tab === "vod" || tab === "series")
+    && !hasAnyCustomGroups
+    && Number(tab === "vod" ? (nativeSummary?.vod || activePlaylist.vodCount || 0) : (nativeSummary?.series || activePlaylist.seriesCount || 0)) > 0;
+
+  const selectedIsCustomGroup = useMemo(() => {
+    if (selectedCat === ALL) return false;
+    return Object.values(overrides || {}).some((o: any) => Array.isArray(o?.groups) && o.groups.includes(selectedCat));
+  }, [selectedCat, overrides]);
+
+  const loadNativeLivePage = useCallback(async (reset: boolean) => {
+    if (!activePlaylist?.id || !nativeLivePaged || selectedIsCustomGroup) return;
+    if (nativePageLoadingRef.current && !reset) return;
+    const generation = reset ? ++nativePageGeneration.current : nativePageGeneration.current;
+    nativePageLoadingRef.current = true;
+    try {
+      const offset = reset ? 0 : nativeLiveOffsetRef.current;
+      if (reset) nativeLiveOffsetRef.current = 0;
+      const page = await KizilkanNativeCore.queryItems<any>(activePlaylist.id, "live", {
+        group: selectedCat === ALL ? "__all__" : selectedCat,
+        offset,
+        limit: 80,
+      });
+      if (generation !== nativePageGeneration.current) return;
+      setNativePageOwnerId(activePlaylist.id);
+      setNativeLiveItems(prev => reset ? page.items : [...prev, ...page.items]);
+      nativeLiveOffsetRef.current = offset + page.items.length;
+      setNativeLiveHasMore(!!page.hasMore);
+      setNativeLiveTotal(Number(page.total || 0));
+    } catch (e) {
+      console.warn("[NativeDataCore] canlı Room sorgusu başarısız; tam katalog JS heap'ine hydrate edilmeyecek", e);
+      void recordDiagnostic("database", "NATIVE_LIVE_QUERY_FAILED", { playlistId: activePlaylist.id, error: String((e as any)?.message || e) });
+    } finally {
+      if (generation === nativePageGeneration.current) nativePageLoadingRef.current = false;
+    }
+  }, [activePlaylist?.id, nativeLivePaged, selectedIsCustomGroup, selectedCat, ensureHeavyLoaded]);
+
+  const loadNativeLibraryPage = useCallback(async (reset: boolean) => {
+    if (!activePlaylist?.id || !nativeLibraryPaged || selectedIsCustomGroup || (tab !== "vod" && tab !== "series")) return;
+    if (nativePageLoadingRef.current && !reset) return;
+    const generation = reset ? ++nativePageGeneration.current : nativePageGeneration.current;
+    nativePageLoadingRef.current = true;
+    try {
+      const offset = reset ? 0 : nativeLibraryOffsetRef.current;
+      if (reset) nativeLibraryOffsetRef.current = 0;
+      const page = await KizilkanNativeCore.queryItems<any>(activePlaylist.id, tab, {
+        group: selectedCat === ALL ? "__all__" : selectedCat,
+        offset, limit: 72,
+      });
+      if (generation !== nativePageGeneration.current) return;
+      setNativePageOwnerId(activePlaylist.id);
+      setNativeLibraryItems(prev => reset ? page.items : [...prev, ...page.items]);
+      nativeLibraryOffsetRef.current = offset + page.items.length;
+      setNativeLibraryHasMore(!!page.hasMore);
+      setNativeLibraryTotal(Number(page.total || 0));
+    } catch (e) {
+      console.warn("[NativeDataCore] VOD/Series Room sorgusu başarısız; tam katalog JS heap'ine hydrate edilmeyecek", e);
+      void recordDiagnostic("database", "NATIVE_LIBRARY_QUERY_FAILED", { playlistId: activePlaylist.id, kind: tab, error: String((e as any)?.message || e) });
+    } finally {
+      if (generation === nativePageGeneration.current) nativePageLoadingRef.current = false;
+    }
+  }, [activePlaylist?.id, nativeLibraryPaged, selectedIsCustomGroup, selectedCat, tab, ensureHeavyLoaded]);
+
+  useEffect(() => {
+    nativePageGeneration.current += 1;
+    nativePageLoadingRef.current = false;
+    nativeLiveOffsetRef.current = 0;
+    nativeLibraryOffsetRef.current = 0;
+    setNativePageOwnerId(null);
+    setNativeLiveItems([]);
+    setNativeLibraryItems([]);
+    setNativeCategoryRows([]);
+    setNativeLibraryCategoryRows([]);
+    setNativeLiveTotal(0);
+    setNativeLibraryTotal(0);
+    setNativeLiveHasMore(false);
+    setNativeLibraryHasMore(false);
+    setSelectedCat(ALL);
+    setPreviewChannel(null);
+    setEpgMap({});
+    void recordDiagnostic("catalog", "PLAYLIST_UI_INVALIDATED", { playlistId: activePlaylist?.id || "" });
+  }, [activePlaylist?.id]);
+
+  useEffect(() => {
+    if (!activePlaylist?.id) {
+      setNativeLiveItems([]); setNativeCategoryRows([]); setNativeLiveTotal(0); setNativeLiveHasMore(false);
+      return;
+    }
+    if (nativeLivePaged && !selectedIsCustomGroup) {
+      let cancelled = false;
+      KizilkanNativeCore.getCategories(activePlaylist.id, "live")
+        .then(rows => { if (!cancelled) setNativeCategoryRows(rows || []); })
+        .catch(e => console.warn("[NativeDataCore] kategori sorgusu", e));
+      void loadNativeLivePage(true);
+      return () => { cancelled = true; };
+    }
+    if (nativeLibraryPaged && !selectedIsCustomGroup && (tab === "vod" || tab === "series")) {
+      let cancelled = false;
+      KizilkanNativeCore.getCategories(activePlaylist.id, tab)
+        .then(rows => { if (!cancelled) setNativeLibraryCategoryRows(rows || []); })
+        .catch(e => console.warn("[NativeDataCore] VOD/Series kategori sorgusu", e));
+      void loadNativeLibraryPage(true);
+      return () => { cancelled = true; };
+    }
+    // Özel kullanıcı grupları item-level override eşleştirmesi gerektirir.
+    // Yalnız bu özellik kullanıldığında legacy tam hydrate'e geri dön.
+    if (selectedIsCustomGroup || hasAnyCustomGroups) void ensureHeavyLoaded(activePlaylist.id);
+  }, [activePlaylist?.id, nativeLivePaged, nativeLibraryPaged, selectedIsCustomGroup, hasAnyCustomGroups, tab, selectedCat, loadNativeLivePage, loadNativeLibraryPage, ensureHeavyLoaded]);
   const [epgMap, setEpgMap] = useState<Record<string, NowNext>>({});
   const [epgLoading, setEpgLoading] = useState(false);
 
@@ -439,9 +585,10 @@ function ClassicLiveTvScreen() {
   const currentList = useMemo(() => {
     if (!activePlaylist) return [] as any[];
     let list: any[] = [];
-    if (tab === "live") list = activePlaylist.channels;
-    else if (tab === "vod") list = activePlaylist.vod || [];
-    else list = activePlaylist.series || [];
+    const nativeOwnerMatches = nativePageOwnerId === activePlaylist.id;
+    if (tab === "live") list = nativeLivePaged ? (nativeOwnerMatches ? nativeLiveItems : []) : activePlaylist.channels;
+    else if (tab === "vod") list = nativeLibraryPaged ? (nativeOwnerMatches ? nativeLibraryItems : []) : (activePlaylist.vod || []);
+    else list = nativeLibraryPaged ? (nativeOwnerMatches ? nativeLibraryItems : []) : (activePlaylist.series || []);
     // KİLİTLİ KATEGORİLER (v5.5.0 düzeltmesi)
     // ESKİ: kilit yalnızca ÇOCUK profilinde listeden gizliyordu; normal
     // profilde kilitli kategoriler listede görünüyordu.
@@ -461,7 +608,7 @@ function ClassicLiveTvScreen() {
       list = list.filter((c: any) => !isItemHidden(c.id) && !(c.group && isGroupHidden(c.group)));
     }
     return list;
-  }, [activePlaylist, tab, activeProfile?.isKids, isCategoryLocked, isUnlockedInSession, hiddenModeUnlocked, isItemHidden, isGroupHidden]);
+  }, [activePlaylist, tab, nativeLivePaged, nativeLiveItems, nativeLibraryPaged, nativeLibraryItems, nativePageOwnerId, activeProfile?.isKids, isCategoryLocked, isUnlockedInSession, hiddenModeUnlocked, isItemHidden, isGroupHidden]);
 
   /**
    * Kullanıcı özelleştirmelerini (yeni isim / yeni simge) listeye uygular.
@@ -493,12 +640,23 @@ function ClassicLiveTvScreen() {
 
   /** Sağlayıcıdan gelen kategoriler — kullanıcının seçtiği sıralamaya göre. */
   const providerCategories = useMemo(() => {
+    // Room sayfalama modunda kategorileri yalnız ilk 80 kanaldan türetmek yanlış
+    // olur. SQLite GROUP BY sonucu tüm playlist'i kapsar.
+    const nativeRows = nativePageOwnerId === activePlaylist?.id
+      ? (nativeLivePaged ? nativeCategoryRows : nativeLibraryPaged ? nativeLibraryCategoryRows : [])
+      : [];
+    if ((nativeLivePaged || nativeLibraryPaged) && nativeRows.length > 0) {
+      let names = nativeRows.map(x => x.name).filter(Boolean);
+      if (!hiddenModeUnlocked) names = names.filter(g => !isGroupHidden(g));
+      if (activeProfile?.isKids) names = names.filter(g => !isCategoryLocked(g));
+      return sortCategories(names, catSort);
+    }
     const seen: string[] = [];
     displayList.forEach((c: any) => {
       if (c.group && !seen.includes(c.group)) seen.push(c.group); // sunucu sırası korunur
     });
     return sortCategories(seen, catSort);
-  }, [displayList, catSort]);
+  }, [displayList, catSort, nativeLivePaged, nativeLibraryPaged, nativeCategoryRows, nativeLibraryCategoryRows, nativePageOwnerId, activePlaylist?.id, hiddenModeUnlocked, isGroupHidden, activeProfile?.isKids, isCategoryLocked]);
 
   /** Gösterilecek tüm kategoriler: önce ÖZEL GRUPLAR, sonra sağlayıcı. */
   const categories = useMemo(
@@ -515,6 +673,21 @@ function ClassicLiveTvScreen() {
    * YENİ: tek geçişte sayaç haritası kuruluyor -> ~23.000 işlem (~100 kat hızlı).
    */
   const panelCategories = useMemo<CategoryEntry[]>(() => {
+    const nativeRows = nativePageOwnerId === activePlaylist?.id
+      ? (nativeLivePaged ? nativeCategoryRows : nativeLibraryPaged ? nativeLibraryCategoryRows : [])
+      : [];
+    if ((nativeLivePaged || nativeLibraryPaged) && nativeRows.length > 0 && customGroups.length === 0) {
+      const rows = nativeRows
+        .filter(x => hiddenModeUnlocked || !isGroupHidden(x.name))
+        .filter(x => !activeProfile?.isKids || !isCategoryLocked(x.name));
+      const total = nativeLivePaged
+        ? Number(nativeSummary?.channels || activePlaylist?.channelsCount || nativeLiveTotal || 0)
+        : Number(tab === "vod" ? (nativeSummary?.vod || activePlaylist?.vodCount || nativeLibraryTotal || 0) : (nativeSummary?.series || activePlaylist?.seriesCount || nativeLibraryTotal || 0));
+      return [
+        { name: ALL, count: total },
+        ...rows.map(x => ({ name: x.name, count: x.count })),
+      ];
+    }
     const counts = new Map<string, number>();
     const customSet = new Set(customGroups);
 
@@ -544,7 +717,7 @@ function ClassicLiveTvScreen() {
       list.push({ name: cat, count: counts.get(cat) || 0, custom: customSet.has(cat) });
     }
     return list;
-  }, [categories, displayList, overrides, customGroups]);
+  }, [categories, displayList, overrides, customGroups, nativeLivePaged, nativeLibraryPaged, nativeCategoryRows, nativeLibraryCategoryRows, nativePageOwnerId, hiddenModeUnlocked, isGroupHidden, activeProfile?.isKids, isCategoryLocked, nativeSummary?.channels, nativeSummary?.vod, nativeSummary?.series, activePlaylist?.id, activePlaylist?.channelsCount, activePlaylist?.vodCount, activePlaylist?.seriesCount, nativeLiveTotal, nativeLibraryTotal, tab]);
 
   const filtered = useMemo(() => {
     if (selectedCat === ALL) return displayList;
@@ -560,62 +733,59 @@ function ClassicLiveTvScreen() {
     return isCustom ? applyItemOrder(list as any, selectedCat, ordering) : list;
   }, [displayList, selectedCat, overrides, customGroups, ordering]);
 
-  // Fetch EPG for live — supports Xtream (client-side) + XMLTV (backend)
+  // v15.2.3 — EPG ISOLATION: kanal listesi EPG'yi ASLA beklemez. İlk görünür
+  // pencerenin EPG'si etkileşimler bittikten sonra küçük batch ile arkadan gelir.
+  const epgTargets = useMemo(() => (filtered as any[]).slice(0, 16), [filtered]);
+  const epgTargetSignature = useMemo(() => epgTargets.map(c => String(c.stream_id || c.epg_channel_id || c.tvg_id || c.id || "")).join("|"), [epgTargets]);
+
   useEffect(() => {
-    if (tab !== "live" || !activePlaylist) return;
-    const chList = filtered as any[];
-    if (chList.length === 0) return;
+    if (tab !== "live" || !activePlaylist || epgTargets.length === 0) return;
     let cancelled = false;
-    setEpgLoading(true);
-
-    (async () => {
-      try {
-        // Xtream: client-side short_epg per stream
-        if (activePlaylist.source === "xtream" && activePlaylist.xtreamServer && activePlaylist.xtreamUsername && activePlaylist.xtreamPassword) {
-          const cred = {
-            server: activePlaylist.xtreamServer,
-            username: activePlaylist.xtreamUsername,
-            password: activePlaylist.xtreamPassword,
-          };
-          const { xtreamNowNextBatch } = await import("@/src/utils/iptv");
-          const ids = chList.slice(0, 40).map(c => c.stream_id).filter(Boolean) as string[];
-          if (ids.length > 0) {
-            const map = await xtreamNowNextBatch(cred, ids);
-            if (cancelled) return;
-            // Remap keys from stream_id → epg_channel_id (what ChannelRow expects)
-            const out: Record<string, NowNext> = {};
-            for (const ch of chList) {
-              const sid = ch.stream_id;
-              if (sid && map[sid]) {
-                const key = ch.epg_channel_id || ch.tvg_id || sid;
-                const now = map[sid].now;
-                const next = map[sid].next;
-                out[key] = {
-                  now: now ? { title: now.title, description: now.description || undefined, start: now.start_timestamp ? new Date(now.start_timestamp * 1000).toISOString() : now.start, stop: now.stop_timestamp ? new Date(now.stop_timestamp * 1000).toISOString() : now.stop } : null,
-                  next: next ? { title: next.title, description: next.description || undefined, start: next.start_timestamp ? new Date(next.start_timestamp * 1000).toISOString() : next.start, stop: next.stop_timestamp ? new Date(next.stop_timestamp * 1000).toISOString() : next.stop } : null,
-                } as any;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const interaction = InteractionManager.runAfterInteractions(() => {
+      timer = setTimeout(async () => {
+        if (cancelled) return;
+        setEpgLoading(true);
+        try {
+          if (activePlaylist.source === "xtream" && activePlaylist.xtreamServer && activePlaylist.xtreamUsername && activePlaylist.xtreamPassword) {
+            const cred = { server: activePlaylist.xtreamServer, username: activePlaylist.xtreamUsername, password: activePlaylist.xtreamPassword };
+            const { xtreamNowNextBatch } = await import("@/src/utils/iptv");
+            const ids = epgTargets.map(c => c.stream_id).filter(Boolean) as string[];
+            if (ids.length > 0) {
+              const map = await xtreamNowNextBatch(cred, ids);
+              if (cancelled) return;
+              const out: Record<string, NowNext> = {};
+              for (const ch of epgTargets) {
+                const sid = ch.stream_id;
+                if (sid && map[sid]) {
+                  const key = ch.epg_channel_id || ch.tvg_id || sid;
+                  const now = map[sid].now, next = map[sid].next;
+                  out[key] = {
+                    now: now ? { title: now.title, description: now.description || undefined, start: now.start_timestamp ? new Date(now.start_timestamp * 1000).toISOString() : now.start, stop: now.stop_timestamp ? new Date(now.stop_timestamp * 1000).toISOString() : now.stop } : null,
+                    next: next ? { title: next.title, description: next.description || undefined, start: next.start_timestamp ? new Date(next.start_timestamp * 1000).toISOString() : next.start, stop: next.stop_timestamp ? new Date(next.stop_timestamp * 1000).toISOString() : next.stop } : null,
+                  } as any;
+                }
               }
+              if (!cancelled) setEpgMap(prev => ({ ...prev, ...out }));
             }
-            if (!cancelled) setEpgMap(prev => ({ ...prev, ...out }));
+          } else if (activePlaylist.epgUrl) {
+            const ids = epgTargets.map(c => c.epg_channel_id || c.tvg_id).filter((x): x is string => !!x);
+            if (ids.length > 0) {
+              const { getNowNext } = await import("@/src/utils/epg");
+              const res = await getNowNext(activePlaylist.id, ids, activePlaylist.epgUrl);
+              if (!cancelled) setEpgMap(prev => ({ ...prev, ...(res.data as Record<string, NowNext>) }));
+            }
           }
-        } else if (activePlaylist.epgUrl) {
-          // CİHAZ-İÇİ XMLTV (backend YOK)
-          const ids = chList
-            .map(c => c.epg_channel_id || c.tvg_id)
-            .filter((x): x is string => !!x)
-            .slice(0, 200);
-          if (ids.length > 0) {
-            const { getNowNext } = await import("@/src/utils/epg");
-            const res = await getNowNext(activePlaylist.id, ids, activePlaylist.epgUrl);
-            if (!cancelled) setEpgMap(res.data as Record<string, NowNext>);
-          }
-        }
-      } catch { /* ignore */ }
-      if (!cancelled) setEpgLoading(false);
-    })();
-
-    return () => { cancelled = true; };
-  }, [activePlaylist?.id, activePlaylist?.epgUrl, activePlaylist, filtered, tab]);
+        } catch { /* EPG, kanal listesini bloke eden kritik yol değildir. */ }
+        if (!cancelled) setEpgLoading(false);
+      }, 280);
+    });
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      interaction.cancel();
+    };
+  }, [activePlaylist?.id, activePlaylist?.epgUrl, activePlaylist?.source, activePlaylist?.xtreamServer, activePlaylist?.xtreamUsername, activePlaylist?.xtreamPassword, epgTargetSignature, tab]);
 
   if (!activePlaylist) {
     return (
@@ -636,8 +806,14 @@ function ClassicLiveTvScreen() {
     );
   }
 
-  const hasVod = (activePlaylist.vod?.length || 0) > 0;
-  const hasSeries = (activePlaylist.series?.length || 0) > 0;
+  // v15.2.24-RC2: Android Native Core varken sayaçların canonical kaynağı Room summary
+  // olur. Ağır JS dizilerinin length değeri Room yolunu gölgeleyip tam katalog
+  // hidratasyonunu teşvik etmez. Web/native-core olmayan platformlarda legacy korunur.
+  const liveCount = KizilkanNativeCore.available ? (nativeSummary?.channels || activePlaylist.channelsCount || 0) : (activePlaylist.channels?.length || activePlaylist.channelsCount || 0);
+  const vodCount = KizilkanNativeCore.available ? (nativeSummary?.vod || activePlaylist.vodCount || 0) : (activePlaylist.vod?.length || activePlaylist.vodCount || 0);
+  const seriesCount = KizilkanNativeCore.available ? (nativeSummary?.series || activePlaylist.seriesCount || 0) : (activePlaylist.series?.length || activePlaylist.seriesCount || 0);
+  const hasVod = vodCount > 0;
+  const hasSeries = seriesCount > 0;
 
   const StickyHeader = (
     <>
@@ -652,7 +828,7 @@ function ClassicLiveTvScreen() {
           >
             <Ionicons name="tv" size={18} color={tab === "live" ? colors.onBrandPrimary : colors.onSurfaceSecondary} />
             <Text style={[styles.segmentText, { color: tab === "live" ? colors.onBrandPrimary : colors.onSurfaceSecondary }]}>
-              Canlı ({activePlaylist.channels.length})
+              Canlı ({liveCount})
             </Text>
           </FocusButton>
           <FocusButton
@@ -665,7 +841,7 @@ function ClassicLiveTvScreen() {
           >
             <Ionicons name="film" size={18} color={!hasVod ? colors.onSurfaceTertiary : tab === "vod" ? colors.onBrandPrimary : colors.onSurfaceSecondary} />
             <Text style={[styles.segmentText, { color: !hasVod ? colors.onSurfaceTertiary : tab === "vod" ? colors.onBrandPrimary : colors.onSurfaceSecondary }]}>
-              Filmler{hasVod ? ` (${activePlaylist.vod!.length})` : ""}
+              Filmler{hasVod ? ` (${vodCount})` : ""}
             </Text>
           </FocusButton>
           <FocusButton
@@ -678,7 +854,7 @@ function ClassicLiveTvScreen() {
           >
             <Ionicons name="albums" size={18} color={!hasSeries ? colors.onSurfaceTertiary : tab === "series" ? colors.onBrandPrimary : colors.onSurfaceSecondary} />
             <Text style={[styles.segmentText, { color: !hasSeries ? colors.onSurfaceTertiary : tab === "series" ? colors.onBrandPrimary : colors.onSurfaceSecondary }]}>
-              Diziler{hasSeries ? ` (${activePlaylist.series!.length})` : ""}
+              Diziler{hasSeries ? ` (${seriesCount})` : ""}
             </Text>
           </FocusButton>
         </View>
@@ -719,7 +895,7 @@ function ClassicLiveTvScreen() {
           />
         </FocusButton>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-          <CategoryChip label={`Tümü (${currentList.length})`} active={selectedCat === ALL} onPress={() => setSelectedCat(ALL)} testID="chip-all" />
+          <CategoryChip label={`Tümü (${nativeLivePaged ? liveCount : nativeLibraryPaged ? nativeLibraryTotal : currentList.length})`} active={selectedCat === ALL} onPress={() => setSelectedCat(ALL)} testID="chip-all" />
           {categories.map(cat => {
             const cnt = panelCategories.find(entry => entry.name === cat)?.count ?? 0;
             return (
@@ -754,9 +930,10 @@ function ClassicLiveTvScreen() {
         <View style={{ flex: 1 }}>
           <KizilkanLogo size="md" showSubtitle={false} showIcon align="left" />
           <Text style={[styles.subtitle, { color: colors.onSurfaceSecondary }]} numberOfLines={1}>
-            {activePlaylist.name} • {activePlaylist.channels.length} kanal
-            {hasVod ? ` • ${activePlaylist.vod!.length} film` : ""}
-            {hasSeries ? ` • ${activePlaylist.series!.length} dizi` : ""}
+            {activePlaylist.name} • {liveCount} kanal
+            {hasVod ? ` • ${vodCount} film` : ""}
+            {hasSeries ? ` • ${seriesCount} dizi` : ""}
+            {activePlaylist.serverCodeBinding?.code ? ` • Kod ${activePlaylist.serverCodeBinding.code}` : ""}
           </Text>
         </View>
         {epgLoading && <ActivityIndicator size="small" color={colors.brandPrimary} />}
@@ -806,6 +983,10 @@ function ClassicLiveTvScreen() {
             ref={listRef}
             onScrollToIndexFailed={onScrollToIndexFailed}
             data={filtered as any[]}
+            onEndReached={() => {
+              if (nativeLivePaged && nativeLiveHasMore) void loadNativeLivePage(false);
+            }}
+            onEndReachedThreshold={0.55}
             keyExtractor={c => c.id}
             contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.md, paddingBottom: SPACING.xxxl }}
             renderItem={({ item, index }) => (
@@ -851,6 +1032,8 @@ function ClassicLiveTvScreen() {
           onLongPressItem={(item) => showChannelActions(item)}
           ListHeaderComponent={StickyHeader as any}
           emptyText={tab === "vod" ? "Bu kategoride film yok" : "Bu kategoride dizi yok"}
+          onEndReached={() => { if (nativeLibraryPaged && nativeLibraryHasMore) void loadNativeLibraryPage(false); }}
+          onEndReachedThreshold={0.55}
         />
       )}
 
@@ -933,9 +1116,9 @@ function ClassicLiveTvScreen() {
         visible={catPanel}
         section={tab as any}
         sectionCounts={{
-          live: activePlaylist?.channels?.length || 0,
-          vod: activePlaylist?.vod?.length || 0,
-          series: activePlaylist?.series?.length || 0,
+          live: liveCount,
+          vod: vodCount,
+          series: seriesCount,
         }}
         categories={panelCategories}
         selected={selectedCat === ALL ? "TÜMÜ" : selectedCat}

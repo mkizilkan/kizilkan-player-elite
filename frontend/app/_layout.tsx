@@ -26,10 +26,10 @@
  * ---------------------------------------------------------------------------
  */
 
-import { Stack, useRouter } from "expo-router";
+import { Stack, usePathname, useRouter, useSegments } from "expo-router";
 import * as Linking from "expo-linking";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -37,7 +37,7 @@ import { StatusBar } from "expo-status-bar";
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { ErrorBoundary } from "@/src/components/ErrorBoundary";
 import { ThemeProvider } from "@/src/theme/ThemeContext";
-import { ProfileProvider } from "@/src/store/ProfileContext";
+import { ProfileProvider, useProfiles } from "@/src/store/ProfileContext";
 import { PlaylistProvider } from "@/src/store/PlaylistContext";
 import { ParentalProvider } from "@/src/store/ParentalContext";
 import { LibraryProvider } from "@/src/store/LibraryContext";
@@ -45,15 +45,33 @@ import { DownloadProvider } from "@/src/store/DownloadContext";
 import { registerQuickActions } from "@/src/utils/quickActions";
 import { requestBaselinePermissions } from "@/src/utils/permissions";
 import { prepareExternalStream } from "@/src/utils/externalOpen";
-import { View } from "react-native";
+import { AppState, View } from "react-native";
 import { PlayerProvider } from "@/src/player/PlayerContext";
 import PlayerHost from "@/src/player/PlayerHost";
 import { TvProvider, useTv } from "@/src/store/TvContext";
+import { markAppBackground, markAppForeground, persistAppPath } from "@/src/utils/appSession";
+import { initializeDiagnostics, recordDiagnostic, setDiagnosticAppState, startMemorySampling } from "@/src/utils/diagnostics";
 
 // Açılış ekranı, fontlar hazır olana kadar ekranda kalsın.
 SplashScreen.preventAutoHideAsync().catch(() => {
   /* bazı platformlarda çağrı zaten yapılmış olabilir — yoksayılabilir */
 });
+
+
+const PROFILE_GATE_EXEMPT_PATHS = new Set(["/", "/welcome", "/profile-select"]);
+
+function ProfileSessionGate({ children }: { children: ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const { activeProfile, isLoading, sessionAuthorizedProfileId } = useProfiles();
+  const blocked = !isLoading && !PROFILE_GATE_EXEMPT_PATHS.has(pathname) && !!activeProfile?.hasPin && sessionAuthorizedProfileId !== activeProfile.id;
+  useEffect(() => {
+    if (blocked) router.replace("/profile-select");
+  }, [blocked, router]);
+  // PIN korumalı route bir frame bile görünmesin; redirect tamamlanana kadar siyah bariyer.
+  if (blocked) return <View style={{ flex: 1, backgroundColor: "#000" }} />;
+  return <>{children}</>;
+}
 
 /** Bildirim izni istemeden önce beklenen süre (kullanıcı splash'i görsün). */
 const PERMISSION_PROMPT_DELAY_MS = 3000;
@@ -61,6 +79,11 @@ const PERMISSION_PROMPT_DELAY_MS = 3000;
 export default function RootLayout() {
   const [loaded, error] = useIconFonts();
   const router = useRouter();
+  const pathname = usePathname();
+  const segments = useSegments();
+  const sessionPath = segments[0] === "(tabs)" && pathname === "/" ? "/(tabs)" : pathname;
+  const pathnameRef = useRef(sessionPath);
+  pathnameRef.current = sessionPath;
 
   /**
    * "ŞUNUNLA AÇ" DESTEĞİ (v4.9.0)
@@ -90,6 +113,35 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (!loaded && !error) return;
+    void recordDiagnostic("navigation", "ROUTE_CHANGED", { path: sessionPath });
+    void persistAppPath(sessionPath);
+  }, [sessionPath, loaded, error]);
+
+  useEffect(() => {
+    if (!loaded && !error) return;
+    const init = initializeDiagnostics();
+    setDiagnosticAppState(AppState.currentState || "active");
+    startMemorySampling(30000);
+    void recordDiagnostic("lifecycle", "APP_ROOT_READY", { path: pathnameRef.current, nativeBlackBox: init.native || {} });
+  }, [loaded, error]);
+
+  useEffect(() => {
+    if (!loaded && !error) return;
+    const sub = AppState.addEventListener("change", state => {
+      setDiagnosticAppState(state);
+      if (state === "background" || state === "inactive") {
+        void recordDiagnostic("lifecycle", "APP_BACKGROUND", { state, path: pathnameRef.current });
+        void markAppBackground(pathnameRef.current);
+      } else if (state === "active") {
+        void recordDiagnostic("lifecycle", "APP_FOREGROUND", { state, path: pathnameRef.current });
+        void markAppForeground(pathnameRef.current);
+      }
+    });
+    return () => sub.remove();
+  }, [loaded, error]);
+
+  useEffect(() => {
+    if (!loaded && !error) return;
 
     SplashScreen.hideAsync().catch(() => {});
     registerQuickActions();
@@ -114,6 +166,7 @@ export default function RootLayout() {
               Bağımlılık kontrolü yapıldı: ProfileContext ne temayı ne de TV
               bağlamını kullanıyor, bu yüzden sıra değişimi güvenli. */}
           <ProfileProvider>
+          <ProfileSessionGate>
           <TvProvider>
           <ThemeProvider>
               <PlaylistProvider>
@@ -193,6 +246,7 @@ export default function RootLayout() {
               </PlaylistProvider>
             </ThemeProvider>
           </TvProvider>
+          </ProfileSessionGate>
           </ProfileProvider>
         </SafeAreaProvider>
       </GestureHandlerRootView>
