@@ -28,6 +28,7 @@ import {
   classifyPlaybackError,
   defaultProfile,
   alternateMedia3Surface,
+  setMpvAvailable,   // v16.2.0: MPV kütüphanesi yoksa motoru zincirden çıkar
   fallbackFromError,
   loadEngineProfile,
   recordEngineSuccess,
@@ -999,6 +1000,7 @@ export default function PlayerHost() {
         if (successfulSessionRef.current !== sid) {
           successfulSessionRef.current = sid;
           successfulSessionAtRef.current = Date.now();
+          firstFrameSeenRef.current = true;   // v16.2.0
           recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
           recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
         }
@@ -1543,9 +1545,14 @@ export default function PlayerHost() {
     // showControls mevcut render'da false olsa bile revealControls ile aynı
     // anda çağrılabilsin; yalnız görünür player ve kapalı alt-sheet şarttır.
     if (sheet !== null || !visible) return;
+    /**
+     * v16.2.0: Görüntü YOKKEN kullanıcı motor değiştirmek/yeniden denemek
+     * ister; 4 saniye buna yetmiyordu. İlk kare gelmemişse süre uzatılır.
+     */
+    const noPicture = !firstFrameSeenRef.current;
     hideTimer.current = setTimeout(() => {
       setShowControls(false);
-    }, isTv ? 6000 : 4000);
+    }, noPicture ? (isTv ? 15000 : 12000) : (isTv ? 6000 : 4000));
   };
 
   const revealControls = () => {
@@ -1572,7 +1579,27 @@ export default function PlayerHost() {
 
   // İlk kanal, her zap/yeni kanal ve PlayerHost yeniden görünür olduğunda:
   // kullanıcı istemedikçe panel açılmaz. Aynı kanalı listeden tekrar açma da dahil.
+  /**
+   * v16.2.0 — PANEL "AÇILIR AÇILMAZ KAPANIYOR" DÜZELTMESİ
+   * -------------------------------------------------------------------------
+   * KULLANICI BİLDİRİMİ: "görüntü yok iken ekrana dokununca player ayar paneli
+   * geliyor hemencecik gidiyor."
+   * SEBEP: bu effect `visible` VEYA `channel?.id` her değiştiğinde KOŞULSUZ
+   * paneli kapatıyordu. Görüntü gelmeyen kanalda motor geri düşme zinciri
+   * (media3 -> mpv -> vlc) çalışırken effect yeniden tetikleniyor ve kullanıcı
+   * paneli açar açmaz kapanıyordu.
+   * ÇÖZÜM: yalnızca kanal GERÇEKTEN değiştiğinde sıfırla. Aynı kanal içinde
+   * motor/yeniden deneme olurken panele dokunulmaz.
+   */
+  const lastResetChannelRef = useRef<string>("");
+  /** v16.2.0: bu oturumda ilk video karesi geldi mi? (panel gizleme süresi için) */
+  const firstFrameSeenRef = useRef(false);
   useEffect(() => {
+    const id = String(channel?.id || "");
+    if (!visible) { lastResetChannelRef.current = ""; return; }
+    if (lastResetChannelRef.current === id) return;   // aynı kanal -> dokunma
+    lastResetChannelRef.current = id;
+    firstFrameSeenRef.current = false;   // v16.2.0: yeni kanal -> ilk kare beklentisi sıfırlanır
     cancelHide();
     setSheet(null);
     setShowControls(false);
@@ -2980,6 +3007,18 @@ export default function PlayerHost() {
                 ) return;
 
                 const raw = String(e?.nativeEvent?.message || e?.message || e || "MPV oynatma hatası");
+                /**
+                 * v16.2.0 — MPV KÜTÜPHANESİ YOKSA MOTORU KALICI DEVRE DIŞI BIRAK.
+                 * Cihaz kaydında 20 kez "MPV başlatılamadı: dev.jdtech.mpv.MPVLib"
+                 * görüldü: native sınıf yüklenemiyor, yani motor hiç çalışmıyor.
+                 * Buna rağmen her kanalda geri düşme zincirinde deneniyor ve
+                 * saniyeler kaybediliyordu. İlk bu hatada bayrağı kapatıyoruz;
+                 * zincir bundan sonra doğrudan VLC'ye gider.
+                 */
+                if (/MPVLib|başlatılamadı|ClassNotFound|UnsatisfiedLink|NoClassDefFound/i.test(raw)) {
+                  setMpvAvailable(false);
+                  void recordDiagnostic("player", "MPV_ENGINE_DISABLED", { reason: raw.slice(0, 160) });
+                }
                 const classified = classifyPlaybackError(raw);
                 recordEngineFailure(String(channel?.id || ""), v2Profile, classified.kind, classified.technical).catch(() => {});
 

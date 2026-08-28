@@ -1493,8 +1493,16 @@ export default function AddPlaylist() {
         setProgress("Canlı TV kataloğu alınıyor...");
         let catalog;
         try {
+          /**
+           * v16.2.0 — MAG'DA FİLM VE DİZİ DE ÇEKİLİR.
+           * Önceden liveOnly:true idi; bu yüzden portal film/dizi verse bile
+           * yalnız Canlı TV ekleniyordu (kullanıcı: "IPTV Loader'da canlı,
+           * diziler ve filmler ayrı geliyor, bizimkinde sadece canlı").
+           * stalkerCatalog zaten vod ve series döndürüyor; artık isteniyor ve
+           * aşağıda listeye YAZILIYOR.
+           */
           catalog = await stalkerCatalog(cred, session, {
-            liveOnly: true,
+            liveOnly: false,
             onProgress: (progress) => setProgress(progress.message),
           });
         }
@@ -1517,7 +1525,9 @@ export default function AddPlaylist() {
           stalkerPortal: stPortal.trim(), stalkerMac: stMac.trim().toUpperCase(),
           stalkerSerial: stSerial.trim() || undefined,
           accountInfo: normalizeStalkerAccountInfo(profile),
-          channels: catalog.channels, vod: [], series: [], createdAt: new Date().toISOString(),
+          // v16.2.0: katalogdan gelen film/dizi ARTIK ATILMIYOR.
+          channels: catalog.channels, vod: catalog.vod || [], series: catalog.series || [],
+          createdAt: new Date().toISOString(),
         };
 
         // ENRICHMENT addPlaylist/Room verify BAŞARISINDAN ÖNCE başlatılmaz.

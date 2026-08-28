@@ -296,9 +296,23 @@ export default function PlaylistSelect() {
                 activeOpacity={0.85}
                 focusable
                 hasTVPreferredFocus={i === 0}
+                /**
+                 * v16.2.0 — SEÇİLİ LİSTE BELİRGİNLEŞTİRİLDİ.
+                 * Önceden yalnız kenarlık rengi ve küçük "• SON" yazısı vardı;
+                 * kullanıcı hangi listenin aktif olduğunu ayırt edemiyordu.
+                 * Artık: kalın kenarlık + marka rengi dolgu + sol renk şeridi
+                 * + "AKTİF" rozeti.
+                 */
                 style={[
                   styles.cell,
-                  { backgroundColor: typeColor + "10", borderColor: activePlaylist?.id === p.id ? colors.brandPrimary : typeColor + "88" },
+                  activePlaylist?.id === p.id
+                    ? {
+                        backgroundColor: colors.brandPrimary + "26",
+                        borderColor: colors.brandPrimary,
+                        borderWidth: 2,
+                        borderLeftWidth: 6,
+                      }
+                    : { backgroundColor: typeColor + "10", borderColor: typeColor + "88" },
                 ]}
               >
                 <View style={[styles.iconBox, { backgroundColor: typeColor + "22" }]}>
@@ -308,14 +322,19 @@ export default function PlaylistSelect() {
                   <Text style={[styles.name, { color: colors.onSurface }]} numberOfLines={1}>
                     {p.name}
                     {activePlaylist?.id === p.id && (
-                      <Text style={{ color: colors.brandPrimary, fontSize: FONT.size.xs }}>  •  SON</Text>
+                      <Text style={{ color: colors.brandPrimary, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>
+                        {"  ✓ AKTİF"}
+                      </Text>
                     )}
                   </Text>
                   <Text style={[styles.sub, { color: colors.onSurfaceSecondary }]} numberOfLines={1}>
                     <Text style={{ color: typeColor, fontWeight: FONT.weight.bold }}>{playlistTypeLabel(p)}</Text>
-                    {` • ${p.channels?.length || 0} kanal`}
-                    {p.vod?.length ? ` • ${p.vod.length} film` : ""}
-                    {p.series?.length ? ` • ${p.series.length} dizi` : ""}
+                    {/* v16.2.0: Room kanonik depo olduğundan diziler bellekte BOŞ olabilir;
+                        sayaçlar önce meta'dan okunur, yoksa dizi uzunluğuna düşülür.
+                        Aksi halde dolu listeler "0 kanal" görünüyordu. */}
+                    {` • ${p.channelsCount ?? p.channels?.length ?? 0} kanal`}
+                    {(p.vodCount ?? p.vod?.length ?? 0) ? ` • ${p.vodCount ?? p.vod?.length} film` : ""}
+                    {(p.seriesCount ?? p.series?.length ?? 0) ? ` • ${p.seriesCount ?? p.series?.length} dizi` : ""}
                   </Text>
                   {p.serverCodeBinding && (
                     <Text style={[styles.sub, { color: colors.onSurfaceTertiary }]} numberOfLines={1}>

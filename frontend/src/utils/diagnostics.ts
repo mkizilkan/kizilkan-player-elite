@@ -482,6 +482,64 @@ function deriveAnomalies(events: DiagnosticEvent[]) {
   return out;
 }
 
+/**
+ * v16.2.0 — OTOMATİK TEŞHİS ÖZETİ
+ * ---------------------------------------------------------------------------
+ * Kayıtları elle okurken en çok zaman kaybettiren şey, yüzlerce olayın içinden
+ * ASIL kök nedeni ayıklamaktı. Örneğin 28.08 kaydında 38 motor hatasının 20'si
+ * tek bir sebepti ("MPV başlatılamadı: dev.jdtech.mpv.MPVLib") — ama bunu
+ * görmek için tüm olayları taramak gerekti.
+ *
+ * Bu özet, dışa aktarımın EN BAŞINA konur ve şunları hazır verir:
+ *   • en sık hata imzaları (kaç kez, hangi motor)
+ *   • motor bazlı başarı/başarısızlık dağılımı
+ *   • ilk kare oranı (görüntü gerçekten geliyor mu?)
+ *   • ortalama açılış süresi
+ *   • ön plan/arka plan ayrımıyla ANR sayısı (yanlış pozitif elenir)
+ */
+function buildAutoSummary(events: any[]): Record<string, any> {
+  const sig = new Map<string, number>();
+  const engineFail = new Map<string, number>();
+  let firstFrames = 0, sessions = 0, anrFg = 0, anrBg = 0;
+  const firstFrameMs: number[] = [];
+
+  for (const e of events) {
+    const ev = String(e?.event || "");
+    const d: any = e?.data || {};
+    if (ev === "ENGINE_ERROR" || ev === "MEDIA3_ERROR" || ev === "VLC_ERROR_SIGNAL") {
+      const tech = String(d.technical || d.message || "bilinmiyor").slice(0, 90);
+      const eng = String(d.engine || "?");
+      sig.set(`${eng} :: ${tech}`, (sig.get(`${eng} :: ${tech}`) || 0) + 1);
+      engineFail.set(eng, (engineFail.get(eng) || 0) + 1);
+    }
+    if (ev === "PLAYER_FIRST_FRAME" || ev === "FIRST_FRAME") {
+      firstFrames++;
+      const ms = Number(d.firstFrameMs || 0);
+      if (ms > 0) firstFrameMs.push(ms);
+    }
+    if (ev === "PLAYBACK_SESSION_START" || ev === "ENGINE_ATTEMPT") sessions++;
+    if (ev === "ANR_WATCHDOG_STALL") { if (e?.data?._fg === false) anrBg++; else anrFg++; }
+  }
+
+  const top = [...sig.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)
+    .map(([k, v]) => ({ imza: k, adet: v }));
+  const avg = firstFrameMs.length
+    ? Math.round(firstFrameMs.reduce((a, b) => a + b, 0) / firstFrameMs.length) : null;
+
+  return {
+    aciklama: "Otomatik teşhis özeti — kök nedeni hızlı görmek için (v16.2.0).",
+    enSikHatalar: top,
+    motorBazliHata: Object.fromEntries(engineFail),
+    ilkKareSayisi: firstFrames,
+    oturumSayisi: sessions,
+    ilkKareOraniYuzde: sessions > 0 ? Math.round((firstFrames / sessions) * 100) : null,
+    ortalamaIlkKareMs: avg,
+    anrOnPlan: anrFg,
+    anrArkaPlan_yanlisPozitifOlabilir: anrBg,
+    mpvKullanilabilir: undefined as any,   // PlayerHost tarafından doldurulur
+  };
+}
+
 export async function exportDiagnosticReport(extra: Record<string, any> = {}): Promise<string> {
   ensureNativeBlackBox();
   const events = await loadDiagnostics(MAX_EXPORT_EVENTS);
@@ -490,6 +548,8 @@ export async function exportDiagnosticReport(extra: Record<string, any> = {}): P
   try { nativeFlightRecorder = await KizilkanNativeCore.getBlackBoxSnapshot?.(MAX_EXPORT_EVENTS) || {}; } catch {}
   const payload = sanitizeValue({
     format: 'KIZILKAN_FLIGHT_RECORDER_V5',
+    // v16.2.0: kök nedeni en başta göster
+    autoSummary: buildAutoSummary(events),
     schemaVersion: 5,
     eventCapacity: MAX_EVENTS,
     appSessionId,
