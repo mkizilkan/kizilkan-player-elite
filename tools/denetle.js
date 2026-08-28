@@ -52,6 +52,7 @@ const CHECKS = [
   ["check-v15226-rc1-lockfile.js", "v15.2.26 RC1 lockfile/package integrity contract", ""],
   ["check-v15227-mag-playback-pagination-ui.js", "v15.2.27 MAG playback/pagination/progress/emergency-controls contract", ""],
   ["check-v15227-rc2-ci-tsc-fix.js", "v15.2.27 RC2 CI TypeScript HARD gate resolver/install contract", ""],
+  ["check-v15227-rc3-stalker-ts2345-fix.js", "v15.2.27 RC3 Stalker create_link TS2345 type-safety contract", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 

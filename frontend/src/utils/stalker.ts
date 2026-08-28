@@ -1193,11 +1193,19 @@ export async function stalkerCreateLink(
   // İlk deneme eski/stabil create_link sözleşmesini korur. Yalnız gerçek medya
   // isteği 401/403/456 ile reddedilip fresh-session recovery tetiklenirse sahada
   // kullanılan Ministra varyantlarındaki sn/token/long_lived alanları eklenir.
-  const recoveryParams = opts.recovery ? {
-    sn: String(cred.serial || ""),
-    token: String(ses.token || ""),
-    long_lived: "1",
-  } : {};
+  // v15.2.27-RC3 FIX: buildUrl yalnız Record<string,string> kabul eder.
+  // Opsiyonel serial alanını ternary-spread ile birleştirmek TypeScript'in
+  // `sn?: undefined` üretmesine ve gerçek CI'da TS2345'e yol açıyordu.
+  // Recovery parametreleri artık açıkça string map olarak kuruluyor; boş
+  // opsiyonel değerler request'e hiç eklenmiyor.
+  const recoveryParams: Record<string, string> = {};
+  if (opts.recovery) {
+    const serial = String(cred.serial ?? "").trim();
+    const token = String(ses.token ?? "").trim();
+    if (serial) recoveryParams.sn = serial;
+    if (token) recoveryParams.token = token;
+    recoveryParams.long_lived = "1";
+  }
   const data = await req(
     buildUrl(ses.endpoint, {
       type: mediaType,

@@ -18,7 +18,7 @@ function staticChecks(){
   need(stalker,/nextPage:\s*2/,'1-based portal için gerçek p=2 probe yok');
   need(stalker,/max_page_items/,'portal max_page_items sayfalama metadatası kullanılmıyor');
   need(stalker,/opts:\s*\{ forceFresh\?: boolean \}/,'playback fresh-session resolve seçeneği yok');
-  need(stalker,/long_lived:\s*"1"/,'456 recovery create_link long_lived varyantı yok');
+  need(stalker,/long_lived(?:\s*:\s*|\s*=\s*)"1"/,'456 recovery create_link long_lived varyantı yok');
   need(request,/runtimeHeaders\?: Record<string, string>/,'runtime playback header bridge yok');
   need(request,/\.\.\.cleanHeaders\(runtimeHeaders\)/,'runtime headers PlaybackRequest içine aktarılmıyor');
   need(player,/resolvedHeaders/,'PlayerHost resolved MAG headers state yok');
