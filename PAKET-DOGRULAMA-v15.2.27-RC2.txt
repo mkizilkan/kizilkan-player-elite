@@ -1,0 +1,3 @@
+KIZILKAN PLAYER ELITE v15.2.27-RC2
+CI TypeScript HARD gate fix paketi.
+SHA-256 paketleme sonunda ayrı .sha256 dosyasına yazılır.

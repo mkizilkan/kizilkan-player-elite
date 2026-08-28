@@ -108,7 +108,17 @@ jobs:
 
       # ---------------------------------------------------------------- 5
       - name: Bagimliliklari kur
-        run: yarn install --network-timeout 600000
+        # v15.2.27-RC2 FIX: TypeScript devDependency HARD gate icin zorunludur.
+        # Ortamdan gelebilecek NODE_ENV=production / production install etkisini
+        # kapat; lockfile sapmasina da izin verme.
+        run: yarn install --frozen-lockfile --production=false --network-timeout 600000
+
+      - name: TypeScript CLI on-kontrolu - HARD gate
+        # denetle.js'den once gercek TypeScript CLI'nin kurulmus oldugunu kanitla.
+        # Yoksa hata artik iki eski gate icinde gizlenmek yerine burada acik gorunur.
+        run: |
+          node -e "console.log('TypeScript module:', require.resolve('typescript/bin/tsc'))"
+          yarn exec tsc --version
 
       # ---------------------------------------------------------------- 5b
       # STATIK DENETIM KAPISI (v9.12.0)

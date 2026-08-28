@@ -51,6 +51,7 @@ const CHECKS = [
   ["check-v15225-rc3-typescript-project.js", "v15.2.25 RC3 tsconfig-bound TypeScript project gate", ""],
   ["check-v15226-rc1-lockfile.js", "v15.2.26 RC1 lockfile/package integrity contract", ""],
   ["check-v15227-mag-playback-pagination-ui.js", "v15.2.27 MAG playback/pagination/progress/emergency-controls contract", ""],
+  ["check-v15227-rc2-ci-tsc-fix.js", "v15.2.27 RC2 CI TypeScript HARD gate resolver/install contract", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 
@@ -73,6 +74,14 @@ for (const [file, label, argMode] of CHECKS) {
     console.log(`${clean ? "✓" : "✗"} ${label}`);
   } catch (e) {
     failed++;
+    // v15.2.27-RC2 FIX: child gate'in gerçek stdout/stderr'ini gizleme.
+    // CI ekranında yalnız "Command failed" görmek kök nedeni örter.
+    const childOut = [e.stdout, e.stderr]
+      .filter(Boolean)
+      .map(v => Buffer.isBuffer(v) ? v.toString("utf8") : String(v))
+      .join("\n")
+      .trim();
+    if (childOut) console.log(childOut);
     console.log(`✗ ${label}  (çalıştırılamadı: ${e.message.split("\n")[0]})`);
   }
 }
