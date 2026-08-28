@@ -76,6 +76,6 @@ async function fixtureDuplicatePagination(){
     throw new Error('fixture endpoint '+url);
   });
   const r=await m.stalkerCatalog({portal:'http://p',mac:'00:11:22:33:44:55'},{token:'t',endpoint:'http://p/portal.php',compatProfile:'mag254-encoded'});
-  if(r.vod.length!==1 || vodPages>2) throw new Error(`duplicate pagination governor başarısız vod=${r.vod.length} pages=${vodPages}`);
+  if(r.vod.length!==1 || vodPages>3) throw new Error(`duplicate pagination governor başarısız vod=${r.vod.length} pages=${vodPages}`); // v15.2.27: p=0/p=1 alias ise p=2 güvenli probe edilir
 }
 (async()=>{try{staticChecks(); await fixtureHandshakeMag254(); await fixtureRejectBounded(); await fixtureDuplicatePagination(); console.log('TEMIZ — v15.2.25 MAG254 learned handshake + bounded reject + live-first durable commit + Room-safe enrichment + adaptive pagination fixtures');}catch(e){console.error('HATA — v15.2.25 MAG architecture:',e.message);process.exit(1);}})();

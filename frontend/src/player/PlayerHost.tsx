@@ -336,7 +336,11 @@ export default function PlayerHost() {
    * KISA SÜRELİDİR. Bu yüzden burada çözülüp oynatıcıya veriliyor.
    */
   const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
+  const [resolvedHeaders, setResolvedHeaders] = useState<Record<string, string>>({});
   const [resolving, setResolving] = useState(false);
+  const [stalkerFreshResolveNonce, setStalkerFreshResolveNonce] = useState(0);
+  const stalkerPlaybackRefreshRef = useRef(0);
+  const stalkerForceFreshRequestedRef = useRef(false);
 
 
   const [isRecording, setIsRecording] = useState(false);   // DVR kaydı (v7.3.0)
@@ -554,8 +558,9 @@ export default function PlayerHost() {
       override: overrides?.[channel.id || ""],
       playlist: activePlaylist,
       isLive: sessionKind === "live",
+      runtimeHeaders: activePlaylist?.source === "stalker" ? resolvedHeaders : undefined,
     });
-  }, [playUrl, channel, overrides, activePlaylist, sessionKind]);
+  }, [playUrl, channel, overrides, activePlaylist, sessionKind, resolvedHeaders]);
 
   const playbackCandidates = useMemo(() => {
     if (!basePlaybackRequest) return [] as string[];
@@ -582,6 +587,11 @@ export default function PlayerHost() {
   } : null, [playbackRequest]);
 
   useEffect(() => {
+    stalkerPlaybackRefreshRef.current = 0;
+    stalkerForceFreshRequestedRef.current = false;
+  }, [channel?.id, activePlaylist?.id]);
+
+  useEffect(() => {
     if (!visible || !channel?.id) return;
     const started = Date.now();
     playerSelectionStartedAtRef.current = started;
@@ -591,7 +601,7 @@ export default function PlayerHost() {
 
   useEffect(() => {
     // Stalker değilse çözüme gerek yok
-    if (!channel?.url || activePlaylist?.source !== "stalker") { setResolvedUrl(null); return; }
+    if (!channel?.url || activePlaylist?.source !== "stalker") { setResolvedUrl(null); setResolvedHeaders({}); return; }
     let alive = true;
     setResolving(true);
     (async () => {
@@ -603,8 +613,14 @@ export default function PlayerHost() {
           mac: normalizeMac(pl.stalkerMac || ""),
           serial: pl.stalkerSerial,
         };
-        const { url } = await stalkerResolveStream(cred, null, String(channel.url));
-        if (alive) setResolvedUrl(url);
+        const forceFresh = stalkerForceFreshRequestedRef.current;
+        stalkerForceFreshRequestedRef.current = false;
+        const { url, headers } = await stalkerResolveStream(cred, null, String(channel.url), { forceFresh });
+        if (alive) {
+          setResolvedHeaders(headers);
+          setResolvedUrl(url);
+          if (forceFresh) setPlaybackRetryNonce(n => n + 1);
+        }
       } catch (e: any) {
         if (alive) {
           setResolvedUrl(null);
@@ -615,7 +631,7 @@ export default function PlayerHost() {
       }
     })();
     return () => { alive = false; };
-  }, [channel?.url, activePlaylist?.id, activePlaylist?.source]);
+  }, [channel?.url, activePlaylist?.id, activePlaylist?.source, stalkerFreshResolveNonce]);
 
 
   /**
@@ -859,6 +875,23 @@ export default function PlayerHost() {
           return;
         }
         const classified = classifyPlaybackError(event.error);
+        const mediaErrorText = String(event?.error?.message || event?.error || "");
+        const stalkerHttpAuthFailure = activePlaylist?.source === "stalker" && /(?:response\s+code|http(?:\s+status)?)\s*[:=]?\s*(401|403|456)\b/i.test(mediaErrorText);
+        if (stalkerHttpAuthFailure && stalkerPlaybackRefreshRef.current < 1) {
+          stalkerPlaybackRefreshRef.current += 1;
+          void recordDiagnostic("player", "STALKER_PLAYBACK_HTTP_REFRESH", {
+            channelId: String(channel?.id || ""),
+            reason: mediaErrorText.match(/(401|403|456)/)?.[1] || "auth_http",
+            attempt: stalkerPlaybackRefreshRef.current,
+          }, { sessionId: playerDiagnosticSessionRef.current });
+          setRecoveryMessage("MAG oturumu yenileniyor ve yayın bağlantısı tekrar alınıyor…");
+          setError(null);
+          setTechnicalError(classified.technical);
+          setIsBuffering(true);
+          stalkerForceFreshRequestedRef.current = true;
+          setStalkerFreshResolveNonce(n => n + 1);
+          return;
+        }
 
         // Xtream bazı panellerde aynı stream'i yalnız .ts veya yalnız .m3u8
         // endpoint'inde düzgün döndürür. Extractor/source/404 hatasında motoru
@@ -2457,6 +2490,18 @@ export default function PlayerHost() {
           style={StyleSheet.absoluteFill}
         />
       )}
+      {visible && channel && !isTv && !showControls && sheet === null && !error && (resolving || isBuffering || v2Phase !== "playing") && (
+        <Pressable
+          testID="player-emergency-touch-catcher"
+          style={[StyleSheet.absoluteFill, { zIndex: 6 }]}
+          onPress={() => {
+            void recordDiagnostic("player", "PLAYER_EMERGENCY_CONTROLS_OPEN", { phase: v2Phase, engine: v2Profile.engine, buffering: isBuffering, resolving });
+            revealControls();
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Oynatma kontrollerini aç"
+        />
+      )}
       <GestureDetector gesture={Gesture.Exclusive(doubleTapGesture, longPressGesture, volumeGesture, tapGesture)}>
         <Animated.View style={StyleSheet.absoluteFill}>
           {v2ProfileReady && v2Profile.engine === "media3" && (
@@ -3030,6 +3075,21 @@ export default function PlayerHost() {
             * fallback dener. Buna rağmen hata ekranına düşülmüşse kullanıcıya
             * aynı ekrandan gerçek ikinci motoru deneme olanağı ver.
             */}
+          <FocusButton
+            testID="player-select-engine-on-error-btn"
+            focusable
+            onPress={() => {
+              setError(null);
+              setTechnicalError(null);
+              setRecoveryMessage("Manuel motor seçimi açıldı…");
+              setShowControls(true);
+              setSheet("engine");
+            }}
+            style={[styles.retryBtn, { backgroundColor: "transparent", borderWidth: 1, borderColor: colors.brandPrimary }]}
+          >
+            <Text style={[styles.retryText, { color: colors.brandPrimary }]}>Oynatıcı Motorunu Seç</Text>
+          </FocusButton>
+
           {v2Profile.engine !== "vlc" && VLC_AVAILABLE && Platform.OS !== "web" && (
             <FocusButton
               testID="player-try-vlc-btn"

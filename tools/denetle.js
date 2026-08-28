@@ -49,6 +49,8 @@ const CHECKS = [
   ["check-v15225-rc2-storage-contract.js", "v15.2.25 RC2 learned MAG storage TypeScript contract", ""],
   ["check-v15225-rc2-typescript-build.js", "v15.2.25 RC2 full TypeScript --noEmit build gate", ""],
   ["check-v15225-rc3-typescript-project.js", "v15.2.25 RC3 tsconfig-bound TypeScript project gate", ""],
+  ["check-v15226-rc1-lockfile.js", "v15.2.26 RC1 lockfile/package integrity contract", ""],
+  ["check-v15227-mag-playback-pagination-ui.js", "v15.2.27 MAG playback/pagination/progress/emergency-controls contract", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 
@@ -66,7 +68,7 @@ for (const [file, label, argMode] of CHECKS) {
   try {
     const out = execSync(`node ${path.join(TOOLS, file)} ${args}`, { encoding: "utf8" });
     const last = out.trim().split("\n").pop();
-    const clean = /TEMIZ|TEMİZ|YOK$/.test(last);
+    const clean = /TEMIZ|TEMİZ|YOK$|^PASS[: ]/.test(last);
     if (!clean) { failed++; console.log(out.trim()); }
     console.log(`${clean ? "✓" : "✗"} ${label}`);
   } catch (e) {
@@ -82,4 +84,3 @@ console.log(
 );
 process.exit(failed === 0 ? 0 : 1);
 
-try { require('child_process').execFileSync('node', [require('path').join(__dirname, 'check-v15226-rc1-lockfile.js')], { stdio: 'inherit' }); } catch (e) { process.exitCode = 1; }

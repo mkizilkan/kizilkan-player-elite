@@ -1,7 +1,7 @@
 /**
  * KIZILKAN PLAYER — Stalker / MAG Portal (CİHAZ İÇİ)
  * Dosya  : frontend/src/utils/stalker.ts
- * Sürüm  : v1.1.1 (v15.2.25-RC2)
+ * Sürüm  : v1.2.0 (v15.2.27-RC1)
  *
  * ===========================================================================
  * MAC adresiyle çalışan Stalker/MAG portallarına DOĞRUDAN CİHAZDAN bağlanır.
@@ -53,6 +53,15 @@ export interface StalkerCreds {
   serial?: string;
   deviceId?: string;
   deviceModel?: "MAG254" | "MAG250";
+}
+
+
+export interface StalkerPlaybackContext {
+  url: string;
+  headers: Record<string, string>;
+  session: StalkerSession;
+  mediaType: "itv" | "vod";
+  refreshed: boolean;
 }
 
 export interface StalkerSession {
@@ -291,6 +300,67 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
   if (encoded) h["Accept-Encoding"] = "gzip, deflate";
   if (token) h.Authorization = `Bearer ${token}`;
   return h;
+}
+
+
+function normalizePlaybackHost(hostname: string): string {
+  return String(hostname || "").trim().toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
+}
+
+function isIpLiteral(hostname: string): boolean {
+  const h = normalizePlaybackHost(hostname);
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(h) || h.includes(":");
+}
+
+/**
+ * Credential taşıma sınırı bilerek sıkıdır: yalnız aynı host veya doğrudan
+ * parent/subdomain ilişkisi. "son iki label aynı" yaklaşımı co.uk gibi
+ * public-suffix alanlarında ilgisiz sitelere credential sızdırabileceği için
+ * kullanılmaz. Farklı CDN hostuna yalnız zararsız uyumluluk header'ları gider.
+ */
+function isTrustedPlaybackTarget(endpoint: string, playbackUrl: string): boolean {
+  try {
+    const portal = new URL(endpoint);
+    const target = new URL(playbackUrl);
+    if (portal.protocol !== target.protocol && target.protocol !== "https:") return false;
+    const p = normalizePlaybackHost(portal.hostname);
+    const t = normalizePlaybackHost(target.hostname);
+    if (!p || !t) return false;
+    if (p === t) return true;
+    if (isIpLiteral(p) || isIpLiteral(t)) return false;
+    return t.endsWith(`.${p}`) || p.endsWith(`.${t}`);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * create_link sonrası gerçek medya isteğinin MAG cihaz kimliğini kaybetmesini
+ * önler. Hassas token/MAC yalnız portal ile aynı sağlayıcı ailesindeki hedefe
+ * gönderilir; üçüncü taraf CDN/redirect hostuna körlemesine credential sızdırılmaz.
+ */
+function playbackHeadersFor(cred: StalkerCreds, ses: StalkerSession, playbackUrl: string): Record<string, string> {
+  const apiHeaders = headersFor(cred, ses.token, ses.endpoint, ses.compatProfile);
+  const trusted = isTrustedPlaybackTarget(ses.endpoint, playbackUrl);
+  const out: Record<string, string> = {
+    "User-Agent": apiHeaders["User-Agent"],
+    "X-User-Agent": apiHeaders["X-User-Agent"],
+    Referer: apiHeaders.Referer,
+    Accept: "*/*",
+  };
+  if (trusted) {
+    if (apiHeaders.Cookie) out.Cookie = apiHeaders.Cookie;
+    if (apiHeaders.Authorization) out.Authorization = apiHeaders.Authorization;
+  }
+  void recordDiagnostic("player", "STALKER_PLAYBACK_CONTEXT", {
+    targetTrusted: trusted,
+    targetHost: (() => { try { return new URL(playbackUrl).host; } catch { return ""; } })(),
+    portalHost: (() => { try { return new URL(ses.endpoint).host; } catch { return ""; } })(),
+    headerNames: Object.keys(out).sort(),
+    hasAuthorization: !!out.Authorization,
+    hasCookie: !!out.Cookie,
+  });
+  return out;
 }
 
 type ReqOptions = { timeoutMs?: number; signal?: AbortSignal; allowNon2xxParsed?: (parsed:any, status:number)=>boolean };
@@ -750,6 +820,7 @@ async function stalkerOrderedList(
   const out:any[]=[]; const seen=new Set<string>();
   let total=Number.POSITIVE_INFINITY, page=0, firstNonEmptyPage:number|null=null;
   let maxPages=ORDERED_LIST_ABSOLUTE_MAX_PAGES, consecutiveNoNew=0, previousFingerprint="";
+  let effectivePageBase: 0 | 1 | null = null;
   let stopReason="TOTAL_OR_END";
   while (page < maxPages && out.length < total) {
     if (signal?.aborted) { stopReason="CANCELLED"; break; }
@@ -768,16 +839,37 @@ async function stalkerOrderedList(
     if (!isExplicitListShape(data)) throw new StalkerCatalogUnsupportedError(type,`${type} ordered-list yanıt biçimi desteklenmiyor`);
     const js=data?.js, rows=rowsFromListShape(data);
     const declared=Number(js?.total_items);
+    const declaredPageItems=Number(js?.max_page_items);
     if (Number.isFinite(declared) && declared>=0) total=declared;
+    if (Number.isFinite(declaredPageItems) && declaredPageItems > 0 && Number.isFinite(total)) {
+      maxPages=Math.min(ORDERED_LIST_ABSOLUTE_MAX_PAGES, Math.max(4, Math.ceil(total / declaredPageItems) + 3));
+    }
     if (!rows.length) {
       if (firstNonEmptyPage===null && page===0) { page=1; continue; }
       stopReason="EMPTY_PAGE"; break;
     }
     if (firstNonEmptyPage===null) firstNonEmptyPage=page;
     const fingerprint=pageFingerprint(rows);
-    if (fingerprint===previousFingerprint) { stopReason="DUPLICATE_PAGE"; break; }
+    if (fingerprint===previousFingerprint) {
+      // Bazı Ministra/Stalker portalları p=0 isteğini p=1 alias'ı gibi döndürür.
+      // Eski kod burada katalogu 14 öğede kesiyordu. İlk 0/1 çifti aynıysa
+      // 1-based portal olarak öğren ve gerçek ikinci sayfa olan p=2'yi dene.
+      if (effectivePageBase === null && firstNonEmptyPage === 0 && page === 1) {
+        effectivePageBase = 1;
+        void recordDiagnostic("mag", "STALKER_PAGINATION_BASE_DETECTED", { type, effectivePageBase, reason: "P0_EQUALS_P1", nextPage: 2 });
+        page = 2;
+        continue;
+      }
+      stopReason="DUPLICATE_PAGE"; break;
+    }
+    if (effectivePageBase === null && firstNonEmptyPage === 0 && page === 1) {
+      effectivePageBase = 0;
+      void recordDiagnostic("mag", "STALKER_PAGINATION_BASE_DETECTED", { type, effectivePageBase, reason: "P0_DIFFERS_P1" });
+    } else if (effectivePageBase === null && firstNonEmptyPage === 1) {
+      effectivePageBase = 1;
+    }
     previousFingerprint=fingerprint;
-    if (page===firstNonEmptyPage) maxPages=expectedPageLimit(total,rows.length);
+    if (page===firstNonEmptyPage && maxPages===ORDERED_LIST_ABSOLUTE_MAX_PAGES) maxPages=expectedPageLimit(total,rows.length);
 
     let added=0;
     for (let ri=0; ri<rows.length; ri++) {
@@ -789,13 +881,13 @@ async function stalkerOrderedList(
     await stalkerCatalogYield(page,1);
     const progressTotal=Number.isFinite(total)?total:undefined;
     try { onPage?.(page,out.length,progressTotal); } catch {}
-    void recordDiagnostic("mag","STALKER_PAGINATION_PAGE",{type,page,rows:rows.length,added,loaded:out.length,total:progressTotal,maxPages});
+    void recordDiagnostic("mag","STALKER_PAGINATION_PAGE",{type,page,rows:rows.length,added,loaded:out.length,total:progressTotal,maxPages,effectivePageBase,maxPageItems:Number(js?.max_page_items)||undefined});
     if (!added) consecutiveNoNew++; else consecutiveNoNew=0;
     if (consecutiveNoNew>=ORDERED_LIST_NO_NEW_LIMIT) { stopReason="NO_NEW_IDS"; break; }
     page++;
   }
   if (page>=maxPages && out.length<total) stopReason="PAGE_GOVERNOR";
-  void recordDiagnostic("mag","STALKER_PAGINATION_STOP",{type,stopReason,page,loaded:out.length,total:Number.isFinite(total)?total:undefined,maxPages});
+  void recordDiagnostic("mag","STALKER_PAGINATION_STOP",{type,stopReason,page,loaded:out.length,total:Number.isFinite(total)?total:undefined,maxPages,effectivePageBase});
   return out;
 }
 
@@ -1095,8 +1187,17 @@ export async function stalkerCreateLink(
   ses: StalkerSession,
   cmd: string,
   mediaType: "itv" | "vod" = "itv",
-  series = ""
+  series = "",
+  opts: { recovery?: boolean } = {},
 ): Promise<string> {
+  // İlk deneme eski/stabil create_link sözleşmesini korur. Yalnız gerçek medya
+  // isteği 401/403/456 ile reddedilip fresh-session recovery tetiklenirse sahada
+  // kullanılan Ministra varyantlarındaki sn/token/long_lived alanları eklenir.
+  const recoveryParams = opts.recovery ? {
+    sn: String(cred.serial || ""),
+    token: String(ses.token || ""),
+    long_lived: "1",
+  } : {};
   const data = await req(
     buildUrl(ses.endpoint, {
       type: mediaType,
@@ -1106,6 +1207,7 @@ export async function stalkerCreateLink(
       forced_storage: "undefined",
       disable_ad: "0",
       download: "0",
+      ...recoveryParams,
     }),
     headersFor(cred, ses.token, ses.endpoint, ses.compatProfile)
   );
@@ -1150,26 +1252,37 @@ export async function stalkerLogin(
 export async function stalkerResolveStream(
   cred: StalkerCreds,
   ses: StalkerSession | null,
-  cmd: string
-): Promise<{ url: string; session: StalkerSession }> {
+  cmd: string,
+  opts: { forceFresh?: boolean } = {},
+): Promise<StalkerPlaybackContext> {
   const started = Date.now();
-  let session = ses || getCachedSession(cred)?.session || null;
+  let session = opts.forceFresh ? null : (ses || getCachedSession(cred)?.session || null);
   const cacheHit = !!session;
-  if (!session) session = (await stalkerLogin(cred)).session;
+  let refreshed = !!opts.forceFresh;
+  if (opts.forceFresh) invalidateSession(cred);
+  if (!session) session = (await stalkerLogin(cred, { forceFresh: !!opts.forceFresh })).session;
   const parsed = parseMediaCommand(cmd);
+  const resolveWithSession = async (activeSession: StalkerSession, didRefresh: boolean): Promise<StalkerPlaybackContext> => {
+    const url = await stalkerCreateLink(cred, activeSession, parsed.cmd, parsed.kind, parsed.series, { recovery: didRefresh });
+    const headers = playbackHeadersFor(cred, activeSession, url);
+    void recordDiagnostic("player", "STALKER_RESOLVE_DONE", {
+      elapsedMs: Date.now()-started, cacheHit, mediaType: parsed.kind, refreshed: didRefresh,
+      headerNames: Object.keys(headers).sort(),
+    });
+    return { url, headers, session: activeSession, mediaType: parsed.kind, refreshed: didRefresh };
+  };
   try {
-    const url = await stalkerCreateLink(cred, session, parsed.cmd, parsed.kind, parsed.series);
-    void recordDiagnostic("player", "STALKER_RESOLVE_DONE", { elapsedMs: Date.now()-started, cacheHit, mediaType: parsed.kind });
-    return { url, session };
+    return await resolveWithSession(session, refreshed);
   } catch (e: any) {
     const message = String(e?.message || e);
     void recordDiagnostic("player", "STALKER_RESOLVE_ERROR", { elapsedMs: Date.now()-started, cacheHit, message, status: e?.status });
-    if (e?.status === 401 || e?.status === 403 || /token|auth/i.test(message)) {
+    if (e?.status === 401 || e?.status === 403 || e?.status === 456 || /token|auth/i.test(message)) {
       invalidateSession(cred);
       const fresh = await stalkerLogin(cred, { forceFresh: true });
-      const url = await stalkerCreateLink(cred, fresh.session, parsed.cmd, parsed.kind, parsed.series);
+      refreshed = true;
+      const result = await resolveWithSession(fresh.session, true);
       void recordDiagnostic("player", "STALKER_RESOLVE_REFRESHED", { elapsedMs: Date.now()-started, mediaType: parsed.kind });
-      return { url, session: fresh.session };
+      return result;
     }
     throw e;
   }

@@ -1366,7 +1366,7 @@ export default function AddPlaylist() {
     }
 
     setLoading(true);
-    setProgress("");
+    setProgress(method === "stalker" ? "MAG Portal hazırlanıyor · bağlantı ve cihaz profili doğrulanacak…" : "");
     try {
       // GPT v10.5.0: "Paneli bilmiyorum" yolunda kullanıcı yalnız kullanıcı
       // adı + şifre verir. Firebase yalnız katalog olarak kullanılır; kimlik
@@ -1573,12 +1573,23 @@ export default function AddPlaylist() {
         });
       }
       setProgress(method === "stalker"
-        ? "Canlı TV hazır. Film ve diziler arka planda tamamlanacak..."
+        ? `Canlı TV hazır · ${playlist.channels?.length || 0} kanal kaydedildi. Film ve diziler arka planda tamamlanacak…`
         : "Playlist hazır. +18 filtresi arka planda hazırlanıyor...");
-      router.replace("/(tabs)");
 
       // addPlaylist + Room verify başarıyla tamamlandıktan SONRA enrichment.
       if (magEnrichment) void magEnrichment.run();
+
+      if (method === "stalker") {
+        await new Promise<void>((resolve) => {
+          Alert.alert(
+            "MAG Portal Eklendi",
+            `${playlist.channels?.length || 0} canlı kanal kullanıma hazır.\n\nFilm ve diziler arka planda yüklenmeye devam edecek; uygulamayı kullanabilirsiniz.`,
+            [{ text: "Listeye Git", onPress: () => resolve() }],
+            { cancelable: false },
+          );
+        });
+      }
+      router.replace("/(tabs)");
     } catch (e: any) {
       const message = e.message || "Bilinmeyen hata";
       if (method === "stalker") void recordDiagnostic("catalog", "STALKER_ADD_ERROR", { message });
@@ -2247,6 +2258,24 @@ export default function AddPlaylist() {
             </FocusButton>
           </View>
         </ScrollView>
+
+        <Modal
+          visible={loading && method === "stalker" && !!progress}
+          transparent
+          animationType="fade"
+          onRequestClose={() => {}}
+        >
+          <View style={styles.matchModalBackdrop}>
+            <View style={[styles.matchModalCard, { backgroundColor: colors.surface, borderColor: colors.border, maxWidth: 520 }]}>
+              <View style={{ alignItems: "center", gap: SPACING.md, paddingVertical: SPACING.md }}>
+                <ActivityIndicator size="large" color={colors.brandPrimary} />
+                <Text style={[styles.matchModalTitle, { color: colors.onSurface, textAlign: "center" }]}>MAG Portal hazırlanıyor</Text>
+                <Text style={{ color: colors.onSurfaceSecondary, textAlign: "center", lineHeight: 21 }}>{progress}</Text>
+                <Text style={{ color: colors.onSurfaceTertiary, textAlign: "center", fontSize: FONT.size.sm }}>Bu ekran bağlantı, katalog ve cihaz kayıt aşamalarını canlı gösterir.</Text>
+              </View>
+            </View>
+          </View>
+        </Modal>
 
         <Modal
           visible={showBulkCandidates}

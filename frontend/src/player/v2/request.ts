@@ -19,11 +19,14 @@ export function buildPlaybackRequest(args: {
   override?: any;
   playlist?: any;
   isLive: boolean;
+  runtimeHeaders?: Record<string, string>;
 }): PlaybackRequest {
-  const { url, channel, override, playlist, isLive } = args;
+  const { url, channel, override, playlist, isLive, runtimeHeaders } = args;
   const headers = {
     ...cleanHeaders(channel?.headers),
     ...cleanHeaders(override?.headers),
+    // Runtime-resolved MAG context is authoritative for the temporary create_link URL.
+    ...cleanHeaders(runtimeHeaders),
   };
 
   const userAgent =

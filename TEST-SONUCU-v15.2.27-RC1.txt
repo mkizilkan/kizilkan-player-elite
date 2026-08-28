@@ -1,0 +1,29 @@
+KIZILKAN PLAYER ELITE v15.2.27-RC1 — DOĞRULAMA RAPORU
+======================================================
+
+[PASS] node --check tools/check-v15227-mag-playback-pagination-ui.js
+[PASS] node --check tools/denetle.js
+[PASS] node tools/check-v15227-mag-playback-pagination-ui.js
+       - 1-based alias pagination: p=0/p=1 aynı -> p=2 probe -> içerik devam ediyor
+       - 0-based pagination: p=0/p=1 farklı -> normal devam
+       - page parametresini yok sayan portal: duplicate governor sonsuz döngüyü kesiyor
+       - MAG playback runtime header bridge
+       - 456 fresh-session/fresh-create_link recovery kontratı
+       - trusted target Cookie/Authorization aktarımı
+       - external host credential redaction
+       - MAG add progress UI kontratı
+       - player emergency touch catcher kontratı
+
+[PASS] node tools/check-v15226-rc1-lockfile.js
+[PASS] frontend/package.json JSON parse
+[PASS] frontend/app.json JSON parse
+[PASS] version = 15.2.27
+[PASS] Android versionCode = 150227
+
+[NOT RUN / PASS DEĞİL]
+Tam TypeScript project gate (tsc --project tsconfig.json --noEmit)
+Sebep: bu çalışma konteynerinde proje node_modules mevcut değil. yarn/corepack ile dependency kurulum denemesi registry.yarnpkg.com DNS/ağ erişimi olmadığı için EAI_AGAIN ile başarısız oldu. Global TypeScript'i tek başına kullanmak Expo/React Native modülleri olmadan geçerli proje doğrulaması sağlamadığından bu sonuç PASS sayılmadı.
+
+Master denetle.js sonucu bu nedenle iki TypeScript gate'ini başarısız/çalıştırılamadı olarak raporlar; diğer fonksiyonel gate'ler PASS'tir. Paket bu durumu gizlemez.
+
+Telefon tarafında ağır build/TypeScript doğrulaması istenmemektedir. GitHub CI dependency kurabildiği ortamda tam TypeScript/build gate çalıştırılmalıdır.
