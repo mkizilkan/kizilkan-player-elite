@@ -606,7 +606,7 @@ export default function PlayerHost() {
     setResolving(true);
     (async () => {
       try {
-        const { stalkerResolveStream, normalizeMac } = await import("@/src/utils/stalker");
+        const { stalkerResolveStream, normalizeMac, stripStreamPrefix } = await import("@/src/utils/stalker");
         const pl: any = activePlaylist;
         const cred = {
           portal: pl.stalkerPortal,
@@ -618,7 +618,13 @@ export default function PlayerHost() {
         const { url, headers } = await stalkerResolveStream(cred, null, String(channel.url), { forceFresh });
         if (alive) {
           setResolvedHeaders(headers);
-          setResolvedUrl(url);
+          /**
+           * v16.1.0 — SON SAVUNMA.
+           * Adres başka bir yoldan (eski kayıt, önbellek, farklı çözümleyici)
+           * "ffmpeg http://..." önekiyle gelirse Media3 MalformedURLException
+           * fırlatıyordu. Oynatıcıya HER ZAMAN temiz adres verilir.
+           */
+          setResolvedUrl(stripStreamPrefix(String(url)));
           if (forceFresh) setPlaybackRetryNonce(n => n + 1);
         }
       } catch (e: any) {

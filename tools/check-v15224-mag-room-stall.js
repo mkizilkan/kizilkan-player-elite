@@ -6,8 +6,11 @@ const need=(r,t,l)=>{if(!read(r).includes(t)){console.log(`HATA — ${l}: ${t}`)
 const order=(r,a,b,l)=>{const s=read(r),ia=s.indexOf(a),ib=s.indexOf(b,Math.max(0,ia)); if(ia<0||ib<0||ia>=ib){console.log(`HATA — ${l}: sıra doğrulanamadı`);bad++;}};
 const pkg=JSON.parse(fs.readFileSync(path.join(front,'package.json'),'utf8'));
 const app=JSON.parse(fs.readFileSync(path.join(front,'app.json'),'utf8'));
-const verOk = /^15\.2\.(\d+)$/.test(pkg.version) && pkg.version===app.expo.version && Number(app.expo.android.versionCode)===Number(pkg.version.split('.')[0])*10000+Number(pkg.version.split('.')[1])*100+Number(pkg.version.split('.')[2]);
-if(!verOk || Number(pkg.version.split('.')[2])<24){console.log('HATA — v15.2.24+ sürüm üçlüsü tutarsız');bad++;}
+const _sv=v=>{const m=String(v||'').match(/^(\d+)\.(\d+)\.(\d+)/);return m?Number(m[1])*1000000+Number(m[2])*1000+Number(m[3]):-1;};
+const _code=v=>{const m=String(v||'').match(/^(\d+)\.(\d+)\.(\d+)/);return m?Number(m[1])*10000+Number(m[2])*100+Number(m[3]):-1;};
+// v16.1.0: 15.2 serisine KİLİTLİYDİ. Amaç korunuyor: en az 15.2.24 + üçlü tutarlılık.
+const verOk = /^\d+\.\d+\.\d+$/.test(pkg.version) && pkg.version===app.expo.version && Number(app.expo.android.versionCode)===_code(pkg.version);
+if(!verOk || _sv(pkg.version) < _sv('15.2.24')){console.log('HATA — sürüm üçlüsü tutarsız veya asgari sürümün altında');bad++;}
 
 // MAG duplicate-download / telemetry / progress
 need('frontend/src/utils/stalker.ts','stalkerCatalogInFlight','MAG single-flight map');

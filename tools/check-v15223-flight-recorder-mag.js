@@ -5,7 +5,11 @@ const read=r=>fs.readFileSync(path.join(root,r),'utf8');
 const need=(r,t,l)=>{if(!read(r).includes(t)){console.log(`HATA — ${l}: ${t}`);bad++;}};
 const pkg=JSON.parse(fs.readFileSync(path.join(front,'package.json'),'utf8'));
 const app=JSON.parse(fs.readFileSync(path.join(front,'app.json'),'utf8'));
-const patchOf=v=>Number(String(v||'').split('.')[2]||0); if(String(pkg.version).split('.').slice(0,2).join('.')!=='15.2'||patchOf(pkg.version)<23||String(app.expo.version).split('.').slice(0,2).join('.')!=='15.2'||patchOf(app.expo.version)<23||Number(app.expo.android.versionCode)<150223){console.log('HATA — v15.2.23+ sürüm üçlüsü tutarsız');bad++;}
+const _sv=v=>{const m=String(v||'').match(/^(\d+)\.(\d+)\.(\d+)/);return m?Number(m[1])*1000000+Number(m[2])*1000+Number(m[3]):-1;};
+const _code=v=>{const m=String(v||'').match(/^(\d+)\.(\d+)\.(\d+)/);return m?Number(m[1])*10000+Number(m[2])*100+Number(m[3]):-1;};
+// v16.1.0: denetleyici 15.2 serisine KİLİTLİYDİ; sürüm yükselince kaçınılmaz kırılıyordu.
+// Amaç korunuyor: sürüm en az 15.2.23 olmalı ve üçlü tutarlı olmalı.
+if(_sv(pkg.version)<_sv('15.2.23')||String(app.expo.version)!==String(pkg.version)||Number(app.expo.android.versionCode)!==_code(pkg.version)||Number(app.expo.android.versionCode)<150223){console.log('HATA — sürüm üçlüsü tutarsız veya asgari sürümün altında');bad++;}
 need('frontend/src/utils/diagnostics.ts','KIZILKAN_FLIGHT_RECORDER_V5','Flight Recorder V5 export');
 need('frontend/src/utils/diagnostics.ts','const MAX_EVENTS = 50000','JS recorder 50K kapasite');
 need('frontend/src/utils/diagnostics.ts','Array.from({ length: 7 }','8 segmentli JSONL journal');

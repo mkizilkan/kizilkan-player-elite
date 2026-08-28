@@ -11,7 +11,13 @@ const dao=read('frontend/modules/kizilkan-native-core/android/src/main/java/expo
 function need(src,re,msg){ if(!re.test(src)){ throw new Error(msg); } }
 function forbid(src,re,msg){ if(re.test(src)){ throw new Error(msg); } }
 function staticChecks(){
-  need(stalker,/MAG_COMPAT_PROFILES[^\n]+\["mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"\]/,'MAG254 varsayılan profil sırası yok');
+  // v16.1.0 SÖZLEŞME GÜNCELLEMESİ: "golden" profili listenin BAŞINA eklendi.
+  // Gerekçe: v9.6.0'da MAG portalı çalışıyordu (SURUM-NOTU-v9.7.0.md kullanıcı
+  // testi). O sürümün SADE isteği (MAG250 UA + kodlanmış mac + ham timezone +
+  // X-User-Agent/Accept-Language/Accept-Encoding YOK) "golden" olarak geri
+  // getirildi ve ilk sırada denenir. Dört eski profil YEDEK olarak korunur.
+  need(stalker,/MAG_COMPAT_PROFILES[^\n]+\["golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"\]/,'golden + MAG254 profil sırası yok');
+  need(stalker,/profile === "golden"/,'golden profil başlık dalı yok');
   need(stalker,/model:"MAG250"\|"MAG254"="MAG254"/,'get_profile varsayılanı MAG254 değil');
   need(stalker,/MAG_LEARNED_KEY/,'endpoint/profile learning yok');
   need(stalker,/STALKER_HANDSHAKE_PLAN/,'handshake plan telemetrisi yok');
@@ -55,7 +61,10 @@ async function fixtureHandshakeMag254(){
   const m=load(async(_url,opts)=>{calls++; if(!firstUA) firstUA=String(opts?.headers?.['User-Agent']||''); return http({js:{token:'tok',random:'r'}});});
   const s=await m.stalkerHandshake({portal:'http://p/c/portal.php',mac:'00:11:22:33:44:55',deviceModel:'MAG254'});
   if(calls!==1) throw new Error('MAG254 başarılı handshake tek istekte durmadı: '+calls);
-  if(!/MAG254/.test(firstUA) || s.compatProfile!=='mag254-encoded') throw new Error('MAG254 ilk profil/header doğrulanamadı');
+  // v16.1.0: İLK deneme artık "golden" (v9.6.0'ın kanıtlanmış SADE isteği,
+  // MAG250 kimliğiyle). MAG254 profilleri hemen ardından yedek olarak gelir.
+  // Bu test, ilk isteğin golden ile yapıldığını doğrular.
+  if(!/MAG200 stbapp ver: 2 rev: 250/.test(firstUA) || s.compatProfile!=='golden') throw new Error('golden ilk profil/header doğrulanamadı: '+firstUA+' / '+s.compatProfile);
 }
 async function fixtureRejectBounded(){
   let calls=0;

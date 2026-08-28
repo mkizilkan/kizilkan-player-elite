@@ -120,6 +120,25 @@ function emitCatalogProgress(opts: StalkerCatalogOptions | undefined, progress: 
   try { opts?.onProgress?.(progress); } catch {}
 }
 
+/**
+ * v16.1.0 — YAYIN ADRESİ ÖNEK TEMİZLEYİCİ
+ * ---------------------------------------------------------------------------
+ * Stalker portalları komutu "ffmpeg http://...", "auto http://...",
+ * "extension http://..." gibi ÖNEKLİ döndürebilir. Bu değer temizlenmeden
+ * oynatıcıya verilirse Media3 şu hatayı verir (cihaz kaydında 5 kez görüldü):
+ *     java.net.MalformedURLException: no protocol: ffmpeg http://...
+ * create_link yolu öneği zaten ayıklıyordu, fakat kanal listesine HAM cmd
+ * yazıldığı için (url alanı) doğrudan oynatılan yollarda hata çıkıyordu.
+ */
+export function stripStreamPrefix(raw: string): string {
+  const v = String(raw || "").trim();
+  if (!v) return "";
+  const m = v.match(/https?:\/\/\S+/);        // ilk gerçek adresi al
+  if (m) return m[0];
+  // Adres yoksa (ör. saklı komut biçimi) değeri OLDUĞU GİBİ bırak.
+  return v;
+}
+
 /** MAC'i portalın beklediği biçime getirir: BÜYÜK harf, iki nokta ayraçlı. */
 export function normalizeMac(raw: string): string {
   const hex = (raw || "").replace(/[^0-9a-fA-F]/g, "").toUpperCase();
@@ -182,23 +201,48 @@ function refererFor(cred: StalkerCreds, endpoint?: string): string {
   } catch { return baseOf(cred.portal) + "/c/"; }
 }
 
-type MagCompatProfile = "mag254-encoded" | "mag254-raw" | "mag250-encoded" | "mag250-raw";
-const MAG_COMPAT_PROFILES: MagCompatProfile[] = ["mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"];
+/**
+ * v16.1.0 — "ALTIN PROFİL" (golden)
+ * ---------------------------------------------------------------------------
+ * KANIT: v9.6.0'da MAG portalı ÇALIŞIYORDU (SURUM-NOTU-v9.7.0.md, kullanıcı
+ * testi: "MAG düzenle/yenile çalışıyor"). O sürümün stalker.ts'i 270 satırdı ve
+ * isteği SADE idi. Bugünkü 1250+ satırlık istemci portaldan 403 alıyor;
+ * hatanın geldiği profil "mag254-raw", yani v9.6.0'da çalışan yapılandırmanın
+ * TAM TERSİ (MAG254 kimliği + HAM mac).
+ *
+ * v9.6.0'da OLMAYAN ama bugün gönderilen başlıklar:
+ *   • X-User-Agent      • Accept-Language      • Accept-Encoding
+ *   • timezone KODLANMIŞ (Europe%2FIstanbul)  <- v9.6.0'da ham: Europe/Istanbul
+ *
+ * "golden" profili v9.6.0'ın başlıklarını BİREBİR üretir ve listenin BAŞINDA
+ * denenir. Diğer profiller yedek olarak korunur (regresyon yok).
+ */
+type MagCompatProfile = "golden" | "mag254-encoded" | "mag254-raw" | "mag250-encoded" | "mag250-raw";
+const MAG_COMPAT_PROFILES: MagCompatProfile[] = ["golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"];
 const MAG_LEARNED_KEY = "kizilkan.mag.compat.v15225";
 
 type LearnedMagCompat = { endpoint:string; profile:MagCompatProfile; model:"MAG254"|"MAG250"; at:number; failures:number };
 const learnedCompatMemory = new Map<string, LearnedMagCompat>();
 
 function compatModel(profile: MagCompatProfile): "MAG254"|"MAG250" {
+  if (profile === "golden") return "MAG250";   // v16.1.0: v9.6.0 kimliği
   return profile.startsWith("mag254") ? "MAG254" : "MAG250";
 }
 function compatEncoded(profile: MagCompatProfile): boolean {
+  if (profile === "golden") return true;       // v16.1.0: mac HER ZAMAN kodlanır
   return profile.endsWith("-encoded");
 }
 function preferredCompatProfiles(cred: StalkerCreds, learned?: LearnedMagCompat | null): MagCompatProfile[] {
+  /**
+   * v16.1.0 — "golden" HER ZAMAN İLK SIRADA.
+   * v9.6.0'da portalın kabul ettiği birebir istek budur; önce o denenir.
+   * Diğer profiller yedek olarak korunur (mevcut davranış bozulmaz).
+   * NOT: golden listeye eklenmezse headersFor'daki altın dal HİÇ çalışmaz —
+   * bu fonksiyon profilleri belirleyen tek yerdir.
+   */
   const ordered: MagCompatProfile[] = cred.deviceModel === "MAG250"
-    ? ["mag250-encoded","mag250-raw","mag254-encoded","mag254-raw"]
-    : ["mag254-encoded","mag254-raw","mag250-encoded","mag250-raw"];
+    ? ["golden","mag250-encoded","mag250-raw","mag254-encoded","mag254-raw"]
+    : ["golden","mag254-encoded","mag254-raw","mag250-encoded","mag250-raw"];
   if (learned?.profile && ordered.includes(learned.profile)) {
     return [learned.profile, ...ordered.filter(x => x !== learned.profile)];
   }
@@ -289,6 +333,23 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
   const encodedMac = encodeURIComponent(mac);
   const model=compatModel(profile);
   const encoded=compatEncoded(profile);
+  /**
+   * v16.1.0 — ALTIN PROFİL: v9.6.0'ın BİREBİR başlıkları.
+   * Fazladan hiçbir başlık gönderilmez (X-User-Agent / Accept-Language /
+   * Accept-Encoding YOK), timezone HAM eğik çizgiyle yazılır ve Referer
+   * her zaman "<host>/c/" olur — v9.6.0'da portal bu istekle çalışıyordu.
+   */
+  if (profile === "golden") {
+    const g: Record<string, string> = {
+      "User-Agent": MAG250_UA,
+      Referer: baseOf(cred.portal) + "/c/",
+      Accept: "*/*",
+      Cookie: `mac=${encodedMac}; stb_lang=en; timezone=Europe/Istanbul`,
+    };
+    if (token) g.Authorization = `Bearer ${token}`;
+    return g;
+  }
+
   const h: Record<string, string> = {
     "User-Agent": model === "MAG254" ? MAG254_UA : MAG250_UA,
     Referer: refererFor(cred, endpoint),
@@ -719,7 +780,8 @@ export async function stalkerChannels(cred: StalkerCreds, ses: StalkerSession, s
       name: c.name || "Kanal",
       group: genres.get(String(c.tv_genre_id ?? c.category_id)) || String(c.category_name || "Genel"),
       logo: c.logo ? (String(c.logo).startsWith("http") ? c.logo : baseOf(cred.portal) + "/stalker_portal/misc/logos/320/" + c.logo) : null,
-      url: String(c.cmd || c.url || ""),
+      // v16.1.0: "ffmpeg http://..." öneki BURADA temizlenir (MalformedURLException kökü)
+      url: stripStreamPrefix(String(c.cmd || c.url || "")),
       epg_channel_id: c.xmltv_id || undefined,
       tvg_id: c.xmltv_id || undefined,
       source: "stalker",

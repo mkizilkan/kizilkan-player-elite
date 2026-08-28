@@ -23,11 +23,12 @@ const compile = rel => ts.transpileModule(fs.readFileSync(path.join(front, rel),
 
 const pkg = JSON.parse(fs.readFileSync(path.join(front, 'package.json'),'utf8'));
 const app = JSON.parse(fs.readFileSync(path.join(front, 'app.json'),'utf8'));
-const patchOf = v => Number(String(v || '').split('.')[2] || 0);
-if (String(pkg.version).split('.').slice(0,2).join('.') !== '15.2' || patchOf(pkg.version) < 23 ||
-    String(app.expo.version).split('.').slice(0,2).join('.') !== '15.2' || patchOf(app.expo.version) < 23 ||
-    Number(app.expo.android.versionCode) < 150223) {
-  console.log('HATA — v15.2.23+ sürüm üçlüsü tutarsız'); bad++;
+const _sv=v=>{const m=String(v||'').match(/^(\d+)\.(\d+)\.(\d+)/);return m?Number(m[1])*1000000+Number(m[2])*1000+Number(m[3]):-1;};
+const _code=v=>{const m=String(v||'').match(/^(\d+)\.(\d+)\.(\d+)/);return m?Number(m[1])*10000+Number(m[2])*100+Number(m[3]):-1;};
+// v16.1.0: 15.2 serisine KİLİTLİYDİ. Amaç korunuyor: en az 15.2.23 + üçlü tutarlılık.
+if (_sv(pkg.version) < _sv('15.2.23') || String(app.expo.version) !== String(pkg.version) ||
+    Number(app.expo.android.versionCode) !== _code(pkg.version)) {
+  console.log('HATA — sürüm üçlüsü tutarsız veya asgari sürümün altında'); bad++;
 }
 
 // P0 gesture/worklet crash

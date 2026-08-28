@@ -2583,6 +2583,32 @@ export default function AddPlaylist() {
         </Modal>
 
       </KeyboardAvoidingView>
+      {/**
+        * v16.1.0 — ENGELLEYİCİ İLERLEME KATMANI
+        * -------------------------------------------------------------------
+        * SORUN (kullanıcı bildirimi): "MAG portal eklenirken kullanıcıya
+        * herhangi bir bilgi verilmiyor, kullanıcı olmadı deyip Kaydet ve
+        * Yükle'ye defalarca basabiliyor."
+        * Düğmede disabled={loading} vardı ve ilerleme metni yazılıyordu, ama
+        * metin sayfanın altında kaldığı için görünmüyordu; kullanıcı işlemin
+        * sürdüğünü anlamıyordu. Bu katman EKRANI KAPLAR: hem durumu net
+        * gösterir hem de arkadaki düğmelere basılmasını fiziksel olarak
+        * engeller (her basış yeni bir ağır MAG işlemi başlatıyordu).
+        */}
+      <Modal visible={loading} transparent animationType="fade" onRequestClose={() => {}}>
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.88)", alignItems: "center", justifyContent: "center", padding: SPACING.lg }}>
+          <ActivityIndicator size="large" color={colors.brandPrimary} />
+          <Text style={{ color: colors.onSurface, fontSize: FONT.size.lg, fontWeight: "700", marginTop: SPACING.lg, textAlign: "center" }}>
+            {method === "stalker" ? "MAG Portal ekleniyor" : "Liste ekleniyor"}
+          </Text>
+          <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm, marginTop: SPACING.sm, textAlign: "center", lineHeight: 20 }}>
+            {progress || "Hazırlanıyor…"}
+          </Text>
+          <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: SPACING.lg, textAlign: "center" }}>
+            Lütfen bekleyin — işlem sürerken tekrar dokunmayın.
+          </Text>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
