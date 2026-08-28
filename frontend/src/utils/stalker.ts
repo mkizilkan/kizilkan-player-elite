@@ -71,7 +71,14 @@ export interface StalkerSession {
   profileError?: string;
   profileVariant?: string;
   random?: string;
-  compatProfile?: "mag254-encoded" | "mag254-raw" | "mag250-encoded" | "mag250-raw";
+  /**
+   * v16.1.0 — TİP TAKMA ADI KULLANILIR.
+   * Burada birleşim ELLE yazılmıştı; "golden" profili eklenince bu alan
+   * güncellenmediği için CI'da TS2322 hatası çıktı (yerelde node_modules
+   * olmadığı için tam tip kontrolü çalışmıyordu). Artık MagCompatProfile'a
+   * bağlı: yeni bir profil eklendiğinde burası kendiliğinden uyumlu kalır.
+   */
+  compatProfile?: MagCompatProfile;
 }
 
 const SESSION_TTL_MS = 15 * 60 * 1000;
