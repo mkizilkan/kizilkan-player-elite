@@ -24,7 +24,7 @@ export default function PlaylistSelect() {
   const homeRoute = (isTv && tvLayout === "columns") ? "/tv-home" : "/(tabs)";
   const router = useRouter();
   const { colors } = useTheme();
-  const { playlists, activePlaylist, setActivePlaylist, isLoading, loadedProfileId, updatePlaylist } = usePlaylists();
+  const { playlists, activePlaylist, setActivePlaylist, isLoading, loadedProfileId, updatePlaylist, heavyLoading, repairFailedId} = usePlaylists();
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [refreshAllProgress, setRefreshAllProgress] = useState("");
@@ -285,6 +285,30 @@ export default function PlaylistSelect() {
             )}
           </View>
           <ScrollView contentContainerStyle={styles.list}>
+            {/**
+              * v16.4.0 — ONARIM DURUM BANDI
+              * heavyLoading: içerik kaynağından yeniden indiriliyor.
+              * repairFailedId: onarım da başarısız — kullanıcıya ne yapacağını söyler.
+              */}
+            {heavyLoading && (
+              <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm, padding: SPACING.md, marginBottom: SPACING.sm, borderRadius: RADIUS.md, borderWidth: 1, borderColor: colors.brandPrimary }}>
+                <ActivityIndicator size="small" color={colors.brandPrimary} />
+                <Text style={{ color: colors.onSurface, flex: 1, fontSize: FONT.size.sm }}>
+                  Liste içeriği hazırlanıyor…
+                </Text>
+              </View>
+            )}
+            {!!repairFailedId && !heavyLoading && (
+              <View style={{ padding: SPACING.md, marginBottom: SPACING.sm, borderRadius: RADIUS.md, borderWidth: 1, borderColor: colors.error }}>
+                <Text style={{ color: colors.error, fontWeight: FONT.weight.bold, marginBottom: 4 }}>
+                  Bu listenin içeriği cihazda yok
+                </Text>
+                <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm, lineHeight: 18 }}>
+                  İçerik indirilemedi. İnternet bağlantınızı kontrol edip listeye tekrar dokunun.
+                  Sorun sürerse listeyi silip yeniden ekleyin.
+                </Text>
+              </View>
+            )}
             {sorted.map((p, i) => {
               const typeColor = playlistVisualColor(p);
               return (
@@ -324,6 +348,18 @@ export default function PlaylistSelect() {
                     {activePlaylist?.id === p.id && (
                       <Text style={{ color: colors.brandPrimary, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>
                         {"  ✓ AKTİF"}
+                      </Text>
+                    )}
+                    {/**
+                      * v16.4.0 — İÇERİK YOK ROZETİ.
+                      * Cihaz kaydında bu listeler seçilmeye çalışıldığında
+                      * "Room indeksi ve legacy veri dosyası bulunamadı" hatası
+                      * alınıyor ve seçim SESSİZCE başarısız oluyordu; kullanıcı
+                      * neden seçilmediğini anlamıyordu. Artık görünür.
+                      */}
+                    {repairFailedId === p.id && (
+                      <Text style={{ color: colors.error, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>
+                        {"  ⚠ İÇERİK YOK"}
                       </Text>
                     )}
                   </Text>

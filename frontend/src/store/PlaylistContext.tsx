@@ -121,6 +121,11 @@ interface PlaylistContextValue {
   isFavorite: (channelId: string) => boolean;
   addToRecent: (channelId: string) => Promise<void>;
   clearRecent: () => Promise<void>;
+  /* ---- v16.4.0 ---- */
+  /** Ağır veri/onarım sürüyor mu? */
+  heavyLoading: boolean;
+  /** İçeriği olmayan ve onarılamayan liste kimliği (null = sorun yok). */
+  repairFailedId: string | null;
 }
 
 const PlaylistContext = createContext<PlaylistContextValue | null>(null);
@@ -153,6 +158,15 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   const [recent, setRecent] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [nativeSummary, setNativeSummary] = useState<NativePlaylistSummary | null>(null);
+  /**
+   * v16.4.0 — LİSTE ONARIM DURUMU
+   * heavyLoading   : içerik indirilirken arayüz "yükleniyor" gösterir.
+   * repairFailedId : içeriği olmayan ve ONARILAMAYAN listenin kimliği. Arayüz
+   *                  bunu kullanıp kullanıcıya net mesaj/rozet gösterir —
+   *                  eskiden seçim sessizce başarısız oluyordu.
+   */
+  const [heavyLoading, setHeavyLoading] = useState(false);
+  const [repairFailedId, setRepairFailedId] = useState<string | null>(null);
   // v11.5.0: Bellekteki playlist state'inin hangi profile ait olduğunu işaretler.
   // activeProfile değiştiği anda effect henüz başlamamış olsa bile tüketiciler
   // eski profil listesini "hazır" sanmasın.
@@ -668,8 +682,66 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           elapsedMs: Date.now() - verifyStartedAt,
           error: String(e?.message || e),
         });
-        // Eski aktif playlist aynen korunur. Geçersiz hedefi storage'a yazmayız.
-        return;
+
+        /**
+         * v16.4.0 — "BOŞ KABUK" LİSTE OTOMATİK ONARIMI
+         * ---------------------------------------------------------------------
+         * CİHAZ KANITI (28.08 kaydı): 21 kez PLAYLIST_SWITCH_VERIFY_FAILED
+         *   "Playlist Room indeksi ve legacy veri dosyası bulunamadı"
+         * Yani listenin METASI var ama İÇERİĞİ hiç yazılmamış (ekleme sırasında
+         * "Liste içeriği cihaza kaydedilemedi" hatası alınmış, meta yine de
+         * kalmış). Eski davranış: sessizce vazgeç -> kullanıcı için liste
+         * "seçilmiyor" görünüyordu, hiçbir açıklama yoktu.
+         *
+         * YENİ: içerik yoksa ve listenin KAYNAK bilgisi duruyorsa (sunucu,
+         * kullanıcı, şifre, panel kodu, m3u adresi) içerik kaynağından
+         * SESSİZCE yeniden indirilir ve seçim tamamlanır. Kullanıcı hiçbir şey
+         * yapmaz. Onarım da başarısız olursa artık sessiz kalınmaz; durum
+         * kaydedilir ve arayüz bilgilendirilir.
+         */
+        const broken = playlistsRef.current.find(pl => pl.id === id);
+        const hasSource = !!(broken?.m3uUrl || broken?.xtreamServer || broken?.stalkerPortal || (broken as any)?.panelCode);
+        if (broken && hasSource) {
+          try {
+            setHeavyLoading(true);
+            void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_START', { playlistId: id, source: broken.source });
+            const { refreshPlaylistContent } = await import('@/src/utils/refreshPlaylist');
+            const res = await refreshPlaylistContent(broken as any);
+            if (activeSwitchGeneration.current !== generation) return;
+            if (res?.ok && res.patch) {
+              await updatePlaylist(id, res.patch as any);
+              try { verifiedSummary = await KizilkanNativeCore.warmPlaylist(id); } catch { verifiedSummary = null as any; }
+              if (verifiedSummary?.roomIndexed) {
+                void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_OK', {
+                  playlistId: id, channels: verifiedSummary.channels || 0,
+                });
+                setRepairFailedId(null);
+              } else {
+                void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_INDEX_MISSING', { playlistId: id });
+                setRepairFailedId(id);
+                return;
+              }
+            } else {
+              void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_FAILED', {
+                playlistId: id, message: String(res?.message || 'bilinmiyor'),
+              });
+              setRepairFailedId(id);
+              return;
+            }
+          } catch (repairErr: any) {
+            void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_ERROR', {
+              playlistId: id, error: String(repairErr?.message || repairErr),
+            });
+            setRepairFailedId(id);
+            return;
+          } finally {
+            setHeavyLoading(false);
+          }
+        } else {
+          // Kaynak bilgisi yok: onarılamaz. Kullanıcıya bildirilecek.
+          setRepairFailedId(id);
+          return;
+        }
       }
     }
 
@@ -744,6 +816,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         loadedProfileId, nativeSummary, ensureHeavyLoaded,
         addPlaylist, addPreparedPlaylist, enrichPlaylistMedia, removePlaylist, updatePlaylist, setActivePlaylist,
         toggleFavorite, isFavorite, addToRecent, clearRecent,
+        heavyLoading, repairFailedId,
       }}
     >
       {children}

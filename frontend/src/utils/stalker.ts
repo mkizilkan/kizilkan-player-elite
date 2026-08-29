@@ -502,7 +502,17 @@ async function req(url: string, headers: Record<string, string>, options: number
     const kind=decoded.bodyKind==="html" ? "HTML" : "NON_JSON";
     const err:any=new Error(`Portal JSON değil · HTTP ${res.status}${contentType?` · ${contentType.split(";")[0]}`:""}${redirected?" · yönlendirme var":""}`);
     err.kind=kind; err.status=res.status; err.contentType=contentType; err.finalUrl=finalUrl; err.redirected=redirected; err.bodyKind=decoded.bodyKind;
-    void recordDiagnostic("mag","STALKER_HTTP_PARSE_ERROR",{...requestMeta,elapsedMs:Date.now()-startedAt,status:res.status,kind,bytes:text.length,contentType:contentType.split(";")[0]||"",redirected});
+    /**
+     * v16.3.0 — GÖVDE ÖRNEĞİ KAYDA EKLENDİ (telemetri boşluğu)
+     * Bu hatada şimdiye kadar YALNIZ boyut ve içerik türü kaydediliyordu
+     * ("21 bayt · text/javascript"), gövdenin KENDİSİ görünmüyordu; bu yüzden
+     * portalın ne dediği anlaşılamıyordu. Artık ilk 200 karakter kaydedilir ve
+     * kullanıcıya gösterilen mesaja da eklenir — portal "Authorization failed."
+     * gibi bir metin döndürüyorsa doğrudan görülür.
+     */
+    err.snippet=sanitizeBodySnippet(text);
+    err.message=`${err.message}${err.snippet?` · yanıt: ${err.snippet}`:""}`;
+    void recordDiagnostic("mag","STALKER_HTTP_PARSE_ERROR",{...requestMeta,elapsedMs:Date.now()-startedAt,status:res.status,kind,bytes:text.length,contentType:contentType.split(";")[0]||"",redirected,snippet:err.snippet});
     throw err;
   } finally {
     clearTimeout(t);
@@ -1093,11 +1103,38 @@ export type StalkerCatalogDiagnostics = {
   warnings: string[];
 };
 
-async function retryCatalogPart<T>(label:string, fn:()=>Promise<T>):Promise<T> {
+/**
+ * v16.3.0 — YETKİLENDİRME HATASINDA OTURUM TAZELEME
+ * ---------------------------------------------------------------------------
+ * Cihaz kaydı (28.08): portal HTTP 200 döndürüyor ama gövde JSON değil ve
+ * yalnızca 21 bayt (text/javascript). Bu, Stalker portallarının bayat/geçersiz
+ * oturumda döndürdüğü kısa metin yanıtının imzasıdır ("Authorization failed."
+ * tam 21 karakterdir). Eski akış aynı BAYAT token ile iki kez deniyor ve ikisi
+ * de aynı yanıtı alıyordu.
+ * Artık bu imzada oturum geçersiz kılınıp handshake yenilenerek son bir kez
+ * denenir. (Gövde artık kayda da yazılıyor; bir sonraki kayıtta portalın tam
+ * olarak ne dediği görülecek.)
+ */
+function looksLikeAuthFailure(e:any): boolean {
+  const kind=String(e?.kind||""); const snip=String(e?.snippet||e?.message||"").toLowerCase();
+  if (kind!=="NON_JSON" && kind!=="HTTP") return false;
+  return /authorization|auth failed|not authorized|access denied|invalid token|token/.test(snip)
+      || (Number(e?.bytes||0)>0 && Number(e?.bytes||0)<64);
+}
+
+async function retryCatalogPart<T>(label:string, fn:()=>Promise<T>, onAuthFailure?:()=>Promise<void>):Promise<T> {
   let last:any;
   for (let i=0;i<2;i++) {
     try { return await fn(); }
     catch (e) { if (e instanceof StalkerCatalogUnsupportedError) throw e; last=e; if (i===0) await new Promise(r=>setTimeout(r,350)); }
+  }
+  // v16.3.0: yetkilendirme imzası -> oturumu tazeleyip SON bir deneme.
+  if (onAuthFailure && looksLikeAuthFailure(last)) {
+    void recordDiagnostic("catalog","STALKER_CATALOG_AUTH_RETRY",{label,bytes:last?.bytes,snippet:last?.snippet||""});
+    try {
+      await onAuthFailure();
+      return await fn();
+    } catch (e2) { last=e2; }
   }
   void recordDiagnostic("catalog", "STALKER_CATALOG_PART_ERROR", { label, kind:last?.kind, status:last?.status, contentType:last?.contentType, redirected:last?.redirected, finalUrl:last?.finalUrl, message:String(last?.message || last) });
   const err:any=new Error(`${label} kataloğu alınamadı: ${last?.message || last}`); err.cause=last; err.kind=last?.kind; err.status=last?.status; err.contentType=last?.contentType; err.redirected=last?.redirected; err.finalUrl=last?.finalUrl; throw err;
@@ -1105,6 +1142,21 @@ async function retryCatalogPart<T>(label:string, fn:()=>Promise<T>):Promise<T> {
 
 async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: StalkerCatalogOptions = {}): Promise<StalkerCatalogResult> {
   const catalogStarted = Date.now();
+  /**
+   * v16.3.0: Yetkilendirme imzasında oturumu tazeler.
+   * Handshake yeniden yapılır ve yeni token mevcut oturum nesnesine yazılır;
+   * böylece bundan sonraki istekler taze token kullanır.
+   */
+  const refreshSession = async () => {
+    invalidateSession(cred);
+    const fresh = await stalkerHandshake({ ...cred });
+    if (fresh?.token) {
+      (ses as any).token = fresh.token;
+      (ses as any).endpoint = fresh.endpoint || ses.endpoint;
+      (ses as any).random = fresh.random ?? (ses as any).random;
+      (ses as any).compatProfile = fresh.compatProfile ?? (ses as any).compatProfile;
+    }
+  };
   void recordDiagnostic("catalog", "STALKER_CATALOG_START", { endpoint: ses.endpoint, profileError: ses.profileError || "" });
 
   emitCatalogProgress(opts,{stage:"live",message:"Canlı TV kataloğu yükleniyor..."});
@@ -1112,7 +1164,7 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
   let channels:Channel[]=[];
   let liveError="";
   const finishLiveTask = startDiagnosticTask("mag:catalog-live");
-  try { channels=await retryCatalogPart("MAG Live",()=>stalkerChannels(cred,ses,opts.signal)); }
+  try { channels=await retryCatalogPart("MAG Live",()=>stalkerChannels(cred,ses,opts.signal),refreshSession); }
   catch (e:any) { liveError=String(e?.message || e); void recordDiagnostic("mag","STALKER_LIVE_PARTIAL_FAILURE",{message:liveError,status:e?.status,kind:e?.kind}); }
   finally { finishLiveTask(); }
   void recordDiagnostic("catalog","STALKER_CATALOG_STAGE_DONE",{stage:"live",elapsedMs:Date.now()-liveStageStarted,count:channels.length,error:liveError});
@@ -1136,7 +1188,7 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
   let vodPart:VodPartition;
   let vodError="";
   const finishVodTask = startDiagnosticTask("mag:catalog-vod");
-  try { vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses,opts)); }
+  try { vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses,opts),refreshSession); }
   catch (e:any) { vodError=String(e?.message || e); vodPart={vod:[],fallbackSeries:[],supported:!(e instanceof StalkerCatalogUnsupportedError),rawCount:0,seriesFlagged:0}; void recordDiagnostic("mag","STALKER_VOD_PARTIAL_FAILURE",{message:vodError,status:e?.status,kind:e?.kind}); }
   finally { finishVodTask(); }
   void recordDiagnostic("catalog","STALKER_CATALOG_STAGE_DONE",{stage:"vod",elapsedMs:Date.now()-vodStageStarted,count:vodPart.vod.length,seriesFlagged:vodPart.fallbackSeries.length,error:vodError});
@@ -1147,7 +1199,7 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
   let nativeSeries:{items:SeriesItem[];supported:boolean};
   let seriesError="";
   const finishSeriesTask = startDiagnosticTask("mag:catalog-series");
-  try { nativeSeries=await retryCatalogPart("MAG Series",()=>nativeStalkerSeries(cred,ses,opts)); }
+  try { nativeSeries=await retryCatalogPart("MAG Series",()=>nativeStalkerSeries(cred,ses,opts),refreshSession); }
   catch (e:any) { seriesError=String(e?.message || e); nativeSeries={items:[],supported:!(e instanceof StalkerCatalogUnsupportedError)}; void recordDiagnostic("mag","STALKER_SERIES_PARTIAL_FAILURE",{message:seriesError,status:e?.status,kind:e?.kind}); }
   finally { finishSeriesTask(); }
 
@@ -1188,15 +1240,29 @@ export type StalkerEnrichmentResult = { vod:VodItem[]; series:SeriesItem[]; diag
 export async function stalkerEnrichment(cred:StalkerCreds, ses:StalkerSession, opts:StalkerCatalogOptions = {}):Promise<StalkerEnrichmentResult> {
   const finish=startDiagnosticTask("mag:enrichment",{endpoint:ses.endpoint});
   const started=Date.now();
+  /**
+   * v16.3.0: Zenginleştirme akışının KENDİ oturum yenileyicisi.
+   * (runStalkerCatalog'daki yerel yenileyici burada kapsam dışıdır.)
+   */
+  const refreshSession = async () => {
+    invalidateSession(cred);
+    const fresh = await stalkerHandshake({ ...cred });
+    if (fresh?.token) {
+      (ses as any).token = fresh.token;
+      (ses as any).endpoint = fresh.endpoint || ses.endpoint;
+      (ses as any).random = fresh.random ?? (ses as any).random;
+      (ses as any).compatProfile = fresh.compatProfile ?? (ses as any).compatProfile;
+    }
+  };
   try {
     emitCatalogProgress(opts,{stage:"vod",message:"Film kataloğu arka planda tamamlanıyor..."});
     let vodPart:VodPartition, vodError="";
-    try { vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses,opts)); }
+    try { vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses,opts),refreshSession); }
     catch (e:any) { vodError=String(e?.message||e); vodPart={vod:[],fallbackSeries:[],supported:!(e instanceof StalkerCatalogUnsupportedError),rawCount:0,seriesFlagged:0}; }
 
     emitCatalogProgress(opts,{stage:"series",message:"Dizi kataloğu arka planda tamamlanıyor..."});
     let nativeSeries:{items:SeriesItem[];supported:boolean}, seriesError="";
-    try { nativeSeries=await retryCatalogPart("MAG Series",()=>nativeStalkerSeries(cred,ses,opts)); }
+    try { nativeSeries=await retryCatalogPart("MAG Series",()=>nativeStalkerSeries(cred,ses,opts),refreshSession); }
     catch (e:any) { seriesError=String(e?.message||e); nativeSeries={items:[],supported:!(e instanceof StalkerCatalogUnsupportedError)}; }
 
     const merged=new Map<string,SeriesItem>();
