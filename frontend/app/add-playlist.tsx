@@ -1494,15 +1494,24 @@ export default function AddPlaylist() {
         let catalog;
         try {
           /**
-           * v16.2.0 — MAG'DA FİLM VE DİZİ DE ÇEKİLİR.
-           * Önceden liveOnly:true idi; bu yüzden portal film/dizi verse bile
-           * yalnız Canlı TV ekleniyordu (kullanıcı: "IPTV Loader'da canlı,
-           * diziler ve filmler ayrı geliyor, bizimkinde sadece canlı").
-           * stalkerCatalog zaten vod ve series döndürüyor; artık isteniyor ve
-           * aşağıda listeye YAZILIYOR.
+           * v16.6.0 — GERİ ALINDI: liveOnly TEKRAR true.
+           * ---------------------------------------------------------------
+           * v16.2.0'da film/dizi de ekleme akışında çekilsin diye liveOnly:false
+           * yapmıştım. Bu BENİM GERİLEMEM oldu — cihaz kaydı (29.08):
+           *     type: vod · page 68 · loaded 952 · total 103.662 · rows/page 14
+           *     _task: mag:catalog-vod · _taskAgeMs: 102.355 (102 saniye)
+           * Portal 103 binden fazla film bildiriyor ve sayfa başına yalnız 14
+           * satır veriyor; tamamı için binlerce sayfa gerekiyor. Kullanıcı
+           * "MAG portal ekleme çalışmaz olmuş" dedi — ekleme dakikalarca
+           * sürüyor ve ANR üretiyordu (16 donma kaydı).
+           *
+           * DOĞRU TASARIM ZATEN VARDI: canlı katalog hızlıca eklenir, film ve
+           * dizi ARKA PLANDA stalkerEnrichment ile doldurulur (aşağıda
+           * magEnrichment.run). Böylece kullanıcı hemen izlemeye başlar,
+           * film/dizi sekmeleri arkadan dolar.
            */
           catalog = await stalkerCatalog(cred, session, {
-            liveOnly: false,
+            liveOnly: true,
             onProgress: (progress) => setProgress(progress.message),
           });
         }
@@ -1525,7 +1534,8 @@ export default function AddPlaylist() {
           stalkerPortal: stPortal.trim(), stalkerMac: stMac.trim().toUpperCase(),
           stalkerSerial: stSerial.trim() || undefined,
           accountInfo: normalizeStalkerAccountInfo(profile),
-          // v16.2.0: katalogdan gelen film/dizi ARTIK ATILMIYOR.
+          // v16.6.0: canlı hemen eklenir; film/dizi arka planda (enrichment)
+          // doldurulur. catalog.vod/series varsa yine de kullanılır.
           channels: catalog.channels, vod: catalog.vod || [], series: catalog.series || [],
           createdAt: new Date().toISOString(),
         };
@@ -2270,7 +2280,15 @@ export default function AddPlaylist() {
         </ScrollView>
 
         <Modal
-          visible={loading && method === "stalker" && !!progress}
+          /**
+           * v16.5.0 — MAG EKLEME "GİZLİ" GÖRÜNÜYORDU.
+           * Koşulda !!progress vardı: ilerleme metni henüz üretilmemişken
+           * (handshake/ilk istek aşaması) katman AÇILMIYOR, kullanıcı hiçbir
+           * şey görmüyor ve "Kaydet ve Yükle"ye tekrar tekrar basabiliyordu.
+           * Artık işlem başlar başlamaz görünür; metin gelene kadar
+           * "Bağlanılıyor…" yazar.
+           */
+          visible={loading && method === "stalker"}
           transparent
           animationType="fade"
           onRequestClose={() => {}}
@@ -2280,7 +2298,7 @@ export default function AddPlaylist() {
               <View style={{ alignItems: "center", gap: SPACING.md, paddingVertical: SPACING.md }}>
                 <ActivityIndicator size="large" color={colors.brandPrimary} />
                 <Text style={[styles.matchModalTitle, { color: colors.onSurface, textAlign: "center" }]}>MAG Portal hazırlanıyor</Text>
-                <Text style={{ color: colors.onSurfaceSecondary, textAlign: "center", lineHeight: 21 }}>{progress}</Text>
+                <Text style={{ color: colors.onSurfaceSecondary, textAlign: "center", lineHeight: 21 }}>{progress || "Portala bağlanılıyor… Lütfen bekleyin, tekrar dokunmayın."}</Text>
                 <Text style={{ color: colors.onSurfaceTertiary, textAlign: "center", fontSize: FONT.size.sm }}>Bu ekran bağlantı, katalog ve cihaz kayıt aşamalarını canlı gösterir.</Text>
               </View>
             </View>
@@ -2605,7 +2623,8 @@ export default function AddPlaylist() {
         * gösterir hem de arkadaki düğmelere basılmasını fiziksel olarak
         * engeller (her basış yeni bir ağır MAG işlemi başlatıyordu).
         */}
-      <Modal visible={loading} transparent animationType="fade" onRequestClose={() => {}}>
+      {/* v16.5.0: MAG için üstteki özel katman var; burada çift göstermiyoruz. */}
+      <Modal visible={loading && method !== "stalker"} transparent animationType="fade" onRequestClose={() => {}}>
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.88)", alignItems: "center", justifyContent: "center", padding: SPACING.lg }}>
           <ActivityIndicator size="large" color={colors.brandPrimary} />
           <Text style={{ color: colors.onSurface, fontSize: FONT.size.lg, fontWeight: "700", marginTop: SPACING.lg, textAlign: "center" }}>

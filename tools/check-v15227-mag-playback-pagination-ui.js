@@ -28,7 +28,15 @@ function staticChecks(){
   need(player,/PLAYER_EMERGENCY_CONTROLS_OPEN/,'emergency controls telemetry yok');
   need(player,/player-select-engine-on-error-btn/,'final error ekranında manuel motor seçimi yok');
   need(add,/MAG Portal hazırlanıyor · bağlantı ve cihaz profili doğrulanacak/,'Kaydet sonrası ilk görünür MAG durum mesajı yok');
-  need(add,/visible=\{loading && method === "stalker" && !!progress\}/,'MAG görünür progress modalı yok');
+  // v16.5.0 SÖZLEŞME GÜNCELLEMESİ: "&& !!progress" koşulu KALDIRILDI.
+  // Gerekçe (kullanıcı bildirimi + cihaz gözlemi): ilerleme metni henüz
+  // üretilmemişken (handshake/ilk istek) katman açılmıyor, kullanıcı hiçbir
+  // bilgi görmüyor ve "Kaydet ve Yükle"ye defalarca basabiliyordu. Katman artık
+  // işlem başlar başlamaz görünür; metin gelene kadar "Portala bağlanılıyor…"
+  // yazar. Sözleşmenin ASIL amacı (MAG'da görünür ilerleme modalı olması)
+  // korunuyor, hatta güçleniyor.
+  need(add,/visible=\{loading && method === "stalker"\}/,'MAG görünür progress modalı yok');
+  need(add,/Portala bağlanılıyor/,'MAG modalında boş-metin durumu için mesaj yok');
   need(add,/"MAG Portal Eklendi"/,'Live commit sonrası kullanıcı başarı bilgisi yok');
   need(add,/Film ve diziler arka planda yüklenmeye devam edecek/,'background enrichment kullanıcı bilgisi yok');
   forbid(stalker,/console\.log\([^\n]*(token|Cookie|Authorization)/i,'secret loglama şüphesi');

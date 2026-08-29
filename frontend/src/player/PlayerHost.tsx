@@ -1549,10 +1549,17 @@ export default function PlayerHost() {
      * v16.2.0: Görüntü YOKKEN kullanıcı motor değiştirmek/yeniden denemek
      * ister; 4 saniye buna yetmiyordu. İlk kare gelmemişse süre uzatılır.
      */
+    /**
+     * v16.5.0 — PANEL ÇOK ÇABUK KAYBOLUYORDU.
+     * Kullanıcı: "kanal açıkken ekrana tıklayınca açılan panel çok kısa
+     * zamanda kayboluyor." Görüntü varken süre 4 sn idi; kullanıcı menüyü
+     * okuyup bir seçim yapmaya fırsat bulamıyordu. Süre iki katına çıkarıldı.
+     * Görüntü YOKKEN (motor değiştirme/yeniden deneme gerekir) daha da uzun.
+     */
     const noPicture = !firstFrameSeenRef.current;
     hideTimer.current = setTimeout(() => {
       setShowControls(false);
-    }, noPicture ? (isTv ? 15000 : 12000) : (isTv ? 6000 : 4000));
+    }, noPicture ? (isTv ? 20000 : 15000) : (isTv ? 12000 : 10000));
   };
 
   const revealControls = () => {

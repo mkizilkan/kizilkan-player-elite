@@ -305,6 +305,14 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           if (!cancelled) setNativeSummary(summary);
           return;
         } catch (e) {
+          /**
+           * v16.5.0: Bu düşüş SESSİZDİ (yalnız console.warn). Kullanıcı
+           * "liste seçtim ama kanallar gelmiyor / çok yavaş geliyor" dediğinde
+           * kayıtta hiçbir iz olmuyordu. Artık kaydediliyor ve süresi ölçülüyor.
+           */
+          void recordDiagnostic('catalog', 'PLAYLIST_WARM_FALLBACK', {
+            playlistId: activeId, error: String((e as any)?.message || e),
+          });
           console.warn('[Playlist] Native Core warm-up başarısız; legacy hydrate kullanılacak', e);
         }
       }
@@ -738,9 +746,58 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
             setHeavyLoading(false);
           }
         } else {
-          // Kaynak bilgisi yok: onarılamaz. Kullanıcıya bildirilecek.
-          setRepairFailedId(id);
-          return;
+          /**
+           * v16.5.0 — TEŞHİS BOŞLUĞU KAPATILDI + ONARIM KOŞULU GENİŞLETİLDİ.
+           * v16.4.0'da bu dal SESSİZDİ: cihaz kaydında 14 kez
+           * PLAYLIST_SWITCH_VERIFY_FAILED görüldü ama hiç SELF_REPAIR olayı
+           * yoktu; yani onarım hiç denenmemişti ve NEDEN denenmediği de
+           * anlaşılamıyordu. Artık hangi kaynak alanlarının bulunduğu/eksik
+           * olduğu kaydedilir.
+           *
+           * Ayrıca: kaynak alanları eksik görünse bile liste Xtream/M3U/MAG
+           * olarak işaretliyse ve kullanıcı bilgileri duruyorsa onarım YİNE
+           * denenir — kaynak bilgisi farklı alan adlarında saklanmış olabilir.
+           */
+          void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_SKIPPED', {
+            playlistId: id,
+            found: !!broken,
+            source: broken?.source || '',
+            hasM3u: !!broken?.m3uUrl,
+            hasXtreamServer: !!broken?.xtreamServer,
+            hasXtreamUser: !!broken?.xtreamUsername,
+            hasStalkerPortal: !!broken?.stalkerPortal,
+            hasPanelCode: !!(broken as any)?.panelCode,
+            hasPreferredServer: !!(broken as any)?.preferredServer,
+            keys: broken ? Object.keys(broken).slice(0, 30).join(',') : '',
+          });
+
+          // Son çare: liste var ve bir kaynak TÜRÜ biliniyorsa yenilemeyi dene.
+          if (broken && broken.source) {
+            try {
+              setHeavyLoading(true);
+              void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_START', { playlistId: id, source: broken.source, mode: 'fallback' });
+              const { refreshPlaylistContent } = await import('@/src/utils/refreshPlaylist');
+              const res = await refreshPlaylistContent(broken as any);
+              if (activeSwitchGeneration.current !== generation) return;
+              if (res?.ok && res.patch) {
+                await updatePlaylist(id, res.patch as any);
+                try { verifiedSummary = await KizilkanNativeCore.warmPlaylist(id); } catch { verifiedSummary = null as any; }
+                if (verifiedSummary?.roomIndexed) {
+                  void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_OK', { playlistId: id, mode: 'fallback' });
+                  setRepairFailedId(null);
+                } else { setRepairFailedId(id); return; }
+              } else {
+                void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_FAILED', { playlistId: id, mode: 'fallback', message: String(res?.message || '') });
+                setRepairFailedId(id); return;
+              }
+            } catch (err2: any) {
+              void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_ERROR', { playlistId: id, mode: 'fallback', error: String(err2?.message || err2) });
+              setRepairFailedId(id); return;
+            } finally { setHeavyLoading(false); }
+          } else {
+            setRepairFailedId(id);
+            return;
+          }
         }
       }
     }

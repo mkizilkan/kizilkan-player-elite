@@ -901,8 +901,25 @@ async function stalkerOrderedList(
   let maxPages=ORDERED_LIST_ABSOLUTE_MAX_PAGES, consecutiveNoNew=0, previousFingerprint="";
   let effectivePageBase: 0 | 1 | null = null;
   let stopReason="TOTAL_OR_END";
+  /**
+   * v16.6.0 — ZAMAN BÜTÇESİ (kritik)
+   * -------------------------------------------------------------------------
+   * CİHAZ KANITI (29.08): bir portal 103.662 film bildiriyor ve sayfa başına
+   * yalnız 14 satır veriyor. 120 sayfalık üst sınırla bile bu iş 100 SANİYEDEN
+   * uzun sürüyor ve ANR üretiyordu (16 donma kaydı). Sayfa sayısı tek başına
+   * yeterli koruma değil: yavaş portalda 120 sayfa dakikalarca sürebiliyor.
+   * Bu yüzden duvar saati bütçesi ekliyoruz: süre dolunca elde ne varsa onunla
+   * dönülür (kısmi liste, boş listeden iyidir).
+   */
+  const PAGE_BUDGET_MS = 45000;
+  const budgetStartedAt = Date.now();
   while (page < maxPages && out.length < total) {
     if (signal?.aborted) { stopReason="CANCELLED"; break; }
+    if (Date.now() - budgetStartedAt > PAGE_BUDGET_MS) {
+      stopReason="TIME_BUDGET";
+      void recordDiagnostic("mag","STALKER_PAGINATION_BUDGET",{type,page,loaded:out.length,total,elapsedMs:Date.now()-budgetStartedAt});
+      break;
+    }
     let data:any;
     try {
       data=await req(
