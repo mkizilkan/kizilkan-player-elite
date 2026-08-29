@@ -224,18 +224,20 @@ function refererFor(cred: StalkerCreds, endpoint?: string): string {
  * "golden" profili v9.6.0'ın başlıklarını BİREBİR üretir ve listenin BAŞINDA
  * denenir. Diğer profiller yedek olarak korunur (regresyon yok).
  */
-type MagCompatProfile = "golden" | "mag254-encoded" | "mag254-raw" | "mag250-encoded" | "mag250-raw";
-const MAG_COMPAT_PROFILES: MagCompatProfile[] = ["golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"];
+type MagCompatProfile = "fulldevice" | "golden" | "mag254-encoded" | "mag254-raw" | "mag250-encoded" | "mag250-raw";
+const MAG_COMPAT_PROFILES: MagCompatProfile[] = ["fulldevice", "golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"];
 const MAG_LEARNED_KEY = "kizilkan.mag.compat.v15225";
 
 type LearnedMagCompat = { endpoint:string; profile:MagCompatProfile; model:"MAG254"|"MAG250"; at:number; failures:number };
 const learnedCompatMemory = new Map<string, LearnedMagCompat>();
 
 function compatModel(profile: MagCompatProfile): "MAG254"|"MAG250" {
+  if (profile === "fulldevice") return "MAG254";   // v16.7.0: tam cihaz parmak izi
   if (profile === "golden") return "MAG250";   // v16.1.0: v9.6.0 kimliği
   return profile.startsWith("mag254") ? "MAG254" : "MAG250";
 }
 function compatEncoded(profile: MagCompatProfile): boolean {
+  if (profile === "fulldevice") return true;   // v16.7.0
   if (profile === "golden") return true;       // v16.1.0: mac HER ZAMAN kodlanır
   return profile.endsWith("-encoded");
 }
@@ -248,8 +250,8 @@ function preferredCompatProfiles(cred: StalkerCreds, learned?: LearnedMagCompat 
    * bu fonksiyon profilleri belirleyen tek yerdir.
    */
   const ordered: MagCompatProfile[] = cred.deviceModel === "MAG250"
-    ? ["golden","mag250-encoded","mag250-raw","mag254-encoded","mag254-raw"]
-    : ["golden","mag254-encoded","mag254-raw","mag250-encoded","mag250-raw"];
+    ? ["fulldevice","golden","mag250-encoded","mag250-raw","mag254-encoded","mag254-raw"]
+    : ["fulldevice","golden","mag254-encoded","mag254-raw","mag250-encoded","mag250-raw"];
   if (learned?.profile && ordered.includes(learned.profile)) {
     return [learned.profile, ...ordered.filter(x => x !== learned.profile)];
   }
@@ -335,6 +337,66 @@ async function markLearnedFailure(cred: StalkerCreds, learned: LearnedMagCompat 
   } else await saveLearnedCompat(cred,next);
 }
 
+/**
+ * v16.7.0 — TAM CİHAZ ÇEREZİ (MAG portal "Authorization failed." kök çözümü)
+ * ---------------------------------------------------------------------------
+ * CİHAZ KANITI (29.08 kaydı, v16.3.0'da eklediğim gövde kaydı sayesinde):
+ *     action: handshake · HTTP 200 · text/javascript · 21 bayt
+ *     snippet: "Authorization failed."
+ * ve bu hata TÜM profillerde (golden dahil) çıkıyor.
+ *
+ * Sebep: bizim çerezimiz yalnız `mac; stb_lang; timezone` gönderiyordu. Gerçek
+ * MAG kutuları çerezte cihaz parmak izinin TAMAMINI taşır:
+ *     adid, device_id, device_id2, hw_version, sn, mac, stb_lang, timezone
+ * Anti-korsan katmanı olan portallar bu alanları handshake AŞAMASINDA
+ * doğrular; eksikse "Authorization failed." döner. (Kullanıcının aynı MAC ve
+ * portalla IPTV Loader Pro'da bağlanabilmesi, farkın istemcide olduğunu
+ * gösteriyordu.)
+ *
+ * Kimlik türetimi asenkron (md5/sha256) olduğu, headersFor ise eşzamanlı
+ * çalıştığı için kimlik istekten ÖNCE hesaplanıp burada önbelleğe alınır.
+ */
+const identityCache = new Map<string, {sn:string; deviceId:string; deviceId2:string; signatureLegacy:string; signatureModern:string; hwVersion2:string; adid:string}>();
+
+function identityKey(cred: StalkerCreds): string {
+  return `${normalizeMac(cred.mac)}|${cred.serial || ""}|${cred.deviceId || ""}`;
+}
+
+/** Kimliği hesaplayıp önbelleğe alır. İstek göndermeden ÖNCE çağrılmalı. */
+export async function primeMagIdentity(cred: StalkerCreds): Promise<void> {
+  const key = identityKey(cred);
+  if (identityCache.has(key)) return;
+  try {
+    const id = await derivedMagIdentity(cred);
+    // adid: gerçek MAG kutularında cihaza özel bir tanımlayıcı. md5 yardımcı
+    // fonksiyonu derivedMagIdentity içinde YEREL olduğundan burada expo-crypto
+    // doğrudan kullanılır (aynı algoritma).
+    const Crypto = await import("expo-crypto");
+    const adid = String(
+      await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.MD5, String(id.sn) + normalizeMac(cred.mac))
+    ).toLowerCase();
+    identityCache.set(key, { ...id, adid });
+  } catch { /* kimlik üretilemezse tam çerez atlanır, eski davranış sürer */ }
+}
+
+/** Tam MAG çerezi; kimlik yoksa sade çereze düşer. */
+function fullDeviceCookie(cred: StalkerCreds, encodedMac: string, tz: string): string {
+  const id = identityCache.get(identityKey(cred));
+  if (!id) return `mac=${encodedMac}; stb_lang=en; timezone=${tz}`;
+  const sn = cred.serial || id.sn;
+  return [
+    `adid=${id.adid}`,
+    `debug=1`,
+    `device_id=${id.deviceId}`,
+    `device_id2=${id.deviceId2}`,
+    `hw_version=${id.hwVersion2 || "1.7-BD-00"}`,
+    `mac=${encodedMac}`,
+    `sn=${sn}`,
+    `stb_lang=en`,
+    `timezone=${tz}`,
+  ].join("; ");
+}
+
 function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profile: MagCompatProfile = "mag254-encoded"): Record<string, string> {
   const mac = normalizeMac(cred.mac);
   const encodedMac = encodeURIComponent(mac);
@@ -346,6 +408,24 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
    * Accept-Encoding YOK), timezone HAM eğik çizgiyle yazılır ve Referer
    * her zaman "<host>/c/" olur — v9.6.0'da portal bu istekle çalışıyordu.
    */
+  /**
+   * v16.7.0 — TAM CİHAZ PROFİLİ.
+   * Gerçek MAG kutusunun gönderdiği çerezin tamamı (adid, device_id,
+   * device_id2, hw_version, sn, mac) + MAG254 kimliği. Portal handshake
+   * aşamasında cihaz parmak izi doğruluyorsa çalışan tek profil budur.
+   */
+  if (profile === "fulldevice") {
+    const f: Record<string, string> = {
+      "User-Agent": MAG254_UA,
+      Referer: baseOf(cred.portal) + "/c/",
+      Accept: "*/*",
+      "X-User-Agent": "Model: MAG254; Link: WiFi",
+      Cookie: fullDeviceCookie(cred, encodedMac, "Europe/Istanbul"),
+    };
+    if (token) f.Authorization = `Bearer ${token}`;
+    return f;
+  }
+
   if (profile === "golden") {
     const g: Record<string, string> = {
       "User-Agent": MAG250_UA,
@@ -544,6 +624,13 @@ export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSessi
   const finishTask=startDiagnosticTask("mag:handshake",{portal:cred.portal});
   const errors:string[]=[];
   try {
+    /**
+     * v16.7.0: Cihaz kimliğini İSTEKTEN ÖNCE hesapla.
+     * headersFor eşzamanlı çalıştığı için tam çerez (adid/device_id/sn) ancak
+     * önbellek doluysa üretilebilir. Bu satır olmadan "fulldevice" profili
+     * sessizce sade çereze düşer ve düzeltme etkisiz kalır.
+     */
+    await primeMagIdentity(cred);
     const learned=await loadLearnedCompat(cred);
     const all=portalCandidates(cred.portal);
     const plan:string[]=[];

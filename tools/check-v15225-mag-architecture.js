@@ -16,7 +16,14 @@ function staticChecks(){
   // testi). O sürümün SADE isteği (MAG250 UA + kodlanmış mac + ham timezone +
   // X-User-Agent/Accept-Language/Accept-Encoding YOK) "golden" olarak geri
   // getirildi ve ilk sırada denenir. Dört eski profil YEDEK olarak korunur.
-  need(stalker,/MAG_COMPAT_PROFILES[^\n]+\["golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"\]/,'golden + MAG254 profil sırası yok');
+  // v16.7.0 SÖZLEŞME GÜNCELLEMESİ: "fulldevice" profili listenin BAŞINA eklendi.
+  // Gerekçe (cihaz kanıtı 29.08): portal handshake'e HTTP 200 + "Authorization
+  // failed." (21 bayt) döndürüyordu ve bu TÜM profillerde oluyordu. Sebep:
+  // çerezde yalnız mac gönderiliyordu; gerçek MAG kutuları adid/device_id/
+  // device_id2/hw_version/sn de gönderir ve anti-korsan katmanı bunu doğrular.
+  need(stalker,/MAG_COMPAT_PROFILES[^\n]+\["fulldevice", "golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"\]/,'fulldevice + golden + MAG254 profil sırası yok');
+  need(stalker,/profile === "fulldevice"/,'tam cihaz çerezi dalı yok');
+  need(stalker,/primeMagIdentity/,'cihaz kimliği ön-hesaplaması yok');
   need(stalker,/profile === "golden"/,'golden profil başlık dalı yok');
   need(stalker,/model:"MAG250"\|"MAG254"="MAG254"/,'get_profile varsayılanı MAG254 değil');
   need(stalker,/MAG_LEARNED_KEY/,'endpoint/profile learning yok');
@@ -64,7 +71,9 @@ async function fixtureHandshakeMag254(){
   // v16.1.0: İLK deneme artık "golden" (v9.6.0'ın kanıtlanmış SADE isteği,
   // MAG250 kimliğiyle). MAG254 profilleri hemen ardından yedek olarak gelir.
   // Bu test, ilk isteğin golden ile yapıldığını doğrular.
-  if(!/MAG200 stbapp ver: 2 rev: 250/.test(firstUA) || s.compatProfile!=='golden') throw new Error('golden ilk profil/header doğrulanamadı: '+firstUA+' / '+s.compatProfile);
+  // v16.7.0: İLK deneme artık "fulldevice" (tam MAG çerezi + MAG254 kimliği).
+  // golden ve diğer profiller yedek olarak hemen ardından gelir.
+  if(!/MAG254 stbapp/.test(firstUA) || s.compatProfile!=='fulldevice') throw new Error('fulldevice ilk profil/header doğrulanamadı: '+firstUA+' / '+s.compatProfile);
 }
 async function fixtureRejectBounded(){
   let calls=0;
