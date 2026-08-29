@@ -21,7 +21,12 @@ function staticChecks(){
   // failed." (21 bayt) döndürüyordu ve bu TÜM profillerde oluyordu. Sebep:
   // çerezde yalnız mac gönderiliyordu; gerçek MAG kutuları adid/device_id/
   // device_id2/hw_version/sn de gönderir ve anti-korsan katmanı bunu doğrular.
-  need(stalker,/MAG_COMPAT_PROFILES[^\n]+\["fulldevice", "golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"\]/,'fulldevice + golden + MAG254 profil sırası yok');
+  // v16.8.0: "fulldevice-macid" eklendi — kullanıcının girdiği seri numarası
+  // device_id'yi (sha256(serial)) belirlediği için yanlış seri parmak izini
+  // bozup portalın reddine yol açabiliyor; bu varyant seriyi yok sayar.
+  need(stalker,/MAG_COMPAT_PROFILES[^\n]+\["fulldevice", "fulldevice-macid", "golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"\]/,'fulldevice(+macid) + golden + MAG254 profil sırası yok');
+  need(stalker,/fulldevice-macid/,'seriden bağımsız kimlik varyantı yok');
+  need(stalker,/HANDSHAKE_PARAM_VARIANTS/,'handshake parametre varyantları yok');
   need(stalker,/profile === "fulldevice"/,'tam cihaz çerezi dalı yok');
   need(stalker,/primeMagIdentity/,'cihaz kimliği ön-hesaplaması yok');
   need(stalker,/profile === "golden"/,'golden profil başlık dalı yok');

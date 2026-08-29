@@ -30,7 +30,14 @@ const MAX_JS_FALLBACK_EVENTS = 5000;
 const JS_STORAGE_FLUSH_EVERY = 64;
 const JS_JOURNAL_SAMPLE_EVERY = 16;
 const SYSTEM_SAMPLE_INTERVAL_MS = 5000;
-const CRITICAL_EVENT_RE = /CRASH|ANR|FATAL|BLACK_SCREEN|ROLLBACK|TIMEOUT|STALL|OOM|LOW_MEMORY|FAILED|ERROR/i;
+/**
+ * v16.8.0 — "ROOM" -> "OOM" YANLIŞ POZİTİFİ DÜZELTİLDİ.
+ * OOM kalıbı sınır kontrolü olmadan yazıldığı için "R-OOM" kelimesi de
+ * eşleşiyordu: MAG_ENRICH_ROOM_OK, ROOM_VERIFY_OK gibi BAŞARI olayları
+ * "kritik" sayılıyor, kayıtları kirletiyor ve gerçek kritik olayları
+ * gizliyordu. Artık OOM yalnız kendi başına bir sözcük olarak eşleşir.
+ */
+const CRITICAL_EVENT_RE = /CRASH|ANR|FATAL|BLACK_SCREEN|ROLLBACK|TIMEOUT|STALL|(?<![A-Z])OOM(?![A-Z])|LOW_MEMORY|FAILED|ERROR/i;
 const WARN_EVENT_RE = /WARN|STALE|RECOVERY|REBUFFER|SLOW|DROPPED/i;
 const JOURNAL_NAME = 'kizilkan-blackbox-v5.jsonl';
 const JOURNAL_ARCHIVE_NAMES = Array.from({ length: 7 }, (_, i) => `kizilkan-blackbox-v5.${i + 1}.jsonl`);
@@ -287,7 +294,8 @@ function nativeSnapshotEvents(snapshot: Record<string, any>): DiagnosticEvent[] 
 
 function classifySeverity(event: string): DiagnosticEvent['severity'] {
   if (/CRASH|ANR|FATAL|BLACK_SCREEN|ROLLBACK_FAILED/i.test(event)) return 'critical';
-  if (/ERROR|FAILED|TIMEOUT|STALL|OOM|LOW_MEMORY/i.test(event)) return 'error';
+  // v16.8.0: OOM sınır kontrollü (ROOM eşleşmesin)
+  if (/ERROR|FAILED|TIMEOUT|STALL|(?<![A-Z])OOM(?![A-Z])|LOW_MEMORY/i.test(event)) return 'error';
   if (WARN_EVENT_RE.test(event)) return 'warn';
   return 'info';
 }
@@ -342,7 +350,7 @@ export async function recordDiagnostic(
   const safeEvent = String(event || 'EVENT').slice(0, 80);
   const severity = classifySeverity(safeEvent);
   const critical = severity === 'critical' || severity === 'error' || CRITICAL_EVENT_RE.test(safeEvent);
-  const syncCritical = severity === 'critical' || /CRASH|ANR|FATAL|BLACK_SCREEN|OOM|LOW_MEMORY|ROLLBACK_FAILED|PROCESS_DEATH/i.test(safeEvent);
+  const syncCritical = severity === 'critical' || /CRASH|ANR|FATAL|BLACK_SCREEN|(?<![A-Z])OOM(?![A-Z])|LOW_MEMORY|ROLLBACK_FAILED|PROCESS_DEATH/i.test(safeEvent);
   const safeData = sanitizeValue(data);
   const item: DiagnosticEvent = {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,

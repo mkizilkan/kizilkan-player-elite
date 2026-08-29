@@ -179,8 +179,20 @@ function portalCandidates(portal: string): string[] {
       push(origin + "/stalker_portal/server/load.php");
       push(origin + "/stalker_portal/server/portal.php");
     } else if (/\/c$/i.test(path)) {
+      /**
+       * v16.8.0 — /c/ PORTALLARINDA ADAY LİSTESİ GENİŞLETİLDİ.
+       * Cihaz kaydı (29.08): hkpremiumtv.xyz:2095/c/ için yalnız 3 yol
+       * denenmiş; /portal.php "Authorization failed." vermiş, diğer ikisi 404.
+       * /server/load.php ve /c/portal.php HİÇ DENENMEMİŞTİ — oysa daha önceki
+       * kayıtlarda /server/load.php yanıt veriyordu. Ministra kurulumlarında
+       * doğru uç nokta bunlardan biri olabiliyor.
+       */
       push(origin + "/portal.php");
+      push(origin + "/c/portal.php");
+      push(origin + "/server/load.php");
       push(origin + "/stalker_portal/server/load.php");
+      push(origin + "/c/server/load.php");
+      push(origin + "/portal.php?");
     } else if (path && path !== "/") {
       // Özel alt dizine kurulmuş portallar: /foo/c -> /foo/server/load.php vb.
       const prefix = path.replace(/\/c$/i, "");
@@ -224,20 +236,20 @@ function refererFor(cred: StalkerCreds, endpoint?: string): string {
  * "golden" profili v9.6.0'ın başlıklarını BİREBİR üretir ve listenin BAŞINDA
  * denenir. Diğer profiller yedek olarak korunur (regresyon yok).
  */
-type MagCompatProfile = "fulldevice" | "golden" | "mag254-encoded" | "mag254-raw" | "mag250-encoded" | "mag250-raw";
-const MAG_COMPAT_PROFILES: MagCompatProfile[] = ["fulldevice", "golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"];
+type MagCompatProfile = "fulldevice" | "fulldevice-macid" | "golden" | "mag254-encoded" | "mag254-raw" | "mag250-encoded" | "mag250-raw";
+const MAG_COMPAT_PROFILES: MagCompatProfile[] = ["fulldevice", "fulldevice-macid", "golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"];
 const MAG_LEARNED_KEY = "kizilkan.mag.compat.v15225";
 
 type LearnedMagCompat = { endpoint:string; profile:MagCompatProfile; model:"MAG254"|"MAG250"; at:number; failures:number };
 const learnedCompatMemory = new Map<string, LearnedMagCompat>();
 
 function compatModel(profile: MagCompatProfile): "MAG254"|"MAG250" {
-  if (profile === "fulldevice") return "MAG254";   // v16.7.0: tam cihaz parmak izi
+  if (profile === "fulldevice" || profile === "fulldevice-macid") return "MAG254";   // v16.7.0/16.8.0
   if (profile === "golden") return "MAG250";   // v16.1.0: v9.6.0 kimliği
   return profile.startsWith("mag254") ? "MAG254" : "MAG250";
 }
 function compatEncoded(profile: MagCompatProfile): boolean {
-  if (profile === "fulldevice") return true;   // v16.7.0
+  if (profile === "fulldevice" || profile === "fulldevice-macid") return true;   // v16.7.0/16.8.0
   if (profile === "golden") return true;       // v16.1.0: mac HER ZAMAN kodlanır
   return profile.endsWith("-encoded");
 }
@@ -250,8 +262,8 @@ function preferredCompatProfiles(cred: StalkerCreds, learned?: LearnedMagCompat 
    * bu fonksiyon profilleri belirleyen tek yerdir.
    */
   const ordered: MagCompatProfile[] = cred.deviceModel === "MAG250"
-    ? ["fulldevice","golden","mag250-encoded","mag250-raw","mag254-encoded","mag254-raw"]
-    : ["fulldevice","golden","mag254-encoded","mag254-raw","mag250-encoded","mag250-raw"];
+    ? ["fulldevice","fulldevice-macid","golden","mag250-encoded","mag250-raw","mag254-encoded","mag254-raw"]
+    : ["fulldevice","fulldevice-macid","golden","mag254-encoded","mag254-raw","mag250-encoded","mag250-raw"];
   if (learned?.profile && ordered.includes(learned.profile)) {
     return [learned.profile, ...ordered.filter(x => x !== learned.profile)];
   }
@@ -362,8 +374,28 @@ function identityKey(cred: StalkerCreds): string {
   return `${normalizeMac(cred.mac)}|${cred.serial || ""}|${cred.deviceId || ""}`;
 }
 
-/** Kimliği hesaplayıp önbelleğe alır. İstek göndermeden ÖNCE çağrılmalı. */
+/**
+ * Kimliği hesaplayıp önbelleğe alır. İstek göndermeden ÖNCE çağrılmalı.
+ *
+ * v16.8.0 — SERİDEN BAĞIMSIZ VARYANT DA HAZIRLANIR.
+ * derivedMagIdentity'de device_id = sha256(serial) olduğu için, kullanıcının
+ * girdiği seri numarası TÜM cihaz parmak izini belirliyor. Seri gerçek MAG
+ * kutusununkiyle uyuşmuyorsa portal parmak izini tanımayıp reddedebiliyor.
+ * Bu yüzden ikinci bir kimlik daha üretilir: seri YOK SAYILIP yalnız MAC'ten
+ * türetilen kimlik. "fulldevice-macid" profili bunu kullanır.
+ */
 export async function primeMagIdentity(cred: StalkerCreds): Promise<void> {
+  // Seriden bağımsız ikinci kimlik (aynı MAC, serial yok)
+  const macOnlyCred = { ...cred, serial: undefined, deviceId: undefined } as StalkerCreds;
+  const macOnlyKey = identityKey(macOnlyCred);
+  if (!identityCache.has(macOnlyKey)) {
+    try {
+      const id2 = await derivedMagIdentity(macOnlyCred);
+      const C2 = await import("expo-crypto");
+      const adid2 = String(await C2.digestStringAsync(C2.CryptoDigestAlgorithm.MD5, String(id2.sn) + normalizeMac(cred.mac))).toLowerCase();
+      identityCache.set(macOnlyKey, { ...id2, adid: adid2 });
+    } catch { /* üretilemezse bu varyant sade çereze düşer */ }
+  }
   const key = identityKey(cred);
   if (identityCache.has(key)) return;
   try {
@@ -379,11 +411,12 @@ export async function primeMagIdentity(cred: StalkerCreds): Promise<void> {
   } catch { /* kimlik üretilemezse tam çerez atlanır, eski davranış sürer */ }
 }
 
-/** Tam MAG çerezi; kimlik yoksa sade çereze düşer. */
-function fullDeviceCookie(cred: StalkerCreds, encodedMac: string, tz: string): string {
-  const id = identityCache.get(identityKey(cred));
+/** Tam MAG çerezi; kimlik yoksa sade çereze düşer. macOnly=true ise seri yok sayılır. */
+function fullDeviceCookie(cred: StalkerCreds, encodedMac: string, tz: string, macOnly = false): string {
+  const lookupCred = macOnly ? ({ ...cred, serial: undefined, deviceId: undefined } as StalkerCreds) : cred;
+  const id = identityCache.get(identityKey(lookupCred));
   if (!id) return `mac=${encodedMac}; stb_lang=en; timezone=${tz}`;
-  const sn = cred.serial || id.sn;
+  const sn = macOnly ? id.sn : (cred.serial || id.sn);
   return [
     `adid=${id.adid}`,
     `debug=1`,
@@ -414,13 +447,16 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
    * device_id2, hw_version, sn, mac) + MAG254 kimliği. Portal handshake
    * aşamasında cihaz parmak izi doğruluyorsa çalışan tek profil budur.
    */
-  if (profile === "fulldevice") {
+  if (profile === "fulldevice" || profile === "fulldevice-macid") {
+    // v16.8.0: -macid varyantı kullanıcının girdiği seriyi YOK SAYAR (parmak izi
+    // yalnız MAC'ten türetilir); yanlış seri girilmişse kurtarır.
+    const macOnly = profile === "fulldevice-macid";
     const f: Record<string, string> = {
       "User-Agent": MAG254_UA,
       Referer: baseOf(cred.portal) + "/c/",
       Accept: "*/*",
       "X-User-Agent": "Model: MAG254; Link: WiFi",
-      Cookie: fullDeviceCookie(cred, encodedMac, "Europe/Istanbul"),
+      Cookie: fullDeviceCookie(cred, encodedMac, "Europe/Istanbul", macOnly),
     };
     if (token) f.Authorization = `Bearer ${token}`;
     return f;
@@ -608,15 +644,48 @@ function buildUrl(endpoint: string, params: Record<string, string>): string {
 function handshakeRejectedStatus(status:number): boolean { return status===401 || status===403 || status===429 || status===512; }
 function endpointPath(endpoint:string):string { try{return new URL(endpoint).pathname}catch{return endpoint} }
 
+/**
+ * v16.8.0 — HANDSHAKE PARAMETRE VARYANTLARI
+ * ---------------------------------------------------------------------------
+ * Bazı Ministra kurulumları isteği "token" parametresi BOŞ olarak gönderildiği
+ * için reddedip düz metin "Authorization failed." döndürüyor. Gerçek MAG
+ * kutuları ilk handshake'te bu parametreyi hiç göndermeyebiliyor.
+ * Cihaz kaydı (29.08) bu yanıtı tüm profillerde gösterdiğinden, tek bir
+ * parametre biçimine bağlı kalmıyoruz: sırayla üç biçim denenir ve ilk
+ * çalışan kullanılır. Uç nokta başına ek istek sayısı sınırlıdır.
+ */
+const HANDSHAKE_PARAM_VARIANTS: Array<{label:string; params:Record<string,string>}> = [
+  { label: "token-empty-prehash0", params: { type:"stb", action:"handshake", token:"", prehash:"0" } },
+  { label: "bare",                 params: { type:"stb", action:"handshake" } },
+  { label: "token-empty",          params: { type:"stb", action:"handshake", token:"" } },
+];
+
 async function handshakeAttempt(cred:StalkerCreds, endpoint:string, compatProfile:MagCompatProfile):Promise<StalkerSession|null> {
-  const data=await req(
-    buildUrl(endpoint,{type:"stb",action:"handshake",token:"",prehash:"0"}),
-    headersFor(cred,undefined,endpoint,compatProfile),
-    {timeoutMs:20000},
-  );
-  const token=String(data?.js?.token||"").trim();
-  if (!token) return null;
-  return {token,endpoint,random:primitiveString(data?.js?.random),compatProfile};
+  let lastErr:any=null;
+  for (const variant of HANDSHAKE_PARAM_VARIANTS) {
+    try {
+      const data=await req(
+        buildUrl(endpoint,variant.params),
+        headersFor(cred,undefined,endpoint,compatProfile),
+        {timeoutMs:20000},
+      );
+      const token=String(data?.js?.token||"").trim();
+      if (token) {
+        void recordDiagnostic("mag","STALKER_HANDSHAKE_VARIANT_OK",{endpoint,compatProfile,variant:variant.label});
+        return {token,endpoint,random:primitiveString(data?.js?.random),compatProfile};
+      }
+    } catch (e:any) {
+      lastErr=e;
+      // Yalnızca "yetkilendirme" imzasında diğer biçimleri denemeye devam et;
+      // 404 gibi hatalarda uç nokta zaten yanlış demektir.
+      const snip=String(e?.snippet||e?.message||"").toLowerCase();
+      const status=Number(e?.status||0);
+      if (status===404) throw e;
+      if (!/authorization|auth|json değil|non_json/.test(snip)) throw e;
+    }
+  }
+  if (lastErr) throw lastErr;
+  return null;
 }
 
 /** 1) HANDSHAKE — MAG254 varsayılan, öğrenilmiş endpoint/profil önce, fallback sınırlı. */
@@ -637,7 +706,12 @@ export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSessi
     const push=(x?:string)=>{if(x && !plan.includes(x)) plan.push(x)};
     push(learned?.endpoint);
     push(all[0]);
-    for (const x of all) { if (plan.length>=3) break; push(x); }
+    /**
+     * v16.8.0: Plan 3 uç noktayla sınırlıydı; doğru uç nokta 4-5. sırada
+     * kalırsa HİÇ denenmiyordu (cihaz kaydında tam olarak bu oldu). Sınır 6'ya
+     * çıkarıldı — her uç nokta yine tek deneme alır, IP güvenliği korunur.
+     */
+    for (const x of all) { if (plan.length>=6) break; push(x); }
     const profiles=preferredCompatProfiles(cred,learned);
     void recordDiagnostic("catalog","STALKER_HANDSHAKE_PLAN",{
       strategy:learned?"learned-first-bounded":"mag254-first-bounded",candidateCount:plan.length,
