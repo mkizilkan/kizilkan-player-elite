@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * KIZILKAN Flight Recorder v5 — native, process-resilient diagnostics core.
+ * KIZILKAN Flight Recorder v6 — native, process-resilient diagnostics core.
  *
  * Tasarım hedefi:
  *  - Normal olaylar Room/WAL içinde append-only tutulur.
@@ -97,6 +97,12 @@ object NativeBlackBox {
         severity = severity,
         sessionId = obj.optString("sessionId", "").take(160),
         runId = obj.optString("runId", "").take(160),
+        traceId = obj.optString("traceId", "").take(160),
+        operationId = obj.optString("operationId", "").take(160),
+        stage = obj.optString("stage", "").take(96),
+        durationMs = obj.optLong("durationMs", 0L).coerceAtLeast(0L),
+        outcome = obj.optString("outcome", "").take(32),
+        errorClass = obj.optString("errorClass", "").take(96),
         payloadJson = obj.optJSONObject("data")?.toString() ?: "{}",
         critical = critical,
         suppliedId = obj.optString("id", ""),
@@ -121,6 +127,12 @@ object NativeBlackBox {
         .put("domain", incoming.optString("domain", "system").take(32))
         .put("sessionId", incoming.optString("sessionId", "").take(160))
         .put("runId", incoming.optString("runId", "").take(160))
+        .put("traceId", incoming.optString("traceId", "").take(160))
+        .put("operationId", incoming.optString("operationId", "").take(160))
+        .put("stage", incoming.optString("stage", "").take(96))
+        .put("durationMs", incoming.optLong("durationMs", 0L).coerceAtLeast(0L))
+        .put("outcome", incoming.optString("outcome", "").take(32))
+        .put("errorClass", incoming.optString("errorClass", "").take(96))
         .put("data", incoming.optJSONObject("data") ?: JSONObject())
         .put("memory", JSONObject(runtimeMemory(app)))
         .put("appSessionId", appSessionId)
@@ -157,7 +169,7 @@ object NativeBlackBox {
     val events = try { dao.latest(take).filter { it.atEpochMs >= clearEpoch }.map(::entityToMap) } catch (_: Throwable) { emptyList() }
     val critical = try { dao.latestCritical(1000).filter { it.atEpochMs >= clearEpoch }.map(::entityToMap) } catch (_: Throwable) { emptyList() }
     return mapOf(
-      "schemaVersion" to 5,
+      "schemaVersion" to 6,
       "appSessionId" to appSessionId,
       "health" to health(app),
       "events" to events,
@@ -173,7 +185,7 @@ object NativeBlackBox {
     val critical = criticalFile(app)
     return mapOf(
       "initialized" to initialized.get(),
-      "schemaVersion" to 5,
+      "schemaVersion" to 6,
       "appSessionId" to appSessionId,
       "dbEvents" to try { dao.count() } catch (_: Throwable) { 0 },
       "dbCriticalEvents" to try { dao.criticalCount() } catch (_: Throwable) { 0 },
@@ -215,6 +227,12 @@ object NativeBlackBox {
     severity: String,
     sessionId: String,
     runId: String,
+    traceId: String = "",
+    operationId: String = "",
+    stage: String = "",
+    durationMs: Long = 0L,
+    outcome: String = "",
+    errorClass: String = "",
     payloadJson: String,
     critical: Boolean,
     suppliedId: String = "",
@@ -232,6 +250,12 @@ object NativeBlackBox {
       severity = severity,
       sessionId = sessionId,
       runId = runId,
+      traceId = traceId,
+      operationId = operationId,
+      stage = stage,
+      durationMs = durationMs,
+      outcome = outcome,
+      errorClass = errorClass,
       threadName = Thread.currentThread().name.take(120),
       processId = Process.myPid(),
       critical = critical,
@@ -391,6 +415,12 @@ object NativeBlackBox {
     "severity" to e.severity,
     "sessionId" to e.sessionId,
     "runId" to e.runId,
+    "traceId" to e.traceId,
+    "operationId" to e.operationId,
+    "stage" to e.stage,
+    "durationMs" to e.durationMs,
+    "outcome" to e.outcome,
+    "errorClass" to e.errorClass,
     "thread" to e.threadName,
     "pid" to e.processId,
     "critical" to e.critical,

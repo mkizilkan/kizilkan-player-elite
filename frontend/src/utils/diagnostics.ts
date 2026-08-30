@@ -12,6 +12,12 @@ export type DiagnosticEvent = {
   event: string;
   sessionId?: string;
   runId?: string;
+  traceId?: string;
+  operationId?: string;
+  stage?: string;
+  durationMs?: number;
+  outcome?: 'started' | 'success' | 'failed' | 'cancelled' | 'skipped' | string;
+  errorClass?: string;
   severity?: 'info' | 'warn' | 'error' | 'critical';
   critical?: boolean;
   data?: Record<string, any>;
@@ -44,6 +50,7 @@ const JOURNAL_ARCHIVE_NAMES = Array.from({ length: 7 }, (_, i) => `kizilkan-blac
 const LEGACY_JOURNALS = ['kizilkan-blackbox-v4.jsonl', 'kizilkan-blackbox-v4.1.jsonl', 'kizilkan-blackbox-v4.2.jsonl', 'kizilkan-blackbox-v4.3.jsonl', 'kizilkan-blackbox-v2.jsonl', 'kizilkan-blackbox-v2.1.jsonl'];
 const MAX_JOURNAL_BYTES = 32 * 1024 * 1024;
 const SENSITIVE_KEY = /(pass(word)?|token|cookie|authorization|secret|pin|device[_-]?id|serial|mac|username|user(name)?)/i;
+const SAFE_SENSITIVE_METADATA_KEY = /(present|shape|count|names|keys|mode|policy|source|kind|type|hash)$/i;
 
 function shortHash(input: string): string {
   let h = 0x811c9dc5;
@@ -164,6 +171,8 @@ function redactString(input: string): string {
   let value = String(input || '');
   value = value.replace(/\b(?:[0-9A-F]{2}:){5}[0-9A-F]{2}\b/gi, '[REDACTED-MAC]');
   value = value.replace(/(https?:\/\/)([^\s/@:]+):([^\s/@]+)@/gi, '$1[REDACTED]@');
+  value = value.replace(/\bBearer\s+[A-Za-z0-9._~+\/=-]+/gi, 'Bearer [REDACTED]');
+  value = value.replace(/\b(play_token|access_token|auth_token|token|password|passwd|username)=([^&\s]+)/gi, '$1=[REDACTED]');
   const scrubUrl = (raw: string): string => {
     try {
       const u = new URL(raw);
@@ -185,7 +194,7 @@ function redactString(input: string): string {
 
 function sanitizeValue(value: any, key = '', depth = 0): any {
   if (depth > 8) return '[TRUNCATED]';
-  if (SENSITIVE_KEY.test(key)) return '[REDACTED]';
+  if (SENSITIVE_KEY.test(key) && !SAFE_SENSITIVE_METADATA_KEY.test(key)) return '[REDACTED]';
   if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value === 'string') return redactString(value);
   if (Array.isArray(value)) return value.slice(0, 80).map((v) => sanitizeValue(v, '', depth + 1));
@@ -286,6 +295,12 @@ function nativeSnapshotEvents(snapshot: Record<string, any>): DiagnosticEvent[] 
     event: String(row?.event || 'EVENT'),
     sessionId: row?.sessionId ? String(row.sessionId) : undefined,
     runId: row?.runId ? String(row.runId) : undefined,
+    traceId: row?.traceId ? String(row.traceId) : undefined,
+    operationId: row?.operationId ? String(row.operationId) : undefined,
+    stage: row?.stage ? String(row.stage) : undefined,
+    durationMs: Number(row?.durationMs || 0) || undefined,
+    outcome: row?.outcome ? String(row.outcome) : undefined,
+    errorClass: row?.errorClass ? String(row.errorClass) : undefined,
     severity: row?.severity || undefined,
     critical: !!row?.critical,
     data: row?.data && typeof row.data === 'object' ? row.data : {},
@@ -337,6 +352,7 @@ function checkpointSummary(item: DiagnosticEvent): string {
   const bits = [item.domain, item.event];
   if (item.sessionId) bits.push(`s:${shortHash(item.sessionId)}`);
   if (item.runId) bits.push(`r:${shortHash(item.runId)}`);
+  if (item.traceId) bits.push(`t:${shortHash(item.traceId)}`);
   return bits.join(';').slice(0, 120);
 }
 
@@ -344,7 +360,7 @@ export async function recordDiagnostic(
   domain: DiagnosticDomain,
   event: string,
   data: Record<string, any> = {},
-  ctx: { sessionId?: string; runId?: string } = {},
+  ctx: { sessionId?: string; runId?: string; traceId?: string; operationId?: string; stage?: string; durationMs?: number; outcome?: string; errorClass?: string } = {},
 ): Promise<void> {
   ensureNativeBlackBox();
   const safeEvent = String(event || 'EVENT').slice(0, 80);
@@ -359,6 +375,12 @@ export async function recordDiagnostic(
     event: safeEvent,
     sessionId: ctx.sessionId ? String(ctx.sessionId).slice(0, 120) : undefined,
     runId: ctx.runId ? String(ctx.runId).slice(0, 120) : undefined,
+    traceId: ctx.traceId ? String(ctx.traceId).slice(0, 120) : undefined,
+    operationId: ctx.operationId ? String(ctx.operationId).slice(0, 120) : undefined,
+    stage: ctx.stage ? String(ctx.stage).slice(0, 80) : undefined,
+    durationMs: Number.isFinite(Number(ctx.durationMs)) && Number(ctx.durationMs) >= 0 ? Math.round(Number(ctx.durationMs)) : undefined,
+    outcome: ctx.outcome ? String(ctx.outcome).slice(0, 32) : undefined,
+    errorClass: ctx.errorClass ? String(ctx.errorClass).slice(0, 80) : undefined,
     severity,
     critical,
     data: (() => {
@@ -404,6 +426,59 @@ export async function recordDiagnostic(
     }
   }).catch(() => {});
   await writeQueue;
+}
+
+
+export type DiagnosticTrace = {
+  traceId: string;
+  operationId: string;
+  domain: DiagnosticDomain;
+  name: string;
+  startedAt: number;
+  stage: (stage: string, data?: Record<string, any>) => Promise<void>;
+  measure: <T>(stage: string, work: () => Promise<T>, data?: Record<string, any>) => Promise<T>;
+  finish: (outcome?: string, data?: Record<string, any>) => Promise<void>;
+};
+
+function newDiagnosticId(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+/** v16.13.0 Flight Recorder V6: UI -> network -> DB -> resolver -> player correlation. */
+export function beginDiagnosticTrace(domain: DiagnosticDomain, name: string, base: Record<string, any> = {}, ids: { traceId?: string; operationId?: string; sessionId?: string; runId?: string } = {}): DiagnosticTrace {
+  const traceId = String(ids.traceId || newDiagnosticId('trace')).slice(0, 120);
+  const operationId = String(ids.operationId || newDiagnosticId('op')).slice(0, 120);
+  const safeName = String(name || 'operation').slice(0, 80);
+  const startedAt = Date.now();
+  void recordDiagnostic(domain, `${safeName}_START`, base, { ...ids, traceId, operationId, stage: 'start', outcome: 'started' });
+  return {
+    traceId, operationId, domain, name: safeName, startedAt,
+    stage: async (stage, data = {}) => recordDiagnostic(domain, `${safeName}_STAGE`, data, { ...ids, traceId, operationId, stage, outcome: 'success' }),
+    measure: async (stage: string, work: () => Promise<any>, data: Record<string, any> = {}): Promise<any> => {
+      const t0 = Date.now();
+      try {
+        const result = await work();
+        await recordDiagnostic(domain, `${safeName}_STAGE_DONE`, data, { ...ids, traceId, operationId, stage, durationMs: Date.now() - t0, outcome: 'success' });
+        return result;
+      } catch (error: any) {
+        await recordDiagnostic(domain, `${safeName}_STAGE_FAILED`, { ...data, message: String(error?.message || error || '').slice(0, 600) }, { ...ids, traceId, operationId, stage, durationMs: Date.now() - t0, outcome: 'failed', errorClass: String(error?.name || error?.constructor?.name || 'Error') });
+        throw error;
+      }
+    },
+    finish: async (outcome = 'success', data = {}) => recordDiagnostic(domain, `${safeName}_${outcome === 'success' ? 'COMPLETED' : 'FINISHED'}`, data, { ...ids, traceId, operationId, stage: 'complete', durationMs: Date.now() - startedAt, outcome }),
+  };
+}
+
+export async function measureDiagnosticStage<T>(domain: DiagnosticDomain, event: string, stage: string, work: () => Promise<T>, ctx: { traceId?: string; operationId?: string; sessionId?: string; runId?: string } = {}, data: Record<string, any> = {}): Promise<T> {
+  const t0 = Date.now();
+  try {
+    const result = await work();
+    await recordDiagnostic(domain, event, data, { ...ctx, stage, durationMs: Date.now() - t0, outcome: 'success' });
+    return result;
+  } catch (error: any) {
+    await recordDiagnostic(domain, `${event}_FAILED`, { ...data, message: String(error?.message || error || '').slice(0, 600) }, { ...ctx, stage, durationMs: Date.now() - t0, outcome: 'failed', errorClass: String(error?.name || error?.constructor?.name || 'Error') });
+    throw error;
+  }
 }
 
 export async function loadDiagnostics(limit = MAX_EVENTS): Promise<DiagnosticEvent[]> {
@@ -463,7 +538,7 @@ export function summarizePlayerDiagnostics(events: DiagnosticEvent[]) {
   };
 }
 
-export async function recordBlackBox(event: string, data: Record<string, any> = {}, ctx: { sessionId?: string; runId?: string } = {}): Promise<void> {
+export async function recordBlackBox(event: string, data: Record<string, any> = {}, ctx: { sessionId?: string; runId?: string; traceId?: string; operationId?: string; stage?: string; durationMs?: number; outcome?: string; errorClass?: string } = {}): Promise<void> {
   return recordDiagnostic('system', `BLACKBOX_${event}`, { ...data, appAt: Date.now() }, ctx);
 }
 
@@ -471,7 +546,7 @@ function deriveAnomalies(events: DiagnosticEvent[]) {
   const out: Array<Record<string, any>> = [];
   const add = (type: string, e: DiagnosticEvent, evidence: Record<string, any> = {}) => {
     if (out.length >= 250) return;
-    out.push({ type, at: e.at, domain: e.domain, event: e.event, sessionId: e.sessionId, runId: e.runId, evidence: sanitizeValue(evidence) });
+    out.push({ type, at: e.at, domain: e.domain, event: e.event, sessionId: e.sessionId, runId: e.runId, traceId: e.traceId, operationId: e.operationId, stage: e.stage, evidence: sanitizeValue(evidence) });
   };
   for (const e of events) {
     if (e.event === 'STALE_BUFFERING_CLEARED') add('PLAYER_STALE_BUFFERING_STATE', e, e.data || {});
@@ -548,6 +623,54 @@ function buildAutoSummary(events: any[]): Record<string, any> {
   };
 }
 
+
+function buildTraceSummary(events: DiagnosticEvent[]): Record<string, any> {
+  const traces = new Map<string, DiagnosticEvent[]>();
+  for (const e of events) {
+    const id = e.traceId || e.operationId;
+    if (!id) continue;
+    const list = traces.get(id) || []; list.push(e); traces.set(id, list);
+  }
+  const rows = [...traces.entries()].map(([id, list]) => {
+    const ordered = list.slice().sort((a,b)=>a.at-b.at);
+    const durations = ordered.map(x=>Number(x.durationMs || 0)).filter(x=>x>0);
+    const failed = ordered.filter(x=>x.outcome === 'failed' || x.severity === 'error' || x.severity === 'critical');
+    return { traceHash: shortHash(id), events: ordered.length, startedAt: ordered[0]?.at || 0, endedAt: ordered[ordered.length-1]?.at || 0, measuredStageMs: durations.reduce((a,b)=>a+b,0), failures: failed.length, lastEvent: ordered[ordered.length-1]?.event || '' };
+  }).sort((a,b)=>b.startedAt-a.startedAt);
+  return { traceCount: rows.length, recent: rows.slice(0, 100) };
+}
+
+function buildPerformanceSummary(events: DiagnosticEvent[]): Record<string, any> {
+  const buckets = new Map<string, number[]>();
+  for (const e of events) {
+    const ms = Number(e.durationMs ?? e.data?.elapsedMs ?? 0);
+    if (!Number.isFinite(ms) || ms <= 0) continue;
+    const key = `${e.domain}:${e.stage || e.event}`;
+    const list = buckets.get(key) || []; if (list.length < 5000) list.push(ms); buckets.set(key, list);
+  }
+  const percentile = (arr: number[], p: number) => { if (!arr.length) return 0; const x=arr.slice().sort((a,b)=>a-b); return Math.round(x[Math.min(x.length-1, Math.floor((x.length-1)*p))]); };
+  return [...buckets.entries()].map(([stage, values]) => ({ stage, count: values.length, avgMs: Math.round(values.reduce((a,b)=>a+b,0)/values.length), p50Ms: percentile(values,.5), p95Ms: percentile(values,.95), maxMs: Math.round(Math.max(...values)) })).sort((a,b)=>b.p95Ms-a.p95Ms).slice(0,120);
+}
+
+function finalRedactionPass(serialized: string): { text: string; replacements: number } {
+  let text = serialized;
+  let replacements = 0;
+  const rules: Array<[RegExp, string]> = [
+    [/\b(?:[0-9A-F]{2}:){5}[0-9A-F]{2}\b/gi, '[REDACTED-MAC]'],
+    [/\bBearer\s+[A-Za-z0-9._~+\/=-]+/gi, 'Bearer [REDACTED]'],
+    [/(play_token|access_token|auth_token|token|password|passwd|username)=([^&\s\"\\]+)/gi, '$1=[REDACTED]'],
+  ];
+  for (const [re, replacement] of rules) {
+    text = text.replace(re, (...args: any[]) => {
+      replacements += 1;
+      if (!replacement.includes('$')) return replacement;
+      const groups = args.slice(1, -2);
+      return replacement.replace(/\$(\d+)/g, (_m, idx) => String(groups[Number(idx) - 1] ?? ''));
+    });
+  }
+  return { text, replacements };
+}
+
 export async function exportDiagnosticReport(extra: Record<string, any> = {}): Promise<string> {
   ensureNativeBlackBox();
   const events = await loadDiagnostics(MAX_EXPORT_EVENTS);
@@ -555,14 +678,19 @@ export async function exportDiagnosticReport(extra: Record<string, any> = {}): P
   let nativeFlightRecorder: Record<string, any> = {};
   try { nativeFlightRecorder = await KizilkanNativeCore.getBlackBoxSnapshot?.(MAX_EXPORT_EVENTS) || {}; } catch {}
   const payload = sanitizeValue({
-    format: 'KIZILKAN_FLIGHT_RECORDER_V5',
+    format: 'KIZILKAN_FLIGHT_RECORDER_V6',
     // v16.2.0: kök nedeni en başta göster
     autoSummary: buildAutoSummary(events),
-    schemaVersion: 5,
+    schemaVersion: 6,
+    structuredTraceSchema: 1,
     eventCapacity: MAX_EVENTS,
     appSessionId,
     persistentJournal: journalInfo(),
     nativeFlightRecorder,
+    databaseHealth: await (async () => { try { return await KizilkanNativeCore.getDatabaseHealth?.(true) || {}; } catch { return {}; } })(),
+    performanceSummary: buildPerformanceSummary(events),
+    traceSummary: buildTraceSummary(events),
+    redactionAudit: { enabled: true, structuralSensitiveMetadataAllowed: true, rawSensitiveValuesAllowed: false },
     processExitHistory: (() => {
       try {
         const clearEpoch = Number(nativeFlightRecorder?.health?.clearEpochMs || 0);
@@ -585,7 +713,11 @@ export async function exportDiagnosticReport(extra: Record<string, any> = {}): P
   const file = new File(Paths.cache, name);
   if (file.exists) file.delete();
   file.create();
-  file.write(JSON.stringify(payload, null, 2));
+  const redacted = finalRedactionPass(JSON.stringify(payload, null, 2));
+  file.write(redacted.text);
+  if (redacted.replacements > 0) {
+    void recordDiagnostic('system', 'TELEMETRY_REDACTION_APPLIED', { replacements: redacted.replacements }, { stage: 'export', outcome: 'success' });
+  }
   if (await Sharing.isAvailableAsync()) {
     await Sharing.shareAsync(file.uri, { mimeType: 'application/json', dialogTitle: 'KIZILKAN Flight Recorder Raporunu Paylaş' });
   }

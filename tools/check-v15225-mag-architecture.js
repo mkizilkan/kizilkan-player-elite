@@ -25,7 +25,7 @@ function staticChecks(){
   // device_id'yi (sha256(serial)) belirlediği için yanlış seri parmak izini
   // bozup portalın reddine yol açabiliyor; bu varyant seriyi yok sayar.
   need(stalker,/MAG_COMPAT_PROFILES[^\n]+fulldevice-macid/,'profil kataloğunda fulldevice-macid yok');
-  need(stalker,/"wire250","mag254-raw","mag254-encoded","golden"/,'v16.10.0 wire250-önce profil sırası yok');
+  need(stalker,/"pcap320-minimal","mag254-raw","mag254-encoded","wire250"/,'v16.12.1 PCAP320-önce profil sırası yok');
   need(stalker,/Range: "bytes=0-"/,'wire250 Range başlığı yok');
   need(stalker,/Accept-Charset/,'wire250 Accept-Charset başlığı yok');
   need(stalker,/fulldevice-macid/,'seriden bağımsız kimlik varyantı yok');
@@ -85,10 +85,12 @@ async function fixtureHandshakeMag254(){
   // Gerekçe: cihaz kaydında fulldevice/golden/fulldevice-macid hepsi
   // "Authorization failed." aldı; sorun EKSİK alan değil, aksine şişirilmiş
   // çerez olabilir. Sade profiller öne alındı, tam cihaz profilleri yedek.
-  // v16.10.0: İLK deneme artık "wire250" — sahada alınmış gerçek MAG250 paket
-  // kaydının birebir kopyası (Range: bytes=0-, Accept-Charset, ham mac cookie,
-  // X-User-Agent Link: WiFi). O kayıtta portal HTTP 206 ile token döndürmüştü.
-  if(!/MAG200 stbapp ver: 2 rev: 250/.test(firstUA) || s.compatProfile!=='wire250') throw new Error('wire250 ilk profil/header doğrulanamadı: '+firstUA+' / '+s.compatProfile);
+  // v16.12.1: 30.08.2026 PCAPdroid kaydı daha yeni ve doğrudan çalışan
+  // HKPREMIUM istemcisini gösterdi: MAG320 + Ethernet + encoded MAC +
+  // Europe/Paris + handshake query'sinde JsHttpRequest YOK. Bu nedenle genel
+  // pcap320-minimal profil ilk güvenli denemedir; wire250 ve tüm eski profiller
+  // fallback olarak korunur.
+  if(!/MAG320 stbapp ver: 2 rev: 250/.test(firstUA) || s.compatProfile!=='pcap320-minimal') throw new Error('pcap320-minimal ilk profil/header doğrulanamadı: '+firstUA+' / '+s.compatProfile);
 }
 async function fixtureRejectBounded(){
   let calls=0;

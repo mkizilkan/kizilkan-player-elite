@@ -22,7 +22,7 @@ forbid('frontend/src/store/PlaylistContext.tsx', '.then(() => storage.setItem(ke
 // Native uçuş kayıt sistemi.
 need('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/NativeDataEntities.kt', 'data class DiagnosticEventEntity', 'Room diagnostic entity');
 need('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/NativeDataDao.kt', 'interface DiagnosticEventDao', 'Room diagnostic DAO');
-need('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeDatabase.kt', 'version = 3', 'Room schema v3');
+{ const db=read('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeDatabase.kt'); const m=db.match(/version\s*=\s*(\d+)/); if(!m || Number(m[1]) < 3){ console.log('HATA — Room schema v3+'); bad++; } }
 need('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeDatabase.kt', 'MIGRATION_2_3', 'Room 2→3 migration');
 need('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/NativeBlackBox.kt', 'object NativeBlackBox', 'native flight recorder core');
 need('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/NativeBlackBox.kt', 'UNCAUGHT_EXCEPTION', 'native crash journal');
@@ -34,7 +34,7 @@ need('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/k
 need('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeCoreModule.kt', 'getBlackBoxSnapshot', 'native snapshot bridge');
 
 // JS coordinator + privacy + export.
-{ const d=read('frontend/src/utils/diagnostics.ts'); if(!d.includes('KIZILKAN_FLIGHT_RECORDER_V3') && !d.includes('KIZILKAN_FLIGHT_RECORDER_V4') && !d.includes('KIZILKAN_FLIGHT_RECORDER_V5')){ console.log('HATA — Flight Recorder V3+ export'); bad++; } }
+{ const d=read('frontend/src/utils/diagnostics.ts'); if(!d.includes('KIZILKAN_FLIGHT_RECORDER_V3') && !d.includes('KIZILKAN_FLIGHT_RECORDER_V4') && !d.includes('KIZILKAN_FLIGHT_RECORDER_V5') && !d.includes('KIZILKAN_FLIGHT_RECORDER_V6')){ console.log('HATA — Flight Recorder V3+ export'); bad++; } }
 need('frontend/src/utils/diagnostics.ts', 'appendBlackBoxEvent', 'native-first persistence');
 need('frontend/src/utils/diagnostics.ts', 'appendCriticalBlackBoxEvent', 'terminal olay sync critical journal');
 need('frontend/src/utils/diagnostics.ts', 'setBlackBoxCheckpoint', 'process checkpoint correlation');
