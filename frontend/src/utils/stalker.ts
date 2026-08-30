@@ -699,8 +699,20 @@ async function req(url: string, headers: Record<string, string>, options: number
   }
 }
 
-function buildUrl(endpoint: string, params: Record<string, string>): string {
-  const q = new URLSearchParams({ ...params, JsHttpRequest: "1-xml" }).toString();
+/**
+ * v16.11.0 — JsHttpRequest ARTIK ZORUNLU DEĞİL
+ * ---------------------------------------------------------------------------
+ * Sahada alınmış gerçek MAG250 paket kaydında handshake şöyleydi:
+ *     GET /stalker_portal/server/load.php?type=stb&action=handshake
+ *     -> HTTP 206, Content-Type: application/json, token döndü
+ * Yani JsHttpRequest parametresi YOKTU ve yanıt düz JSON'du.
+ * Bizim isteğimizde bu parametre HER ZAMAN ekleniyordu ve portal
+ * "text/javascript" + "Authorization failed." döndürüyordu. Bu, JsHttpRequest
+ * sarmalayıcı katmanının devrede olduğunu ve hatayı o katmanın ürettiğini
+ * gösteriyor. Artık parametresiz biçim de denenebiliyor.
+ */
+function buildUrl(endpoint: string, params: Record<string, string>, withJsHttp = true): string {
+  const q = new URLSearchParams(withJsHttp ? { ...params, JsHttpRequest: "1-xml" } : { ...params }).toString();
   return `${endpoint}?${q}`;
 }
 
@@ -717,7 +729,10 @@ function endpointPath(endpoint:string):string { try{return new URL(endpoint).pat
  * parametre biçimine bağlı kalmıyoruz: sırayla üç biçim denenir ve ilk
  * çalışan kullanılır. Uç nokta başına ek istek sayısı sınırlıdır.
  */
-const HANDSHAKE_PARAM_VARIANTS: Array<{label:string; params:Record<string,string>; post?:boolean}> = [
+const HANDSHAKE_PARAM_VARIANTS: Array<{label:string; params:Record<string,string>; post?:boolean; noJs?:boolean}> = [
+  // v16.11.0: EN BAŞTA gerçek MAG paket kaydının birebir biçimi — JsHttpRequest YOK.
+  { label: "wire-nojs",            params: { type:"stb", action:"handshake" }, noJs: true },
+  { label: "wire-nojs-token",      params: { type:"stb", action:"handshake", token:"" }, noJs: true },
   { label: "token-empty-prehash0", params: { type:"stb", action:"handshake", token:"", prehash:"0" } },
   { label: "bare",                 params: { type:"stb", action:"handshake" } },
   { label: "token-empty",          params: { type:"stb", action:"handshake", token:"" } },
@@ -733,13 +748,18 @@ async function handshakeAttempt(cred:StalkerCreds, endpoint:string, compatProfil
     try {
       const hdrs=headersFor(cred,undefined,endpoint,compatProfile);
       // v16.9.0: çerezin gerçekten üretildiğini ve biçimini kaydet (MAC değeri DEĞİL)
+      // v16.11.0: alan adlarında "cookie" geçtiği için tanı filtresi değerleri
+      // [REDACTED] yapıyordu ve kendi telemetrimizi okuyamıyorduk. Adlar değişti.
       void recordDiagnostic("mag","STALKER_HANDSHAKE_TRY",{
-        endpoint, compatProfile, variant: variant.label, method: variant.post ? "POST" : "GET",
-        cookieSent: !!hdrs.Cookie,
-        cookieShape: hdrs.Cookie ? (hdrs.Cookie.includes("device_id") ? "fulldevice" : (hdrs.Cookie.includes("%3A") ? "encoded" : "raw")) : "none",
+        endpoint, compatProfile, variant: variant.label,
+        method: variant.post ? "POST" : "GET",
+        jsHttp: variant.noJs ? "off" : "on",
+        hdrSessionPresent: !!hdrs.Cookie,
+        hdrSessionShape: hdrs.Cookie ? (hdrs.Cookie.includes("device_id") ? "fulldevice" : (hdrs.Cookie.includes("%3A") ? "encoded" : "raw")) : "none",
+        hdrCount: Object.keys(hdrs).length,
       });
       const data=await req(
-        buildUrl(endpoint,variant.params),
+        buildUrl(endpoint,variant.params,!variant.noJs),
         hdrs,
         {timeoutMs:20000, postForm: !!variant.post} as any,
       );
@@ -839,7 +859,29 @@ export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSessi
         throw new Error(`Portal bu MAG isteğini reddetti (${errors.at(-1)||"HTTP ret"}). Aynı host üzerinde geniş endpoint taraması güvenlik nedeniyle durduruldu.`);
       }
     }
-    throw new Error("Portala bağlanılamadı. Sınırlı MAG254/MAG250 uyumluluk planı başarısız:\n"+errors.join("\n")+"\n\nPortal adresini ve MAC'i kontrol edin.");
+    /**
+     * v16.11.0 — ANLAŞILIR HATA MESAJI.
+     * Eskiden 30+ satırlık "yol/profil: hata" dökümü basılıyordu; kullanıcı
+     * için okunaksızdı ve 404'ler (o panelde var olmayan yollar) asıl sorunu
+     * gizliyordu. Artık ÖZET verilir: hangi uç noktalar gerçekten yanıt verdi,
+     * portal ne dedi ve kullanıcı ne yapabilir. Tam döküm kayıtta zaten var.
+     */
+    const live = errors.filter(e => /HTTP 200/.test(e));
+    const authFail = live.filter(e => /Authorization failed/i.test(e));
+    const livePaths = Array.from(new Set(live.map(e => (e.split("/").slice(0,4).join("/") || "").split(":")[0]).filter(Boolean)));
+    if (authFail.length > 0) {
+      throw new Error(
+        "Portal isteği reddetti (HTTP 200 · \"Authorization failed\").\n\n" +
+        `Portal bulundu ve yanıt verdi (${livePaths.slice(0,3).join(", ") || "/portal.php"}), ` +
+        `denenen tüm cihaz profilleri (${MAG_COMPAT_PROFILES.length}) aynı cevabı aldı.\n\n` +
+        "Olası nedenler:\n" +
+        "• MAC bu portala kayıtlı değil veya başka bir cihaza kilitli\n" +
+        "• Aynı MAC şu an başka bir uygulamada açık — o uygulamayı kapatıp tekrar deneyin\n" +
+        "• Portal bu istemciyi tanımıyor (sağlayıcıdan MAC'in yetkilendirilmesini isteyin)\n\n" +
+        "Not: 404 dönen yollar bu panelde mevcut değildir, sorunun sebebi onlar değil."
+      );
+    }
+    throw new Error("Portala bağlanılamadı.\n"+errors.slice(0,6).join("\n")+(errors.length>6?`\n… (+${errors.length-6} deneme)`:"")+"\n\nPortal adresini ve MAC'i kontrol edin.");
   } finally { finishTask(); }
 }
 
