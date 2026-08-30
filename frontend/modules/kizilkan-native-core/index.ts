@@ -13,25 +13,6 @@ export type NativePlaylistSummary = {
   cacheHit?: boolean;
 };
 
-
-export type DatabaseHealth = {
-  schemaVersion?: number;
-  status?: "healthy" | "attention" | "critical" | string;
-  healthReasons?: string[]; recommendedMaintenance?: "none" | "diagnose" | "quick" | "normal" | "deep" | string; integrityChecked?: boolean;
-  databaseBytes?: number; walBytes?: number; shmBytes?: number; totalBytes?: number;
-  pageCount?: number; pageSize?: number; freelistCount?: number; reclaimableBytes?: number; reclaimablePercent?: number;
-  journalMode?: string; snapshotCount?: number; mediaCount?: number; epgCount?: number; diagnosticEventCount?: number; criticalDiagnosticEventCount?: number;
-  mediaOrphans?: number; epgOrphans?: number; expiredEpgCandidates?: number; expiredNormalTelemetryCandidates?: number; expiredCriticalTelemetryCandidates?: number;
-  quickCheck?: string; foreignKeyViolations?: number; measuredAtEpochMs?: number; playlists?: Array<Record<string, any>>;
-};
-
-export type DatabaseMaintenanceResult = {
-  mode: "diagnose" | "quick" | "normal" | "deep" | string;
-  operationId?: string; changed?: boolean; durationMs?: number; reclaimedTotalBytes?: number; totalBytesDelta?: number; vacuumRan?: boolean; optimizeRan?: boolean;
-  removedMediaOrphans?: number; removedEpgOrphans?: number; removedExpiredEpg?: number; removedNormalTelemetry?: number; removedCriticalTelemetry?: number;
-  checkpoint?: Record<string, any>; before?: DatabaseHealth; after?: DatabaseHealth;
-};
-
 export type NativeQueryPage<T = any> = {
   items: T[];
   offset: number;
@@ -62,8 +43,6 @@ export const KizilkanNativeCore = {
   hasPlaylistIndex: async (id: string): Promise<boolean> => native ? !!(await native.hasPlaylistIndex(id)) : false,
   deleteLegacyPlaylistFile: async (id: string): Promise<boolean> => native ? !!(await native.deleteLegacyPlaylistFile(id)) : false,
   getStorageFootprint: async (): Promise<Record<string, any>> => native ? (await native.getStorageFootprint()) : {},
-  getDatabaseHealth: async (includeIntegrity = false): Promise<DatabaseHealth> => native ? ((await native.getDatabaseHealth(!!includeIntegrity)) || {}) : {},
-  runDatabaseMaintenance: async (mode: "diagnose" | "quick" | "normal" | "deep"): Promise<DatabaseMaintenanceResult> => native ? ((await native.runDatabaseMaintenance(mode)) || { mode }) : { mode, changed: false },
   getRuntimeMemory: (): Record<string, any> => native ? (native.getRuntimeMemory() || {}) : {},
   getLastExitInfo: (): Record<string, any> => native ? (native.getLastExitInfo?.() || {}) : {},
   getExitHistory: (maxNum = 5): Record<string, any>[] => native ? (native.getExitHistory?.(maxNum) || []) : [],

@@ -54,9 +54,6 @@ const CHECKS = [
   ["check-v15227-rc2-ci-tsc-fix.js", "v15.2.27 RC2 CI TypeScript HARD gate resolver/install contract", ""],
   ["check-v15227-rc3-stalker-ts2345-fix.js", "v15.2.27 RC3 Stalker create_link TS2345 type-safety contract", ""],
   ["check-v16121-pcap-mag-player-controls.js", "v16.12.1 PCAP MAG320 / stronger ban-safe / stale-frame / controls contract", ""],
-  ["check-v16122-pcap-first-rate-limit-telemetry.js", "v16.12.2 PCAP-first / learned migration / rate-limit-aware cooldown / request telemetry", ""],
-  ["check-v16130-db-health-telemetry.js", "v16.13.0 DB Health Center / safe maintenance / Flight Recorder V6", ""],
-  ["check-v16131-native-blackbox-kotlin.js", "v16.13.1 NativeBlackBox Kotlin signature / ANR Flight Recorder fix", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 

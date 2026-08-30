@@ -10,7 +10,7 @@ const _code=v=>{const m=String(v||'').match(/^(\d+)\.(\d+)\.(\d+)/);return m?Num
 // v16.1.0: denetleyici 15.2 serisine KİLİTLİYDİ; sürüm yükselince kaçınılmaz kırılıyordu.
 // Amaç korunuyor: sürüm en az 15.2.23 olmalı ve üçlü tutarlı olmalı.
 if(_sv(pkg.version)<_sv('15.2.23')||String(app.expo.version)!==String(pkg.version)||Number(app.expo.android.versionCode)!==_code(pkg.version)||Number(app.expo.android.versionCode)<150223){console.log('HATA — sürüm üçlüsü tutarsız veya asgari sürümün altında');bad++;}
-{ const d=read('frontend/src/utils/diagnostics.ts'); if(!/KIZILKAN_FLIGHT_RECORDER_V[56]/.test(d)){ console.log('HATA — Flight Recorder V5+ export'); bad++; } }
+need('frontend/src/utils/diagnostics.ts','KIZILKAN_FLIGHT_RECORDER_V5','Flight Recorder V5 export');
 need('frontend/src/utils/diagnostics.ts','const MAX_EVENTS = 50000','JS recorder 50K kapasite');
 need('frontend/src/utils/diagnostics.ts','Array.from({ length: 7 }','8 segmentli JSONL journal');
 need('frontend/src/utils/diagnostics.ts','32 * 1024 * 1024','32 MiB journal segmenti');

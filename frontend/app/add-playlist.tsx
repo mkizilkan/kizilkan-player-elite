@@ -1488,7 +1488,8 @@ export default function AddPlaylist() {
         };
 
         setProgress("MAG254 profiliyle portala bağlanılıyor...");
-        const { session, profile: prof } = await stLogin(cred);
+        // v16.13.0: bu bir KULLANICI eylemi — ban-koruma soğuması aşılabilir.
+        const { session, profile: prof } = await stLogin(cred, { userInitiated: true });
 
         setProgress("Canlı TV kataloğu alınıyor...");
         let catalog;

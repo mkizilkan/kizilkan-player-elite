@@ -38,15 +38,6 @@ interface MediaItemDao {
   @Query("DELETE FROM media_items")
   fun clear()
 
-  @Query("SELECT COUNT(*) FROM media_items")
-  fun totalCount(): Int
-
-  @Query("SELECT COUNT(*) FROM media_items WHERE playlistId NOT IN (SELECT playlistId FROM playlist_snapshots)")
-  fun orphanCount(): Int
-
-  @Query("DELETE FROM media_items WHERE playlistId NOT IN (SELECT playlistId FROM playlist_snapshots)")
-  fun deleteOrphans(): Int
-
   @Query("SELECT COUNT(*) FROM media_items WHERE playlistId = :playlistId AND kind = :kind")
   fun count(playlistId: String, kind: String): Int
 
@@ -117,21 +108,6 @@ interface EpgProgramDao {
   @Query("DELETE FROM epg_programs")
   fun clear()
 
-  @Query("SELECT COUNT(*) FROM epg_programs")
-  fun totalCount(): Int
-
-  @Query("SELECT COUNT(*) FROM epg_programs WHERE playlistId NOT IN (SELECT playlistId FROM playlist_snapshots)")
-  fun orphanCount(): Int
-
-  @Query("DELETE FROM epg_programs WHERE playlistId NOT IN (SELECT playlistId FROM playlist_snapshots)")
-  fun deleteOrphans(): Int
-
-  @Query("SELECT COUNT(*) FROM epg_programs WHERE stopTimestamp < :beforeSec")
-  fun expiredCount(beforeSec: Long): Int
-
-  @Query("DELETE FROM epg_programs WHERE stopTimestamp < :beforeSec")
-  fun deleteExpired(beforeSec: Long): Int
-
   @Query("SELECT COUNT(*) FROM epg_programs WHERE playlistId = :playlistId")
   fun count(playlistId: String): Int
 
@@ -174,16 +150,4 @@ interface DiagnosticEventDao {
 
   @Query("DELETE FROM diagnostic_events")
   fun clear(): Int
-
-  @Query("SELECT COUNT(*) FROM diagnostic_events WHERE critical = 0 AND atEpochMs < :beforeEpochMs")
-  fun expiredNormalCount(beforeEpochMs: Long): Int
-
-  @Query("SELECT COUNT(*) FROM diagnostic_events WHERE critical = 1 AND atEpochMs < :beforeEpochMs")
-  fun expiredCriticalCount(beforeEpochMs: Long): Int
-
-  @Query("DELETE FROM diagnostic_events WHERE critical = 0 AND atEpochMs < :beforeEpochMs")
-  fun deleteExpiredNormal(beforeEpochMs: Long): Int
-
-  @Query("DELETE FROM diagnostic_events WHERE critical = 1 AND atEpochMs < :beforeEpochMs")
-  fun deleteExpiredCritical(beforeEpochMs: Long): Int
 }
