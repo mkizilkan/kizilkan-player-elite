@@ -298,6 +298,10 @@ export default function PlayerHost() {
   const [gestureFlash, setGestureFlash] = useState<string | null>(null);
   const [videoStats, setVideoStats] = useState<{ width?: number; height?: number; duration?: number; currentTime?: number; position?: number; mpvCodec?: string; mpvFormat?: string; mpvHwdec?: string; mpvEvent?: string }>({});
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** v16.12.0: eski timer callback'i yeni kullanıcı etkileşimini kapatamaz. */
+  // v16.12.1 recheck: stale-hide ve double-touch koruması ikinci doğrulamada tekrar onaylandı.
+  const controlsHideGenerationRef = useRef(0);
+  const lastControlsRevealAtRef = useRef(0);
   const sleepTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -337,6 +341,9 @@ export default function PlayerHost() {
    * KISA SÜRELİDİR. Bu yüzden burada çözülüp oynatıcıya veriliyor.
    */
   const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
+  /** v16.12.0: resolved URL yalnız ait olduğu Stalker kanalında kullanılabilir. */
+  const [resolvedStalkerKey, setResolvedStalkerKey] = useState<string>("");
+  const stalkerResolveGenerationRef = useRef(0);
   const [resolvedHeaders, setResolvedHeaders] = useState<Record<string, string>>({});
   const [resolving, setResolving] = useState(false);
   const [stalkerFreshResolveNonce, setStalkerFreshResolveNonce] = useState(0);
@@ -550,7 +557,23 @@ export default function PlayerHost() {
     engine: String(v2Profile.engine),
   };
 
-  const playUrl = resolvedUrl || channel?.url || null;
+  /**
+   * v16.12.0 — STALKER RAW URL / ESKİ KANAL SIZINTISI KAPISI.
+   * Kanal değiştiği render'da resolvedUrl state'i bir önceki kanala ait olabilir.
+   * Key eşleşmeden o URL kullanılmaz; Stalker'da raw `ffmpeg http://...` komutu
+   * da native player'a fallback olarak verilmez.
+   */
+  const currentStalkerKey = activePlaylist?.source === "stalker" && channel?.url
+    ? `${String(activePlaylist?.id || "")}|${String(channel.id || "")}|${String(channel.url)}`
+    : "";
+  const resolvedForCurrentStalker = !!currentStalkerKey && resolvedStalkerKey === currentStalkerKey;
+  // v16.12.0 FIX: Stalker kanal değişiminde önceki native yüzey yeni resolve
+  // tamamlanana kadar ekranda tutulmaz. Böylece eski kanalın son karesi fotoğraf
+  // gibi görünmez; yeni URL hazır olana kadar nötr/loading katmanı görünür.
+  const resolvedMediaReadyForCurrentChannel = activePlaylist?.source !== "stalker" || resolvedForCurrentStalker;
+  const playUrl = activePlaylist?.source === "stalker"
+    ? (resolvedForCurrentStalker ? resolvedUrl : null)
+    : (channel?.url || null);
   const basePlaybackRequest = useMemo(() => {
     if (!playUrl || !channel) return null;
     return buildPlaybackRequest({
@@ -559,9 +582,9 @@ export default function PlayerHost() {
       override: overrides?.[channel.id || ""],
       playlist: activePlaylist,
       isLive: sessionKind === "live",
-      runtimeHeaders: activePlaylist?.source === "stalker" ? resolvedHeaders : undefined,
+      runtimeHeaders: activePlaylist?.source === "stalker" && resolvedForCurrentStalker ? resolvedHeaders : undefined,
     });
-  }, [playUrl, channel, overrides, activePlaylist, sessionKind, resolvedHeaders]);
+  }, [playUrl, channel, overrides, activePlaylist, sessionKind, resolvedHeaders, resolvedForCurrentStalker]);
 
   const playbackCandidates = useMemo(() => {
     if (!basePlaybackRequest) return [] as string[];
@@ -601,9 +624,17 @@ export default function PlayerHost() {
   }, [visible, channel?.id, activePlaylist?.source]);
 
   useEffect(() => {
+    const generation=++stalkerResolveGenerationRef.current;
     // Stalker değilse çözüme gerek yok
-    if (!channel?.url || activePlaylist?.source !== "stalker") { setResolvedUrl(null); setResolvedHeaders({}); return; }
+    if (!channel?.url || activePlaylist?.source !== "stalker") {
+      setResolvedUrl(null); setResolvedHeaders({}); setResolvedStalkerKey(""); return;
+    }
+    const requestedKey=`${String(activePlaylist?.id || "")}|${String(channel.id || "")}|${String(channel.url)}`;
     let alive = true;
+    // Kanal değişir değişmez eski resolve sonucu render yolundan çıkar.
+    setResolvedUrl(null);
+    setResolvedHeaders({});
+    setResolvedStalkerKey("");
     setResolving(true);
     (async () => {
       try {
@@ -617,7 +648,7 @@ export default function PlayerHost() {
         const forceFresh = stalkerForceFreshRequestedRef.current;
         stalkerForceFreshRequestedRef.current = false;
         const { url, headers } = await stalkerResolveStream(cred, null, String(channel.url), { forceFresh });
-        if (alive) {
+        if (alive && generation===stalkerResolveGenerationRef.current) {
           setResolvedHeaders(headers);
           /**
            * v16.1.0 — SON SAVUNMA.
@@ -625,16 +656,20 @@ export default function PlayerHost() {
            * "ffmpeg http://..." önekiyle gelirse Media3 MalformedURLException
            * fırlatıyordu. Oynatıcıya HER ZAMAN temiz adres verilir.
            */
-          setResolvedUrl(stripStreamPrefix(String(url)));
+          const cleanUrl=stripStreamPrefix(String(url));
+          setResolvedUrl(cleanUrl);
+          setResolvedStalkerKey(requestedKey);
           if (forceFresh) setPlaybackRetryNonce(n => n + 1);
         }
       } catch (e: any) {
-        if (alive) {
+        if (alive && generation===stalkerResolveGenerationRef.current) {
           setResolvedUrl(null);
+          setResolvedHeaders({});
+          setResolvedStalkerKey("");
           setError("Portal yayın adresi vermedi: " + String(e?.message || e));
         }
       } finally {
-        if (alive) setResolving(false);
+        if (alive && generation===stalkerResolveGenerationRef.current) setResolving(false);
       }
     })();
     return () => { alive = false; };
@@ -1528,12 +1563,13 @@ export default function PlayerHost() {
   /**
    * PLAYER CONTROLS v2 (v9.20.0)
    * - Kanal ilk açıldığında ve zap sonrası panel KAPALI kalır.
-   * - TV: kullanıcı OK ile açar; Back ile kapatır; 6 sn hareketsizlikte kapanır.
-   * - Telefon/tablet: tek dokunuş aç/kapat; 4 sn hareketsizlikte kapanır.
+   * - TV: kullanıcı OK ile açar; Back ile kapatır; görüntü varken 12 sn hareketsizlikte kapanır.
+   * - Telefon/tablet: tek dokunuş aç/kapat; görüntü varken 10 sn hareketsizlikte kapanır.
    * - Bir alt sheet açıkken auto-hide TAMAMEN durur; kullanıcı seçim yaparken
    *   görünmez focus catcher'ın geri gelmesine izin verilmez.
    */
   const cancelHide = () => {
+    controlsHideGenerationRef.current += 1;
     if (hideTimer.current) {
       clearTimeout(hideTimer.current);
       hideTimer.current = null;
@@ -1557,12 +1593,16 @@ export default function PlayerHost() {
      * Görüntü YOKKEN (motor değiştirme/yeniden deneme gerekir) daha da uzun.
      */
     const noPicture = !firstFrameSeenRef.current;
+    const generation=++controlsHideGenerationRef.current;
     hideTimer.current = setTimeout(() => {
+      if (generation !== controlsHideGenerationRef.current) return;
+      if (sheetRef.current !== null || !showControlsRef.current) return;
       setShowControls(false);
     }, noPicture ? (isTv ? 20000 : 15000) : (isTv ? 12000 : 10000));
   };
 
   const revealControls = () => {
+    lastControlsRevealAtRef.current = Date.now();
     setShowControls(true);
     scheduleHide(); // her gerçek kullanıcı etkileşiminde süre baştan başlar
   };
@@ -1602,16 +1642,16 @@ export default function PlayerHost() {
   /** v16.2.0: bu oturumda ilk video karesi geldi mi? (panel gizleme süresi için) */
   const firstFrameSeenRef = useRef(false);
   useEffect(() => {
-    const id = String(channel?.id || "");
+    const id = channel ? `${String(activePlaylist?.id || "")}|${String(channel.url || channel.id || "")}` : "";
     if (!visible) { lastResetChannelRef.current = ""; return; }
-    if (lastResetChannelRef.current === id) return;   // aynı kanal -> dokunma
+    if (lastResetChannelRef.current === id) return;   // aynı gerçek kaynak -> dokunma
     lastResetChannelRef.current = id;
     firstFrameSeenRef.current = false;   // v16.2.0: yeni kanal -> ilk kare beklentisi sıfırlanır
     cancelHide();
     setSheet(null);
     setShowControls(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, channel?.id]);
+  }, [visible, channel?.id, channel?.url, activePlaylist?.id]);
 
   const togglePlay = () => {
     // YAYIN AKTİFSE komutu TV'deki oynatıcıya gönder (v7.4.0).
@@ -1791,6 +1831,8 @@ export default function PlayerHost() {
     flashMessage(dir === "fwd" ? "⏭ +10s" : "⏮ -10s");
   };
 
+  const emergencyTouchActive = !!(visible && channel && !isTv && !showControls && sheet === null && !error && (resolving || isBuffering || v2Phase !== "playing"));
+
   // Single tap: toggle controls
   /**
    * DOKUNMA = AÇ/KAPAT (v9.3.0 — kullanıcı isteği)
@@ -1798,6 +1840,12 @@ export default function PlayerHost() {
    * beklemek gerekiyordu. Artık aynı dokunuş kapatıyor da.
    */
   const toggleControls = () => {
+    // v16.12.0: emergency Pressable ile ana GestureDetector aynı fiziksel
+    // dokunmayı art arda raporlarsa ikinci callback paneli anında kapatmasın.
+    if (showControls && Date.now() - lastControlsRevealAtRef.current < 500) {
+      scheduleHide();
+      return;
+    }
     if (showControls) { cancelHide(); setShowControls(false); }
     else revealControls();
   };
@@ -1808,7 +1856,7 @@ export default function PlayerHost() {
   // JS thread authority altında çalıştırılır. Böylece orientation/gesture sırasında
   // `CppException: TypeError: undefined is not a function` worklet crash yolu kapanır.
   const tapGesture = Gesture.Tap()
-    .enabled(visible && !isTv)
+    .enabled(visible && !isTv && !emergencyTouchActive)
     .maxDuration(200)
     .runOnJS(true)
     .onEnd(() => {
@@ -1821,7 +1869,7 @@ export default function PlayerHost() {
   // YENİ: TEK jest, dokunma X konumuna göre yön belirler:
   //   ekranın sol yarısı -> geri (-10s), sağ yarısı -> ileri (+10s).
   const doubleTapGesture = Gesture.Tap()
-    .enabled(visible && !isTv)
+    .enabled(visible && !isTv && !emergencyTouchActive)
     .numberOfTaps(2)
     .maxDuration(300)
     .runOnJS(true)
@@ -1862,7 +1910,7 @@ export default function PlayerHost() {
   };
 
   const volumeGesture = Gesture.Pan()
-    .enabled(visible && !isTv)
+    .enabled(visible && !isTv && !emergencyTouchActive)
     .activeOffsetY([-12, 12])       // yatay kaydırmayla çakışmasın
     .runOnJS(true)
     .onBegin(() => { volumeStartRef.current = volume; })
@@ -1874,7 +1922,7 @@ export default function PlayerHost() {
     });
 
   const longPressGesture = Gesture.LongPress()
-    .enabled(visible && !isTv)
+    .enabled(visible && !isTv && !emergencyTouchActive)
     .minDuration(500)
     .runOnJS(true)
     .onStart(() => {
@@ -2530,7 +2578,7 @@ export default function PlayerHost() {
           style={StyleSheet.absoluteFill}
         />
       )}
-      {visible && channel && !isTv && !showControls && sheet === null && !error && (resolving || isBuffering || v2Phase !== "playing") && (
+      {emergencyTouchActive && (
         <Pressable
           testID="player-emergency-touch-catcher"
           style={[StyleSheet.absoluteFill, { zIndex: 6 }]}
@@ -2544,7 +2592,7 @@ export default function PlayerHost() {
       )}
       <GestureDetector gesture={Gesture.Exclusive(doubleTapGesture, longPressGesture, volumeGesture, tapGesture)}>
         <Animated.View style={StyleSheet.absoluteFill}>
-          {v2ProfileReady && v2Profile.engine === "media3" && (
+          {v2ProfileReady && resolvedMediaReadyForCurrentChannel && !!playbackRequest?.url && v2Profile.engine === "media3" && (
             <VideoView
               /**
                * v16.9.0 — ESKİ YAYININ SON KARESİ EKRANDA KALIYORDU.
@@ -2603,11 +2651,11 @@ export default function PlayerHost() {
               }}
             />
           )}
-          {v2ProfileReady && useVLC && VLC_AVAILABLE && channel && (
+          {v2ProfileReady && resolvedMediaReadyForCurrentChannel && !!playbackRequest?.url && useVLC && VLC_AVAILABLE && channel && (
             <VLCPlayerLib
               key={`vlc-${channel.id}-${effectiveVlcHwAccel ? "hw" : "sw"}-${vlcRecoveryGeneration}`}
               ref={vlcRef}
-              uri={playbackRequest?.url || playUrl || channel.url}
+              uri={playbackRequest?.url || playUrl || ""}
               bufferMs={bufferMs}
               volume={volume}
               /**
@@ -2847,7 +2895,7 @@ export default function PlayerHost() {
             />
           )}
 
-          {v2ProfileReady && useMPV && KIZILKAN_MPV_AVAILABLE && channel && mpvSource && (
+          {v2ProfileReady && resolvedMediaReadyForCurrentChannel && !!playbackRequest?.url && useMPV && KIZILKAN_MPV_AVAILABLE && channel && mpvSource && (
             <KizilkanMpvView
               key={`kizilkan-mpv-core-${activeSessionId}-${mpvRecoveryGeneration}`}
               ref={mpvRef}
@@ -3199,7 +3247,11 @@ export default function PlayerHost() {
               if (!channel?.url) return;
               setTesting(true);
               try {
-                const primaryUrl = playbackRequest?.url || channel.url;
+                const primaryUrl = playbackRequest?.url || (activePlaylist?.source === "stalker" ? "" : channel.url);
+                if (!primaryUrl) {
+                  Alert.alert("MAG yayın adresi hazır değil", "Kanal testi ham Stalker komutunu oynatıcıya göndermez. create_link çözümünün tamamlanmasını bekleyip tekrar deneyin.");
+                  return;
+                }
                 let r = await testStream(
                   primaryUrl,
                   playbackRequest?.headers?.["User-Agent"] || DEFAULT_USER_AGENT,
@@ -3325,7 +3377,8 @@ export default function PlayerHost() {
                   } catch { /* oynatıcı hazır değilse sorun değil */ }
                 }}
                 source={{
-                  url: channel.url,
+                  // v16.12.0: Cast'e de raw Stalker komutu değil çözülmüş medya URL'si gider.
+                  url: playbackRequest?.url || (activePlaylist?.source === "stalker" ? "" : channel.url),
                   name: channel.name,
                   poster: (channel as any).logo,
                   /**

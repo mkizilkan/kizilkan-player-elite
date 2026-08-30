@@ -1,7 +1,7 @@
 /**
  * KIZILKAN PLAYER — Stalker / MAG Portal (CİHAZ İÇİ)
  * Dosya  : frontend/src/utils/stalker.ts
- * Sürüm  : v1.2.0 (v15.2.27-RC1)
+ * Sürüm  : v16.12.1 (PCAP MAG320 + stronger ban-safe interoperability)
  *
  * ===========================================================================
  * MAC adresiyle çalışan Stalker/MAG portallarına DOĞRUDAN CİHAZDAN bağlanır.
@@ -35,6 +35,9 @@ const MAG250_UA =
   "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3";
 const MAG254_UA =
   "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG254 stbapp ver: 4 rev: 2721 Safari/533.3";
+/** v16.12.0 — 30.08.2026 PCAPdroid kaydında HKPREMIUM tarafından kabul edilen gerçek istemci kimliği. */
+const MAG320_UA =
+  "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG320 stbapp ver: 2 rev: 250 Safari/533.3";
 
 /** Sağlayıcıya göre değişen yaygın endpoint yolları. */
 const PORTAL_PATHS = [
@@ -52,7 +55,7 @@ export interface StalkerCreds {
   mac: string;
   serial?: string;
   deviceId?: string;
-  deviceModel?: "MAG254" | "MAG250";
+  deviceModel?: "MAG320" | "MAG254" | "MAG250";
 }
 
 
@@ -79,6 +82,8 @@ export interface StalkerSession {
    * bağlı: yeni bir profil eklendiğinde burası kendiliğinden uyumlu kalır.
    */
   compatProfile?: MagCompatProfile;
+  /** v16.12.0: başarılı handshake query biçimi; learned-first tekrarında kullanılır. */
+  handshakeVariant?: string;
 }
 
 const SESSION_TTL_MS = 15 * 60 * 1000;
@@ -236,20 +241,23 @@ function refererFor(cred: StalkerCreds, endpoint?: string): string {
  * "golden" profili v9.6.0'ın başlıklarını BİREBİR üretir ve listenin BAŞINDA
  * denenir. Diğer profiller yedek olarak korunur (regresyon yok).
  */
-type MagCompatProfile = "wire250" | "fulldevice" | "fulldevice-macid" | "golden" | "mag254-encoded" | "mag254-raw" | "mag250-encoded" | "mag250-raw";
-const MAG_COMPAT_PROFILES: MagCompatProfile[] = ["wire250", "fulldevice", "fulldevice-macid", "golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"];
-const MAG_LEARNED_KEY = "kizilkan.mag.compat.v15225";
+type MagDeviceModel = "MAG320" | "MAG254" | "MAG250";
+type MagCompatProfile = "pcap320-minimal" | "wire250" | "fulldevice" | "fulldevice-macid" | "golden" | "mag254-encoded" | "mag254-raw" | "mag250-encoded" | "mag250-raw";
+const MAG_COMPAT_PROFILES: MagCompatProfile[] = ["pcap320-minimal", "wire250", "fulldevice", "fulldevice-macid", "golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"];
+const MAG_LEARNED_KEY = "kizilkan.mag.compat.v15225"; // v16.12.0: mevcut öğrenilmiş portal profillerini kaybetme; şema geriye uyumlu.
 
-type LearnedMagCompat = { endpoint:string; profile:MagCompatProfile; model:"MAG254"|"MAG250"; at:number; failures:number };
+type LearnedMagCompat = { endpoint:string; profile:MagCompatProfile; model:MagDeviceModel; handshakeVariant?:string; at:number; failures:number };
 const learnedCompatMemory = new Map<string, LearnedMagCompat>();
 
-function compatModel(profile: MagCompatProfile): "MAG254"|"MAG250" {
+function compatModel(profile: MagCompatProfile): MagDeviceModel {
+  if (profile === "pcap320-minimal") return "MAG320";
   if (profile === "wire250") return "MAG250";   // v16.10.0: gerçek paket kaydı
   if (profile === "fulldevice" || profile === "fulldevice-macid") return "MAG254";   // v16.7.0/16.8.0
   if (profile === "golden") return "MAG250";   // v16.1.0: v9.6.0 kimliği
   return profile.startsWith("mag254") ? "MAG254" : "MAG250";
 }
 function compatEncoded(profile: MagCompatProfile): boolean {
+  if (profile === "pcap320-minimal") return true;
   if (profile === "wire250") return false;     // v16.10.0: HAM mac (paket kaydındaki gibi)
   if (profile === "fulldevice" || profile === "fulldevice-macid") return true;   // v16.7.0/16.8.0
   if (profile === "golden") return true;       // v16.1.0: mac HER ZAMAN kodlanır
@@ -263,18 +271,16 @@ function preferredCompatProfiles(cred: StalkerCreds, learned?: LearnedMagCompat 
    * NOT: golden listeye eklenmezse headersFor'daki altın dal HİÇ çalışmaz —
    * bu fonksiyon profilleri belirleyen tek yerdir.
    */
+  /**
+   * v16.12.0 — PCAP-KANITLI ÖNCELİK.
+   * 30.08.2026 HKPREMIUM kaydında çalışan istemci MAG320 + Ethernet +
+   * encoded MAC + Europe/Paris + no-JsHttp handshake kullandı. Bu profil
+   * sağlayıcı adına bağlı değildir; genel, minimal MAG320 uyumluluk yoludur.
+   * Learned profil varsa yine en öne alınır.
+   */
   const ordered: MagCompatProfile[] = cred.deviceModel === "MAG250"
-    /**
-     * v16.9.0 — SIRA DEĞİŞTİ: ÖNCE SADE, SONRA ŞİŞİRİLMİŞ ÇEREZ.
-     * Cihaz kaydı: fulldevice/fulldevice-macid/golden hepsi "Authorization
-     * failed." aldı — yani sorun eksik alan DEĞİL. Birçok panel handshake'te
-     * yalnız MAC arar; adid/device_id/sn/debug=1 içeren şişirilmiş çerez bazı
-     * özelleştirilmiş MAG köprülerinde düz metin redde yol açıyor.
-     * Bu yüzden önce SADE çerezli profiller (ham ve kodlanmış MAC), ardından
-     * tam cihaz parmak izli profiller denenir.
-     */
-    ? ["wire250","mag250-raw","mag250-encoded","golden","mag254-raw","mag254-encoded","fulldevice","fulldevice-macid"]
-    : ["wire250","mag254-raw","mag254-encoded","golden","mag250-raw","mag250-encoded","fulldevice","fulldevice-macid"];
+    ? ["pcap320-minimal","wire250","mag250-raw","mag250-encoded","golden","mag254-raw","mag254-encoded","fulldevice","fulldevice-macid"]
+    : ["pcap320-minimal","mag254-raw","mag254-encoded","wire250","golden","mag250-raw","mag250-encoded","fulldevice","fulldevice-macid"];
   if (learned?.profile && ordered.includes(learned.profile)) {
     return [learned.profile, ...ordered.filter(x => x !== learned.profile)];
   }
@@ -297,7 +303,7 @@ function parseLearnedCompatStore(raw: string | null): LearnedMagCompatStore {
       if (
         typeof value.endpoint === "string" && value.endpoint.length > 0 &&
         typeof value.profile === "string" && MAG_COMPAT_PROFILES.includes(value.profile as MagCompatProfile) &&
-        (value.model === "MAG254" || value.model === "MAG250") &&
+        (value.model === "MAG320" || value.model === "MAG254" || value.model === "MAG250") &&
         typeof value.at === "number" && Number.isFinite(value.at) &&
         typeof value.failures === "number" && Number.isFinite(value.failures)
       ) {
@@ -306,6 +312,7 @@ function parseLearnedCompatStore(raw: string | null): LearnedMagCompatStore {
           profile: value.profile as MagCompatProfile,
           model: value.model,
           at: value.at,
+          handshakeVariant: typeof value.handshakeVariant === "string" ? value.handshakeVariant : undefined,
           failures: Math.max(0, Math.trunc(value.failures)),
         };
       }
@@ -470,6 +477,24 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
    * Ayrıca X-User-Agent'ta "Link: WiFi" (bizde Ethernet yazıyordu) ve
    * Cache-Control/Connection başlıkları da kayıtta mevcut.
    */
+  if (profile === "pcap320-minimal") {
+    /**
+     * v16.12.0 — PCAP gerçek-wire profili.
+     * Host/Connection fetch/OkHttp tarafından yönetilir; uygulama yalnız
+     * protokol açısından anlamlı ve PCAP'ta gözlenen başlıkları üretir.
+     */
+    const p: Record<string, string> = {
+      "User-Agent": MAG320_UA,
+      Accept: "application/json",
+      Referer: baseOf(cred.portal) + "/c/",
+      "X-User-Agent": "Model: MAG320; Link: Ethernet",
+      Cookie: `mac=${encodedMac}; stb_lang=en; timezone=Europe%2FParis;`,
+      "Accept-Encoding": "gzip",
+    };
+    if (token) p.Authorization = `Bearer ${token}`;
+    return p;
+  }
+
   if (profile === "wire250") {
     const w: Record<string, string> = {
       "User-Agent": MAG250_UA,
@@ -512,7 +537,7 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
   }
 
   const h: Record<string, string> = {
-    "User-Agent": model === "MAG254" ? MAG254_UA : MAG250_UA,
+    "User-Agent": model === "MAG320" ? MAG320_UA : model === "MAG254" ? MAG254_UA : MAG250_UA,
     Referer: refererFor(cred, endpoint),
     Accept: "*/*",
     "Accept-Language": "en-US,en;q=0.9",
@@ -540,11 +565,19 @@ function isIpLiteral(hostname: string): boolean {
  * public-suffix alanlarında ilgisiz sitelere credential sızdırabileceği için
  * kullanılmaz. Farklı CDN hostuna yalnız zararsız uyumluluk header'ları gider.
  */
+function normalizedOriginPort(url: URL): string {
+  if (url.port) return url.port;
+  return url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : "";
+}
 function isTrustedPlaybackTarget(endpoint: string, playbackUrl: string): boolean {
   try {
     const portal = new URL(endpoint);
     const target = new URL(playbackUrl);
-    if (portal.protocol !== target.protocol && target.protocol !== "https:") return false;
+    if (portal.protocol !== target.protocol) return false;
+    // v16.12.0 PCAP SECURITY/FIX: aynı hostname üzerindeki farklı port ayrı origin'dir.
+    // HKPREMIUM kaydında portal :2095 iken medya :8080'e geçiyor ve Loader
+    // Bearer/MAC cookie taşımıyor. Hassas portal kimliği ancak aynı portta kalabilir.
+    if (normalizedOriginPort(portal) !== normalizedOriginPort(target)) return false;
     const p = normalizePlaybackHost(portal.hostname);
     const t = normalizePlaybackHost(target.hostname);
     if (!p || !t) return false;
@@ -564,7 +597,11 @@ function isTrustedPlaybackTarget(endpoint: string, playbackUrl: string): boolean
 function playbackHeadersFor(cred: StalkerCreds, ses: StalkerSession, playbackUrl: string): Record<string, string> {
   const apiHeaders = headersFor(cred, ses.token, ses.endpoint, ses.compatProfile);
   const trusted = isTrustedPlaybackTarget(ses.endpoint, playbackUrl);
-  const out: Record<string, string> = {
+  // v16.12.0 PCAP FIX: MAG320-minimal oturumunda medya farklı origin'e
+  // taşındığında MAG API parmak izini de zorlamıyoruz. Native player kendi UA'sını
+  // kullanır; bu, kayıttaki Exo/Loader medya isteğiyle aynı güvenlik sınırıdır.
+  const pcapDetachedMedia = ses.compatProfile === "pcap320-minimal" && !trusted;
+  const out: Record<string, string> = pcapDetachedMedia ? { Accept: "*/*" } : {
     "User-Agent": apiHeaders["User-Agent"],
     "X-User-Agent": apiHeaders["X-User-Agent"],
     Referer: apiHeaders.Referer,
@@ -729,7 +766,8 @@ function endpointPath(endpoint:string):string { try{return new URL(endpoint).pat
  * parametre biçimine bağlı kalmıyoruz: sırayla üç biçim denenir ve ilk
  * çalışan kullanılır. Uç nokta başına ek istek sayısı sınırlıdır.
  */
-const HANDSHAKE_PARAM_VARIANTS: Array<{label:string; params:Record<string,string>; post?:boolean; noJs?:boolean}> = [
+type HandshakeParamVariant = {label:string; params:Record<string,string>; post?:boolean; noJs?:boolean};
+const HANDSHAKE_PARAM_VARIANTS: HandshakeParamVariant[] = [
   // v16.11.0: EN BAŞTA gerçek MAG paket kaydının birebir biçimi — JsHttpRequest YOK.
   { label: "wire-nojs",            params: { type:"stb", action:"handshake" }, noJs: true },
   { label: "wire-nojs-token",      params: { type:"stb", action:"handshake", token:"" }, noJs: true },
@@ -742,18 +780,104 @@ const HANDSHAKE_PARAM_VARIANTS: Array<{label:string; params:Record<string,string
   { label: "post-token-empty",     params: { type:"stb", action:"handshake", token:"", prehash:"0" }, post: true },
 ];
 
-async function handshakeAttempt(cred:StalkerCreds, endpoint:string, compatProfile:MagCompatProfile):Promise<StalkerSession|null> {
+type HandshakeAttemptGuard = {
+  networkAttempts:number;
+  authRejects:number;
+  lastAttemptAt:number;
+  rejectionFingerprints:Map<string,number>;
+};
+
+const HANDSHAKE_MAX_NETWORK_ATTEMPTS = 8;
+const HANDSHAKE_MAX_AUTH_REJECTS = 4;
+const HANDSHAKE_MIN_SPACING_MS = 1_250;
+const HANDSHAKE_COOLDOWN_MS = 5 * 60_000;
+const MAG_HANDSHAKE_GUARD_KEY = "kizilkan.mag.guard.v16121";
+const handshakeInFlight = new Map<string, Promise<StalkerSession>>();
+const handshakeCooldownMemory = new Map<string, number>();
+
+function handshakeProtectionKey(cred:StalkerCreds): string {
+  return `${baseOf(cred.portal).toLowerCase()}|${normalizeMac(cred.mac)}`;
+}
+type HandshakeGuardStore = Record<string,{cooldownUntil:number;at:number}>;
+async function loadHandshakeCooldown(key:string): Promise<number> {
+  const memory=handshakeCooldownMemory.get(key)||0;
+  if (memory>Date.now()) return memory;
+  try {
+    const raw=await storage.getItem(MAG_HANDSHAKE_GUARD_KEY, "");
+    const parsed=raw ? JSON.parse(raw) as HandshakeGuardStore : {};
+    const until=Number(parsed?.[key]?.cooldownUntil||0);
+    if (until>Date.now()) { handshakeCooldownMemory.set(key,until); return until; }
+  } catch {}
+  return 0;
+}
+async function persistHandshakeCooldown(key:string, until:number): Promise<void> {
+  handshakeCooldownMemory.set(key,until);
+  try {
+    const raw=await storage.getItem(MAG_HANDSHAKE_GUARD_KEY, "");
+    const parsed:HandshakeGuardStore=raw ? JSON.parse(raw) : {};
+    parsed[key]={cooldownUntil:until,at:Date.now()};
+    const compact=Object.fromEntries(Object.entries(parsed).filter(([,v])=>Number(v?.cooldownUntil||0)>Date.now()-HANDSHAKE_COOLDOWN_MS).sort((a,b)=>(b[1]?.at||0)-(a[1]?.at||0)).slice(0,24));
+    await storage.setItem(MAG_HANDSHAKE_GUARD_KEY,JSON.stringify(compact));
+  } catch {}
+}
+async function clearHandshakeCooldown(key:string): Promise<void> {
+  handshakeCooldownMemory.delete(key);
+  try {
+    const raw=await storage.getItem(MAG_HANDSHAKE_GUARD_KEY, "");
+    if (!raw) return;
+    const parsed:HandshakeGuardStore=JSON.parse(raw);
+    if (parsed?.[key]) { delete parsed[key]; await storage.setItem(MAG_HANDSHAKE_GUARD_KEY,JSON.stringify(parsed)); }
+  } catch {}
+}
+function isAuthRejection(e:any): boolean {
+  const status=Number(e?.status||0);
+  const text=String(e?.snippet||e?.message||"").toLowerCase();
+  return status===401 || status===403 || status===429 || status===512 || /authorization failed|not authorized|too many requests|rate.?limit/.test(text);
+}
+function rejectionFingerprint(endpoint:string, e:any): string {
+  return `${endpointPath(endpoint)}|${Number(e?.status||0)}|${sanitizeBodySnippet(String(e?.snippet||e?.message||"")).toLowerCase()}`.slice(0,240);
+}
+async function paceHandshakeAttempt(guard:HandshakeAttemptGuard): Promise<void> {
+  if (guard.networkAttempts >= HANDSHAKE_MAX_NETWORK_ATTEMPTS) {
+    const err:any=new Error("MAG güvenli deneme bütçesi doldu; portalı korumak için ek istek gönderilmedi.");
+    err.kind="MAG_SAFE_BUDGET"; throw err;
+  }
+  if (guard.authRejects >= HANDSHAKE_MAX_AUTH_REJECTS) {
+    const err:any=new Error("Portal ardışık yetkilendirme reddi verdi; ban/rate-limit riskini azaltmak için denemeler durduruldu.");
+    err.kind="MAG_AUTH_GOVERNOR"; throw err;
+  }
+  // v16.12.1 — sabit 450 ms yerine auth reddi arttıkça kademeli bekleme.
+  // İlk isteği geciktirme; sonraki isteklerde en az 1.25 sn ve her auth reddinde
+  // +1.25 sn ek bekleme uygula. Böylece aynı MAC/portal birkaç saniyede
+  // bombardımana tutulmaz; yine de meşru fallback yolları tamamen kapanmaz.
+  const adaptiveSpacing = HANDSHAKE_MIN_SPACING_MS * Math.max(1, guard.authRejects + 1);
+  const wait=Math.max(0,adaptiveSpacing-(Date.now()-guard.lastAttemptAt));
+  if (wait>0) await new Promise<void>(resolve=>setTimeout(resolve,wait));
+  guard.lastAttemptAt=Date.now(); guard.networkAttempts+=1;
+}
+
+function variantsForProfile(profile:MagCompatProfile, learnedVariant?:string): HandshakeParamVariant[] {
+  if (profile === "pcap320-minimal") return [HANDSHAKE_PARAM_VARIANTS[0]];
+  const ordered=learnedVariant
+    ? [...HANDSHAKE_PARAM_VARIANTS.filter(v=>v.label===learnedVariant), ...HANDSHAKE_PARAM_VARIANTS.filter(v=>v.label!==learnedVariant)]
+    : HANDSHAKE_PARAM_VARIANTS;
+  // Eski varyantlar korunur; global güvenli bütçe hangilerinin gerçekten ağa çıkacağını sınırlar.
+  return ordered;
+}
+
+async function handshakeAttempt(
+  cred:StalkerCreds, endpoint:string, compatProfile:MagCompatProfile, guard:HandshakeAttemptGuard, learnedVariant?:string
+):Promise<StalkerSession|null> {
   let lastErr:any=null;
-  for (const variant of HANDSHAKE_PARAM_VARIANTS) {
+  for (const variant of variantsForProfile(compatProfile, learnedVariant)) {
     try {
+      await paceHandshakeAttempt(guard);
       const hdrs=headersFor(cred,undefined,endpoint,compatProfile);
-      // v16.9.0: çerezin gerçekten üretildiğini ve biçimini kaydet (MAC değeri DEĞİL)
-      // v16.11.0: alan adlarında "cookie" geçtiği için tanı filtresi değerleri
-      // [REDACTED] yapıyordu ve kendi telemetrimizi okuyamıyorduk. Adlar değişti.
       void recordDiagnostic("mag","STALKER_HANDSHAKE_TRY",{
         endpoint, compatProfile, variant: variant.label,
         method: variant.post ? "POST" : "GET",
         jsHttp: variant.noJs ? "off" : "on",
+        attempt: guard.networkAttempts, maxAttempts: HANDSHAKE_MAX_NETWORK_ATTEMPTS,
         hdrSessionPresent: !!hdrs.Cookie,
         hdrSessionShape: hdrs.Cookie ? (hdrs.Cookie.includes("device_id") ? "fulldevice" : (hdrs.Cookie.includes("%3A") ? "encoded" : "raw")) : "none",
         hdrCount: Object.keys(hdrs).length,
@@ -765,15 +889,24 @@ async function handshakeAttempt(cred:StalkerCreds, endpoint:string, compatProfil
       );
       const token=String(data?.js?.token||"").trim();
       if (token) {
-        void recordDiagnostic("mag","STALKER_HANDSHAKE_VARIANT_OK",{endpoint,compatProfile,variant:variant.label});
-        return {token,endpoint,random:primitiveString(data?.js?.random),compatProfile};
+        void recordDiagnostic("mag","STALKER_HANDSHAKE_VARIANT_OK",{endpoint,compatProfile,variant:variant.label,attempt:guard.networkAttempts});
+        return {token,endpoint,random:primitiveString(data?.js?.random),compatProfile,handshakeVariant:variant.label} as StalkerSession;
       }
     } catch (e:any) {
       lastErr=e;
-      // Yalnızca "yetkilendirme" imzasında diğer biçimleri denemeye devam et;
-      // 404 gibi hatalarda uç nokta zaten yanlış demektir.
-      const snip=String(e?.snippet||e?.message||"").toLowerCase();
+      if (e?.kind === "MAG_SAFE_BUDGET" || e?.kind === "MAG_AUTH_GOVERNOR") throw e;
       const status=Number(e?.status||0);
+      if (isAuthRejection(e)) {
+        const fp=rejectionFingerprint(endpoint,e);
+        const seen=(guard.rejectionFingerprints.get(fp)||0)+1;
+        guard.rejectionFingerprints.set(fp,seen);
+        guard.authRejects+=1;
+        void recordDiagnostic("mag","STALKER_HANDSHAKE_AUTH_REJECT",{endpoint,compatProfile,variant:variant.label,authRejects:guard.authRejects,duplicateCount:seen});
+        // Aynı red cevabını aynı profil içinde farklı query biçimleriyle bombardımana tutma.
+        if (seen>=2 || compatProfile === "pcap320-minimal") break;
+        continue;
+      }
+      const snip=String(e?.snippet||e?.message||"").toLowerCase();
       if (status===404) throw e;
       if (!/authorization|auth|json değil|non_json/.test(snip)) throw e;
     }
@@ -783,9 +916,10 @@ async function handshakeAttempt(cred:StalkerCreds, endpoint:string, compatProfil
 }
 
 /** 1) HANDSHAKE — MAG254 varsayılan, öğrenilmiş endpoint/profil önce, fallback sınırlı. */
-export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSession> {
+async function stalkerHandshakeInternal(cred: StalkerCreds): Promise<StalkerSession> {
   const finishTask=startDiagnosticTask("mag:handshake",{portal:cred.portal});
   const errors:string[]=[];
+  const guard:HandshakeAttemptGuard={networkAttempts:0,authRejects:0,lastAttemptAt:0,rejectionFingerprints:new Map()};
   try {
     /**
      * v16.7.0: Cihaz kimliğini İSTEKTEN ÖNCE hesapla.
@@ -832,9 +966,9 @@ export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSessi
         const compatProfile=profiles[pi], profileAttemptAt=Date.now();
         void recordDiagnostic("catalog","STALKER_COMPAT_ATTEMPT",{endpoint,path:label,compatProfile,model:compatModel(compatProfile)});
         try {
-          const session=await handshakeAttempt(cred,endpoint,compatProfile);
+          const session=await handshakeAttempt(cred,endpoint,compatProfile,guard, learned?.profile===compatProfile ? learned.handshakeVariant : undefined);
           if (session) {
-            await saveLearnedCompat(cred,{endpoint,profile:compatProfile,model:compatModel(compatProfile),at:Date.now(),failures:0});
+            await saveLearnedCompat(cred,{endpoint,profile:compatProfile,model:compatModel(compatProfile),handshakeVariant:session.handshakeVariant,at:Date.now(),failures:0});
             void recordDiagnostic("catalog","STALKER_COMPAT_OK",{endpoint,path:label,compatProfile,elapsedMs:Date.now()-profileAttemptAt});
             void recordDiagnostic("catalog","STALKER_ENDPOINT_OK",{endpoint,path:label,elapsedMs:Date.now()-attemptAt,compatProfile,model:compatModel(compatProfile)});
             return session;
@@ -842,6 +976,7 @@ export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSessi
           errors.push(`${label}/${compatProfile}: token yok`);
           void recordDiagnostic("catalog","STALKER_COMPAT_ERROR",{endpoint,path:label,compatProfile,elapsedMs:Date.now()-profileAttemptAt,kind:"NO_TOKEN"});
         } catch (e:any) {
+          if (e?.kind === "MAG_SAFE_BUDGET" || e?.kind === "MAG_AUTH_GOVERNOR") throw e;
           errors.push(`${label}/${compatProfile}: ${String(e?.message||e)}`);
           void recordDiagnostic("catalog","STALKER_COMPAT_ERROR",{endpoint,path:label,compatProfile,elapsedMs:Date.now()-profileAttemptAt,kind:e?.kind,status:e?.status,bodyKind:e?.bodyKind,message:String(e?.message||e)});
           if (handshakeRejectedStatus(Number(e?.status||0))) {
@@ -873,7 +1008,7 @@ export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSessi
       throw new Error(
         "Portal isteği reddetti (HTTP 200 · \"Authorization failed\").\n\n" +
         `Portal bulundu ve yanıt verdi (${livePaths.slice(0,3).join(", ") || "/portal.php"}), ` +
-        `denenen tüm cihaz profilleri (${MAG_COMPAT_PROFILES.length}) aynı cevabı aldı.\n\n` +
+        `güvenli deneme bütçesindeki cihaz profilleri aynı cevabı aldı.\n\n` +
         "Olası nedenler:\n" +
         "• MAC bu portala kayıtlı değil veya başka bir cihaza kilitli\n" +
         "• Aynı MAC şu an başka bir uygulamada açık — o uygulamayı kapatıp tekrar deneyin\n" +
@@ -885,8 +1020,39 @@ export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSessi
   } finally { finishTask(); }
 }
 
+/**
+ * v16.12.0 — BAN-SAFE SINGLE-FLIGHT + COOLDOWN.
+ * Aynı portal/MAC için eşzamanlı handshake çağrıları tek network uçuşunu paylaşır.
+ * Ardışık auth reddi güvenli eşiğe ulaşırsa kısa cooldown uygulanır; uygulama
+ * uygulama yeniden başlasa bile kalıcı cooldown portalın tekrar tekrar dövülmesini önler.
+ */
+export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSession> {
+  const key=handshakeProtectionKey(cred);
+  const cooldownUntil=await loadHandshakeCooldown(key);
+  if (cooldownUntil>Date.now()) {
+    const seconds=Math.max(1,Math.ceil((cooldownUntil-Date.now())/1000));
+    throw new Error(`Portal koruma bekleme süresi aktif (${seconds} sn). Ban/rate-limit riskini azaltmak için yeni handshake gönderilmedi.`);
+  }
+  const existing=handshakeInFlight.get(key);
+  if (existing) return existing;
+  const task=stalkerHandshakeInternal(cred).then(async session=>{
+    await clearHandshakeCooldown(key);
+    return session;
+  }).catch(async (e:any)=>{
+    if (e?.kind === "MAG_AUTH_GOVERNOR" || e?.kind === "MAG_SAFE_BUDGET" || /ban\/rate-limit|güvenli deneme bütçesi/i.test(String(e?.message||""))) {
+      await persistHandshakeCooldown(key,Date.now()+HANDSHAKE_COOLDOWN_MS);
+      void recordDiagnostic("mag","STALKER_HANDSHAKE_COOLDOWN",{durationMs:HANDSHAKE_COOLDOWN_MS,reason:e?.kind||"safe-budget"});
+    }
+    throw e;
+  }).finally(()=>{
+    if (handshakeInFlight.get(key)===task) handshakeInFlight.delete(key);
+  });
+  handshakeInFlight.set(key,task);
+  return task;
+}
+
 /** 2) GET_PROFILE — portal varyantlarına kontrollü uyumluluk. */
-type StalkerProfileVariant = { label: string; params: Record<string,string> };
+type StalkerProfileVariant = { label: string; params: Record<string,string>; noJs?: boolean };
 
 async function derivedMagIdentity(cred: StalkerCreds): Promise<{sn:string; deviceId:string; deviceId2:string; signatureLegacy:string; signatureModern:string; hwVersion2:string}> {
   const Crypto = await import("expo-crypto");
@@ -925,8 +1091,12 @@ function baseProfileParams(mac:string, model:"MAG250"|"MAG254"="MAG254"): Record
   };
 }
 
-function initialProfileVariants(cred:StalkerCreds, preferredModel:"MAG254"|"MAG250"="MAG254"): StalkerProfileVariant[] {
+function initialProfileVariants(cred:StalkerCreds, preferredModel:MagDeviceModel="MAG254"): StalkerProfileVariant[] {
   const mac=normalizeMac(cred.mac);
+  if (preferredModel === "MAG320") {
+    // PCAP: GET /portal.php?action=get_profile&type=stb — JsHttpRequest ve fingerprint query yok.
+    return [{label:"MAG320-pcap-minimal",params:{type:"stb",action:"get_profile"},noJs:true}];
+  }
   const mag254=baseProfileParams(mac,"MAG254");
   const mag250=baseProfileParams(mac,"MAG250");
   const mag254Variants:StalkerProfileVariant[]=[{
@@ -946,7 +1116,8 @@ function initialProfileVariants(cred:StalkerCreds, preferredModel:"MAG254"|"MAG2
   return preferredModel==="MAG250" ? [...mag250Variants,...mag254Variants] : [...mag254Variants,...mag250Variants];
 }
 
-async function derivedProfileVariants(cred:StalkerCreds, random="", preferredModel:"MAG254"|"MAG250"="MAG254"): Promise<StalkerProfileVariant[]> {
+async function derivedProfileVariants(cred:StalkerCreds, random="", preferredModel:MagDeviceModel="MAG254"): Promise<StalkerProfileVariant[]> {
+  if (preferredModel === "MAG320") return [];
   try {
     const mac=normalizeMac(cred.mac);
     const base=baseProfileParams(mac,preferredModel);
@@ -985,7 +1156,7 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession): P
   for (const variant of variants) {
     const started=Date.now();
     try {
-      const data=await req(buildUrl(ses.endpoint, variant.params), headersFor(cred, ses.token, ses.endpoint, ses.compatProfile));
+      const data=await req(buildUrl(ses.endpoint, variant.params, !variant.noJs), headersFor(cred, ses.token, ses.endpoint, ses.compatProfile));
       const profile=profilePayload(data);
       if (profile) {
         ses.profileVariant=variant.label;
