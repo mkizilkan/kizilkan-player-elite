@@ -327,7 +327,22 @@ object NativeBlackBox {
             .put("appSessionId", appSessionId)
           writeCriticalSync(context, payload)
           try {
-            insertEvent(context, "system", "ANR_WATCHDOG_STALL", "critical", appSessionId, "", payload.toString(), true)
+            insertEvent(
+              context = context,
+              domain = "system",
+              event = "ANR_WATCHDOG_STALL",
+              severity = "critical",
+              sessionId = appSessionId,
+              runId = "",
+              traceId = "anr-$appSessionId",
+              operationId = "anr-watchdog",
+              stage = "main-thread-stall",
+              durationMs = lag,
+              outcome = "failure",
+              errorClass = "MAIN_THREAD_STALL",
+              payloadJson = payload.toString(),
+              critical = true,
+            )
           } catch (_: Throwable) {}
           setCheckpoint(context, "anr-watchdog;lag:${lag}ms")
         }

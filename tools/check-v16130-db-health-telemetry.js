@@ -23,7 +23,8 @@ function transpile(file, jsx=false){
  if(errors.length) fail(`${file} transpile: `+errors.map(d=>ts.flattenDiagnosticMessageText(d.messageText,'\n')).join(' | '));
 }
 function checks(){
- if(pkg.version!=='16.13.0'||app.expo?.version!=='16.13.0'||app.expo?.android?.versionCode!==161300||app.expo?.ios?.buildNumber!=='16.13.0') fail('version 16.13.0/161300 contract');
+ const [maj,min,patch]=String(pkg.version).split('.').map(Number);
+ if(maj!==16||min!==13||patch<0||app.expo?.version!==pkg.version||app.expo?.android?.versionCode<161300||app.expo?.ios?.buildNumber!==pkg.version) fail('version >=16.13.0 preservation contract');
  must(db,/version\s*=\s*4/, 'Room schema v4 missing');
  must(db,/MIGRATION_3_4/, 'explicit 3->4 migration missing');
  must(db,/ALTER TABLE `diagnostic_events` ADD COLUMN `traceId`/, 'traceId migration missing');
