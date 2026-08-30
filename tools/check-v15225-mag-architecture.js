@@ -24,7 +24,10 @@ function staticChecks(){
   // v16.8.0: "fulldevice-macid" eklendi — kullanıcının girdiği seri numarası
   // device_id'yi (sha256(serial)) belirlediği için yanlış seri parmak izini
   // bozup portalın reddine yol açabiliyor; bu varyant seriyi yok sayar.
-  need(stalker,/MAG_COMPAT_PROFILES[^\n]+\["fulldevice", "fulldevice-macid", "golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"\]/,'fulldevice(+macid) + golden + MAG254 profil sırası yok');
+  need(stalker,/MAG_COMPAT_PROFILES[^\n]+fulldevice-macid/,'profil kataloğunda fulldevice-macid yok');
+  need(stalker,/"wire250","mag254-raw","mag254-encoded","golden"/,'v16.10.0 wire250-önce profil sırası yok');
+  need(stalker,/Range: "bytes=0-"/,'wire250 Range başlığı yok');
+  need(stalker,/Accept-Charset/,'wire250 Accept-Charset başlığı yok');
   need(stalker,/fulldevice-macid/,'seriden bağımsız kimlik varyantı yok');
   need(stalker,/HANDSHAKE_PARAM_VARIANTS/,'handshake parametre varyantları yok');
   need(stalker,/profile === "fulldevice"/,'tam cihaz çerezi dalı yok');
@@ -78,7 +81,14 @@ async function fixtureHandshakeMag254(){
   // Bu test, ilk isteğin golden ile yapıldığını doğrular.
   // v16.7.0: İLK deneme artık "fulldevice" (tam MAG çerezi + MAG254 kimliği).
   // golden ve diğer profiller yedek olarak hemen ardından gelir.
-  if(!/MAG254 stbapp/.test(firstUA) || s.compatProfile!=='fulldevice') throw new Error('fulldevice ilk profil/header doğrulanamadı: '+firstUA+' / '+s.compatProfile);
+  // v16.9.0: İLK deneme artık SADE çerezli ham MAC profili (mag254-raw).
+  // Gerekçe: cihaz kaydında fulldevice/golden/fulldevice-macid hepsi
+  // "Authorization failed." aldı; sorun EKSİK alan değil, aksine şişirilmiş
+  // çerez olabilir. Sade profiller öne alındı, tam cihaz profilleri yedek.
+  // v16.10.0: İLK deneme artık "wire250" — sahada alınmış gerçek MAG250 paket
+  // kaydının birebir kopyası (Range: bytes=0-, Accept-Charset, ham mac cookie,
+  // X-User-Agent Link: WiFi). O kayıtta portal HTTP 206 ile token döndürmüştü.
+  if(!/MAG200 stbapp ver: 2 rev: 250/.test(firstUA) || s.compatProfile!=='wire250') throw new Error('wire250 ilk profil/header doğrulanamadı: '+firstUA+' / '+s.compatProfile);
 }
 async function fixtureRejectBounded(){
   let calls=0;

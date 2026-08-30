@@ -236,19 +236,21 @@ function refererFor(cred: StalkerCreds, endpoint?: string): string {
  * "golden" profili v9.6.0'ın başlıklarını BİREBİR üretir ve listenin BAŞINDA
  * denenir. Diğer profiller yedek olarak korunur (regresyon yok).
  */
-type MagCompatProfile = "fulldevice" | "fulldevice-macid" | "golden" | "mag254-encoded" | "mag254-raw" | "mag250-encoded" | "mag250-raw";
-const MAG_COMPAT_PROFILES: MagCompatProfile[] = ["fulldevice", "fulldevice-macid", "golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"];
+type MagCompatProfile = "wire250" | "fulldevice" | "fulldevice-macid" | "golden" | "mag254-encoded" | "mag254-raw" | "mag250-encoded" | "mag250-raw";
+const MAG_COMPAT_PROFILES: MagCompatProfile[] = ["wire250", "fulldevice", "fulldevice-macid", "golden", "mag254-encoded", "mag254-raw", "mag250-encoded", "mag250-raw"];
 const MAG_LEARNED_KEY = "kizilkan.mag.compat.v15225";
 
 type LearnedMagCompat = { endpoint:string; profile:MagCompatProfile; model:"MAG254"|"MAG250"; at:number; failures:number };
 const learnedCompatMemory = new Map<string, LearnedMagCompat>();
 
 function compatModel(profile: MagCompatProfile): "MAG254"|"MAG250" {
+  if (profile === "wire250") return "MAG250";   // v16.10.0: gerçek paket kaydı
   if (profile === "fulldevice" || profile === "fulldevice-macid") return "MAG254";   // v16.7.0/16.8.0
   if (profile === "golden") return "MAG250";   // v16.1.0: v9.6.0 kimliği
   return profile.startsWith("mag254") ? "MAG254" : "MAG250";
 }
 function compatEncoded(profile: MagCompatProfile): boolean {
+  if (profile === "wire250") return false;     // v16.10.0: HAM mac (paket kaydındaki gibi)
   if (profile === "fulldevice" || profile === "fulldevice-macid") return true;   // v16.7.0/16.8.0
   if (profile === "golden") return true;       // v16.1.0: mac HER ZAMAN kodlanır
   return profile.endsWith("-encoded");
@@ -262,8 +264,17 @@ function preferredCompatProfiles(cred: StalkerCreds, learned?: LearnedMagCompat 
    * bu fonksiyon profilleri belirleyen tek yerdir.
    */
   const ordered: MagCompatProfile[] = cred.deviceModel === "MAG250"
-    ? ["fulldevice","fulldevice-macid","golden","mag250-encoded","mag250-raw","mag254-encoded","mag254-raw"]
-    : ["fulldevice","fulldevice-macid","golden","mag254-encoded","mag254-raw","mag250-encoded","mag250-raw"];
+    /**
+     * v16.9.0 — SIRA DEĞİŞTİ: ÖNCE SADE, SONRA ŞİŞİRİLMİŞ ÇEREZ.
+     * Cihaz kaydı: fulldevice/fulldevice-macid/golden hepsi "Authorization
+     * failed." aldı — yani sorun eksik alan DEĞİL. Birçok panel handshake'te
+     * yalnız MAC arar; adid/device_id/sn/debug=1 içeren şişirilmiş çerez bazı
+     * özelleştirilmiş MAG köprülerinde düz metin redde yol açıyor.
+     * Bu yüzden önce SADE çerezli profiller (ham ve kodlanmış MAC), ardından
+     * tam cihaz parmak izli profiller denenir.
+     */
+    ? ["wire250","mag250-raw","mag250-encoded","golden","mag254-raw","mag254-encoded","fulldevice","fulldevice-macid"]
+    : ["wire250","mag254-raw","mag254-encoded","golden","mag250-raw","mag250-encoded","fulldevice","fulldevice-macid"];
   if (learned?.profile && ordered.includes(learned.profile)) {
     return [learned.profile, ...ordered.filter(x => x !== learned.profile)];
   }
@@ -447,6 +458,33 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
    * device_id2, hw_version, sn, mac) + MAG254 kimliği. Portal handshake
    * aşamasında cihaz parmak izi doğruluyorsa çalışan tek profil budur.
    */
+  /**
+   * v16.10.0 — "WIRE250": GERÇEK MAG250 PAKET KAYDININ BİREBİR KOPYASI
+   * -------------------------------------------------------------------------
+   * Kaynak: sahada alınmış bir MAG250 kutusunun handshake isteği (HTTP 206 ile
+   * token dönmüş, yani portal kabul etmiş). Bizim isteğimizde OLMAYAN üç şey
+   * vardı ve bazı portallar bunları doğruluyor olabilir:
+   *   1) Range: bytes=0-            (kutu daima gönderiyor; yanıt 206 geliyor)
+   *   2) Accept-Charset: UTF-8,*;q=0.8
+   *   3) Cookie'de HAM mac (iki nokta üst üste kodlanmamış)
+   * Ayrıca X-User-Agent'ta "Link: WiFi" (bizde Ethernet yazıyordu) ve
+   * Cache-Control/Connection başlıkları da kayıtta mevcut.
+   */
+  if (profile === "wire250") {
+    const w: Record<string, string> = {
+      "User-Agent": MAG250_UA,
+      Accept: "*/*",
+      Referer: baseOf(cred.portal) + "/c/",
+      Cookie: `mac=${mac}; stb_lang=en; timezone=Europe/Kiev`,
+      "Accept-Charset": "UTF-8,*;q=0.8",
+      "X-User-Agent": "Model: MAG250; Link: WiFi",
+      Range: "bytes=0-",
+      "Cache-Control": "no-cache",
+    };
+    if (token) w.Authorization = `Bearer ${token}`;
+    return w;
+  }
+
   if (profile === "fulldevice" || profile === "fulldevice-macid") {
     // v16.8.0: -macid varyantı kullanıcının girdiği seriyi YOK SAYAR (parmak izi
     // yalnız MAC'ten türetilir); yanlış seri girilmişse kurtarır.
@@ -582,7 +620,32 @@ async function req(url: string, headers: Record<string, string>, options: number
   })();
   try {
     let res:any;
-    try { res=await fetch(url,{headers,signal:c.signal}); }
+    /**
+     * v16.9.0 — POST YEDEĞİ + ÇEREZ TELEMETRİSİ
+     * Bazı Xtream/OpenXC MAG köprüleri parametreleri yalnız $_POST içinden
+     * okur; GET query'yi görmezden gelip düz metin "Authorization failed."
+     * döndürebiliyor. opts.postForm=true ise aynı başlıklarla POST edilir.
+     * (404 durumunda POST denemenin anlamı yoktur; çağıran taraf karar verir.)
+     *
+     * Ayrıca Cookie başlığının GERÇEKTEN gönderilip gönderilmediği kaydedilir:
+     * React Native/OkHttp elle yazılan Cookie'yi bazen düşürür ve portal MAC'i
+     * göremeyip tam bu 21 baytlık reddi döndürür. MAC değerinin KENDİSİ
+     * kaydedilmez, yalnız var/yok ve biçim bilgisi.
+     */
+    try {
+      if ((opts as any).postForm) {
+        const u = new URL(url);
+        const body = u.searchParams.toString();
+        res = await fetch(u.origin + u.pathname, {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
+          body,
+          signal: c.signal,
+        });
+      } else {
+        res = await fetch(url, { headers, signal: c.signal });
+      }
+    }
     catch (cause:any) {
       const parentAbort=!!opts.signal?.aborted;
       const err:any=new Error(cause?.name==="AbortError"
@@ -654,20 +717,31 @@ function endpointPath(endpoint:string):string { try{return new URL(endpoint).pat
  * parametre biçimine bağlı kalmıyoruz: sırayla üç biçim denenir ve ilk
  * çalışan kullanılır. Uç nokta başına ek istek sayısı sınırlıdır.
  */
-const HANDSHAKE_PARAM_VARIANTS: Array<{label:string; params:Record<string,string>}> = [
+const HANDSHAKE_PARAM_VARIANTS: Array<{label:string; params:Record<string,string>; post?:boolean}> = [
   { label: "token-empty-prehash0", params: { type:"stb", action:"handshake", token:"", prehash:"0" } },
   { label: "bare",                 params: { type:"stb", action:"handshake" } },
   { label: "token-empty",          params: { type:"stb", action:"handshake", token:"" } },
+  // v16.9.0: GET reddedilirse aynı başlıklarla POST (bazı MAG köprüleri
+  // parametreleri yalnız $_POST içinden okur).
+  { label: "post-bare",            params: { type:"stb", action:"handshake" }, post: true },
+  { label: "post-token-empty",     params: { type:"stb", action:"handshake", token:"", prehash:"0" }, post: true },
 ];
 
 async function handshakeAttempt(cred:StalkerCreds, endpoint:string, compatProfile:MagCompatProfile):Promise<StalkerSession|null> {
   let lastErr:any=null;
   for (const variant of HANDSHAKE_PARAM_VARIANTS) {
     try {
+      const hdrs=headersFor(cred,undefined,endpoint,compatProfile);
+      // v16.9.0: çerezin gerçekten üretildiğini ve biçimini kaydet (MAC değeri DEĞİL)
+      void recordDiagnostic("mag","STALKER_HANDSHAKE_TRY",{
+        endpoint, compatProfile, variant: variant.label, method: variant.post ? "POST" : "GET",
+        cookieSent: !!hdrs.Cookie,
+        cookieShape: hdrs.Cookie ? (hdrs.Cookie.includes("device_id") ? "fulldevice" : (hdrs.Cookie.includes("%3A") ? "encoded" : "raw")) : "none",
+      });
       const data=await req(
         buildUrl(endpoint,variant.params),
-        headersFor(cred,undefined,endpoint,compatProfile),
-        {timeoutMs:20000},
+        hdrs,
+        {timeoutMs:20000, postForm: !!variant.post} as any,
       );
       const token=String(data?.js?.token||"").trim();
       if (token) {
@@ -723,7 +797,18 @@ export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSessi
       void recordDiagnostic("catalog","STALKER_ENDPOINT_ATTEMPT",{endpoint,path:label,index:ei});
       let endpointRejected=false;
       for (let pi=0; pi<profiles.length; pi++) {
-        if (pi >= (ei===0 ? 3 : 2)) break;
+        /**
+         * v16.9.0 — PROFİL LİMİTİ GENİŞLETİLDİ (kritik).
+         * Eski satır: ilk uç noktada 3, sonrakilerde 2 profil deneniyordu.
+         * Sonuç: HAM MAC kullanan profiller (mag254-raw / mag250-raw) fiilen
+         * HİÇ çalışmıyordu — cihaz kaydında her uç noktada yalnız "golden" ve
+         * "fulldevice" görünüyor. Portal çerezde ham MAC bekliyorsa bunu asla
+         * deneyemiyorduk.
+         * Artık gerçekten YANIT VEREN uç noktalarda (HTTP 200) tüm profiller
+         * denenir; 404 dönen uç noktalarda erken çıkılır (aşağıdaki
+         * endpointRejected mantığı zaten bunu yapıyor).
+         */
+        if (pi >= (ei===0 ? profiles.length : 4)) break;
         const compatProfile=profiles[pi], profileAttemptAt=Date.now();
         void recordDiagnostic("catalog","STALKER_COMPAT_ATTEMPT",{endpoint,path:label,compatProfile,model:compatModel(compatProfile)});
         try {

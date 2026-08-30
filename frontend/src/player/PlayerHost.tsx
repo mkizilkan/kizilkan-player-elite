@@ -2546,7 +2546,18 @@ export default function PlayerHost() {
         <Animated.View style={StyleSheet.absoluteFill}>
           {v2ProfileReady && v2Profile.engine === "media3" && (
             <VideoView
-              key={`vv-${effectiveSurface}`}
+              /**
+               * v16.9.0 — ESKİ YAYININ SON KARESİ EKRANDA KALIYORDU.
+               * KULLANICI: "kanaldan çıkıp başka içerik açınca son izlediğim
+               * içeriğin son ekranı fotoğraf gibi duruyor."
+               * SEBEP: VLC ve MPV bileşenlerinin key'inde kanal/oturum kimliği
+               * varken (remount olup yüzeyi temizliyorlar), Media3 VideoView'ın
+               * key'i yalnız yüzey türüne bağlıydı; kanal değişse de aynı view
+               * kalıyor ve SurfaceView son kareyi tutuyordu.
+               * Artık oturum kimliği key'e dahil: her yeni oynatmada yüzey
+               * sıfırdan oluşturulur, önceki kare taşınmaz.
+               */
+              key={`vv-${effectiveSurface}-${activeSessionId}`}
               player={player}
               style={StyleSheet.absoluteFill}
               contentFit={fit}
