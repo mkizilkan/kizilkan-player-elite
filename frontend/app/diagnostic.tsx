@@ -9,8 +9,27 @@ import { usePlaylists } from "@/src/store/PlaylistContext";
 import { haptic } from "@/src/utils/haptic";
 import * as Clipboard from "expo-clipboard";
 import { FocusButton } from "@/src/components/FocusButton";
+import { KizilkanNativeCore, type DatabaseHealth, type DatabaseMaintenanceResult } from "@/modules/kizilkan-native-core";
+import { recordDiagnostic } from "@/src/utils/diagnostics";
 
 interface TestResult { url: string; label: string; ok: boolean; ms?: number }
+type MaintenanceMode = "diagnose" | "quick" | "normal" | "deep";
+
+function formatBytes(value: any): string {
+  const n = Math.max(0, Number(value || 0));
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function statusLabel(status?: string): string {
+  if (status === "healthy") return "Sağlıklı";
+  if (status === "attention") return "Bakım öneriliyor";
+  if (status === "critical") return "Kontrol gerekli";
+  return "Ölçülmedi";
+}
+
 
 /** Zaman aşımlı erişim testi. */
 async function probe(url: string, timeoutMs = 12000): Promise<{ ok: boolean; ms: number }> {
@@ -34,6 +53,10 @@ export default function DiagnosticScreen() {
   const [testing, setTesting] = useState(false);
   const [results, setResults] = useState<TestResult[]>([]);
   const [allOk, setAllOk] = useState<boolean | null>(null);
+  const [dbHealth, setDbHealth] = useState<DatabaseHealth | null>(null);
+  const [dbLoading, setDbLoading] = useState(false);
+  const [maintenanceMode, setMaintenanceMode] = useState<MaintenanceMode | null>(null);
+  const [lastMaintenance, setLastMaintenance] = useState<DatabaseMaintenanceResult | null>(null);
 
   /**
    * v4.8.3: Bu ekran ESKİDEN emergent backend'ini test ediyordu. Xtream/M3U/EPG
@@ -85,7 +108,63 @@ export default function DiagnosticScreen() {
     if (ok) haptic.success(); else haptic.error();
   };
 
+  const loadDatabaseHealth = async (includeIntegrity = false) => {
+    if (!KizilkanNativeCore.available) return;
+    setDbLoading(true);
+    const started = Date.now();
+    try {
+      const health = await KizilkanNativeCore.getDatabaseHealth(includeIntegrity);
+      setDbHealth(health);
+      await recordDiagnostic("database", "DB_HEALTH_READ", {
+        includeIntegrity, status: health?.status, totalBytes: health?.totalBytes, walBytes: health?.walBytes,
+        reclaimableBytes: health?.reclaimableBytes, mediaOrphans: health?.mediaOrphans, epgOrphans: health?.epgOrphans,
+      }, { stage: "health-read", durationMs: Date.now() - started, outcome: "success" });
+    } catch (error: any) {
+      await recordDiagnostic("database", "DB_HEALTH_READ_FAILED", { message: String(error?.message || error || "") }, { stage: "health-read", durationMs: Date.now() - started, outcome: "failed", errorClass: String(error?.name || "Error") });
+      Alert.alert("Veritabanı", `Sağlık bilgisi okunamadı: ${String(error?.message || error || "Bilinmeyen hata")}`);
+    } finally { setDbLoading(false); }
+  };
+
+  const executeMaintenance = async (mode: MaintenanceMode) => {
+    if (!KizilkanNativeCore.available || maintenanceMode) return;
+    setMaintenanceMode(mode);
+    try {
+      const result = await KizilkanNativeCore.runDatabaseMaintenance(mode);
+      setLastMaintenance(result);
+      setDbHealth(result.after || await KizilkanNativeCore.getDatabaseHealth(false));
+      haptic.success();
+      if (mode !== "diagnose") {
+        Alert.alert("Veritabanı bakımı tamamlandı", [
+          `Mod: ${mode === "quick" ? "Hızlı" : mode === "normal" ? "Normal" : "Derin"}`,
+          `Süre: ${Math.round(Number(result.durationMs || 0) / 100) / 10} sn`,
+          `Geri kazanılan toplam alan: ${formatBytes(Math.max(0, Number(result.reclaimedTotalBytes || 0)))}`,
+          `Orphan medya: ${Number(result.removedMediaOrphans || 0)}`,
+          `Orphan EPG: ${Number(result.removedEpgOrphans || 0)}`,
+          `Eski EPG: ${Number(result.removedExpiredEpg || 0)}`,
+          `Eski telemetri: ${Number(result.removedNormalTelemetry || 0) + Number(result.removedCriticalTelemetry || 0)}`,
+          result.vacuumRan ? "VACUUM: çalıştırıldı" : "VACUUM: çalıştırılmadı",
+        ].join("\n"));
+      }
+    } catch (error: any) {
+      haptic.error();
+      Alert.alert("Bakım başarısız", String(error?.message || error || "Bilinmeyen hata"));
+    } finally { setMaintenanceMode(null); }
+  };
+
+  const requestMaintenance = (mode: MaintenanceMode) => {
+    if (mode === "deep") {
+      Alert.alert(
+        "Derin veritabanı bakımı",
+        "Orphan/retention temizliği, WAL checkpoint, PRAGMA optimize ve VACUUM uygulanacak. Büyük veritabanlarında işlem zaman alabilir. Kullanıcı verisi için destructive migration kullanılmaz.",
+        [{ text: "Vazgeç", style: "cancel" }, { text: "Derin Bakımı Başlat", style: "destructive", onPress: () => void executeMaintenance("deep") }],
+      );
+      return;
+    }
+    void executeMaintenance(mode);
+  };
+
   useEffect(() => {
+    void loadDatabaseHealth(false);
     runTest();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -124,6 +203,71 @@ export default function DiagnosticScreen() {
             </Text>
           </View>
         </View>
+
+        <Text style={[styles.sectionTitle, { color: colors.onSurfaceTertiary }]}>VERİTABANI SAĞLIK MERKEZİ</Text>
+
+        {!KizilkanNativeCore.available ? (
+          <View style={[styles.helpCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+            <Ionicons name="hardware-chip-outline" size={18} color={colors.onSurfaceTertiary} />
+            <Text style={[styles.helpText, { color: colors.onSurfaceSecondary, flex: 1 }]}>Native Room sağlık ölçümü bu platformda kullanılamıyor.</Text>
+          </View>
+        ) : (
+          <>
+            <View style={[styles.dbCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+              <View style={styles.dbHeaderRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.dbTitle, { color: colors.onSurface }]}>{statusLabel(dbHealth?.status)}</Text>
+                  <Text style={[styles.urlMeta, { color: colors.onSurfaceSecondary }]}>Room / SQLite • {String(dbHealth?.journalMode || "WAL").toUpperCase()}</Text>
+                </View>
+                {dbLoading ? <ActivityIndicator color={colors.brandPrimary} /> : (
+                  <FocusButton testID="db-health-refresh" onPress={() => void loadDatabaseHealth(true)} style={styles.smallIconBtn}>
+                    <Ionicons name="scan-outline" size={20} color={colors.brandPrimary} />
+                  </FocusButton>
+                )}
+              </View>
+
+              <View style={styles.metricGrid}>
+                <View style={styles.metric}><Text style={[styles.metricValue,{color:colors.onSurface}]}>{formatBytes(dbHealth?.totalBytes)}</Text><Text style={[styles.metricLabel,{color:colors.onSurfaceSecondary}]}>Toplam</Text></View>
+                <View style={styles.metric}><Text style={[styles.metricValue,{color:colors.onSurface}]}>{formatBytes(dbHealth?.databaseBytes)}</Text><Text style={[styles.metricLabel,{color:colors.onSurfaceSecondary}]}>Ana DB</Text></View>
+                <View style={styles.metric}><Text style={[styles.metricValue,{color:colors.onSurface}]}>{formatBytes(dbHealth?.walBytes)}</Text><Text style={[styles.metricLabel,{color:colors.onSurfaceSecondary}]}>WAL</Text></View>
+                <View style={styles.metric}><Text style={[styles.metricValue,{color:colors.onSurface}]}>{formatBytes(dbHealth?.reclaimableBytes)}</Text><Text style={[styles.metricLabel,{color:colors.onSurfaceSecondary}]}>Boş sayfa</Text></View>
+              </View>
+
+              <View style={[styles.dbDivider,{backgroundColor:colors.border}]} />
+              <Text style={[styles.dbLine,{color:colors.onSurfaceSecondary}]}>Medya: {Number(dbHealth?.mediaCount || 0).toLocaleString("tr-TR")} • EPG: {Number(dbHealth?.epgCount || 0).toLocaleString("tr-TR")} • Telemetri: {Number(dbHealth?.diagnosticEventCount || 0).toLocaleString("tr-TR")}</Text>
+              <Text style={[styles.dbLine,{color:colors.onSurfaceSecondary}]}>Orphan medya: {Number(dbHealth?.mediaOrphans || 0).toLocaleString("tr-TR")} • Orphan EPG: {Number(dbHealth?.epgOrphans || 0).toLocaleString("tr-TR")}</Text>
+              <Text style={[styles.dbLine,{color:colors.onSurfaceSecondary}]}>Eski EPG adayı: {Number(dbHealth?.expiredEpgCandidates || 0).toLocaleString("tr-TR")} • Retention telemetri: {(Number(dbHealth?.expiredNormalTelemetryCandidates || 0)+Number(dbHealth?.expiredCriticalTelemetryCandidates || 0)).toLocaleString("tr-TR")}</Text>
+              <Text style={[styles.dbLine,{color:colors.onSurfaceSecondary}]}>Freelist: %{Number(dbHealth?.reclaimablePercent || 0).toFixed(2)} • quick_check: {String(dbHealth?.quickCheck || "tarama yapılmadı")} • FK ihlali: {Number(dbHealth?.foreignKeyViolations ?? -1) < 0 ? "tarama yapılmadı" : Number(dbHealth?.foreignKeyViolations || 0)}</Text>
+              <Text style={[styles.dbLine,{color:colors.onSurfaceSecondary}]}>Önerilen bakım: {String(dbHealth?.recommendedMaintenance || "none")} • Neden: {(dbHealth?.healthReasons || []).join(", ") || "ölçülen sorun yok"}</Text>
+            </View>
+
+            <View style={styles.maintenanceGrid}>
+              <FocusButton testID="db-maint-diagnose" disabled={!!maintenanceMode} onPress={() => requestMaintenance("diagnose")} style={[styles.maintenanceBtn,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
+                {maintenanceMode === "diagnose" ? <ActivityIndicator color={colors.brandPrimary}/> : <Ionicons name="search-outline" size={19} color={colors.brandPrimary}/>}
+                <Text style={[styles.maintenanceText,{color:colors.onSurface}]}>Tanıla</Text>
+              </FocusButton>
+              <FocusButton testID="db-maint-quick" disabled={!!maintenanceMode} onPress={() => requestMaintenance("quick")} style={[styles.maintenanceBtn,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
+                {maintenanceMode === "quick" ? <ActivityIndicator color={colors.brandPrimary}/> : <Ionicons name="flash-outline" size={19} color={colors.brandPrimary}/>}
+                <Text style={[styles.maintenanceText,{color:colors.onSurface}]}>Hızlı</Text>
+              </FocusButton>
+              <FocusButton testID="db-maint-normal" disabled={!!maintenanceMode} onPress={() => requestMaintenance("normal")} style={[styles.maintenanceBtn,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
+                {maintenanceMode === "normal" ? <ActivityIndicator color={colors.brandPrimary}/> : <Ionicons name="construct-outline" size={19} color={colors.brandPrimary}/>}
+                <Text style={[styles.maintenanceText,{color:colors.onSurface}]}>Normal</Text>
+              </FocusButton>
+              <FocusButton testID="db-maint-deep" disabled={!!maintenanceMode} onPress={() => requestMaintenance("deep")} style={[styles.maintenanceBtn,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
+                {maintenanceMode === "deep" ? <ActivityIndicator color={colors.brandPrimary}/> : <Ionicons name="layers-outline" size={19} color={colors.brandPrimary}/>}
+                <Text style={[styles.maintenanceText,{color:colors.onSurface}]}>Derin</Text>
+              </FocusButton>
+            </View>
+
+            {lastMaintenance && (
+              <View style={[styles.helpCard,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
+                <Ionicons name="checkmark-circle-outline" size={18} color={colors.brandPrimary}/>
+                <Text style={[styles.helpText,{color:colors.onSurfaceSecondary,flex:1}]}>Son bakım: {String(lastMaintenance.mode)} • {Math.round(Number(lastMaintenance.durationMs || 0)/100)/10} sn • geri kazanım {formatBytes(Math.max(0,Number(lastMaintenance.reclaimedTotalBytes || 0)))}</Text>
+              </View>
+            )}
+          </>
+        )}
 
         <Text style={[styles.sectionTitle, { color: colors.onSurfaceTertiary }]}>IPTV SUNUCUSU & EPG</Text>
 
@@ -223,4 +367,17 @@ const styles = StyleSheet.create({
   },
   helpTitle: { fontSize: FONT.size.sm, fontWeight: FONT.weight.bold },
   helpText: { fontSize: FONT.size.xs, lineHeight: 18 },
+  dbCard: { padding: SPACING.md, borderRadius: RADIUS.md, borderWidth: 1, gap: 8 },
+  dbHeaderRow: { flexDirection: "row", alignItems: "center", gap: SPACING.sm },
+  dbTitle: { fontSize: FONT.size.base, fontWeight: FONT.weight.bold },
+  smallIconBtn: { padding: 8 },
+  metricGrid: { flexDirection: "row", flexWrap: "wrap", marginTop: 4 },
+  metric: { width: "50%", paddingVertical: 6 },
+  metricValue: { fontSize: FONT.size.base, fontWeight: FONT.weight.bold },
+  metricLabel: { fontSize: FONT.size.xs, marginTop: 2 },
+  dbDivider: { height: StyleSheet.hairlineWidth, marginVertical: 4 },
+  dbLine: { fontSize: FONT.size.xs, lineHeight: 18 },
+  maintenanceGrid: { flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm },
+  maintenanceBtn: { width: "48%", minHeight: 48, borderWidth: 1, borderRadius: RADIUS.md, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 10 },
+  maintenanceText: { fontSize: FONT.size.sm, fontWeight: FONT.weight.semibold },
 });

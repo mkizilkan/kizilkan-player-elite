@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, Pressable, TextInput } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, Pressable, TextInput, PanResponder, Animated } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -13,6 +13,11 @@ import { KizilkanLogo } from "@/src/components/KizilkanLogo";
 import { haptic } from "@/src/utils/haptic";
 import { FocusButton } from "@/src/components/FocusButton";
 import { playlistTypeLabel, playlistVisualColor, playlistTypeIcon } from "@/src/utils/playlistVisual";
+import { storage } from "@/src/utils/storage";
+import { ContentSelectionModal } from "@/src/components/ContentSelectionModal";
+import { applyContentSelection, catalogCategories } from "@/src/utils/contentSelection";
+import { DEFAULT_PLAYLIST_SORT, PLAYLIST_SORT_LABELS, sortPlaylists, playlistRemainingDays, playlistTotalCount, type PlaylistSortMode, type PlaylistSortPreferences } from "@/src/utils/playlistManagement";
+import type { Playlist, PlaylistContentSelection } from "@/src/types";
 
 export default function PlaylistSelect() {
   /**
@@ -24,7 +29,7 @@ export default function PlaylistSelect() {
   const homeRoute = (isTv && tvLayout === "columns") ? "/tv-home" : "/(tabs)";
   const router = useRouter();
   const { colors } = useTheme();
-  const { playlists, activePlaylist, setActivePlaylist, isLoading, loadedProfileId, updatePlaylist, heavyLoading, repairFailedId} = usePlaylists();
+  const { playlists, activePlaylist, setActivePlaylist, isLoading, loadedProfileId, updatePlaylist, removePlaylist, heavyLoading, repairFailedId} = usePlaylists();
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [refreshAllProgress, setRefreshAllProgress] = useState("");
@@ -38,17 +43,33 @@ export default function PlaylistSelect() {
   const autoIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [autoTimer, setAutoTimer] = useState(4);
 
+  const sortKey = `kizilkan.playlist-sort.${activeProfile.id}`;
+  const [sortPref, setSortPref] = useState<PlaylistSortPreferences>(DEFAULT_PLAYLIST_SORT);
+  const [sortModal, setSortModal] = useState(false);
+  const [reorderModal, setReorderModal] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const [categoryEdit, setCategoryEdit] = useState<{playlist:Playlist;catalog:{channels:any[];vod:any[];series:any[]}}|null>(null);
+  const [bulkMode,setBulkMode]=useState(false);
+  const [bulkSelected,setBulkSelected]=useState<Set<string>>(new Set());
+
+  useEffect(()=>{
+    let live=true;
+    (async()=>{
+      const raw=await storage.getItem<string>(sortKey,"");
+      if(!live||!raw)return;
+      try{ const parsed=JSON.parse(raw); if(parsed?.mode) setSortPref({...DEFAULT_PLAYLIST_SORT,...parsed}); }catch{}
+    })();
+    return()=>{live=false};
+  },[sortKey]);
+
+  const persistSortPref = async (next:PlaylistSortPreferences) => { setSortPref(next); await storage.setItem(sortKey,JSON.stringify(next)); };
+
   const sorted = useMemo(() => {
-    // last-used first
-    if (!playlists?.length) return [];
-    const copy = [...playlists];
-    copy.sort((a, b) => {
-      if (activePlaylist?.id === a.id) return -1;
-      if (activePlaylist?.id === b.id) return 1;
-      return String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
-    });
-    return copy;
-  }, [playlists, activePlaylist]);
+    const q=searchText.trim().toLocaleLowerCase('tr');
+    const filtered=(playlists||[]).filter(p=>!q || p.name.toLocaleLowerCase('tr').includes(q) || playlistTypeLabel(p).toLocaleLowerCase('tr').includes(q));
+    return sortPlaylists(filtered,sortPref);
+  }, [playlists, sortPref, searchText]);
+
 
   // Auto-continue with the last-used playlist if user is idle.
   // GPT ELITE v12.5.0: profil metadata'sı hazır olduktan SONRA deterministik
@@ -81,9 +102,10 @@ export default function PlaylistSelect() {
       const res = await refreshPlaylistContent(pl, (p) => setRefreshOneProgress(`${pl.name} · ${formatRefreshProgress(p)}`));
       if (res.ok && res.patch) {
         setRefreshOneProgress(`${pl.name} · Cihaza kaydediliyor...`);
-        await updatePlaylist(pl.id, res.patch);
+        await updatePlaylist(pl.id, { ...res.patch, lastRefreshedAt: new Date().toISOString(), lastRefreshOk: true });
         Alert.alert("Liste güncellendi", res.message);
       } else {
+        await updatePlaylist(pl.id,{lastRefreshedAt:new Date().toISOString(),lastRefreshOk:false});
         Alert.alert("Yenilenemedi", res.message);
       }
     } finally {
@@ -91,6 +113,32 @@ export default function PlaylistSelect() {
       setRefreshOneProgress("");
     }
   };
+  const refreshOneWithCategoryChoice = (pl:Playlist) => {
+    cancelAuto();
+    Alert.alert(
+      "Kategori tercihleri",
+      "Mevcut tercihle yenileyebilir, ayrıntılı seçim ekranını yeniden açabilir veya filtreyi kaldırıp tüm kategorileri yükleyebilirsiniz.",
+      [
+        {text:"Vazgeç",style:"cancel"},
+        {text:"Mevcut seçimle yenile",onPress:()=>void refreshOne(pl)},
+        {text:"Kategori seçimlerini değiştir",onPress:async()=>{
+          if(refreshingId)return; setRefreshingId(pl.id); setRefreshOneProgress(`${pl.name} · Tam katalog kategori seçimi için yükleniyor…`);
+          try{
+            const res=await refreshPlaylistContent({...pl,contentSelection:null},(p)=>setRefreshOneProgress(`${pl.name} · ${formatRefreshProgress(p)}`),{ignoreContentSelection:true});
+            if(!res.ok||!res.patch){Alert.alert("Yenilenemedi",res.message);return;}
+            const catalog={channels:(res.patch.channels||[]) as any[],vod:(res.patch.vod||[]) as any[],series:(res.patch.series||[]) as any[]};
+            setCategoryEdit({playlist:pl,catalog});
+          } finally { setRefreshingId(null); setRefreshOneProgress(""); }
+        }},
+        ...(pl.contentSelection ? [{text:"Tüm kategorileri yükle",style:"destructive" as const,onPress:async()=>{
+          if(refreshingId)return; setRefreshingId(pl.id);
+          try { const base={...pl,contentSelection:null}; const res=await refreshPlaylistContent(base,(p)=>setRefreshOneProgress(`${pl.name} · ${formatRefreshProgress(p)}`),{ignoreContentSelection:true}); if(res.ok&&res.patch){await updatePlaylist(pl.id,{...res.patch,contentSelection:null,lastRefreshedAt:new Date().toISOString(),lastRefreshOk:true}); Alert.alert("Kategori tercihi güncellendi","Filtre kaldırıldı; bundan sonraki yenilemeler tüm kategorileri kullanacak.");} else Alert.alert("Yenilenemedi",res.message); } finally {setRefreshingId(null);setRefreshOneProgress("");}
+        }}] : []),
+      ]
+    );
+  };
+
+
   const refreshAll = async () => {
     if (refreshingId || refreshingAll || !playlists.length) return;
     cancelAuto();
@@ -126,7 +174,7 @@ export default function PlaylistSelect() {
           if (res.ok && res.patch) {
             status.set(pl.name, "Cihaza kaydediliyor...");
             publish();
-            await updatePlaylist(pl.id, res.patch);
+            await updatePlaylist(pl.id, { ...res.patch, lastRefreshedAt: new Date().toISOString(), lastRefreshOk: true });
             ok += 1;
             status.set(pl.name, `✅ ${res.message}`);
           } else {
@@ -158,6 +206,27 @@ export default function PlaylistSelect() {
       setRefreshAllProgress("");
       setRefreshAllDetails([]);
     }
+  };
+
+  const toggleBulkSelection=(id:string)=>setBulkSelected(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n});
+  const selectedPlaylists=()=>playlists.filter(p=>bulkSelected.has(p.id));
+  const bulkPin=async(pinned:boolean)=>{for(const pl of selectedPlaylists())await updatePlaylist(pl.id,{pinned});setBulkSelected(new Set());setBulkMode(false)};
+  const bulkRefresh=async()=>{const targets=selectedPlaylists();if(!targets.length)return;setRefreshingAll(true);let ok=0;try{for(const pl of targets){const res=await refreshPlaylistContent(pl,p=>setRefreshAllProgress(`${pl.name} · ${formatRefreshProgress(p)}`));if(res.ok&&res.patch){await updatePlaylist(pl.id,{...res.patch,lastRefreshedAt:new Date().toISOString(),lastRefreshOk:true});ok++}else await updatePlaylist(pl.id,{lastRefreshedAt:new Date().toISOString(),lastRefreshOk:false});}Alert.alert('Toplu yenileme',`${ok}/${targets.length} playlist güncellendi.`)}finally{setRefreshingAll(false);setRefreshAllProgress('');setBulkSelected(new Set());setBulkMode(false)}};
+  const bulkDelete=()=>{const targets=selectedPlaylists();if(!targets.length)return;Alert.alert('Playlistleri sil',`${targets.length} playlist ve cihazdaki kayıtlı içerikleri silinsin mi?`,[{text:'Vazgeç',style:'cancel'},{text:'Sil',style:'destructive',onPress:async()=>{for(const pl of targets)await removePlaylist(pl.id);setBulkSelected(new Set());setBulkMode(false)}}])};
+
+  const togglePinned = async (pl:Playlist) => { cancelAuto(); await updatePlaylist(pl.id,{pinned:!pl.pinned}); };
+  const saveManualOrder = async (ordered:Playlist[]) => {
+    for(let i=0;i<ordered.length;i++) await updatePlaylist(ordered[i].id,{manualOrder:i});
+    await persistSortPref({...sortPref,mode:'manual'});
+  };
+  const applyNewCategorySelection = async (selection:PlaylistContentSelection) => {
+    const state=categoryEdit; if(!state)return;
+    const filtered=applyContentSelection(state.catalog,selection);
+    setCategoryEdit(null); setRefreshingId(state.playlist.id);
+    try{
+      await updatePlaylist(state.playlist.id,{...filtered,contentSelection:selection,lastRefreshedAt:new Date().toISOString(),lastRefreshOk:true});
+      Alert.alert('Kategori tercihi güncellendi',`${filtered.channels.length} kanal • ${filtered.vod.length} film • ${filtered.series.length} dizi kaydedildi.`);
+    }finally{setRefreshingId(null)}
   };
 
   useEffect(() => {
@@ -284,6 +353,19 @@ export default function PlaylistSelect() {
               <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, marginTop: SPACING.xs }}>{refreshOneProgress}</Text>
             )}
           </View>
+          <View style={styles.manageBar}>
+            <TextInput value={searchText} onChangeText={t=>{cancelAuto();setSearchText(t)}} placeholder="Playlist ara…" placeholderTextColor={colors.onSurfaceTertiary} style={[styles.manageSearch,{color:colors.onSurface,borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}/>
+            <FocusButton onPress={()=>{cancelAuto();setSortModal(true)}} style={[styles.manageBtn,{borderColor:colors.border}]}><Ionicons name="swap-vertical" size={18} color={colors.brandPrimary}/><Text style={{color:colors.onSurface,fontSize:12}}>{PLAYLIST_SORT_LABELS[sortPref.mode]}</Text></FocusButton>
+            <FocusButton onPress={()=>{cancelAuto();setReorderModal(true)}} style={[styles.manageBtn,{borderColor:colors.border}]}><Ionicons name="reorder-three" size={20} color={colors.brandPrimary}/><Text style={{color:colors.onSurface,fontSize:12}}>Özel sıra</Text></FocusButton>
+            <FocusButton onPress={()=>{cancelAuto();setBulkMode(v=>!v);setBulkSelected(new Set())}} style={[styles.manageBtn,{borderColor:bulkMode?colors.brandPrimary:colors.border}]}><Ionicons name="checkbox-outline" size={18} color={colors.brandPrimary}/><Text style={{color:colors.onSurface,fontSize:12}}>Toplu</Text></FocusButton>
+          </View>
+          {bulkMode && <View style={[styles.manageBar,{paddingTop:0}]}>
+            <Text style={{color:colors.onSurfaceSecondary,alignSelf:'center'}}>{bulkSelected.size} seçili</Text>
+            <FocusButton disabled={!bulkSelected.size} onPress={()=>void bulkRefresh()} style={[styles.manageBtn,{borderColor:colors.border}]}><Text style={{color:colors.onSurface}}>Yenile</Text></FocusButton>
+            <FocusButton disabled={!bulkSelected.size} onPress={()=>void bulkPin(true)} style={[styles.manageBtn,{borderColor:colors.border}]}><Text style={{color:colors.onSurface}}>Sabitle</Text></FocusButton>
+            <FocusButton disabled={!bulkSelected.size} onPress={()=>void bulkPin(false)} style={[styles.manageBtn,{borderColor:colors.border}]}><Text style={{color:colors.onSurface}}>Çöz</Text></FocusButton>
+            <FocusButton disabled={!bulkSelected.size} onPress={bulkDelete} style={[styles.manageBtn,{borderColor:colors.error}]}><Text style={{color:colors.error}}>Sil</Text></FocusButton>
+          </View>}
           <ScrollView contentContainerStyle={styles.list}>
             {/**
               * v16.4.0 — ONARIM DURUM BANDI
@@ -315,7 +397,7 @@ export default function PlaylistSelect() {
               <FocusButton
                 key={p.id}
                 testID={`playlist-cell-${p.id}`}
-                onPress={() => choose(p.id)}
+                onPress={() => bulkMode ? toggleBulkSelection(p.id) : choose(p.id)}
                 onFocus={cancelAuto}
                 activeOpacity={0.85}
                 focusable
@@ -339,7 +421,8 @@ export default function PlaylistSelect() {
                     : { backgroundColor: typeColor + "10", borderColor: typeColor + "88" },
                 ]}
               >
-                <View style={[styles.iconBox, { backgroundColor: typeColor + "22" }]}>
+                {bulkMode && <Ionicons name={bulkSelected.has(p.id)?"checkbox":"square-outline"} size={23} color={bulkSelected.has(p.id)?colors.brandPrimary:colors.onSurfaceTertiary}/>}
+                <View style={[styles.iconBox, { backgroundColor: typeColor + "22" }]} >
                   <Ionicons name={playlistTypeIcon(p) as any} size={28} color={typeColor} />
                 </View>
                 <View style={{ flex: 1, gap: 2 }}>
@@ -372,15 +455,18 @@ export default function PlaylistSelect() {
                     {(p.vodCount ?? p.vod?.length ?? 0) ? ` • ${p.vodCount ?? p.vod?.length} film` : ""}
                     {(p.seriesCount ?? p.series?.length ?? 0) ? ` • ${p.seriesCount ?? p.series?.length} dizi` : ""}
                   </Text>
+                  <Text style={[styles.sub,{color:colors.onSurfaceTertiary}]} numberOfLines={1}>{`Toplam ${playlistTotalCount(p)} • Kalan gün: ${playlistRemainingDays(p)==null?'Bilinmiyor':playlistRemainingDays(p)}${p.lastRefreshedAt?` • Son güncelleme ${new Date(p.lastRefreshedAt).toLocaleDateString('tr-TR')} ${p.lastRefreshOk===true?'✓':p.lastRefreshOk===false?'✕':''}`:''}`}</Text>
                   {p.serverCodeBinding && (
                     <Text style={[styles.sub, { color: colors.onSurfaceTertiary }]} numberOfLines={1}>
                       Panel: {p.serverCodeBinding.panelName} • Sunucu kodu: {p.serverCodeBinding.code}
                     </Text>
                   )}
                 </View>
+                <FocusButton testID={`playlist-pin-${p.id}`} onPress={()=>void togglePinned(p)} hitSlop={8} style={{padding:6}}><Ionicons name={p.pinned?"pin":"pin-outline"} size={19} color={p.pinned?colors.brandPrimary:colors.onSurfaceTertiary}/></FocusButton>
                 <FocusButton
                   testID={`playlist-refresh-${p.id}`}
                   onPress={() => refreshOne(p)}
+                  onLongPress={() => refreshOneWithCategoryChoice(p)}
                   disabled={!!refreshingId}
                   hitSlop={10}
                   focusable
@@ -497,6 +583,19 @@ export default function PlaylistSelect() {
       </Modal>
     </SafeAreaView>
   );
+}
+
+
+function ReorderPlaylistsModal({visible,playlists,colors,onCancel,onSave}:{visible:boolean;playlists:Playlist[];colors:any;onCancel:()=>void;onSave:(rows:Playlist[])=>void}){
+  const [rows,setRows]=useState<Playlist[]>(playlists);
+  React.useEffect(()=>{if(visible)setRows(playlists)},[visible,playlists]);
+  const move=(from:number,to:number)=>{if(to<0||to>=rows.length||from===to)return;setRows(prev=>{const n=[...prev];const [x]=n.splice(from,1);n.splice(to,0,x);return n})};
+  return <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}><View style={styles.manageOverlay}><View style={[styles.manageModal,{backgroundColor:colors.surface,borderColor:colors.border}]}><Text style={[styles.manageTitle,{color:colors.onSurface}]}>Özel playlist sırası</Text><Text style={{color:colors.onSurfaceSecondary,marginBottom:8}}>Tutma kolunu yukarı/aşağı sürükleyin veya okları kullanın. Kaydedilen sıra otomatik sıralamalara geçseniz de korunur.</Text><ScrollView style={{maxHeight:500}}>{rows.map((pl,index)=><DraggableOrderRow key={pl.id} pl={pl} index={index} count={rows.length} colors={colors} move={move}/>)}</ScrollView><View style={{flexDirection:'row',gap:8,marginTop:12}}><FocusButton onPress={onCancel} style={[styles.closeBtn,{flex:1,borderColor:colors.border}]}><Text style={{color:colors.onSurface}}>İptal</Text></FocusButton><FocusButton onPress={()=>onSave(rows)} style={[styles.closeBtn,{flex:1,borderColor:colors.brandPrimary,backgroundColor:colors.brandPrimary}]}><Text style={{color:colors.onBrandPrimary,fontWeight:'800'}}>Sırayı Kaydet</Text></FocusButton></View></View></View></Modal>;
+}
+function DraggableOrderRow({pl,index,count,colors,move}:{pl:Playlist;index:number;count:number;colors:any;move:(from:number,to:number)=>void}){
+  const dy=useRef(new Animated.Value(0)).current; const startIndex=useRef(index); startIndex.current=index;
+  const pan=useMemo(()=>PanResponder.create({onStartShouldSetPanResponder:()=>true,onMoveShouldSetPanResponder:(_,g)=>Math.abs(g.dy)>4,onPanResponderMove:(_,g)=>dy.setValue(g.dy),onPanResponderRelease:(_,g)=>{const delta=Math.round(g.dy/58);dy.setValue(0);move(startIndex.current,Math.max(0,Math.min(count-1,startIndex.current+delta)))},onPanResponderTerminate:()=>dy.setValue(0)}),[count,move,dy]);
+  return <Animated.View style={{transform:[{translateY:dy}],zIndex:2}}><View style={{minHeight:54,flexDirection:'row',alignItems:'center',gap:8,borderBottomWidth:1,borderBottomColor:colors.border}}><View {...pan.panHandlers} style={{padding:10}}><Ionicons name="reorder-three" size={24} color={colors.brandPrimary}/></View><Text style={{flex:1,color:colors.onSurface,fontWeight:'700'}} numberOfLines={1}>{index+1}. {pl.name}</Text><FocusButton disabled={index===0} onPress={()=>move(index,index-1)} style={{padding:8,opacity:index===0?.3:1}}><Ionicons name="chevron-up" size={20} color={colors.onSurface}/></FocusButton><FocusButton disabled={index===count-1} onPress={()=>move(index,index+1)} style={{padding:8,opacity:index===count-1?.3:1}}><Ionicons name="chevron-down" size={20} color={colors.onSurface}/></FocusButton></View></Animated.View>;
 }
 
 const styles = StyleSheet.create({

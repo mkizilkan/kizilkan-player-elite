@@ -27,7 +27,9 @@ import {
   xtreamLiveStreams, xtreamVod as xtVodLocal, xtreamSeries as xtSeriesLocal,
   detectXtreamFromM3U,
 } from "@/src/utils/iptv";
-import type { Playlist, AccountInfo, ServerCodeBinding } from "@/src/types";
+import type { Playlist, AccountInfo, ServerCodeBinding, PlaylistContentSelection } from "@/src/types";
+import { catalogCategories, applyContentSelection, allContentSelection } from "@/src/utils/contentSelection";
+import { playlistIdentityCanonical } from "@/src/utils/playlistManagement";
 import { FocusButton } from "@/src/components/FocusButton";
 import {
   DEFAULT_CODE_SOURCE, CODE_SOURCE_KEY,
@@ -127,7 +129,42 @@ export default function AddPlaylist() {
 
   const router = useRouter();
   const { colors } = useTheme();
-  const { playlists, addPlaylist, addPreparedPlaylist, enrichPlaylistMedia } = usePlaylists();
+  const { playlists, addPlaylist, addPreparedPlaylist, enrichPlaylistMedia, setActivePlaylist } = usePlaylists();
+
+  // v16.13.6 — Aynı sağlayıcı hesabının yanlışlıkla tekrar eklenmesini görünür kıl.
+  // Parola/token fingerprint'e girmez; canonical kimlik yalnız kaynak + normalize endpoint + kullanıcı/MAC bilgisidir.
+  type DuplicateDecision = { action: "proceed" | "cancel"; target: Playlist };
+  const resolveDuplicateTarget = React.useCallback(async (candidate: Playlist, allowUpdate = true): Promise<DuplicateDecision> => {
+    const identity = playlistIdentityCanonical(candidate);
+    const duplicate = playlists.find(p => p.id !== candidate.id && playlistIdentityCanonical(p) === identity);
+    if (!duplicate) return { action: "proceed", target: candidate };
+    return await new Promise(resolve => {
+      Alert.alert(
+        "Playlist zaten mevcut",
+        `“${duplicate.name}” aynı kaynak hesabını kullanıyor. Mevcut kaydı güncelleyebilir, onu açabilir veya ayrı bir playlist olarak ekleyebilirsiniz.`,
+        [
+          { text: "Vazgeç", style: "cancel", onPress: () => resolve({ action: "cancel", target: candidate }) },
+          { text: "Mevcut olanı aç", onPress: async () => { await setActivePlaylist(duplicate.id); router.replace("/(tabs)"); resolve({ action: "cancel", target: candidate }); } },
+          { text: "Ayrı ekle", onPress: () => resolve({ action: "proceed", target: candidate }) },
+          ...(allowUpdate ? [{ text: "Mevcudu güncelle", onPress: () => resolve({ action: "proceed", target: { ...candidate, id: duplicate.id, createdAt: duplicate.createdAt, manualOrder: duplicate.manualOrder, pinned: duplicate.pinned } }) }] : []),
+        ]
+      );
+    });
+  }, [playlists, router, setActivePlaylist]);
+
+  const commitPlaylist = React.useCallback(async (candidate: Playlist): Promise<boolean> => {
+    const decision = await resolveDuplicateTarget(candidate);
+    if (decision.action === "cancel") return false;
+    await addPlaylist(decision.target);
+    return true;
+  }, [addPlaylist, resolveDuplicateTarget]);
+
+  const commitPreparedPlaylist = React.useCallback(async (candidate: Playlist): Promise<boolean> => {
+    const decision = await resolveDuplicateTarget(candidate, false);
+    if (decision.action === "cancel") return false;
+    await addPreparedPlaylist(decision.target);
+    return true;
+  }, [addPreparedPlaylist, resolveDuplicateTarget]);
   const playlistServerKeysRef = React.useRef<Set<string>>(new Set());
   const directImportLocksRef = React.useRef<Set<string>>(new Set());
   const restoredImportAdoptedRef = React.useRef<Set<string>>(new Set());
@@ -181,6 +218,17 @@ export default function AddPlaylist() {
   const [fileContent, setFileContent] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<string>("");
+  const [chooseCategories, setChooseCategories] = useState(false);
+  const [categoryPicker, setCategoryPicker] = useState<null | { categories:{live:string[];vod:string[];series:string[]}; selection:PlaylistContentSelection }>(null);
+  const categoryResolveRef = React.useRef<((v:PlaylistContentSelection|null)=>void)|null>(null);
+  const requestCategorySelection = React.useCallback((catalog:{channels:any[];vod:any[];series:any[]}) => new Promise<PlaylistContentSelection|null>((resolve) => {
+    const cats=catalogCategories(catalog as any);
+    categoryResolveRef.current=resolve;
+    setCategoryPicker({categories:cats,selection:allContentSelection()});
+  }), []);
+  const finishCategorySelection = React.useCallback((value:PlaylistContentSelection|null) => {
+    const resolve=categoryResolveRef.current; categoryResolveRef.current=null; setCategoryPicker(null); resolve?.(value);
+  }, []);
   const [scanSpeed, setScanSpeed] = useState<ScanSpeed>("balanced");
   const [error, setError] = useState<string | null>(null);
   const nativeScanTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
@@ -734,7 +782,7 @@ export default function AddPlaylist() {
       // v15.2.4 Android: Tek Xtream ekleme de çoklu ekleme ile aynı native
       // foreground importer'ı kullanır. Böylece 50-100 bin içerik JS'e taşınmaz,
       // app arka plana geçse de indirme/normalize/Room transaction devam eder.
-      if (KizilkanNativeCore.available && Platform.OS === "android") {
+      if (KizilkanNativeCore.available && Platform.OS === "android" && !chooseCategories) {
         const jobKey = `direct-${id}`;
         const candidate: BulkResolvedCandidate = {
           key: jobKey, sourceRow: 1, name: displayName?.trim() || name.trim() || "Xtream Codes",
@@ -762,13 +810,13 @@ export default function AddPlaylist() {
           if (!snap.running && !row) throw new Error("Native Xtream işi beklenmedik biçimde sona erdi.");
           await new Promise(resolve => setTimeout(resolve, 350));
         }
-        await addPreparedPlaylist({
+        if (!(await commitPreparedPlaylist({
           id, name: candidate.name, source: "xtream",
           xtreamServer: cred.server, xtreamUsername: cred.username, xtreamPassword: cred.password,
           serverCodeBinding, accountInfo: (completedRow?.userInfo || null) as AccountInfo, serverInfo: completedRow?.serverInfo || null,
           channels: [], vod: [], series: [], channelsCount: Number(completedRow?.channels || 0), vodCount: Number(completedRow?.vod || 0), seriesCount: Number(completedRow?.series || 0),
           createdAt: new Date().toISOString(),
-        });
+        }))) return false;
         await storage.secureRemove(PENDING_BULK_IMPORT_KEY);
         playlistServerKeysRef.current.add(accountKey);
         setProgress("Playlist Room/SQLite üzerinde hazır.");
@@ -786,22 +834,30 @@ export default function AddPlaylist() {
         ].filter(Boolean).join(" · ");
         throw new Error(`Xtream kataloglarından biri alınamadı; eksik/yanlış playlist kaydedilmedi. ${failed}`);
       }
-      const channels = chRes.value;
-      const vod = vodRes.value;
-      const series = serRes.value;
+      let channels = chRes.value;
+      let vod = vodRes.value;
+      let series = serRes.value;
+      let contentSelection: PlaylistContentSelection | null = null;
+      if (chooseCategories) {
+        setProgress("Kategoriler hazır · seçim bekleniyor…");
+        contentSelection = await requestCategorySelection({channels,vod,series});
+        if (!contentSelection) throw new Error("Kategori seçimi iptal edildi; playlist kaydedilmedi.");
+        ({channels,vod,series}=applyContentSelection({channels,vod,series},contentSelection));
+      }
       const playlist: Playlist = {
         id, name: displayName?.trim() || name.trim() || "Xtream Codes", source: "xtream",
         xtreamServer: cred.server, xtreamUsername: cred.username, xtreamPassword: cred.password,
         serverCodeBinding,
         accountInfo: login.user_info as AccountInfo,
         serverInfo: login.server_info || null,
+        contentSelection,
         channels, vod, series,
         createdAt: new Date().toISOString(),
       };
       const total = channels.length + vod.length + series.length;
       if (total === 0) throw new Error("Hiç içerik bulunamadı. Kaynağı kontrol edin.");
       setProgress(`Cihaza kaydediliyor...\n${channels.length} kanal · ${vod.length} film · ${series.length} dizi`);
-      await addPlaylist(playlist);
+      if (!(await commitPlaylist(playlist))) return false;
       setProgress("Playlist hazır. +18 filtresi arka planda hazırlanıyor...");
       playlistServerKeysRef.current.add(`${cred.username}\u0000${normalizedServer}`);
       if (navigateAfter) router.replace("/(tabs)");
@@ -908,13 +964,13 @@ export default function AddPlaylist() {
             if (row.state !== "completed" || !row.playlistId || restoredImportAdoptedRef.current.has(String(row.playlistId))) continue;
             if (playlists.some(pl => pl.id === String(row.playlistId))) { restoredImportAdoptedRef.current.add(String(row.playlistId)); continue; }
             const c = byKey.get(String(row.jobKey || "")); if (!c) continue;
-            await addPreparedPlaylist({
+            if (!(await commitPreparedPlaylist({
               id:String(row.playlistId), name:String(row.displayName||c.name), source:"xtream",
               xtreamServer:c.server, xtreamUsername:c.username, xtreamPassword:c.password,
               serverCodeBinding:c.direct ? undefined : makeBinding(c.code,c.panelName,c.server,c.validatedHosts),
               accountInfo:(row.userInfo||c.login?.user_info||null) as AccountInfo, serverInfo:row.serverInfo||c.login?.server_info||null,
               channels:[], vod:[], series:[], channelsCount:Number(row.channels||0), vodCount:Number(row.vod||0), seriesCount:Number(row.series||0), createdAt:new Date().toISOString(),
-            });
+            }))) return false;
             restoredImportAdoptedRef.current.add(String(row.playlistId));
           }
         }
@@ -1227,7 +1283,7 @@ export default function AddPlaylist() {
     // v15.2.2-RC1: Android'de katalog indirme + normalize + dosya + Room index
     // tamamen foreground native service'te çalışır. JS arka plana alınsa bile iş
     // devam eder; UI geri geldiğinde kalıcı snapshot'tan kaldığı durumu okur.
-    if (Platform.OS === "android" && KizilkanNativeCore.available) {
+    if (Platform.OS === "android" && KizilkanNativeCore.available && !chooseCategories) {
       await storage.secureSet(PENDING_BULK_IMPORT_KEY, JSON.stringify(chosen));
       bulkImportOwnedByScreenRef.current = true;
       const jobs = chosen.map((c) => ({
@@ -1403,56 +1459,55 @@ export default function AddPlaylist() {
         if (playlists.some(pl => pl.id === id || (pl.m3uUrl && canonicalUrlIdentity(pl.m3uUrl) === canonicalM3u))) {
           throw new Error("Bu M3U kaynağı zaten ekli.");
         }
-        if (Platform.OS === "android" && KizilkanNativeCore.available) {
+        if (Platform.OS === "android" && KizilkanNativeCore.available && !chooseCategories) {
           setProgress("M3U Native Core ile indiriliyor ve Room'a indeksleniyor...");
           const summary = await KizilkanNativeCore.fetchAndImportM3u(id, m3uUrl.trim());
           const total = Number(summary?.channels || 0) + Number(summary?.vod || 0) + Number(summary?.series || 0);
           if (!summary?.roomIndexed || total === 0) throw new Error("M3U kaynağında içerik bulunamadı.");
-          await addPreparedPlaylist({
+          if (!(await commitPreparedPlaylist({
             id, name: name.trim() || "M3U Listesi", source: "m3u_url", m3uUrl: m3uUrl.trim(),
             channels: [], vod: [], series: [], channelsCount: Number(summary.channels || 0),
             vodCount: Number(summary.vod || 0), seriesCount: Number(summary.series || 0),
             createdAt: new Date().toISOString(),
-          });
+          }))) return false;
           router.replace("/(tabs)");
           return;
         }
         setProgress("Kanallar yükleniyor (legacy parser)...");
         const res = await fetchAndParseM3U(m3uUrl.trim());
+        let m3uCatalog={channels:res.channels,vod:res.vod || [],series:res.series || []};
+        let contentSelection:PlaylistContentSelection|null=null;
+        if(chooseCategories){contentSelection=await requestCategorySelection(m3uCatalog);if(!contentSelection)throw new Error("Kategori seçimi iptal edildi; playlist kaydedilmedi.");m3uCatalog=applyContentSelection(m3uCatalog,contentSelection);}
         playlist = {
-          id, name: name.trim() || "M3U Listesi", source: "m3u_url",
-          m3uUrl: m3uUrl.trim(),
-          channels: res.channels,
-          vod: res.vod,
-          series: res.series,
-          createdAt: new Date().toISOString(),
+          id, name: name.trim() || "M3U Listesi", source: "m3u_url", m3uUrl: m3uUrl.trim(), contentSelection,
+          channels:m3uCatalog.channels, vod:m3uCatalog.vod, series:m3uCatalog.series, createdAt:new Date().toISOString(),
         };
       } else if (method === "m3u_file") {
         if (!fileContent) throw new Error("Lütfen bir M3U dosyası seçin");
         id = stablePlaylistId("file", fileContent);
         if (playlists.some(pl => pl.id === id)) throw new Error("Bu M3U dosyası zaten ekli.");
-        if (Platform.OS === "android" && KizilkanNativeCore.available) {
+        if (Platform.OS === "android" && KizilkanNativeCore.available && !chooseCategories) {
           setProgress("M3U dosyası Native Core ile ayrıştırılıyor ve Room'a indeksleniyor...");
           const summary = await KizilkanNativeCore.importM3uText(id, fileContent);
           const total = Number(summary?.channels || 0) + Number(summary?.vod || 0) + Number(summary?.series || 0);
           if (!summary?.roomIndexed || total === 0) throw new Error("M3U dosyasında içerik bulunamadı.");
-          await addPreparedPlaylist({
+          if (!(await commitPreparedPlaylist({
             id, name: name.trim() || fileName || "M3U Dosyası", source: "m3u_file",
             channels: [], vod: [], series: [], channelsCount: Number(summary.channels || 0),
             vodCount: Number(summary.vod || 0), seriesCount: Number(summary.series || 0),
             createdAt: new Date().toISOString(),
-          });
+          }))) return false;
           router.replace("/(tabs)");
           return;
         }
         setProgress("Kanallar ayrıştırılıyor (legacy parser)...");
         const res = parseM3U(fileContent);
+        let fileCatalog={channels:res.channels,vod:res.vod || [],series:res.series || []};
+        let contentSelection:PlaylistContentSelection|null=null;
+        if(chooseCategories){contentSelection=await requestCategorySelection(fileCatalog);if(!contentSelection)throw new Error("Kategori seçimi iptal edildi; playlist kaydedilmedi.");fileCatalog=applyContentSelection(fileCatalog,contentSelection);}
         playlist = {
-          id, name: name.trim() || fileName || "M3U Dosyası", source: "m3u_file",
-          channels: res.channels,
-          vod: res.vod,
-          series: res.series,
-          createdAt: new Date().toISOString(),
+          id, name: name.trim() || fileName || "M3U Dosyası", source: "m3u_file", contentSelection,
+          channels:fileCatalog.channels, vod:fileCatalog.vod, series:fileCatalog.series, createdAt:new Date().toISOString(),
         };
       } else {
         /**
@@ -1488,8 +1543,7 @@ export default function AddPlaylist() {
         };
 
         setProgress("MAG254 profiliyle portala bağlanılıyor...");
-        // v16.13.0: bu bir KULLANICI eylemi — ban-koruma soğuması aşılabilir.
-        const { session, profile: prof } = await stLogin(cred, { userInitiated: true });
+        const { session, profile: prof } = await stLogin(cred);
 
         setProgress("Canlı TV kataloğu alınıyor...");
         let catalog;
@@ -1512,7 +1566,7 @@ export default function AddPlaylist() {
            * film/dizi sekmeleri arkadan dolar.
            */
           catalog = await stalkerCatalog(cred, session, {
-            liveOnly: true,
+            liveOnly: !chooseCategories,
             onProgress: (progress) => setProgress(progress.message),
           });
         }
@@ -1530,20 +1584,28 @@ export default function AddPlaylist() {
           );
         }
         const profile = prof || {};
+        let magCatalog={channels:catalog.channels,vod:catalog.vod || [],series:catalog.series || []};
+        let contentSelection:PlaylistContentSelection|null=null;
+        if (chooseCategories) {
+          contentSelection=await requestCategorySelection(magCatalog);
+          if(!contentSelection) throw new Error("Kategori seçimi iptal edildi; playlist kaydedilmedi.");
+          magCatalog=applyContentSelection(magCatalog,contentSelection);
+        }
         playlist = {
           id, name: name.trim() || "MAG Portal", source: "stalker",
           stalkerPortal: stPortal.trim(), stalkerMac: stMac.trim().toUpperCase(),
           stalkerSerial: stSerial.trim() || undefined,
           accountInfo: normalizeStalkerAccountInfo(profile),
+          contentSelection,
           // v16.6.0: canlı hemen eklenir; film/dizi arka planda (enrichment)
           // doldurulur. catalog.vod/series varsa yine de kullanılır.
-          channels: catalog.channels, vod: catalog.vod || [], series: catalog.series || [],
+          channels: magCatalog.channels, vod: magCatalog.vod, series: magCatalog.series,
           createdAt: new Date().toISOString(),
         };
 
         // ENRICHMENT addPlaylist/Room verify BAŞARISINDAN ÖNCE başlatılmaz.
         // Böylece Grok yamasındaki update-before-add race condition oluşmaz.
-        magEnrichment = {
+        magEnrichment = chooseCategories ? null : {
           cred,
           session,
           run: async () => {
@@ -1585,7 +1647,7 @@ export default function AddPlaylist() {
         });
       }
       const commitStartedAt = Date.now();
-      await addPlaylist(playlist);
+      if (!(await commitPlaylist(playlist))) return false;
       if (method === "stalker") {
         void recordDiagnostic("catalog", "STALKER_ADD_COMMIT_OK", {
           playlistId: id,
@@ -2270,6 +2332,18 @@ export default function AddPlaylist() {
             </View>
           )}
 
+          {method !== "code" && method !== "bulk" && (
+            <View style={[styles.selectionCard,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
+              <View style={{flex:1}}>
+                <Text style={[styles.selectionTitle,{color:colors.onSurface}]}>İçerik kategorilerini seç</Text>
+                <Text style={[styles.selectionHint,{color:colors.onSurfaceSecondary}]}>İsteğe bağlı. Açılırsa gerçek kategori/gruplardan seçim yapılır; yalnız seçilen içerik kaydedilir. Tercih sonraki yenilemelerde korunur.</Text>
+              </View>
+              <FocusButton testID="category-selection-toggle" onPress={()=>setChooseCategories(v=>!v)} style={[styles.toggleChip,{borderColor:chooseCategories?colors.brandPrimary:colors.border}]}>
+                <Text style={{color:chooseCategories?colors.brandPrimary:colors.onSurfaceSecondary,fontWeight:"700"}}>{chooseCategories?"AÇIK":"KAPALI"}</Text>
+              </FocusButton>
+            </View>
+          )}
+
           <View style={[styles.footer, { backgroundColor: colors.surface, borderTopColor: colors.border, marginTop: SPACING.lg, marginBottom: keyboardHeight > 0 ? SPACING.sm : SPACING.lg }]}>
             <FocusButton testID="submit-playlist-btn" onPress={submit} disabled={loading} activeOpacity={0.85} style={[styles.cta, { backgroundColor: colors.brandPrimary, opacity: loading ? 0.7 : 1 }]}>
               {loading ? <ActivityIndicator color={colors.onBrandPrimary} /> : <>
@@ -2639,11 +2713,36 @@ export default function AddPlaylist() {
           </Text>
         </View>
       </Modal>
+      <Modal visible={!!categoryPicker} transparent animationType="fade" onRequestClose={()=>finishCategorySelection(null)}>
+        <View style={styles.categoryOverlay}><View style={[styles.categoryModal,{backgroundColor:colors.surface}]}>
+          <Text style={[styles.categoryModalTitle,{color:colors.onSurface}]}>İçerik / Kategori Seçimi</Text>
+          <Text style={[styles.selectionHint,{color:colors.onSurfaceSecondary}]}>Varsayılan: tümü. Bir başlığı kapatabilir veya alt kategorileri tek tek değiştirebilirsiniz.</Text>
+          <ScrollView style={{maxHeight:460}}>
+            {categoryPicker && ([['live','Canlı TV'],['vod','Film'],['series','Dizi']] as const).map(([kind,label])=>{
+              const enabled=categoryPicker.selection[kind]; const key=(kind+'Categories') as 'liveCategories'|'vodCategories'|'seriesCategories';
+              const selected=categoryPicker.selection[key]; const cats=categoryPicker.categories[kind];
+              return <View key={kind} style={styles.categorySection}>
+                <FocusButton onPress={()=>setCategoryPicker(p=>p?{...p,selection:{...p.selection,[kind]:!enabled}}:p)} style={styles.categoryHeader}>
+                  <Text style={[styles.selectionTitle,{color:enabled?colors.brandPrimary:colors.onSurfaceSecondary}]}>{enabled?'☑':'☐'} {label} ({cats.length})</Text>
+                </FocusButton>
+                {enabled && cats.map(cat=>{const on=selected===null||selected.includes(cat); return <FocusButton key={kind+cat} onPress={()=>setCategoryPicker(p=>{if(!p)return p; const cur=p.selection[key]===null?[...p.categories[kind]]:[...(p.selection[key]||[])]; const next=cur.includes(cat)?cur.filter(x=>x!==cat):[...cur,cat]; return {...p,selection:{...p.selection,[key]:next,updatedAt:new Date().toISOString()}}})} style={styles.categoryRow}><Text style={{color:on?colors.onSurface:colors.onSurfaceSecondary}}>{on?'☑':'☐'} {cat}</Text></FocusButton>})}
+              </View>;
+            })}
+          </ScrollView>
+          <View style={styles.categoryActions}>
+            <FocusButton onPress={()=>finishCategorySelection(null)} style={[styles.categoryAction,{borderColor:colors.border}]}><Text style={{color:colors.onSurface}}>İptal</Text></FocusButton>
+            <FocusButton onPress={()=>categoryPicker&&finishCategorySelection({...categoryPicker.selection,updatedAt:new Date().toISOString()})} style={[styles.categoryAction,{backgroundColor:colors.brandPrimary}]}><Text style={{color:'#fff',fontWeight:'800'}}>Seçimi Uygula</Text></FocusButton>
+          </View>
+        </View></View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  selectionCard:{flexDirection:"row",alignItems:"center",gap:12,borderWidth:1,borderRadius:12,padding:14,marginTop:16},
+  selectionTitle:{fontSize:15,fontWeight:"800"}, selectionHint:{fontSize:12,lineHeight:17,marginTop:4}, toggleChip:{borderWidth:1,borderRadius:10,paddingHorizontal:12,paddingVertical:9},
+  categoryOverlay:{flex:1,backgroundColor:"rgba(0,0,0,0.72)",alignItems:"center",justifyContent:"center",padding:18}, categoryModal:{width:"100%",maxWidth:680,borderRadius:16,padding:18}, categoryModalTitle:{fontSize:20,fontWeight:"900",marginBottom:4}, categorySection:{marginTop:14}, categoryHeader:{paddingVertical:8}, categoryRow:{paddingVertical:7,paddingHorizontal:10}, categoryActions:{flexDirection:"row",justifyContent:"flex-end",gap:10,marginTop:16}, categoryAction:{borderWidth:1,borderRadius:10,paddingHorizontal:16,paddingVertical:11},
   safe: { flex: 1 },
   header: {
     flexDirection: "row",

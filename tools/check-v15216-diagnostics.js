@@ -15,7 +15,7 @@ const forbid = (file, text, label) => {
   const p = path.join(root, file); if (!fs.existsSync(p)) return;
   if (fs.readFileSync(p,'utf8').includes(text)) { console.log(`HATA — ${label}: yasak '${text}'`); bad++; }
 };
-{ const d=fs.readFileSync(path.join(root,'src/utils/diagnostics.ts'),'utf8'); if(!/KIZILKAN_(?:DIAGNOSTICS_V1|BLACK_BOX_V2|FLIGHT_RECORDER_V3|FLIGHT_RECORDER_V4|FLIGHT_RECORDER_V5)/.test(d)){ console.log('HATA — kalıcı tanılama raporu formatı yok'); bad++; } }
+{ const d=fs.readFileSync(path.join(root,'src/utils/diagnostics.ts'),'utf8'); if(!/KIZILKAN_(?:DIAGNOSTICS_V1|BLACK_BOX_V2|FLIGHT_RECORDER_V3|FLIGHT_RECORDER_V4|FLIGHT_RECORDER_V5|FLIGHT_RECORDER_V6)/.test(d)){ console.log('HATA — kalıcı tanılama raporu formatı yok'); bad++; } }
 need('src/utils/diagnostics.ts', 'SENSITIVE_KEY', 'tanılama gizli alan redaksiyonu');
 { const d=fs.readFileSync(path.join(root,'src/utils/diagnostics.ts'),'utf8'); const m=d.match(/MAX_EVENTS\s*=\s*(\d+)/); if(!m || Number(m[1]) < 400){ console.log(`HATA — bounded ring buffer kapasitesi yetersiz: ${m?.[1] || 'yok'}`); bad++; } }
 need('src/player/PlayerHost.tsx', 'CHANNEL_SELECTED', 'player seçim başlangıç telemetrisi');

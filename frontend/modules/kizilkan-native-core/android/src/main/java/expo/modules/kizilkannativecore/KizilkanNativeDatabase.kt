@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
   entities = [PlaylistSnapshotEntity::class, MediaItemEntity::class, EpgProgramEntity::class, DiagnosticEventEntity::class],
-  version = 3,
+  version = 4,
   exportSchema = false,
 )
 abstract class KizilkanNativeDatabase : RoomDatabase() {
@@ -40,6 +40,20 @@ abstract class KizilkanNativeDatabase : RoomDatabase() {
       }
     }
 
+
+    private val MIGRATION_3_4 = object : Migration(3, 4) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `diagnostic_events` ADD COLUMN `traceId` TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE `diagnostic_events` ADD COLUMN `operationId` TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE `diagnostic_events` ADD COLUMN `stage` TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE `diagnostic_events` ADD COLUMN `durationMs` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `diagnostic_events` ADD COLUMN `outcome` TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE `diagnostic_events` ADD COLUMN `errorClass` TEXT NOT NULL DEFAULT ''")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_diagnostic_events_traceId_atEpochMs` ON `diagnostic_events` (`traceId`, `atEpochMs`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_diagnostic_events_operationId_atEpochMs` ON `diagnostic_events` (`operationId`, `atEpochMs`)")
+      }
+    }
+
     fun get(context: Context): KizilkanNativeDatabase = instance ?: synchronized(this) {
       instance ?: Room.databaseBuilder(
         context.applicationContext,
@@ -48,7 +62,7 @@ abstract class KizilkanNativeDatabase : RoomDatabase() {
       )
         // Okuma/yazma paralelligi ve UI disi worker sorgulari icin WAL.
         .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
-        .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
         .build()
         .also { instance = it }
     }

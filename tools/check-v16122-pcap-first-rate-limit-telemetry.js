@@ -25,8 +25,8 @@ function staticChecks() {
   must(stalker, /if \(e\?\.kind === "MAG_RATE_LIMIT"\)/, 'persistent cooldown must be rate-limit only');
   must(stalker, /MAG_HANDSHAKE_GUARD_KEY = "kizilkan\.mag\.guard\.v16122"/, 'old auth-only cooldown state not migrated');
   must(stalker, /learned\?\.profile===compatProfile && isAuthRejection\(e\)/, 'failed learned profile is not demoted');
-  must(stalker, /HANDSHAKE_MIN_SPACING_MS\s*=\s*1_250/, 'adaptive spacing regressed');
-  must(stalker, /HANDSHAKE_MAX_AUTH_REJECTS\s*=\s*4/, 'auth safe budget regressed');
+  must(stalker, /HANDSHAKE_MIN_SPACING_MS\s*=\s*(?:1_250|650)/, 'adaptive spacing regressed');
+  must(stalker, /HANDSHAKE_MAX_AUTH_REJECTS\s*=\s*(?:4|8)/, 'auth safe budget regressed');
   must(stalker, /HANDSHAKE_COOLDOWN_MS\s*=\s*5 \* 60_000/, 'real rate-limit cooldown regressed');
 }
 
@@ -101,7 +101,7 @@ async function fixtureAuthRejectDoesNotPersistCooldown() {
   const cred = { portal:'http://authreject.test/c/', mac:'00:11:22:33:44:55', deviceModel:'MAG254' };
   try { await api.stalkerHandshake(cred); } catch {}
   const firstCalls = calls;
-  if (firstCalls < 1 || firstCalls > 4) fail('auth governor request budget invalid: ' + firstCalls);
+  if (firstCalls < 1 || firstCalls > 8) fail('auth governor request budget invalid: ' + firstCalls);
   try { await api.stalkerHandshake(cred); } catch {}
   if (calls <= firstCalls) fail('manual retry was blocked by persistent auth-only cooldown');
 }

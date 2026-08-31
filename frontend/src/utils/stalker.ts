@@ -1,7 +1,7 @@
 /**
  * KIZILKAN PLAYER — Stalker / MAG Portal (CİHAZ İÇİ)
  * Dosya  : frontend/src/utils/stalker.ts
- * Sürüm  : v16.12.1 (PCAP MAG320 + stronger ban-safe interoperability)
+ * Sürüm  : v16.12.2 (PCAP-first + learned migration + rate-limit-aware interoperability)
  *
  * ===========================================================================
  * MAC adresiyle çalışan Stalker/MAG portallarına DOĞRUDAN CİHAZDAN bağlanır.
@@ -281,8 +281,14 @@ function preferredCompatProfiles(cred: StalkerCreds, learned?: LearnedMagCompat 
   const ordered: MagCompatProfile[] = cred.deviceModel === "MAG250"
     ? ["pcap320-minimal","wire250","mag250-raw","mag250-encoded","golden","mag254-raw","mag254-encoded","fulldevice","fulldevice-macid"]
     : ["pcap320-minimal","mag254-raw","mag254-encoded","wire250","golden","mag250-raw","mag250-encoded","fulldevice","fulldevice-macid"];
-  if (learned?.profile && ordered.includes(learned.profile)) {
-    return [learned.profile, ...ordered.filter(x => x !== learned.profile)];
+  /**
+   * v16.12.2 — PCAP-first kesin öncelik.
+   * v16.12.1 cihaz logunda eski learned=golden kaydı MAG320 PCAP profilinin
+   * önüne geçti ve temiz ilk handshake bozuldu. Artık kanıtlı minimal MAG320
+   * HER ZAMAN ilk profildir; learned profil (farklıysa) ikinci sırada korunur.
+   */
+  if (learned?.profile && learned.profile !== "pcap320-minimal" && ordered.includes(learned.profile)) {
+    return ["pcap320-minimal", learned.profile, ...ordered.filter(x => x !== "pcap320-minimal" && x !== learned.profile)];
   }
   return ordered;
 }
@@ -483,22 +489,12 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
      * Host/Connection fetch/OkHttp tarafından yönetilir; uygulama yalnız
      * protokol açısından anlamlı ve PCAP'ta gözlenen başlıkları üretir.
      */
-    /**
-     * v16.13.0 — BAŞLIK SIRASI DA PCAP İLE AYNI.
-     * Cihazdan alınan çalışan istekte sıra şuydu:
-     *     User-Agent -> Cookie -> Referer -> X-User-Agent -> Accept
-     * Bizde Accept ikinci, Cookie sonuncuydu. JavaScript nesnelerinde anahtar
-     * ekleme sırası korunur ve fetch başlıkları bu sırayla yazar; ham sorgu
-     * dizesi gibi başlık sırası da bazı anti-korsan katmanlarında imza
-     * bileşenidir. Elimizde çalışan istek varken sırayı da birebir kopyalıyoruz.
-     * (Host/Connection/Accept-Encoding'i platform ekler.)
-     */
     const p: Record<string, string> = {
       "User-Agent": MAG320_UA,
-      Cookie: `mac=${encodedMac}; stb_lang=en; timezone=Europe%2FParis;`,
+      Accept: "application/json",
       Referer: baseOf(cred.portal) + "/c/",
       "X-User-Agent": "Model: MAG320; Link: Ethernet",
-      Accept: "application/json",
+      Cookie: `mac=${encodedMac}; stb_lang=en; timezone=Europe%2FParis;`,
       "Accept-Encoding": "gzip",
     };
     if (token) p.Authorization = `Bearer ${token}`;
@@ -778,17 +774,7 @@ function endpointPath(endpoint:string):string { try{return new URL(endpoint).pat
  */
 type HandshakeParamVariant = {label:string; params:Record<string,string>; post?:boolean; noJs?:boolean};
 const HANDSHAKE_PARAM_VARIANTS: HandshakeParamVariant[] = [
-  /**
-   * v16.13.0 — PARAMETRE SIRASI PCAP'E GÖRE DÜZELTİLDİ.
-   * Cihazda alınan ÇALIŞAN istek (IPTV Loader, aynı portal ve MAC):
-   *     GET /portal.php?action=handshake&type=stb
-   * Bizde sıra terstİ (type önce). URLSearchParams anahtarları verildiği
-   * sırayla yazdığı için ham sorgu dizesi farklı oluyordu. Bazı Ministra
-   * kurulumlarının anti-korsan katmanı ham sorgu dizesini imza olarak
-   * doğruluyor; elimizde çalışan istek varken birebir kopyalamamak için
-   * sebep yok.
-   */
-  { label: "pcap-order",           params: { action:"handshake", type:"stb" }, noJs: true },
+  // v16.11.0: EN BAŞTA gerçek MAG paket kaydının birebir biçimi — JsHttpRequest YOK.
   { label: "wire-nojs",            params: { type:"stb", action:"handshake" }, noJs: true },
   { label: "wire-nojs-token",      params: { type:"stb", action:"handshake", token:"" }, noJs: true },
   { label: "token-empty-prehash0", params: { type:"stb", action:"handshake", token:"", prehash:"0" } },
@@ -807,11 +793,11 @@ type HandshakeAttemptGuard = {
   rejectionFingerprints:Map<string,number>;
 };
 
-const HANDSHAKE_MAX_NETWORK_ATTEMPTS = 8;
-const HANDSHAKE_MAX_AUTH_REJECTS = 4;
-const HANDSHAKE_MIN_SPACING_MS = 1_250;
+const HANDSHAKE_MAX_NETWORK_ATTEMPTS = 12; // v16.13.5: bounded fallback genişletildi; sonsuz döngü yok
+const HANDSHAKE_MAX_AUTH_REJECTS = 8; // v16.13.5: AUTH_REJECT kalıcı/erken self-ban değildir
+const HANDSHAKE_MIN_SPACING_MS = 650; // v16.13.5: portal 429 vermiyorsa gereksiz bekleme azaltıldı
 const HANDSHAKE_COOLDOWN_MS = 5 * 60_000;
-const MAG_HANDSHAKE_GUARD_KEY = "kizilkan.mag.guard.v16121";
+const MAG_HANDSHAKE_GUARD_KEY = "kizilkan.mag.guard.v16122"; // v16.12.2: eski auth-only cooldown state yeni sürümü kilitlemesin.
 const handshakeInFlight = new Map<string, Promise<StalkerSession>>();
 const handshakeCooldownMemory = new Map<string, number>();
 
@@ -849,10 +835,16 @@ async function clearHandshakeCooldown(key:string): Promise<void> {
     if (parsed?.[key]) { delete parsed[key]; await storage.setItem(MAG_HANDSHAKE_GUARD_KEY,JSON.stringify(parsed)); }
   } catch {}
 }
-function isAuthRejection(e:any): boolean {
+function isRateLimitRejection(e:any): boolean {
   const status=Number(e?.status||0);
   const text=String(e?.snippet||e?.message||"").toLowerCase();
-  return status===401 || status===403 || status===429 || status===512 || /authorization failed|not authorized|too many requests|rate.?limit/.test(text);
+  return status===429 || /too many requests|rate.?limit|retry[- ]?after|request limit/.test(text);
+}
+function isAuthRejection(e:any): boolean {
+  if (isRateLimitRejection(e)) return false;
+  const status=Number(e?.status||0);
+  const text=String(e?.snippet||e?.message||"").toLowerCase();
+  return status===401 || status===403 || status===512 || /authorization failed|not authorized|unauthori[sz]ed/.test(text);
 }
 function rejectionFingerprint(endpoint:string, e:any): string {
   return `${endpointPath(endpoint)}|${Number(e?.status||0)}|${sanitizeBodySnippet(String(e?.snippet||e?.message||"")).toLowerCase()}`.slice(0,240);
@@ -863,37 +855,50 @@ async function paceHandshakeAttempt(guard:HandshakeAttemptGuard): Promise<void> 
     err.kind="MAG_SAFE_BUDGET"; throw err;
   }
   if (guard.authRejects >= HANDSHAKE_MAX_AUTH_REJECTS) {
-    const err:any=new Error("Portal ardışık yetkilendirme reddi verdi; ban/rate-limit riskini azaltmak için denemeler durduruldu.");
+    const err:any=new Error("Portal ardışık yetkilendirme reddi verdi; bu işlem için kontrollü uyumluluk deneme sınırına ulaşıldı. Yeni manuel deneme engellenmez.");
     err.kind="MAG_AUTH_GOVERNOR"; throw err;
   }
   // v16.12.1 — sabit 450 ms yerine auth reddi arttıkça kademeli bekleme.
   // İlk isteği geciktirme; sonraki isteklerde en az 1.25 sn ve her auth reddinde
   // +1.25 sn ek bekleme uygula. Böylece aynı MAC/portal birkaç saniyede
   // bombardımana tutulmaz; yine de meşru fallback yolları tamamen kapanmaz.
-  const adaptiveSpacing = HANDSHAKE_MIN_SPACING_MS * Math.max(1, guard.authRejects + 1);
+  const adaptiveSpacing = HANDSHAKE_MIN_SPACING_MS * Math.min(3, Math.max(1, Math.ceil((guard.authRejects + 1) / 2)));
   const wait=Math.max(0,adaptiveSpacing-(Date.now()-guard.lastAttemptAt));
   if (wait>0) await new Promise<void>(resolve=>setTimeout(resolve,wait));
   guard.lastAttemptAt=Date.now(); guard.networkAttempts+=1;
 }
 
 function variantsForProfile(profile:MagCompatProfile, learnedVariant?:string): HandshakeParamVariant[] {
-  /**
-   * v16.13.0 — MAG320 profili PCAP sırasını kullanır.
-   * v16.12.1'de tek varyanta kilitliydi ve o varyant "type=stb&action=handshake"
-   * sırasındaydı; cihazda ÇALIŞAN istek ise "action=handshake&type=stb".
-   * Artık önce PCAP sırası, olmazsa eski sıra denenir (iki deneme, ban riski
-   * ihmal edilebilir).
-   */
-  if (profile === "pcap320-minimal") {
-    const pcapFirst = HANDSHAKE_PARAM_VARIANTS.filter(v => v.label === "pcap-order");
-    const legacy = HANDSHAKE_PARAM_VARIANTS.filter(v => v.label === "wire-nojs");
-    return [...pcapFirst, ...legacy];
-  }
+  if (profile === "pcap320-minimal") return [HANDSHAKE_PARAM_VARIANTS[0]];
   const ordered=learnedVariant
     ? [...HANDSHAKE_PARAM_VARIANTS.filter(v=>v.label===learnedVariant), ...HANDSHAKE_PARAM_VARIANTS.filter(v=>v.label!==learnedVariant)]
     : HANDSHAKE_PARAM_VARIANTS;
   // Eski varyantlar korunur; global güvenli bütçe hangilerinin gerçekten ağa çıkacağını sınırlar.
   return ordered;
+}
+
+function handshakeRequestFingerprint(targetUrl:string, hdrs:Record<string,string>, compatProfile:MagCompatProfile, variant:HandshakeParamVariant) {
+  let queryKeys:string[]=[];
+  try { queryKeys=Array.from(new URL(targetUrl).searchParams.keys()).sort(); } catch {}
+  const cookie=String(hdrs.Cookie||"");
+  return {
+    compatProfile, variant:variant.label,
+    method: variant.post ? "POST" : "GET",
+    jsHttpPresent: queryKeys.includes("JsHttpRequest"),
+    tokenQueryPresent: queryKeys.includes("token"),
+    prehashPresent: queryKeys.includes("prehash"),
+    queryKeys,
+    userAgentProfile: hdrs["User-Agent"]===MAG320_UA ? "MAG320-PCAP" : hdrs["User-Agent"]===MAG250_UA ? "MAG250" : hdrs["User-Agent"]===MAG254_UA ? "MAG254" : "other",
+    accept: hdrs.Accept||"",
+    acceptEncoding: hdrs["Accept-Encoding"]||"",
+    refererPath: (()=>{ try { return new URL(hdrs.Referer||"").pathname; } catch { return ""; } })(),
+    xUserAgentModel: /Model:\s*([^;]+)/i.exec(hdrs["X-User-Agent"]||"")?.[1]||"",
+    cookieMacShape: /mac=[^;]*%3A/i.test(cookie) ? "encoded" : /mac=[^;]*:/i.test(cookie) ? "raw" : "none",
+    cookieHasStbLang: /(?:^|;\s*)stb_lang=/i.test(cookie),
+    cookieTimezone: /(?:^|;\s*)timezone=([^;]+)/i.exec(cookie)?.[1]||"",
+    cookieHasDeviceId: /(?:^|;\s*)device_id=/i.test(cookie),
+    headerNames: Object.keys(hdrs).sort(),
+  };
 }
 
 async function handshakeAttempt(
@@ -913,8 +918,10 @@ async function handshakeAttempt(
         hdrSessionShape: hdrs.Cookie ? (hdrs.Cookie.includes("device_id") ? "fulldevice" : (hdrs.Cookie.includes("%3A") ? "encoded" : "raw")) : "none",
         hdrCount: Object.keys(hdrs).length,
       });
+      const targetUrl=buildUrl(endpoint,variant.params,!variant.noJs);
+      void recordDiagnostic("mag","STALKER_HANDSHAKE_REQUEST_FINGERPRINT",handshakeRequestFingerprint(targetUrl,hdrs,compatProfile,variant));
       const data=await req(
-        buildUrl(endpoint,variant.params,!variant.noJs),
+        targetUrl,
         hdrs,
         {timeoutMs:20000, postForm: !!variant.post} as any,
       );
@@ -925,8 +932,13 @@ async function handshakeAttempt(
       }
     } catch (e:any) {
       lastErr=e;
-      if (e?.kind === "MAG_SAFE_BUDGET" || e?.kind === "MAG_AUTH_GOVERNOR") throw e;
+      if (e?.kind === "MAG_SAFE_BUDGET" || e?.kind === "MAG_AUTH_GOVERNOR" || e?.kind === "MAG_RATE_LIMIT") throw e;
       const status=Number(e?.status||0);
+      if (isRateLimitRejection(e)) {
+        e.kind="MAG_RATE_LIMIT";
+        void recordDiagnostic("mag","STALKER_HANDSHAKE_RATE_LIMIT",{endpoint,compatProfile,variant:variant.label,status,message:String(e?.snippet||e?.message||"").slice(0,160)});
+        throw e;
+      }
       if (isAuthRejection(e)) {
         const fp=rejectionFingerprint(endpoint,e);
         const seen=(guard.rejectionFingerprints.get(fp)||0)+1;
@@ -963,8 +975,10 @@ async function stalkerHandshakeInternal(cred: StalkerCreds): Promise<StalkerSess
     const all=portalCandidates(cred.portal);
     const plan:string[]=[];
     const push=(x?:string)=>{if(x && !plan.includes(x)) plan.push(x)};
-    push(learned?.endpoint);
+    // v16.12.2: temiz ilk deneme kullanıcının/primer portal endpoint'inde başlar.
+    // Eski learned endpoint korunur fakat primer endpoint'in önüne geçemez.
     push(all[0]);
+    push(learned?.endpoint);
     /**
      * v16.8.0: Plan 3 uç noktayla sınırlıydı; doğru uç nokta 4-5. sırada
      * kalırsa HİÇ denenmiyordu (cihaz kaydında tam olarak bu oldu). Sınır 6'ya
@@ -973,7 +987,7 @@ async function stalkerHandshakeInternal(cred: StalkerCreds): Promise<StalkerSess
     for (const x of all) { if (plan.length>=6) break; push(x); }
     const profiles=preferredCompatProfiles(cred,learned);
     void recordDiagnostic("catalog","STALKER_HANDSHAKE_PLAN",{
-      strategy:learned?"learned-first-bounded":"mag254-first-bounded",candidateCount:plan.length,
+      strategy:learned?"pcap-first-learned-second":"pcap-first-bounded",candidateCount:plan.length,
       firstPath:endpointPath(plan[0]||""),preferredProfile:profiles[0],defaultModel:cred.deviceModel||"MAG254",
     });
 
@@ -1007,9 +1021,12 @@ async function stalkerHandshakeInternal(cred: StalkerCreds): Promise<StalkerSess
           errors.push(`${label}/${compatProfile}: token yok`);
           void recordDiagnostic("catalog","STALKER_COMPAT_ERROR",{endpoint,path:label,compatProfile,elapsedMs:Date.now()-profileAttemptAt,kind:"NO_TOKEN"});
         } catch (e:any) {
-          if (e?.kind === "MAG_SAFE_BUDGET" || e?.kind === "MAG_AUTH_GOVERNOR") throw e;
+          if (e?.kind === "MAG_SAFE_BUDGET" || e?.kind === "MAG_AUTH_GOVERNOR" || e?.kind === "MAG_RATE_LIMIT") throw e;
           errors.push(`${label}/${compatProfile}: ${String(e?.message||e)}`);
           void recordDiagnostic("catalog","STALKER_COMPAT_ERROR",{endpoint,path:label,compatProfile,elapsedMs:Date.now()-profileAttemptAt,kind:e?.kind,status:e?.status,bodyKind:e?.bodyKind,message:String(e?.message||e)});
+          // v16.12.2: learned profil auth reddi alırsa confidence/failure sayacı gerçekten düşsün.
+          // v16.12.1'de HTTP 200 + Authorization failed bu noktada learned kaydı bayatlatmıyordu.
+          if (learned?.profile===compatProfile && isAuthRejection(e)) await markLearnedFailure(cred,learned);
           if (handshakeRejectedStatus(Number(e?.status||0))) {
             endpointRejected=true;
             if (pi>=1) break;
@@ -1052,30 +1069,18 @@ async function stalkerHandshakeInternal(cred: StalkerCreds): Promise<StalkerSess
 }
 
 /**
- * v16.12.0 — BAN-SAFE SINGLE-FLIGHT + COOLDOWN.
+ * v16.12.2 — BAN-SAFE SINGLE-FLIGHT + RATE-LIMIT-AWARE COOLDOWN.
  * Aynı portal/MAC için eşzamanlı handshake çağrıları tek network uçuşunu paylaşır.
- * Ardışık auth reddi güvenli eşiğe ulaşırsa kısa cooldown uygulanır; uygulama
- * uygulama yeniden başlasa bile kalıcı cooldown portalın tekrar tekrar dövülmesini önler.
+ * Authorization failed mevcut zinciri güvenli bütçede durdurur; 5 dakikalık
+ * kalıcı cooldown yalnız gerçek rate-limit (örn. HTTP 429 / açık rate-limit mesajı)
+ * halinde uygulanır.
  */
 export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSession> {
   const key=handshakeProtectionKey(cred);
   const cooldownUntil=await loadHandshakeCooldown(key);
   if (cooldownUntil>Date.now()) {
-    /**
-     * v16.13.0 — SOĞUMA ARTIK KULLANICIYI TAMAMEN KİLİTLEMİYOR.
-     * Ban koruması doğru bir fikir, ancak kullanıcı "Kaydet ve Yükle"ye
-     * BİLEREK bastığında 5 dakika boyunca hiçbir istek gönderilmiyordu; bu
-     * hem teşhisi imkânsızlaştırıyor (yeni profil denenemiyor) hem de
-     * kullanıcıya çaresizlik hissi veriyor. Artık kullanıcı isteğiyle yapılan
-     * denemeye soğuma başına BİR kez izin verilir (tek uçuş, tek profil);
-     * otomatik/arka plan çağrıları eskisi gibi engellenir.
-     */
-    if (!(cred as any).userInitiated) {
-      const seconds=Math.max(1,Math.ceil((cooldownUntil-Date.now())/1000));
-      throw new Error(`Portal koruma bekleme süresi aktif (${seconds} sn). Ban/rate-limit riskini azaltmak için yeni handshake gönderilmedi.`);
-    }
-    void recordDiagnostic("mag","STALKER_COOLDOWN_USER_OVERRIDE",{remainingMs:cooldownUntil-Date.now()});
-    await clearHandshakeCooldown(key);
+    const seconds=Math.max(1,Math.ceil((cooldownUntil-Date.now())/1000));
+    throw new Error(`Portal koruma bekleme süresi aktif (${seconds} sn). Ban/rate-limit riskini azaltmak için yeni handshake gönderilmedi.`);
   }
   const existing=handshakeInFlight.get(key);
   if (existing) return existing;
@@ -1083,9 +1088,15 @@ export async function stalkerHandshake(cred: StalkerCreds): Promise<StalkerSessi
     await clearHandshakeCooldown(key);
     return session;
   }).catch(async (e:any)=>{
-    if (e?.kind === "MAG_AUTH_GOVERNOR" || e?.kind === "MAG_SAFE_BUDGET" || /ban\/rate-limit|güvenli deneme bütçesi/i.test(String(e?.message||""))) {
+    /**
+     * v16.12.2 — uzun persistent cooldown yalnız GERÇEK rate-limit sinyalinde.
+     * HTTP 200 + "Authorization failed." mevcut deneme zincirini güvenli biçimde
+     * durdurabilir fakat kullanıcıyı 5 dakika kilitlemez. Böylece manuel retry
+     * yeni bir kontrollü PCAP-first handshake başlatabilir.
+     */
+    if (e?.kind === "MAG_RATE_LIMIT") {
       await persistHandshakeCooldown(key,Date.now()+HANDSHAKE_COOLDOWN_MS);
-      void recordDiagnostic("mag","STALKER_HANDSHAKE_COOLDOWN",{durationMs:HANDSHAKE_COOLDOWN_MS,reason:e?.kind||"safe-budget"});
+      void recordDiagnostic("mag","STALKER_HANDSHAKE_COOLDOWN",{durationMs:HANDSHAKE_COOLDOWN_MS,reason:"MAG_RATE_LIMIT"});
     }
     throw e;
   }).finally(()=>{
@@ -1887,14 +1898,12 @@ export async function stalkerCreateLink(
 /** Tam oturum: handshake + profil. */
 export async function stalkerLogin(
   cred: StalkerCreds,
-  // v16.13.0: userInitiated -> kullanıcı "Kaydet ve Yükle"ye bilerek bastı;
-  // ban-koruma soğuması bir kereye mahsus aşılabilir (bkz. stalkerHandshake).
-  opts: { forceFresh?: boolean; userInitiated?: boolean } = {}
+  opts: { forceFresh?: boolean } = {}
 ): Promise<{ session: StalkerSession; profile: any }> {
   if (!opts.forceFresh) { const cached = getCachedSession(cred); if (cached) { void recordDiagnostic("catalog", "STALKER_SESSION_CACHE_HIT", { portal: cred.portal }); return cached; } }
   const started = Date.now();
   void recordDiagnostic("catalog", "STALKER_HANDSHAKE_START", { portal: cred.portal });
-  const session = await stalkerHandshake({ ...cred, userInitiated: opts.userInitiated } as any);
+  const session = await stalkerHandshake(cred);
   void recordDiagnostic("catalog", "STALKER_HANDSHAKE_OK", { endpoint: session.endpoint, elapsedMs: Date.now()-started });
   let profile: any = null;
   try {

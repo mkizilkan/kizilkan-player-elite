@@ -139,6 +139,19 @@ export interface ServerCodeBinding {
   validatedHosts?: string[];
 }
 
+export interface PlaylistContentSelection {
+  live: boolean;
+  vod: boolean;
+  series: boolean;
+  /** null=tümü, []=hiçbiri; değerler sağlayıcının gerçek kategori/group adlarıdır. */
+  liveCategories: string[] | null;
+  vodCategories: string[] | null;
+  seriesCategories: string[] | null;
+  /** true ise kullanıcı bir sonraki elle yenilemede tercihleri yeniden düzenlemek istiyor. */
+  askOnManualRefresh?: boolean;
+  updatedAt?: string;
+}
+
 export interface Playlist {
   id: string;
   name: string;
@@ -156,6 +169,14 @@ export interface Playlist {
   serverInfo?: ServerInfo | null;
   /** Kullanıcının girdiği sağlayıcı bilgileri (APK, destek, oynatıcı listesi). */
   providerInfo?: ProviderInfo | null;
+  /** v16.13.5: ilk eklemede seçilen içerik/kategori kapsamı; yenilemede varsayılan olarak korunur. */
+  contentSelection?: PlaylistContentSelection | null;
+  /** v16.13.6: playlist yönetimi metadata'sı. */
+  pinned?: boolean;
+  manualOrder?: number;
+  lastUsedAt?: string;
+  lastRefreshedAt?: string;
+  lastRefreshOk?: boolean;
   /**
    * LİSTE KİLİDİ (v9.3.0 — kullanıcı isteği)
    * Bu listeye geçmek için PIN gerekir. Profil PIN'inden BAĞIMSIZDIR:

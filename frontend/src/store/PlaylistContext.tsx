@@ -424,6 +424,10 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       loadedHeavy.current.add(p.id);
     }
     const current = playlistsRef.current;
+    if (normalizedP.manualOrder == null) {
+      const maxOrder = current.reduce((m, pl) => Math.max(m, Number(pl.manualOrder ?? -1)), -1);
+      normalizedP = { ...normalizedP, manualOrder: maxOrder + 1 };
+    }
     const next = [...current.filter(pl => pl.id !== p.id), normalizedP];
     playlistsRef.current = next;
     setPlaylists(next);
@@ -459,7 +463,10 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       seriesCount: Number(summary.series || p.seriesCount || 0),
     };
     const current = playlistsRef.current;
-    const next = [...current.filter(pl => pl.id !== p.id), normalizedP];
+    const withOrder: Playlist = normalizedP.manualOrder == null
+      ? { ...normalizedP, manualOrder: current.reduce((m, pl) => Math.max(m, Number(pl.manualOrder ?? -1)), -1) + 1 }
+      : normalizedP;
+    const next = [...current.filter(pl => pl.id !== p.id), withOrder];
     playlistsRef.current = next;
     setPlaylists(next);
     loadedHeavy.current.delete(p.id);
@@ -822,6 +829,14 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         await storage.setItem(key, id);
       });
     await persist;
+    if (activeSwitchGeneration.current === generation) {
+      const usedAt = new Date().toISOString();
+      const latest = playlistsRef.current;
+      const nextUsed = latest.map(pl => pl.id === id ? { ...pl, lastUsedAt: usedAt } : pl);
+      playlistsRef.current = nextUsed;
+      setPlaylists(nextUsed);
+      await persistMeta(nextUsed);
+    }
     if (activeSwitchGeneration.current !== generation) {
       void recordDiagnostic('navigation', 'PLAYLIST_SWITCH_STALE_DISCARDED', { fromPlaylistId: previousId || '', toPlaylistId: id, stage: 'persisted' });
       return;
@@ -840,7 +855,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     } finally {
       finishTask();
     }
-  }, [activeId]);
+  }, [activeId, persistMeta]);
 
   const toggleFavorite = useCallback(async (channelId: string) => {
     const next = favorites.includes(channelId)

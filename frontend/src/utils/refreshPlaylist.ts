@@ -19,6 +19,7 @@ import {
 import type { Playlist } from "@/src/types";
 import { resolveBoundPanel } from "@/src/utils/serverCode";
 import { markTask } from "@/src/utils/diagnostics";
+import { applyContentSelection } from "@/src/utils/contentSelection";
 
 export type RefreshPhase = "dns" | "login" | "content" | "save" | "done" | "error";
 export type RefreshProgress = {
@@ -38,7 +39,7 @@ export interface RefreshResult {
   message: string;
 }
 
-export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: RefreshProgress) => void): Promise<RefreshResult> {
+export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: RefreshProgress) => void, options?: { ignoreContentSelection?: boolean }): Promise<RefreshResult> {
   const finishTask = markTask(`refresh:${pl.source}:${pl.name || pl.id}`, { playlistId: pl.id, source: pl.source });
   try {
     if (pl.source === "xtream") {
@@ -121,9 +122,10 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
         ].filter(Boolean).join(" · ");
         return { ok: false, message: `Xtream yenileme eksik kaldı; mevcut playlist korunuyor. ${failed}` };
       }
-      const channels = chRes.value;
-      const vod = vodRes.value;
-      const series = serRes.value;
+      const filtered = applyContentSelection({ channels: chRes.value, vod: vodRes.value, series: serRes.value }, options?.ignoreContentSelection ? null : pl.contentSelection);
+      const channels = filtered.channels;
+      const vod = filtered.vod;
+      const series = filtered.series;
 
       onProgress?.({ phase: "save", message: "Üç katalog da doğrulandı; kayda hazırlanıyor...", live: "done", vod: "done", series: "done", liveCount: channels.length, vodCount: vod.length, seriesCount: series.length });
       return {
@@ -149,7 +151,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       if (total === 0) return { ok: false, message: "Listede içerik bulunamadı." };
       return {
         ok: true,
-        patch: { channels: res.channels, vod: res.vod, series: res.series },
+        patch: applyContentSelection({ channels: res.channels, vod: res.vod || [], series: res.series || [] }, options?.ignoreContentSelection ? null : pl.contentSelection),
         message: `${res.channels.length} kanal • ${res.vod?.length || 0} film • ${res.series?.length || 0} dizi güncellendi`,
       };
     }
@@ -189,7 +191,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       }
       return {
         ok: true,
-        patch: { channels: catalog.channels, vod: catalog.vod, series: catalog.series },
+        patch: applyContentSelection({ channels: catalog.channels, vod: catalog.vod, series: catalog.series }, options?.ignoreContentSelection ? null : pl.contentSelection),
         message: `${catalog.channels.length} kanal • ${catalog.vod.length} film • ${catalog.series.length} dizi güncellendi`,
       };
     }
