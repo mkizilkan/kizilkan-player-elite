@@ -27,6 +27,7 @@
 import type { AccountInfo, Channel, SeriesItem, VodItem } from "@/src/types";
 import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
 import { storage } from "@/src/utils/storage";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 const startDiagnosticTask = (label: string, meta: Record<string, any> = {}) =>
   typeof markTask === "function" ? markTask(label, meta) : (() => {});
@@ -663,6 +664,37 @@ async function req(url: string, headers: Record<string, string>, options: number
   })();
   try {
     let res:any;
+    // v16.13.8 — PCAP/Loader MAG320 profili Android'de RN fetch yerine native
+    // OkHttp exact transport kullanır. Böylece Cookie/UA/X-UA/Referer'ın native
+    // request üzerinde gerçekten var olduğu güvenli fingerprint telemetrisiyle
+    // kanıtlanır. Native modül yoksa eski fetch yolu regresyonsuz korunur.
+    const useNativeExact = !opts.postForm && KizilkanNativeCore.available
+      && headers["User-Agent"] === MAG320_UA
+      && /timezone=Europe%2FParis/i.test(String(headers.Cookie || ""));
+    if (useNativeExact) {
+      try {
+        const nr:any = await KizilkanNativeCore.magExactRequest(url, headers, timeoutMs);
+        if (!nr) throw new Error("Native MAG transport boş yanıt döndürdü");
+        const headerMap = new Map<string,string>([["content-type",String(nr.contentType||"")]]);
+        res = {
+          status:Number(nr.status||0), ok:Number(nr.status||0)>=200 && Number(nr.status||0)<300,
+          url:String(nr.finalUrl||url), redirected:Number(nr.redirectCount||0)>0,
+          headers:{get:(name:string)=>headerMap.get(String(name).toLowerCase())||""},
+          text:async()=>String(nr.body||""),
+        };
+        void recordDiagnostic("mag","MAG_NATIVE_WIRE",{
+          ...requestMeta,transport:"NATIVE_OKHTTP",status:Number(nr.status||0),elapsedMs:Number(nr.elapsedMs||0),
+          redirectCount:Number(nr.redirectCount||0),wireHeaderNames:String(nr.wireHeaderNames||""),
+          cookiePresent:!!nr.cookiePresent,cookieFingerprint:String(nr.cookieFingerprint||""),
+          authorizationPresent:!!nr.authorizationPresent,authorizationFingerprint:String(nr.authorizationFingerprint||""),
+          userAgentProfile:String(nr.userAgent||"")===MAG320_UA?"MAG320-PCAP":"other",
+          refererPath:(()=>{try{return new URL(String(nr.referer||"")).pathname}catch{return""}})(),
+          xUserAgentModel:/Model:\s*([^;]+)/i.exec(String(nr.xUserAgent||""))?.[1]||"",
+        });
+      } catch (cause:any) {
+        const err:any=new Error(`Native MAG transport failed: ${String(cause?.message||cause)}`); err.kind="NETWORK"; throw err;
+      }
+    } else
     /**
      * v16.9.0 — POST YEDEĞİ + ÇEREZ TELEMETRİSİ
      * Bazı Xtream/OpenXC MAG köprüleri parametreleri yalnız $_POST içinden

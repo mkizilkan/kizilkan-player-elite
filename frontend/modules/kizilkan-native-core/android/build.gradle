@@ -13,14 +13,14 @@ plugins {
 apply plugin: 'com.google.devtools.ksp'
 
 group = 'expo.modules.kizilkannativecore'
-version = '1.3.0'
+version = '1.3.1'
 
 android {
   namespace "expo.modules.kizilkannativecore"
   defaultConfig {
     minSdkVersion 26
-    versionCode 4
-    versionName "1.3.0"
+    versionCode 5
+    versionName "1.3.1"
   }
 }
 
@@ -30,6 +30,8 @@ dependencies {
   def roomVersion = "2.8.3"
   implementation "androidx.room:room-runtime:${roomVersion}"
   implementation "androidx.room:room-ktx:${roomVersion}"
+  // v16.13.8: MAG exact-wire transport; request headers/cookies are built natively.
+  implementation "com.squareup.okhttp3:okhttp:4.12.0"
   ksp "androidx.room:room-compiler:${roomVersion}"
 }
 

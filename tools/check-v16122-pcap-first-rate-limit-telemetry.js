@@ -58,6 +58,7 @@ function load(fetchImpl) {
   const js = compileStalker();
   const req = (id) => {
     if (id === '@/src/utils/diagnostics') return { recordDiagnostic: async (domain,event,data) => { diagnostics.push({domain,event,data}); }, markTask: () => () => {} };
+    if (id === '@/modules/kizilkan-native-core') return { KizilkanNativeCore: { available:false, magExactRequest: async () => null } };
     if (id === '@/src/utils/storage') return { storage: {
       getItem: async (k, fallback) => memory.has(k) ? memory.get(k) : fallback,
       setItem: async (k, v) => { memory.set(k, v); return true; },

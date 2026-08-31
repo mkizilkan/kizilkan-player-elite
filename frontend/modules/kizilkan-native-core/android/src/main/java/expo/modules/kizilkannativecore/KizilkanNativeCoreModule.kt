@@ -20,6 +20,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.zip.GZIPInputStream
 import java.time.Instant
+import java.security.MessageDigest
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
@@ -50,6 +54,75 @@ class KizilkanNativeCoreModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("KizilkanNativeCore")
+
+    // v16.13.8 — Native MAG exact-wire transport.
+    // JS'nin "göndermek istediği" başlıklar yerine OkHttp Request'in gerçekten
+    // taşıdığı başlık isimleri/şekilleri raporlanır. Gizli değerler asla dönmez.
+    AsyncFunction("magExactRequest") { url: String, headersJson: String, timeoutMs: Int ->
+      val headersObj = JSONObject(headersJson)
+      val redirectTrace = JSONArray()
+      val client = OkHttpClient.Builder()
+        .connectTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+        .readTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+        .writeTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
+      fun fp(value: String): String {
+        if (value.isBlank()) return ""
+        val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+        return digest.take(6).joinToString("") { "%02x".format(it) }
+      }
+      fun buildRequest(target: String): Request {
+        val b = Request.Builder().url(target).get()
+        headersObj.keys().forEach { name -> b.header(name, headersObj.optString(name, "")) }
+        return b.build()
+      }
+      var request = buildRequest(url)
+      var response: okhttp3.Response? = null
+      var redirects = 0
+      val started = SystemClock.elapsedRealtime()
+      try {
+        while (true) {
+          response?.close()
+          response = client.newCall(request).execute()
+          if (response.code !in listOf(301,302,303,307,308) || redirects >= 5) break
+          val location = response.header("Location") ?: break
+          val next = request.url.resolve(location) ?: break
+          val fromHost = request.url.host
+          val sameOrigin = fromHost.equals(next.host, true) && request.url.port == next.port && request.url.scheme == next.scheme
+          redirectTrace.put(JSONObject().apply {
+            put("status", response.code); put("fromHost", fromHost); put("toHost", next.host); put("sameOrigin", sameOrigin)
+          })
+          val nextHeaders = JSONObject(headersJson)
+          if (!sameOrigin) { nextHeaders.remove("Authorization"); nextHeaders.remove("Cookie") }
+          val b = Request.Builder().url(next).get()
+          nextHeaders.keys().forEach { name -> b.header(name, nextHeaders.optString(name, "")) }
+          request = b.build(); redirects++
+        }
+        val r = response ?: throw IllegalStateException("MAG response yok")
+        val body = r.body?.string() ?: ""
+        val cookie = request.header("Cookie") ?: ""
+        val auth = request.header("Authorization") ?: ""
+        mapOf(
+          "status" to r.code,
+          "body" to body,
+          "contentType" to (r.header("Content-Type") ?: ""),
+          "finalUrl" to r.request.url.toString(),
+          "elapsedMs" to (SystemClock.elapsedRealtime() - started),
+          "redirectCount" to redirects,
+          "redirects" to redirectTrace.toString(),
+          "wireHeaderNames" to r.request.headers.names().sorted().joinToString(","),
+          "cookiePresent" to cookie.isNotBlank(),
+          "cookieFingerprint" to fp(cookie),
+          "authorizationPresent" to auth.isNotBlank(),
+          "authorizationFingerprint" to fp(auth),
+          "userAgent" to (r.request.header("User-Agent") ?: ""),
+          "referer" to (r.request.header("Referer") ?: ""),
+          "xUserAgent" to (r.request.header("X-User-Agent") ?: "")
+        )
+      } finally { response?.close() }
+    }
 
     AsyncFunction("warmPlaylist") { id: String ->
       val result = ensureIndexed(id)
