@@ -4,7 +4,7 @@ const root=path.resolve(__dirname,'..');
 const read=p=>fs.readFileSync(path.join(root,p),'utf8');
 const need=(s,x,m)=>{if(!s.includes(x))throw new Error(m||`missing ${x}`)};
 const pkg=JSON.parse(read('frontend/package.json')), app=JSON.parse(read('frontend/app.json'));
-if(pkg.version!=='16.13.6'||app.expo.version!=='16.13.6'||app.expo.android.versionCode!==161306)throw new Error('version mismatch');
+const v=String(pkg.version||'').split('.').map(Number); const atLeast=v[0]>16||(v[0]===16&&(v[1]>13||(v[1]===13&&v[2]>=6))); if(!atLeast||app.expo.android.versionCode<161306)throw new Error('version must preserve v16.13.6+');
 const pm=read('frontend/src/utils/playlistManagement.ts'), ps=read('frontend/app/playlist-select.tsx'), ap=read('frontend/app/add-playlist.tsx'), ty=read('frontend/src/types/index.ts');
 for(const x of ['manual','name_asc','name_desc','created_desc','created_asc','last_used_desc','last_refresh_desc','total_desc','live_desc','vod_desc','series_desc','expiry_asc','expiry_desc']) need(pm,`'${x}'`,`sort mode ${x}`);
 for(const x of ['pinned?: boolean','manualOrder?: number','lastUsedAt?: string','lastRefreshedAt?: string','lastRefreshOk?: boolean']) need(ty,x);

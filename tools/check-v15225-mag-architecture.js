@@ -43,8 +43,8 @@ function staticChecks(){
   need(stalker,/NO_NEW_IDS/,'no-new-id governor yok');
   need(stalker,/signal\?: AbortSignal/,'catalog cancellation signal yok');
   need(stalker,/export async function stalkerEnrichment/,'VOD/Series-only enrichment yok');
-  need(add,/liveOnly:\s*true/,'MAG add live-first değil');
-  need(add,/await addPlaylist\(playlist\)[\s\S]*if \(magEnrichment\) void magEnrichment\.run\(\)/,'enrichment addPlaylist sonrasında başlamıyor');
+  need(add,/liveOnly:\s*(?:true|!chooseCategories)/,'MAG add varsayılan akışta live-first değil');
+  need(add,/(?:await addPlaylist\(playlist\)|await commitPlaylist\(playlist\))[\s\S]*if \(magEnrichment\) void magEnrichment\.run\(\)/,'enrichment playlist commit sonrasında başlamıyor');
   need(add,/STALKER_ADD_COMMIT_START/,'commit start telemetry yok');
   need(add,/STALKER_ADD_COMMIT_OK/,'commit ok telemetry yok');
   need(add,/deviceModel:\s*"MAG254"/,'MAG form default MAG254 değil');

@@ -59,6 +59,7 @@ const CHECKS = [
   ["check-v16131-native-blackbox-kotlin.js", "v16.13.1 NativeBlackBox Kotlin signature / ANR Flight Recorder fix", ""],
   ["check-v16135-category-mag-policy.js", "v16.13.5 selective category persistence / relaxed MAG self-ban", ""],
   ["check-v16136-playlist-management.js", "v16.13.6 playlist management / category reselect / duplicate / expiry", ""],
+  ["check-v16137-build-corrective.js", "v16.13.7 CI build corrective / playlist styles / MAG legacy gate", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 

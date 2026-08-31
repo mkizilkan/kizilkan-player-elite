@@ -617,4 +617,12 @@ const styles = StyleSheet.create({
   sub: { fontSize: FONT.size.xs, marginTop: 2 },
   footer: { alignItems: "center", padding: SPACING.md },
   footerText: { fontSize: FONT.size.sm, fontWeight: FONT.weight.semibold },
+  // v16.13.7: v16.13.6 playlist management UI style contract.
+  manageBar: { flexDirection: "row", alignItems: "center", gap: SPACING.sm, paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm, flexWrap: "wrap" },
+  manageSearch: { minWidth: 180, flexGrow: 1, height: 44, borderWidth: 1, borderRadius: RADIUS.md, paddingHorizontal: SPACING.md },
+  manageBtn: { minHeight: 42, borderWidth: 1, borderRadius: RADIUS.md, paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 },
+  manageOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.68)", alignItems: "center", justifyContent: "center", padding: SPACING.lg },
+  manageModal: { width: "100%", maxWidth: 620, maxHeight: "88%", borderWidth: 1, borderRadius: RADIUS.lg, padding: SPACING.lg },
+  manageTitle: { fontSize: FONT.size.lg, fontWeight: FONT.weight.black, marginBottom: SPACING.sm, textAlign: "center" },
+  closeBtn: { minHeight: 46, borderWidth: 1, borderRadius: RADIUS.pill, alignItems: "center", justifyContent: "center", paddingHorizontal: SPACING.md },
 });
