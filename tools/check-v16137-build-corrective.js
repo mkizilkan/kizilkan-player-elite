@@ -10,6 +10,6 @@ function need(src,re,msg){if(!re.test(src))throw new Error(msg)}
 for(const k of ['manageBar','manageSearch','manageBtn','manageOverlay','manageModal','manageTitle','closeBtn']) need(ui,new RegExp('\\b'+k+'\\s*:'),'eksik StyleSheet anahtarı: '+k);
 need(magGate,/liveOnly:\\s\*\(\?:true\|!chooseCategories\)/,'eski MAG live-first gate yeni seçmeli kategori akışını tanımıyor');
 need(magGate,/commitPlaylist/,'eski MAG enrichment gate commitPlaylist katmanını tanımıyor');
-if(pkg.version!=='16.13.7')throw new Error('package version 16.13.7 değil');
-if(app.expo.version!=='16.13.7'||app.expo.android.versionCode!==161307)throw new Error('app version/versionCode yanlış');
+if(!/^16\.13\.(?:[7-9]|[1-9]\d+)$/.test(pkg.version))throw new Error('package version v16.13.7+ değil');
+if(app.expo.version!==pkg.version||Number(app.expo.android.versionCode)<161307)throw new Error('app version/versionCode v16.13.7+ ile uyumsuz');
 console.log('TEMIZ — v16.13.7 CI build corrective: playlist styles + MAG legacy gate compatibility');

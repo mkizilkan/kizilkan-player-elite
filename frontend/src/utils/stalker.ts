@@ -629,7 +629,7 @@ function playbackHeadersFor(cred: StalkerCreds, ses: StalkerSession, playbackUrl
   return out;
 }
 
-type ReqOptions = { timeoutMs?: number; signal?: AbortSignal; allowNon2xxParsed?: (parsed:any, status:number)=>boolean };
+type ReqOptions = { timeoutMs?: number; signal?: AbortSignal; allowNon2xxParsed?: (parsed:any, status:number)=>boolean; postForm?: boolean };
 function parseStalkerBody(text:string): { parsed:any|null; bodyKind:"json"|"html"|"empty"|"other" } {
   const trimmed=String(text||"").replace(/^\uFEFF/,"").trim();
   if (!trimmed) return {parsed:null,bodyKind:"empty"};

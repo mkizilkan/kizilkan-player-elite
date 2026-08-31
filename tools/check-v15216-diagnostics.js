@@ -63,7 +63,8 @@ async function sessionCacheFixture(){
   const req=id=>{
     if(id==='@/src/utils/diagnostics') return {recordDiagnostic:async()=>{},markTask:()=>()=>{}};
     if(id==='@/src/utils/storage') return {storage:{getItem:async(k,f)=>memoryStore.has(k)?memoryStore.get(k):f,setItem:async(k,v)=>{memoryStore.set(k,v);return true;},removeItem:async(k)=>{memoryStore.delete(k);return true;}}};
-    return require(id);
+    if(id==='@/modules/kizilkan-native-core') return { KizilkanNativeCore:{ available:false, magExactRequest:async()=>null } };
+      return require(id);
   };
   const box={module:{exports:{}},exports:{},require:req,console,URL,URLSearchParams,AbortController,setTimeout,clearTimeout,fetch}; box.exports=box.module.exports;
   vm.runInNewContext(js,box,{filename:'stalker.ts'}); const m=box.module.exports;

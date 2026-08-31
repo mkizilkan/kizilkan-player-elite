@@ -84,7 +84,8 @@ function load(fetchImpl) {
       removeItem: async (k) => { memory.delete(k); return true; },
     }};
     if (id === 'expo-crypto') return { CryptoDigestAlgorithm: { MD5:'MD5', SHA1:'SHA1', SHA256:'SHA256' }, digestStringAsync: async (_a, v) => ('abc123' + v).padEnd(64, '0').slice(0,64) };
-    return require(id);
+    if(id==='@/modules/kizilkan-native-core') return { KizilkanNativeCore:{ available:false, magExactRequest:async()=>null } };
+      return require(id);
   };
   const box = { module:{exports:{}}, exports:{}, require:req, console, URL, URLSearchParams, AbortController, setTimeout, clearTimeout, fetch:fetchImpl };
   box.exports = box.module.exports;

@@ -24,6 +24,7 @@ async function testStalker() {
     const req = id => {
       if(id==='@/src/utils/diagnostics') return { recordDiagnostic: async()=>{}, markTask:()=>()=>{} };
       if(id==='@/src/utils/storage') return { storage:{getItem:async(k,f)=>store.has(k)?store.get(k):f,setItem:async(k,v)=>{store.set(k,v);return true;},removeItem:async(k)=>{store.delete(k);return true;}} };
+      if(id==='@/modules/kizilkan-native-core') return { KizilkanNativeCore:{ available:false, magExactRequest:async()=>null } };
       return require(id);
     };
     const box={module:{exports:{}},exports:{},require:req,console,URL,URLSearchParams,AbortController,setTimeout,clearTimeout,fetch:fetchImpl};
