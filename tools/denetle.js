@@ -60,6 +60,9 @@ const CHECKS = [
   ["check-v16135-category-mag-policy.js", "v16.13.5 selective category persistence / relaxed MAG self-ban", ""],
   ["check-v16136-playlist-management.js", "v16.13.6 playlist management / category reselect / duplicate / expiry", ""],
   ["check-v16137-build-corrective.js", "v16.13.7 CI build corrective / playlist styles / MAG legacy gate", ""],
+  ["check-v16138-native-mag-wire.js", "v16.13.8 Native MAG exact-wire / secure telemetry", ""],
+  ["check-v16139-ci-native-module-compat.js", "v16.13.9 CI fixture / TypeScript corrective", ""],
+  ["check-v161310-catalog-mag-playlist-management.js", "v16.13.10 catalog / MAG runtime / playlist management corrective", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
 ];
 

@@ -966,7 +966,7 @@ function ClassicLiveTvScreen() {
         {playlists.length > 1 && (
           <FocusButton
             testID="switch-playlist-btn"
-            onPress={() => router.push("/(tabs)/settings")}
+            onPress={() => router.push({ pathname: "/playlist-select", params: { manage: "1" } })}
             hitSlop={10}
             focusable
             style={{ marginLeft: SPACING.md }}

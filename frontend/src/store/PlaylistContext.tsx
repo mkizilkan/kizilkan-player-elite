@@ -179,6 +179,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   // yeni seçimi ezmesin.
   const activeSwitchGeneration = useRef(0);
   const activeSwitchWriteQueue = useRef<Promise<void>>(Promise.resolve());
+  const repairAttemptAt = useRef<Map<string, number>>(new Map());
+  // v16.13.10: aynı playlist seçimine peş peşe dokunmak çalışan repair generation'ını iptal etmesin.
+  const activeSwitchInFlight = useRef<Set<string>>(new Set());
 
   // Hangi liste id'lerinin ağır verisi belleğe yüklendi (tekrar okumayı önler)
   const loadedHeavy = useRef<Set<string>>(new Set());
@@ -653,6 +656,11 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   }, [activeId, ensureHeavyLoaded, persistMeta, updatePlaylist]);
 
   const setActivePlaylist = useCallback(async (id: string) => {
+    if (activeSwitchInFlight.current.has(id)) {
+      void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_COALESCED', { playlistId: id, reason: 'same-target-in-flight' });
+      return;
+    }
+    activeSwitchInFlight.current.add(id);
     const finishTask = markTask('room:switch-verify', { playlistId: id });
     try {
     const generation = ++activeSwitchGeneration.current;
@@ -715,6 +723,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
          * kaydedilir ve arayüz bilgilendirilir.
          */
         const broken = playlistsRef.current.find(pl => pl.id === id);
+        const lastRepair=repairAttemptAt.current.get(id)||0;
+        if(Date.now()-lastRepair<30000){setRepairFailedId(id);void recordDiagnostic('catalog','PLAYLIST_SELF_REPAIR_THROTTLED',{playlistId:id,generation});throw new Error('Playlist içeriği henüz hazır değil; otomatik onarım kısa süre önce denendi.');}
+        repairAttemptAt.current.set(id,Date.now());
         const hasSource = !!(broken?.m3uUrl || broken?.xtreamServer || broken?.stalkerPortal || (broken as any)?.panelCode);
         if (broken && hasSource) {
           try {
@@ -734,21 +745,21 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
               } else {
                 void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_INDEX_MISSING', { playlistId: id });
                 setRepairFailedId(id);
-                return;
+                throw new Error('Playlist Room indeksi onarım sonrasında da oluşturulamadı.');
               }
             } else {
               void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_FAILED', {
                 playlistId: id, message: String(res?.message || 'bilinmiyor'),
               });
               setRepairFailedId(id);
-              return;
+              throw new Error(String(res?.message || 'Playlist otomatik onarımı başarısız.'));
             }
           } catch (repairErr: any) {
             void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_ERROR', {
               playlistId: id, error: String(repairErr?.message || repairErr),
             });
             setRepairFailedId(id);
-            return;
+            throw repairErr instanceof Error ? repairErr : new Error(String(repairErr || 'Playlist otomatik onarım hatası.'));
           } finally {
             setHeavyLoading(false);
           }
@@ -792,18 +803,18 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
                 if (verifiedSummary?.roomIndexed) {
                   void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_OK', { playlistId: id, mode: 'fallback' });
                   setRepairFailedId(null);
-                } else { setRepairFailedId(id); return; }
+                } else { setRepairFailedId(id); throw new Error('Playlist Room indeksi onarım sonrasında da oluşturulamadı.'); }
               } else {
                 void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_FAILED', { playlistId: id, mode: 'fallback', message: String(res?.message || '') });
-                setRepairFailedId(id); return;
+                setRepairFailedId(id); throw new Error(String(res?.message || 'Playlist otomatik onarımı başarısız.'));
               }
             } catch (err2: any) {
               void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_ERROR', { playlistId: id, mode: 'fallback', error: String(err2?.message || err2) });
-              setRepairFailedId(id); return;
+              setRepairFailedId(id); throw err2 instanceof Error ? err2 : new Error(String(err2 || 'Playlist otomatik onarım hatası.'));
             } finally { setHeavyLoading(false); }
           } else {
             setRepairFailedId(id);
-            return;
+            throw new Error('Playlist kaynağı bulunamadığı için otomatik onarım yapılamadı.');
           }
         }
       }
@@ -853,6 +864,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       });
     }
     } finally {
+      activeSwitchInFlight.current.delete(id);
       finishTask();
     }
   }, [activeId, persistMeta]);

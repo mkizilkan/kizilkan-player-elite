@@ -7,5 +7,5 @@ for(const f of ['check-v15214-hardening.js','check-v15216-diagnostics.js','check
 }
 const old=read('tools/check-v16137-build-corrective.js'); if(old.includes("pkg.version!=='16.13.7'")) throw new Error('v16.13.7 gate exact-version kilidi devam ediyor');
 const pkg=JSON.parse(read('frontend/package.json')), app=JSON.parse(read('frontend/app.json'));
-if(pkg.version!=='16.13.9'||app.expo.version!=='16.13.9'||app.expo.android.versionCode!==161309) throw new Error('v16.13.9 metadata yanlış');
+if(!/^16\.13\.(?:9|[1-9]\d+)$/.test(pkg.version)||app.expo.version!==pkg.version||app.expo.android.versionCode<161309) throw new Error('v16.13.9+ metadata yanlış');
 console.log('TEMIZ — v16.13.9 CI native-module fixture compatibility + ReqOptions + forward gate');

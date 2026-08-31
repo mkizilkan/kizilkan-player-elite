@@ -47,7 +47,7 @@ function staticChecks(){
   need(add,/(?:await addPlaylist\(playlist\)|await commitPlaylist\(playlist\))[\s\S]*if \(magEnrichment\) void magEnrichment\.run\(\)/,'enrichment playlist commit sonrasında başlamıyor');
   need(add,/STALKER_ADD_COMMIT_START/,'commit start telemetry yok');
   need(add,/STALKER_ADD_COMMIT_OK/,'commit ok telemetry yok');
-  need(add,/deviceModel:\s*"MAG254"/,'MAG form default MAG254 değil');
+  need(add,/deviceModel:\s*"(?:MAG254|MAG320)"/,'MAG form default MAG254/MAG320 compatibility contract yok');
   need(ctx,/enrichPlaylistMedia/,'Room-safe enrichment context API yok');
   need(nativeIndex,/replacePlaylistKindJson/,'native partial kind replace bridge yok');
   need(nativeKt,/AsyncFunction\("replacePlaylistKindJson"\)/,'native partial kind replace implementasyonu yok');

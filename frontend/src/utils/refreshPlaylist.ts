@@ -114,20 +114,22 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
         state.series = "done"; state.seriesCount = value.length; emit(); return value;
       }).catch((e) => { state.series = "error"; emit(); throw e; });
       const [chRes, vodRes, serRes] = await Promise.allSettled([livePromise, vodPromise, seriesPromise]);
-      if (chRes.status === "rejected" || vodRes.status === "rejected" || serRes.status === "rejected") {
-        const failed = [
-          chRes.status === "rejected" ? `Canlı: ${String(chRes.reason?.message || chRes.reason)}` : "",
-          vodRes.status === "rejected" ? `Film: ${String(vodRes.reason?.message || vodRes.reason)}` : "",
-          serRes.status === "rejected" ? `Dizi: ${String(serRes.reason?.message || serRes.reason)}` : "",
-        ].filter(Boolean).join(" · ");
-        return { ok: false, message: `Xtream yenileme eksik kaldı; mevcut playlist korunuyor. ${failed}` };
+      // v16.13.10 — CAPABILITY-AWARE PARTIAL COMMIT: login başarılıyken VOD/Series 404
+      // çalışan Live kataloğunu ve Room generation'ı artık iptal etmez.
+      const errText = (r: PromiseSettledResult<any>) => r.status === "rejected" ? String((r.reason as any)?.message || r.reason || "") : "";
+      const isUnsupported404 = (r: PromiseSettledResult<any>) => r.status === "rejected" && /HTTP\s+404\b/i.test(errText(r));
+      if (chRes.status === "rejected") return { ok: false, message: `Xtream canlı katalog alınamadı; mevcut playlist korunuyor. Canlı: ${errText(chRes)}` };
+      if ((vodRes.status === "rejected" && !isUnsupported404(vodRes)) || (serRes.status === "rejected" && !isUnsupported404(serRes))) {
+        const failed=[vodRes.status==="rejected"?`Film: ${errText(vodRes)}`:"",serRes.status==="rejected"?`Dizi: ${errText(serRes)}`:""].filter(Boolean).join(" · ");
+        return { ok:false, message:`Xtream yenileme eksik kaldı; mevcut playlist korunuyor. ${failed}` };
       }
-      const filtered = applyContentSelection({ channels: chRes.value, vod: vodRes.value, series: serRes.value }, options?.ignoreContentSelection ? null : pl.contentSelection);
+      const vodValue=vodRes.status==="fulfilled"?vodRes.value:[]; const seriesValue=serRes.status==="fulfilled"?serRes.value:[];
+      const filtered = applyContentSelection({ channels: chRes.value, vod: vodValue, series: seriesValue }, options?.ignoreContentSelection ? null : pl.contentSelection);
       const channels = filtered.channels;
       const vod = filtered.vod;
       const series = filtered.series;
 
-      onProgress?.({ phase: "save", message: "Üç katalog da doğrulandı; kayda hazırlanıyor...", live: "done", vod: "done", series: "done", liveCount: channels.length, vodCount: vod.length, seriesCount: series.length });
+      onProgress?.({ phase: "save", message: `${isUnsupported404(vodRes)||isUnsupported404(serRes) ? "Desteklenen kataloglar doğrulandı" : "Üç katalog da doğrulandı"}; kayda hazırlanıyor...`, live: "done", vod: "done", series: "done", liveCount: channels.length, vodCount: vod.length, seriesCount: series.length });
       return {
         ok: true,
         patch: {
@@ -138,8 +140,9 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
           serverInfo: (login.server_info || null) as any,
           ...(resolvedServer !== pl.xtreamServer ? { xtreamServer: resolvedServer } : {}),
           ...(bindingPatch ? { serverCodeBinding: bindingPatch } : {}),
+          catalogCapabilities: { live: "supported", vod: isUnsupported404(vodRes) ? "unsupported_404" : "supported", series: isUnsupported404(serRes) ? "unsupported_404" : "supported", updatedAt: new Date().toISOString() },
         },
-        message: `${channels.length} kanal • ${vod.length} film • ${series.length} dizi güncellendi${resolvedServer !== pl.xtreamServer ? " • DNS otomatik güncellendi" : ""}`,
+        message: `${channels.length} kanal • ${vod.length} film • ${series.length} dizi güncellendi${isUnsupported404(vodRes) ? " • VOD desteklenmiyor (404)" : ""}${isUnsupported404(serRes) ? " • Dizi desteklenmiyor (404)" : ""}${resolvedServer !== pl.xtreamServer ? " • DNS otomatik güncellendi" : ""}`,
       };
     }
 

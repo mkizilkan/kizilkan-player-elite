@@ -593,9 +593,13 @@ try {
   if (/optional catalog failed[\s\S]{0,160}return fallback/.test(stalker)) problem('v15.2.14 Stalker katalog hatasi yeniden sessiz [] fallback oldu');
   requireText(iptv, 'function classifyM3UEntry', 'M3U metadata-aware classifier');
   requireText(nativeCore, 'classifyM3u(', 'Android native M3U classification parity');
-  requireText(add, 'Xtream kataloglarından biri alınamadı; eksik/yanlış playlist kaydedilmedi.', 'Xtream add partial-catalog commit barrier');
-  requireText(refresh, 'Xtream yenileme eksik kaldı; mevcut playlist korunuyor.', 'Xtream refresh partial-catalog commit barrier');
-  requireText(nativeBulk, 'Xtream kataloglarından biri alınamadı; kısmi playlist kaydedilmedi', 'native Xtream partial-catalog commit barrier');
+  // v16.13.10: gerçek HTTP 404 unsupported katalog kabul edilir; auth/timeout/5xx hâlâ commit barrier'dır.
+  requireText(add, 'isUnsupported404', 'Xtream add capability-aware 404 policy');
+  requireText(add, 'Xtream katalog doğrulaması başarısız; playlist kaydedilmedi.', 'Xtream add non-404 commit barrier');
+  requireText(refresh, 'CAPABILITY-AWARE PARTIAL COMMIT', 'Xtream refresh capability-aware partial commit');
+  requireText(refresh, 'Xtream yenileme eksik kaldı; mevcut playlist korunuyor.', 'Xtream refresh non-404 commit barrier');
+  requireText(nativeBulk, 'isUnsupported404', 'native Xtream capability-aware 404 policy');
+  requireText(nativeBulk, 'Xtream katalog doğrulaması başarısız; mevcut veri korunuyor', 'native Xtream non-404 commit barrier');
   requireText(backupV3, 'KIZILKAN_BACKUP_V3', 'streaming backup v3 format');
   requireText(backupV3, 'KizilkanNativeCore.queryItems', 'backup Room paging');
   requireText(backupV3, 'appendPlaylistChunk', 'backup chunked Room restore');

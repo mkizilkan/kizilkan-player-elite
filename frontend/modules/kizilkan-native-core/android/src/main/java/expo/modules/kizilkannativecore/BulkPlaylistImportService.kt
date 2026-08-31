@@ -238,10 +238,14 @@ class BulkPlaylistImportService : Service() {
       val vodRaw = vodR.data; val vodCats = categoryMap(vodCatsR.data)
       val seriesRaw = seriesR.data; val seriesCats = categoryMap(seriesCatsR.data)
       val endpointResults = listOf(liveR, liveCatsR, vodR, vodCatsR, seriesR, seriesCatsR)
-      val contentFailures = listOf(liveR, vodR, seriesR).filter { it.error != null }
+      // v16.13.10: Login başarılıyken desteklenmeyen VOD/Series endpointinin 404
+      // dönmesi çalışan Live kataloğunu iptal etmez. 401/403/timeout/5xx fatal kalır.
+      fun isUnsupported404(r: EndpointResult): Boolean = r.error?.let { Regex("(^|\\D)404(\\D|$)").containsMatchIn(it) } == true
+      if (liveR.error != null) throw IllegalStateException("Xtream canlı katalog alınamadı; mevcut veri korunuyor: ${liveR.error}")
+      val contentFailures = listOf(vodR, seriesR).filter { it.error != null && !isUnsupported404(it) }
       if (contentFailures.isNotEmpty()) {
         val failures = contentFailures.joinToString("; ") { "${it.name}: ${it.error}" }
-        throw IllegalStateException("Xtream kataloglarından biri alınamadı; kısmi playlist kaydedilmedi: $failures")
+        throw IllegalStateException("Xtream katalog doğrulaması başarısız; mevcut veri korunuyor: $failures")
       }
       val diagnostics = diagnosticsJson(endpointResults)
       statusMap[key]?.put("endpointDiagnostics", diagnostics)

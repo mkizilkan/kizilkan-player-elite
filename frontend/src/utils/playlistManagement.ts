@@ -12,6 +12,8 @@ export type PlaylistSortMode =
   | 'live_desc'
   | 'vod_desc'
   | 'series_desc'
+  | 'max_users_desc'
+  | 'max_users_asc'
   | 'expiry_asc'
   | 'expiry_desc';
 
@@ -34,6 +36,8 @@ export const PLAYLIST_SORT_LABELS: Record<PlaylistSortMode, string> = {
   live_desc: 'Canlı sayısı',
   vod_desc: 'Film sayısı',
   series_desc: 'Dizi sayısı',
+  max_users_desc: 'Maks. kullanıcı çok → az',
+  max_users_asc: 'Maks. kullanıcı az → çok',
   expiry_asc: 'Kalan gün az → çok',
   expiry_desc: 'Kalan gün çok → az',
 };
@@ -44,6 +48,13 @@ const count = (p: Playlist, kind: 'channels'|'vod'|'series') => {
   return Number(p.seriesCount ?? p.series?.length ?? 0);
 };
 export const playlistTotalCount = (p: Playlist) => count(p,'channels') + count(p,'vod') + count(p,'series');
+
+export function playlistMaxUsers(p: Playlist): number | null {
+  const raw = p.accountInfo?.max_connections;
+  if (raw === null || raw === undefined || String(raw).trim() === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
 
 function parseEpochLike(value?: string | null): number | null {
   if (!value) return null;
@@ -84,6 +95,8 @@ export function sortPlaylists(input: Playlist[], pref: PlaylistSortPreferences):
       case 'live_desc': return count(b,'channels') - count(a,'channels');
       case 'vod_desc': return count(b,'vod') - count(a,'vod');
       case 'series_desc': return count(b,'series') - count(a,'series');
+      case 'max_users_desc': { const av=Number(a.accountInfo?.max_connections),bv=Number(b.accountInfo?.max_connections); const aa=Number.isFinite(av)?av:-1,bb=Number.isFinite(bv)?bv:-1; return bb-aa; }
+      case 'max_users_asc': { const av=Number(a.accountInfo?.max_connections),bv=Number(b.accountInfo?.max_connections); const aa=Number.isFinite(av)?av:Number.MAX_SAFE_INTEGER,bb=Number.isFinite(bv)?bv:Number.MAX_SAFE_INTEGER; return aa-bb; }
       case 'expiry_asc': {
         const av=playlistExpiryMs(a), bv=playlistExpiryMs(b);
         if(av==null&&bv==null)return 0; if(av==null)return 1; if(bv==null)return -1; return av-bv;

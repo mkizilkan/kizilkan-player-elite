@@ -826,17 +826,15 @@ export default function AddPlaylist() {
 
       const login = await xtLoginLocal(cred);
       const { chRes, vodRes, serRes } = await loadXtreamContentWithProgress(cred);
-      if (chRes.status === "rejected" || vodRes.status === "rejected" || serRes.status === "rejected") {
-        const failed = [
-          chRes.status === "rejected" ? `Canlı: ${String(chRes.reason?.message || chRes.reason)}` : "",
-          vodRes.status === "rejected" ? `Film: ${String(vodRes.reason?.message || vodRes.reason)}` : "",
-          serRes.status === "rejected" ? `Dizi: ${String(serRes.reason?.message || serRes.reason)}` : "",
-        ].filter(Boolean).join(" · ");
-        throw new Error(`Xtream kataloglarından biri alınamadı; eksik/yanlış playlist kaydedilmedi. ${failed}`);
+      const isUnsupported404=(r:any)=>r?.status === "rejected" && /HTTP\s+404\b/i.test(String(r.reason?.message || r.reason || ""));
+      if (chRes.status === "rejected") throw new Error(`Xtream canlı katalog alınamadı; playlist kaydedilmedi. ${String(chRes.reason?.message || chRes.reason)}`);
+      if ((vodRes.status === "rejected" && !isUnsupported404(vodRes)) || (serRes.status === "rejected" && !isUnsupported404(serRes))) {
+        const failed=[vodRes.status==="rejected"?`Film: ${String(vodRes.reason?.message||vodRes.reason)}`:"",serRes.status==="rejected"?`Dizi: ${String(serRes.reason?.message||serRes.reason)}`:""].filter(Boolean).join(" · ");
+        throw new Error(`Xtream katalog doğrulaması başarısız; playlist kaydedilmedi. ${failed}`);
       }
       let channels = chRes.value;
-      let vod = vodRes.value;
-      let series = serRes.value;
+      let vod = vodRes.status === "fulfilled" ? vodRes.value : [];
+      let series = serRes.status === "fulfilled" ? serRes.value : [];
       let contentSelection: PlaylistContentSelection | null = null;
       if (chooseCategories) {
         setProgress("Kategoriler hazır · seçim bekleniyor…");
@@ -848,6 +846,7 @@ export default function AddPlaylist() {
         id, name: displayName?.trim() || name.trim() || "Xtream Codes", source: "xtream",
         xtreamServer: cred.server, xtreamUsername: cred.username, xtreamPassword: cred.password,
         serverCodeBinding,
+        catalogCapabilities: { live: "supported", vod: isUnsupported404(vodRes) ? "unsupported_404" : "supported", series: isUnsupported404(serRes) ? "unsupported_404" : "supported", updatedAt: new Date().toISOString() },
         accountInfo: login.user_info as AccountInfo,
         serverInfo: login.server_info || null,
         contentSelection,
@@ -1539,10 +1538,10 @@ export default function AddPlaylist() {
           serial: stSerial.trim() || undefined,
           // v15.2.25 RC1: modern varsayılan cihaz. MAG250 yalnız kontrollü
           // compatibility fallback olarak stalker.ts içinde korunur.
-          deviceModel: "MAG254" as const,
+          deviceModel: "MAG320" as const,
         };
 
-        setProgress("MAG254 profiliyle portala bağlanılıyor...");
+        setProgress("MAG320 Exact profiliyle native portala bağlanılıyor...");
         const { session, profile: prof } = await stLogin(cred);
 
         setProgress("Canlı TV kataloğu alınıyor...");
@@ -1577,7 +1576,7 @@ export default function AddPlaylist() {
           throw new Error(
             "Portal oturumu açıldı ancak Canlı TV listesi BOŞ.\n\n" +
               (session.profileError ? `Profil aşaması: ${session.profileError}\n\n` : "") +
-              "MAG254 varsayılan cihaz profili kullanıldı. Olası sebepler:\n" +
+              "MAG320 Exact ilk profil olarak kullanıldı; gerekirse MAG254/MAG250 fallbackleri denendi. Olası sebepler:\n" +
               "• MAC adresi bu portalda yayın yetkisine sahip değil\n" +
               "• Abonelik süresi dolmuş\n" +
               "• Portal farklı cihaz kimliği/SN bekliyor (MAG250 fallback otomatik denenir)"

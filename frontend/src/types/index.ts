@@ -177,6 +177,8 @@ export interface Playlist {
   lastUsedAt?: string;
   lastRefreshedAt?: string;
   lastRefreshOk?: boolean;
+  /** v16.13.10: endpoint gerçeği; 404 olan kataloglar desteklenmiyor kabul edilir, çalışan katalog korunur. */
+  catalogCapabilities?: { live?: 'supported' | 'unsupported_404'; vod?: 'supported' | 'unsupported_404'; series?: 'supported' | 'unsupported_404'; updatedAt?: string };
   /**
    * LİSTE KİLİDİ (v9.3.0 — kullanıcı isteği)
    * Bu listeye geçmek için PIN gerekir. Profil PIN'inden BAĞIMSIZDIR:

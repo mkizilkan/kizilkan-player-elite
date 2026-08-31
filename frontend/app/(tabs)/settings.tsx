@@ -932,6 +932,7 @@ export default function SettingsTab() {
         {/* Oynatma Listeleri */}
         <SectionTitle text="OYNATMA LİSTELERİ" />
         <View style={{ paddingHorizontal: SPACING.lg }}>
+          {playlists.length > 0 && (<FocusButton testID="settings-playlist-management" focusable onPress={() => router.push({ pathname: "/playlist-select", params: { manage: "1" } })} style={[styles.linkBtn,{backgroundColor:colors.surfaceSecondary,borderColor:colors.brandPrimary,marginBottom:SPACING.sm}]}><Ionicons name="options" size={22} color={colors.brandPrimary}/><View style={{flex:1}}><Text style={[styles.rowTitle,{color:colors.onSurface}]}>Playlist Yönetimi ve Sıralama</Text><Text style={[styles.rowSub,{color:colors.onSurfaceSecondary}]}>Sırala, sabitle, sürükle-bırak özel sıra oluştur ve SEÇ butonuyla liste değiştir</Text></View><Ionicons name="chevron-forward" size={20} color={colors.brandPrimary}/></FocusButton>)}
           {playlists.length > 0 && (
             <FocusButton
               testID="settings-refresh-all-playlists"
@@ -1012,6 +1013,7 @@ export default function SettingsTab() {
                     );
                   })()}
                 </FocusButton>
+                <FocusButton testID={`settings-select-action-${pl.id}`} onPress={() => void setActivePlaylist(pl.id)} style={{minWidth:62,minHeight:38,borderRadius:RADIUS.pill,borderWidth:1,borderColor:colors.brandPrimary,backgroundColor:active?colors.surfaceSecondary:colors.brandPrimary,alignItems:"center",justifyContent:"center",paddingHorizontal:10,marginLeft:SPACING.sm}}><Text style={{color:active?colors.brandPrimary:colors.onBrandPrimary,fontWeight:"900"}}>{active?"AKTİF":"SEÇ"}</Text></FocusButton>
                 {active && <Ionicons name="radio-button-on" size={20} color={colors.brandPrimary} />}
                 {/* LİSTE KİLİDİ (v9.3.0) — profil PIN'inden bağımsız */}
                 <FocusButton

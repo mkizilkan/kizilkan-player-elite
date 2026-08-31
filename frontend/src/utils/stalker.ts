@@ -990,7 +990,7 @@ async function handshakeAttempt(
   return null;
 }
 
-/** 1) HANDSHAKE — MAG254 varsayılan, öğrenilmiş endpoint/profil önce, fallback sınırlı. */
+/** 1) HANDSHAKE — v16.13.10: MAG320 PCAP/Loader Exact varsayılan; MAG254/MAG250 yalnız compatibility fallback. */
 async function stalkerHandshakeInternal(cred: StalkerCreds): Promise<StalkerSession> {
   const finishTask=startDiagnosticTask("mag:handshake",{portal:cred.portal});
   const errors:string[]=[];
@@ -1020,7 +1020,7 @@ async function stalkerHandshakeInternal(cred: StalkerCreds): Promise<StalkerSess
     const profiles=preferredCompatProfiles(cred,learned);
     void recordDiagnostic("catalog","STALKER_HANDSHAKE_PLAN",{
       strategy:learned?"pcap-first-learned-second":"pcap-first-bounded",candidateCount:plan.length,
-      firstPath:endpointPath(plan[0]||""),preferredProfile:profiles[0],defaultModel:cred.deviceModel||"MAG254",
+      firstPath:endpointPath(plan[0]||""),preferredProfile:profiles[0],defaultModel:cred.deviceModel||"MAG320",
     });
 
     for (let ei=0; ei<plan.length; ei++) {
@@ -1178,7 +1178,7 @@ function baseProfileParams(mac:string, model:"MAG250"|"MAG254"="MAG254"): Record
   };
 }
 
-function initialProfileVariants(cred:StalkerCreds, preferredModel:MagDeviceModel="MAG254"): StalkerProfileVariant[] {
+function initialProfileVariants(cred:StalkerCreds, preferredModel:MagDeviceModel="MAG320"): StalkerProfileVariant[] {
   const mac=normalizeMac(cred.mac);
   if (preferredModel === "MAG320") {
     // PCAP: GET /portal.php?action=get_profile&type=stb — JsHttpRequest ve fingerprint query yok.
@@ -1203,7 +1203,7 @@ function initialProfileVariants(cred:StalkerCreds, preferredModel:MagDeviceModel
   return preferredModel==="MAG250" ? [...mag250Variants,...mag254Variants] : [...mag254Variants,...mag250Variants];
 }
 
-async function derivedProfileVariants(cred:StalkerCreds, random="", preferredModel:MagDeviceModel="MAG254"): Promise<StalkerProfileVariant[]> {
+async function derivedProfileVariants(cred:StalkerCreds, random="", preferredModel:MagDeviceModel="MAG320"): Promise<StalkerProfileVariant[]> {
   if (preferredModel === "MAG320") return [];
   try {
     const mac=normalizeMac(cred.mac);
@@ -1259,7 +1259,7 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession): P
   }
   return null;
   };
-  const preferredModel=ses.compatProfile ? compatModel(ses.compatProfile) : (cred.deviceModel || "MAG254");
+  const preferredModel=ses.compatProfile ? compatModel(ses.compatProfile) : (cred.deviceModel || "MAG320");
   const direct=await tryVariants(initialProfileVariants(cred,preferredModel));
   if (direct) return direct;
   const derived=await tryVariants(await derivedProfileVariants(cred,ses.random || "",preferredModel));

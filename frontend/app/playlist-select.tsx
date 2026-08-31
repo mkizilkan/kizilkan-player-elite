@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, Pressable, TextInput, PanResponder, Animated } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { useTv } from "@/src/store/TvContext";
@@ -16,7 +16,7 @@ import { playlistTypeLabel, playlistVisualColor, playlistTypeIcon } from "@/src/
 import { storage } from "@/src/utils/storage";
 import { ContentSelectionModal } from "@/src/components/ContentSelectionModal";
 import { applyContentSelection, catalogCategories } from "@/src/utils/contentSelection";
-import { DEFAULT_PLAYLIST_SORT, PLAYLIST_SORT_LABELS, sortPlaylists, playlistRemainingDays, playlistTotalCount, type PlaylistSortMode, type PlaylistSortPreferences } from "@/src/utils/playlistManagement";
+import { DEFAULT_PLAYLIST_SORT, PLAYLIST_SORT_LABELS, sortPlaylists, playlistRemainingDays, playlistTotalCount, playlistMaxUsers, type PlaylistSortMode, type PlaylistSortPreferences } from "@/src/utils/playlistManagement";
 import type { Playlist, PlaylistContentSelection } from "@/src/types";
 
 export default function PlaylistSelect() {
@@ -28,6 +28,8 @@ export default function PlaylistSelect() {
   const { isTv, tvLayout } = useTv();
   const homeRoute = (isTv && tvLayout === "columns") ? "/tv-home" : "/(tabs)";
   const router = useRouter();
+  const params = useLocalSearchParams<{ manage?: string }>();
+  const managementMode = String(params.manage || "") === "1";
   const { colors } = useTheme();
   const { playlists, activePlaylist, setActivePlaylist, isLoading, loadedProfileId, updatePlaylist, removePlaylist, heavyLoading, repairFailedId} = usePlaylists();
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
@@ -231,6 +233,7 @@ export default function PlaylistSelect() {
 
   useEffect(() => {
     clearAutoTimers();
+    if (managementMode) return;
     if (isLoading || loadedProfileId !== activeProfile.id || navigationStartedRef.current) return;
 
     if (sorted.length === 0) {
@@ -266,7 +269,7 @@ export default function PlaylistSelect() {
     }, 4000);
 
     return clearAutoTimers;
-  }, [isLoading, loadedProfileId, activeProfile.id, sorted, activePlaylist?.id, router, setActivePlaylist, homeRoute, clearAutoTimers]);
+  }, [isLoading, loadedProfileId, activeProfile.id, sorted, activePlaylist?.id, router, setActivePlaylist, homeRoute, clearAutoTimers, managementMode]);
 
   /**
    * LİSTE KİLİDİ (v9.3.0 — kullanıcı isteği)
@@ -284,8 +287,9 @@ export default function PlaylistSelect() {
     try {
       if (activePlaylist?.id !== id) await setActivePlaylist(id);
       router.replace(homeRoute as any);
-    } catch {
+    } catch (e:any) {
       navigationStartedRef.current = false;
+      Alert.alert("Playlist seçilemedi", String(e?.message || e || "Liste içeriği doğrulanamadı."));
     }
   };
 
@@ -327,8 +331,8 @@ export default function PlaylistSelect() {
             <Text style={[styles.hello, { color: colors.onSurfaceSecondary }]}>
               Merhaba <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold }}>{activeProfile.name}</Text>
             </Text>
-            <Text style={[styles.title, { color: colors.onSurface }]}>Hangi liste ile başlayalım?</Text>
-            {autoTimer > 0 && sorted.length > 1 && (
+            <Text style={[styles.title, { color: colors.onSurface }]}>{managementMode ? "Oynatma Listelerini Yönet" : "Hangi liste ile başlayalım?"}</Text>
+            {!managementMode && autoTimer > 0 && sorted.length > 1 && (
               <FocusButton testID="cancel-auto-btn" onPress={cancelAuto} style={{ marginTop: SPACING.sm }}>
                 <Text style={[styles.autoText, { color: colors.brandPrimary }]}>
                   {autoTimer}s içinde son liste otomatik açılacak (Dokun: durdur)
@@ -455,13 +459,14 @@ export default function PlaylistSelect() {
                     {(p.vodCount ?? p.vod?.length ?? 0) ? ` • ${p.vodCount ?? p.vod?.length} film` : ""}
                     {(p.seriesCount ?? p.series?.length ?? 0) ? ` • ${p.seriesCount ?? p.series?.length} dizi` : ""}
                   </Text>
-                  <Text style={[styles.sub,{color:colors.onSurfaceTertiary}]} numberOfLines={1}>{`Toplam ${playlistTotalCount(p)} • Kalan gün: ${playlistRemainingDays(p)==null?'Bilinmiyor':playlistRemainingDays(p)}${p.lastRefreshedAt?` • Son güncelleme ${new Date(p.lastRefreshedAt).toLocaleDateString('tr-TR')} ${p.lastRefreshOk===true?'✓':p.lastRefreshOk===false?'✕':''}`:''}`}</Text>
+                  <Text style={[styles.sub,{color:colors.onSurfaceTertiary}]} numberOfLines={1}>{`Toplam ${playlistTotalCount(p)} • Maks. kullanıcı: ${playlistMaxUsers(p)==null?'Bilinmiyor':playlistMaxUsers(p)} • Kalan gün: ${playlistRemainingDays(p)==null?'Bilinmiyor':playlistRemainingDays(p)}${p.lastRefreshedAt?` • Son güncelleme ${new Date(p.lastRefreshedAt).toLocaleDateString('tr-TR')} ${p.lastRefreshOk===true?'✓':p.lastRefreshOk===false?'✕':''}`:''}`}</Text>
                   {p.serverCodeBinding && (
                     <Text style={[styles.sub, { color: colors.onSurfaceTertiary }]} numberOfLines={1}>
                       Panel: {p.serverCodeBinding.panelName} • Sunucu kodu: {p.serverCodeBinding.code}
                     </Text>
                   )}
                 </View>
+                {!bulkMode && <FocusButton testID={`playlist-select-action-${p.id}`} onPress={()=>void choose(p.id)} style={[styles.selectBtn,{backgroundColor:activePlaylist?.id===p.id?colors.surfaceSecondary:colors.brandPrimary,borderColor:colors.brandPrimary}]}><Text style={{color:activePlaylist?.id===p.id?colors.brandPrimary:colors.onBrandPrimary,fontWeight:"900"}}>{activePlaylist?.id===p.id?"AKTİF":"SEÇ"}</Text></FocusButton>}
                 <FocusButton testID={`playlist-pin-${p.id}`} onPress={()=>void togglePinned(p)} hitSlop={8} style={{padding:6}}><Ionicons name={p.pinned?"pin":"pin-outline"} size={19} color={p.pinned?colors.brandPrimary:colors.onSurfaceTertiary}/></FocusButton>
                 <FocusButton
                   testID={`playlist-refresh-${p.id}`}
@@ -513,6 +518,8 @@ export default function PlaylistSelect() {
           </View>
         </>
       )}
+      <Modal visible={sortModal} transparent animationType="fade" onRequestClose={()=>setSortModal(false)}><Pressable style={styles.manageOverlay} onPress={()=>setSortModal(false)}><Pressable style={[styles.manageModal,{backgroundColor:colors.surface,borderColor:colors.border}]} onPress={e=>e.stopPropagation()}><Text style={[styles.manageTitle,{color:colors.onSurface}]}>Playlist sıralama</Text><Text style={{color:colors.onSurfaceSecondary,marginBottom:SPACING.sm}}>Sabitlenen/favori listeler varsayılan olarak en üstte kalır. Maksimum kullanıcı sırası yalnız sunucunun bildirdiği gerçek değeri kullanır.</Text><ScrollView style={{maxHeight:480}}>{(Object.keys(PLAYLIST_SORT_LABELS) as PlaylistSortMode[]).map(mode=><FocusButton key={mode} onPress={()=>{void persistSortPref({...sortPref,mode});setSortModal(false)}} style={[styles.sortOption,{borderColor:sortPref.mode===mode?colors.brandPrimary:colors.border}]}><Ionicons name={sortPref.mode===mode?"radio-button-on":"radio-button-off"} size={19} color={colors.brandPrimary}/><Text style={{color:colors.onSurface,flex:1}}>{PLAYLIST_SORT_LABELS[mode]}</Text></FocusButton>)}</ScrollView><FocusButton onPress={()=>void persistSortPref({...sortPref,pinnedFirst:!sortPref.pinnedFirst})} style={[styles.sortOption,{borderColor:colors.border}]}><Ionicons name={sortPref.pinnedFirst?"checkbox":"square-outline"} size={19} color={colors.brandPrimary}/><Text style={{color:colors.onSurface}}>Sabitlenenleri en üstte tut</Text></FocusButton></Pressable></Pressable></Modal>
+      <ReorderPlaylistsModal visible={reorderModal} playlists={sortPlaylists(playlists,{mode:'manual',pinnedFirst:true})} colors={colors} onCancel={()=>setReorderModal(false)} onSave={rows=>{void saveManualOrder(rows);setReorderModal(false)}}/>
       {/* LİSTE PIN GİRİŞİ (v9.3.0) */}
       <Modal visible={!!pinForList} transparent animationType="fade" onRequestClose={() => setPinForList(null)}>
         <Pressable
@@ -625,4 +632,6 @@ const styles = StyleSheet.create({
   manageModal: { width: "100%", maxWidth: 620, maxHeight: "88%", borderWidth: 1, borderRadius: RADIUS.lg, padding: SPACING.lg },
   manageTitle: { fontSize: FONT.size.lg, fontWeight: FONT.weight.black, marginBottom: SPACING.sm, textAlign: "center" },
   closeBtn: { minHeight: 46, borderWidth: 1, borderRadius: RADIUS.pill, alignItems: "center", justifyContent: "center", paddingHorizontal: SPACING.md },
+  selectBtn: { minWidth: 64, minHeight: 40, borderWidth: 1, borderRadius: RADIUS.pill, alignItems: "center", justifyContent: "center", paddingHorizontal: SPACING.md },
+  sortOption: { minHeight: 46, borderWidth: 1, borderRadius: RADIUS.md, paddingHorizontal: SPACING.md, marginBottom: SPACING.xs, flexDirection: "row", alignItems: "center", gap: SPACING.sm },
 });

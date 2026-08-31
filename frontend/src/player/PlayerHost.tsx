@@ -611,6 +611,12 @@ export default function PlayerHost() {
   } : null, [playbackRequest]);
 
   useEffect(() => {
+    if (!playbackRequest?.url || activePlaylist?.source !== "xtream" || !channel) return;
+    let host="",pathShape=""; try{const u=new URL(playbackRequest.url);host=u.host;const parts=u.pathname.split('/').filter(Boolean);pathShape=parts.length>=4?`/${parts[0]}/<user>/<pass>/${parts[parts.length-1]}`:`/${parts.map((x,i)=>i===parts.length-1?x:'<segment>').join('/')}`;}catch{}
+    void recordDiagnostic("player","XTREAM_PLAYBACK_PROVENANCE",{playlistId:String(activePlaylist.id||""),channelId:String(channel.id||""),streamId:String(channel.stream_id??""),container:String(channel.container_ext||""),host,pathShape,candidateIndex:playbackUrlIndex,candidateCount:playbackCandidates.length,lastRefreshedAt:String(activePlaylist.lastRefreshedAt||"")});
+  },[playbackRequest?.url,activePlaylist?.id,activePlaylist?.source,activePlaylist?.lastRefreshedAt,channel?.id,channel?.stream_id,channel?.container_ext,playbackUrlIndex,playbackCandidates.length]);
+
+  useEffect(() => {
     stalkerPlaybackRefreshRef.current = 0;
     stalkerForceFreshRequestedRef.current = false;
   }, [channel?.id, activePlaylist?.id]);
