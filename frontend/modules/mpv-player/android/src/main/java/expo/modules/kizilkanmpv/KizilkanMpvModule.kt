@@ -22,7 +22,14 @@ class KizilkanMpvModule : Module() {
     // JS telemetry/gate'e açılır; URL/credential içermez.
     Function("getRuntimeStatus") {
       val info = appContext.reactContext?.applicationInfo
-      val classLoaded = try { Class.forName("dev.jdtech.mpv.MPVLib"); true } catch (_: Throwable) { false }
+      var classLoadError = ""
+      val classLoaded = try {
+        Class.forName("dev.jdtech.mpv.MPVLib", false, javaClass.classLoader)
+        true
+      } catch (t: Throwable) {
+        classLoadError = "${t.javaClass.simpleName}:${t.message.orEmpty()}".take(220)
+        false
+      }
       val nativeDir = try { info?.nativeLibraryDir ?: "" } catch (_: Throwable) { "" }
       val extractedLibmpv = nativeDir.isNotBlank() && File(nativeDir, "libmpv.so").exists()
       val extractedLibcxx = nativeDir.isNotBlank() && File(nativeDir, "libc++_shared.so").exists()
@@ -55,6 +62,8 @@ class KizilkanMpvModule : Module() {
         "apkLibcxxPresent" to apkLibcxx,
         "apkAbiMatch" to apkAbi,
         "nativeLibrariesVerified" to nativeLibrariesVerified,
+        "classLoadError" to classLoadError,
+        "moduleClassLoader" to (javaClass.classLoader?.javaClass?.name ?: ""),
       )
     }
 

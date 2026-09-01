@@ -47,7 +47,7 @@ need('frontend/app/_layout.tsx', 'initializeDiagnostics', 'startup initializatio
 need('frontend/app/_layout.tsx', 'APP_BACKGROUND', 'lifecycle background event');
 need('frontend/app/_layout.tsx', 'APP_FOREGROUND', 'lifecycle foreground event');
 need('frontend/app/_layout.tsx', 'ROUTE_CHANGED', 'navigation route correlation');
-need('frontend/app/stats.tsx', 'Flight Recorder v', 'flight recorder health UI');
+need('frontend/app/stats.tsx', 'Flight Recorder V', 'flight recorder health UI');
 need('frontend/app/stats.tsx', 'ANR watchdog', 'watchdog UI health');
 need('tools/denetle.js', 'check-v15220-flight-recorder.js', 'v15.2.20 gate ana zincirde');
 

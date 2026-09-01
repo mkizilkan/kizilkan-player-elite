@@ -111,6 +111,14 @@ type StalkerCatalogOptions = {
 const stalkerCatalogCache = new Map<string, { result: StalkerCatalogResult; at: number }>();
 const stalkerCatalogInFlight = new Map<string, Promise<StalkerCatalogResult>>();
 
+// v16.14.8 PERFORMANCE: create_link çıktıları çok kısa süreli bellek önbelleği.
+// Amaç aynı kanala hızlı geri dönüşte gereksiz 0.5-4 sn resolver gecikmesini
+// kaldırmaktır. Stalker linkleri geçici olduğundan TTL özellikle kısa tutulur;
+// forceFresh/401/403/444/456/520 recovery invalidateSession üzerinden temizler.
+const PLAYBACK_LINK_CACHE_TTL_MS = 8_000;
+const PLAYBACK_LINK_CACHE_MAX = 24;
+const stalkerPlaybackLinkCache = new Map<string, { url: string; at: number }>();
+
 function sessionKey(cred: StalkerCreds): string { return `${baseOf(cred.portal).toLowerCase()}|${normalizeMac(cred.mac)}|${cred.serial || ""}|${cred.deviceId || ""}`; }
 function getCachedSession(cred: StalkerCreds): { session: StalkerSession; profile: any } | null {
   const key = sessionKey(cred); const hit = stalkerSessionCache.get(key); if (!hit) return null;
@@ -125,6 +133,7 @@ function invalidateSession(cred: StalkerCreds) {
   const key = sessionKey(cred);
   stalkerSessionCache.delete(key);
   for (const catalogKey of [...stalkerCatalogCache.keys()]) if (catalogKey.startsWith(key + "|")) stalkerCatalogCache.delete(catalogKey);
+  for (const playbackKey of [...stalkerPlaybackLinkCache.keys()]) if (playbackKey.startsWith(key + "|")) stalkerPlaybackLinkCache.delete(playbackKey);
 }
 function catalogKey(cred: StalkerCreds, ses: StalkerSession, scope = "full"): string {
   return `${sessionKey(cred)}|${String(ses.endpoint || "").toLowerCase()}|${scope}`;
@@ -2015,10 +2024,25 @@ export async function stalkerResolveStream(
   if (!session) session = (await stalkerLogin(cred, { forceFresh: !!opts.forceFresh })).session;
   const parsed = parseMediaCommand(cmd);
   const resolveWithSession = async (activeSession: StalkerSession, didRefresh: boolean): Promise<StalkerPlaybackContext> => {
+    const playbackKey = `${sessionKey(cred)}|${String(activeSession.endpoint || "").toLowerCase()}|${parsed.kind}|${parsed.series}|${parsed.cmd}`;
+    const cachedLink = !didRefresh ? stalkerPlaybackLinkCache.get(playbackKey) : undefined;
+    if (cachedLink && Date.now() - cachedLink.at <= PLAYBACK_LINK_CACHE_TTL_MS) {
+      const headers = playbackHeadersFor(cred, activeSession, cachedLink.url);
+      void recordDiagnostic("player", "STALKER_PLAYBACK_LINK_CACHE_HIT", {
+        elapsedMs: Date.now() - started, ageMs: Date.now() - cachedLink.at, mediaType: parsed.kind,
+      });
+      return { url: cachedLink.url, headers, session: activeSession, mediaType: parsed.kind, refreshed: false };
+    }
+    if (cachedLink) stalkerPlaybackLinkCache.delete(playbackKey);
     const url = await stalkerCreateLink(cred, activeSession, parsed.cmd, parsed.kind, parsed.series, { recovery: didRefresh });
+    stalkerPlaybackLinkCache.set(playbackKey, { url, at: Date.now() });
+    if (stalkerPlaybackLinkCache.size > PLAYBACK_LINK_CACHE_MAX) {
+      const oldest = [...stalkerPlaybackLinkCache.entries()].sort((a,b)=>a[1].at-b[1].at)[0]?.[0];
+      if (oldest) stalkerPlaybackLinkCache.delete(oldest);
+    }
     const headers = playbackHeadersFor(cred, activeSession, url);
     void recordDiagnostic("player", "STALKER_RESOLVE_DONE", {
-      elapsedMs: Date.now()-started, cacheHit, mediaType: parsed.kind, refreshed: didRefresh,
+      elapsedMs: Date.now()-started, cacheHit, linkCacheHit: false, mediaType: parsed.kind, refreshed: didRefresh,
       headerNames: Object.keys(headers).sort(),
     });
     return { url, headers, session: activeSession, mediaType: parsed.kind, refreshed: didRefresh };

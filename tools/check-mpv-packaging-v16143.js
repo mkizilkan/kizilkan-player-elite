@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * v16.14.3 — MPV FAIL-CLOSED BUILD/RUNTIME PACKAGING HARD-GATE
+ * v16.14.8 — MPV FAIL-CLOSED BUILD/RUNTIME PACKAGING HARD-GATE
  *
  * AAR'ın Maven/Gradle cache'te bulunması RELEASE PASS değildir.
  * PASS yalnız final APK içinde aynı desteklenen ABI için BOTH libmpv.so ve
- * libc++_shared.so bulunduğunda verilir. mergeReleaseNativeLibs çıktısı ara kanıttır.
+ * libc++_shared.so VE dev.jdtech.mpv.MPVLib DEX sınıfı bulunduğunda verilir. mergeReleaseNativeLibs çıktısı ara kanıttır.
  * Build artefact yoksa exit 2 = BLOCKED/NOT VERIFIED.
  */
 const fs=require('fs'), path=require('path'), cp=require('child_process'), os=require('os');
@@ -32,6 +32,22 @@ const verifyEntries=(entries,prefix,label)=>{
   return true;
 };
 
+const verifyMpvDexClass=(apk,entries)=>{
+  const dexEntries=entries.filter(x=>/^classes(?:\d+)?\.dex$/.test(x));
+  if(!dexEntries.length){console.error('FAIL — FINAL APK: classes*.dex bulunamadı');return false}
+  for(const dex of dexEntries){
+    try{
+      const out=cp.spawnSync('unzip',['-p',apk,dex],{encoding:null,maxBuffer:256*1024*1024});
+      if(out.status!==0||!out.stdout) continue;
+      const b=out.stdout;
+      const needles=[Buffer.from('Ldev/jdtech/mpv/MPVLib;'),Buffer.from('dev/jdtech/mpv/MPVLib'),Buffer.from('dev.jdtech.mpv.MPVLib')];
+      if(needles.some(n=>b.indexOf(n)>=0)){console.log(`✓ FINAL APK DEX: ${dex} içinde MPVLib class descriptor bulundu`);return true}
+    }catch{}
+  }
+  console.error('FAIL — FINAL APK: dev.jdtech.mpv.MPVLib DEX içinde yok (native .so tek başına yeterli değil)');
+  return false;
+};
+
 // Artifact-level evidence only: useful diagnosis, never release PASS.
 const aarRoot=path.join(os.homedir(),'.gradle','caches','modules-2','files-2.1','dev.jdtech.mpv','libmpv','1.0.0');
 const aars=[];
@@ -56,7 +72,8 @@ const apk=apkCandidates.find(p=>fs.existsSync(p));
 if(apk){
   let entries;try{entries=listZip(apk)}catch{console.error('FAIL — APK açılamadı: '+apk);process.exit(1)}
   if(!verifyEntries(entries,'lib/','FINAL APK')) process.exit(1);
-  console.log('✓ final APK native packaging doğrulandı:',apk);
+  if(!verifyMpvDexClass(apk,entries)) process.exit(1);
+  console.log('✓ final APK native + DEX packaging doğrulandı:',apk);
   console.log('TEMIZ — MPV 1.0.0 FINAL APK packaging VERIFIED');
   process.exit(0);
 }

@@ -1,0 +1,31 @@
+#!/usr/bin/env node
+const fs=require('fs'),path=require('path');
+const R=path.resolve(__dirname,'..'); const read=p=>fs.readFileSync(path.join(R,p),'utf8'); let bad=0;
+const ok=(c,m)=>{console.log(`${c?'PASS':'FAIL'}: ${m}`); if(!c)bad++;};
+const pkg=JSON.parse(read('frontend/package.json')), app=JSON.parse(read('frontend/app.json'));
+const host=read('frontend/src/player/PlayerHost.tsx');
+const stalker=read('frontend/src/utils/stalker.ts');
+const stats=read('frontend/app/stats.tsx');
+const mpvGradle=read('frontend/modules/mpv-player/android/build.gradle');
+const mpvModule=read('frontend/modules/mpv-player/android/src/main/java/expo/modules/kizilkanmpv/KizilkanMpvModule.kt');
+const mpvPlugin=read('frontend/plugins/withMpvRuntime.js');
+const mpvGate=read('tools/check-mpv-packaging-v16143.js');
+const consumer=read('frontend/modules/mpv-player/android/consumer-rules.pro');
+const [M,m,p]=pkg.version.split('.').map(Number), expected=M*10000+m*100+p;
+ok(pkg.version==='16.14.8'&&app.expo.version===pkg.version&&app.expo.android.versionCode===expected,'v16.14.8 metadata synchronized');
+ok(app.expo.ios.buildNumber===pkg.version&&String(app.expo.extra?.kizilkanReleaseLabel||'').includes('16.14.8'),'release metadata synchronized');
+ok(JSON.stringify(app.expo.plugins).includes('./plugins/withMpvRuntime'),'MPV runtime config plugin wired');
+ok(mpvGradle.includes("implementation 'dev.jdtech.mpv:libmpv:1.0.0'")&&mpvPlugin.includes("implementation 'dev.jdtech.mpv:libmpv:1.0.0'"),'MPV 1.0.0 direct app + module dependency hardening');
+ok(consumer.includes('-keep class dev.jdtech.mpv.**')&&mpvPlugin.includes('-keep class dev.jdtech.mpv.**'),'MPV R8/ProGuard runtime keep hardened');
+ok(mpvModule.includes('classLoadError')&&mpvModule.includes('moduleClassLoader'),'MPV runtime class-load failure telemetry strengthened');
+ok(mpvGate.includes('verifyMpvDexClass')&&mpvGate.includes('Ldev/jdtech/mpv/MPVLib;'),'final APK gate verifies MPVLib DEX descriptor');
+ok(host.includes('PLAYER_CHANNEL_ROOM_LOOKUP')&&host.includes('getItemsByIds<any>(activePlaylist.id, "live"'),'player live-channel hot path uses one-row Room lookup');
+ok(!/if \(activePlaylist\?\.id\) void ensureHeavyLoaded\(activePlaylist\.id\);/.test(host.slice(host.indexOf('export default function PlayerHost'),host.indexOf('const { setProgress: setLibProgress'))),'player no longer unconditionally hydrates full catalog on Native Core');
+ok(host.includes('Fail-safe regression path')&&host.includes('const hydrated = await ensureHeavyLoaded(activePlaylist.id)'),'legacy heavy hydrate preserved only as fail-safe');
+ok(host.includes('setBlackBoxCheckpoint')&&host.includes('player;${v2ProfileKey}'),'native crash checkpoint includes player engine/channel ownership');
+ok(stalker.includes('PLAYBACK_LINK_CACHE_TTL_MS = 8_000')&&stalker.includes('STALKER_PLAYBACK_LINK_CACHE_HIT'),'bounded short-lived Stalker playback URL cache enabled');
+ok(stalker.includes('for (const playbackKey of [...stalkerPlaybackLinkCache.keys()])'),'session invalidation also invalidates playback-link cache');
+ok(stats.includes('loadDiagnostics(5000)')&&stats.includes('playerAggregate'),'stats uses wider aggregate without rendering full event set');
+ok(stats.includes('Flight Recorder V7 · Native Journal Schema V'),'Flight Recorder product version/native schema UI separated');
+if(bad){console.error(`FAIL — v16.14.8 performance/runtime hard-gate: ${bad}`);process.exit(1)}
+console.log('TEMIZ — v16.14.8 performance + RAM hot-path + MPV runtime + diagnostics hard-gate');

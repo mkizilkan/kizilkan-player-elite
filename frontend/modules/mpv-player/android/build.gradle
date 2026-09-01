@@ -8,6 +8,9 @@ version = '1.0.0'
 
 android {
   namespace "expo.modules.kizilkanmpv"
+  buildTypes {
+    release { consumerProguardFiles "consumer-rules.pro" }
+  }
   defaultConfig {
     minSdkVersion 26
     versionCode 1
@@ -19,4 +22,6 @@ dependencies {
   // GPT ELITE v15.1: libmpv-android 1.0.0 multiple-instance API.
   // Her KizilkanMpvView kendi MPVLib instance'ını yönetir; ZAP/session izolasyonu native seviyede korunur.
   implementation 'dev.jdtech.mpv:libmpv:1.0.0'
+  // v16.14.8: Uygulama katmanında da dependency hardening vardır; consumer keep
+  // rules release/R8 sırasında MPVLib API'sinin elenmesini engeller.
 }

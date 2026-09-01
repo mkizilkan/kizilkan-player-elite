@@ -28,6 +28,7 @@ export default function StatsScreen() {
   const [scanDiagnostics, setScanDiagnostics] = useState<any[]>([]);
   const [lastScanCrash, setLastScanCrash] = useState<Record<string, any>>({});
   const [blackBoxHealth, setBlackBoxHealth] = useState<Record<string, any>>({});
+  const [playerAggregate, setPlayerAggregate] = useState<ReturnType<typeof summarizePlayerDiagnostics> | null>(null);
 
   // v15.2.4: İstatistik ekranı yalnız birkaç favori/son kanal için artık
   // on binlerce kanalı hydrate etmez. Native Core varsa ID bazlı Room sorgusu.
@@ -63,9 +64,10 @@ export default function StatsScreen() {
   useEffect(() => {
     let live = true;
     void (async () => {
-      const d = await loadDiagnostics(120);
+      const [d, aggregateEvents] = await Promise.all([loadDiagnostics(120), loadDiagnostics(5000)]);
       if (!live) return;
       setDiagnostics(d);
+      setPlayerAggregate(summarizePlayerDiagnostics(aggregateEvents));
       if (nativeData) {
         setRuntimeMemory(KizilkanNativeCore.getRuntimeMemory());
         setLastExitInfo(KizilkanNativeCore.getLastExitInfo());
@@ -78,7 +80,8 @@ export default function StatsScreen() {
     return () => { live = false; };
   }, [nativeData]);
 
-  const playerDiag = useMemo(() => summarizePlayerDiagnostics(diagnostics), [diagnostics]);
+  const recentPlayerDiag = useMemo(() => summarizePlayerDiagnostics(diagnostics), [diagnostics]);
+  const playerDiag = playerAggregate || recentPlayerDiag;
   const exitScanCorrelation = useMemo(() => {
     const exitAt = Number(lastExitInfo.timestamp || 0);
     if (!exitAt) return null;
@@ -163,6 +166,7 @@ export default function StatsScreen() {
                     await Promise.all([clearAllProgress(), clearRecent(), clearDiagnostics()]);
                     if (PanelScan.available) PanelScan.clearDiagnostics();
                     setDiagnostics([]);
+                    setPlayerAggregate(null);
                     setScanDiagnostics([]);
                     setLastScanCrash({});
                     setLastExitInfo({});
@@ -251,7 +255,7 @@ export default function StatsScreen() {
                 <Text key={`exit-${i}`} style={[styles.telemetryLine, { color: colors.onSurfaceTertiary }]}>Önceki {i+2}: {String(x.reasonLabel || x.reason)} · {formatDate(x.timestamp)} · PSS {formatKb(x.pssKb)}{x.traceAvailable ? " · trace var" : ""}</Text>
               ))}
               {exitScanCorrelation ? <Text style={[styles.telemetryLine, { color: colors.brandPrimary }]}>Çıkıştan hemen önce tarama: {String(exitScanCorrelation.state || "?")} · {Number(exitScanCorrelation.tested||0)}/{Number(exitScanCorrelation.total||0)} · PSS {formatKb(exitScanCorrelation.pssKb)}</Text> : null}
-              {blackBoxHealth.initialized ? <Text style={[styles.telemetryLine, { color: colors.brandPrimary }]}>Flight Recorder v{String(blackBoxHealth.schemaVersion || 3)}: {Number(blackBoxHealth.dbEvents || 0)} olay · kritik {Number(blackBoxHealth.dbCriticalEvents || 0)} · ölüm journalı {formatBytes(blackBoxHealth.criticalJournalBytes)} · ANR watchdog {blackBoxHealth.watchdogActive ? "AKTİF" : "PASİF"}</Text> : null}
+              {blackBoxHealth.initialized ? <Text style={[styles.telemetryLine, { color: colors.brandPrimary }]}>Flight Recorder V7 · Native Journal Schema V{String(blackBoxHealth.schemaVersion || "—")}: {Number(blackBoxHealth.dbEvents || 0)} olay · kritik {Number(blackBoxHealth.dbCriticalEvents || 0)} · ölüm journalı {formatBytes(blackBoxHealth.criticalJournalBytes)} · ANR watchdog {blackBoxHealth.watchdogActive ? "AKTİF" : "PASİF"}</Text> : null}
               <Text style={[styles.telemetryLine, { color: colors.onSurfaceTertiary }]}>Thread: {String(runtimeMemory.threadCount ?? "—")} · FD: {String(runtimeMemory.fdCount ?? "—")} · Uptime: {runtimeMemory.uptimeMs ? `${Math.round(Number(runtimeMemory.uptimeMs)/1000)} sn` : "—"}</Text>
             </View>
           </>

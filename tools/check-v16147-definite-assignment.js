@@ -4,7 +4,7 @@ const R=path.resolve(__dirname,'..'); const read=p=>fs.readFileSync(path.join(R,
 const ok=(c,m)=>{console.log(`${c?'PASS':'FAIL'}: ${m}`);if(!c)bad++;};
 const pkg=JSON.parse(read('frontend/package.json')), app=JSON.parse(read('frontend/app.json')), add=read('frontend/app/add-playlist.tsx');
 const [M,m,p]=pkg.version.split('.').map(Number), expected=M*10000+m*100+p;
-ok(pkg.version==='16.14.7'&&app.expo.version===pkg.version&&app.expo.android.versionCode===expected,'v16.14.7 metadata synchronized');
+ok((M>16||(M===16&&(m>14||(m===14&&p>=7))))&&app.expo.version===pkg.version&&app.expo.android.versionCode===expected,'v16.14.7+ metadata synchronized');
 ok(app.expo.ios.buildNumber===pkg.version&&String(app.expo.extra?.kizilkanReleaseLabel||'').includes(pkg.version),'iOS/release label synchronized');
 const submitStart=add.indexOf('const submit = async');
 const submitEnd=add.indexOf('const methods:',submitStart);

@@ -54,7 +54,7 @@ for (const stage of ['playlistSelect','roomVerify','catalogRecovery','channelSel
 ok(pc.includes("recordFlightRecorderStage(traceId, 'playlistSelect'")&&player.includes("recordFlightRecorderStage(traceId, 'urlResolve'")&&player.includes("'firstFrame'"),'V7 lifecycle correlation wired across playlist/player');
 
 ok(mpvGradle.includes("dev.jdtech.mpv:libmpv:1.0.0"),'MPV libmpv 1.0.0 dependency');
-ok(mpvModule.includes('getRuntimeStatus')&&mpvModule.includes('Class.forName("dev.jdtech.mpv.MPVLib")'),'MPV runtime class/ABI status API');
+ok(mpvModule.includes('getRuntimeStatus')&&mpvModule.includes('Class.forName("dev.jdtech.mpv.MPVLib"'),'MPV runtime class/ABI status API');
 ok(fs.existsSync(path.join(ROOT,'tools/check-mpv-packaging-v16142.js')),'MPV AAR/JNI packaging build gate exists');
 
 if(fail){console.error(`FAIL — v16.14.2+ integrated hard-gate: ${fail} sorun`);process.exit(1)}

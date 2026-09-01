@@ -77,6 +77,7 @@ import { loadOverrides, type OverrideMap } from "@/src/utils/overrides";
 import { BackHandler } from "react-native";
 import { VLCPlayer as VLCPlayerLib, VLC_AVAILABLE } from "@/src/native/vlc";
 import { KizilkanMpvView, KIZILKAN_MPV_AVAILABLE, getKizilkanMpvRuntimeStatus, type KizilkanMpvHandle } from "@/modules/mpv-player";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 const EPISODE_URL_KEY = "kizilkan.episode.url.";
 type Fit = "contain" | "cover" | "fill";
@@ -198,11 +199,52 @@ export default function PlayerHost() {
   const sessionKind = params.kind ?? (params.ext === "true" ? "external" : "live");
   const isSynthetic = sessionKind !== "live";
   const { activePlaylist, toggleFavorite, isFavorite, ensureHeavyLoaded } = usePlaylists();
+  const [nativeLiveChannel, setNativeLiveChannel] = useState<any | null>(null);
 
-  // v15.2 Native Core: legacy ekran tam koleksiyon ister.
+  /**
+   * v16.14.8 PERFORMANCE: Player hot-path artık Android Native Core'da bütün
+   * playlisti JS/Hermes heap'ine hydrate etmez. Kanal tıklaması yalnız tek Room
+   * satırını ID ile alır. 20K-100K kataloglarda kanal açılışından önceki büyük
+   * JSON okuma/array üretme ve RAM sıçraması böylece kritik yoldan çıkar.
+   * Web/legacy davranışı korunur.
+   */
   useEffect(() => {
-    if (activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
-  }, [activePlaylist?.id, ensureHeavyLoaded]);
+    let cancelled = false;
+    if (isSynthetic || !activePlaylist?.id || !params.id) {
+      setNativeLiveChannel(null);
+      return () => { cancelled = true; };
+    }
+    if (!KizilkanNativeCore.available) {
+      void ensureHeavyLoaded(activePlaylist.id);
+      return () => { cancelled = true; };
+    }
+    const startedAt = Date.now();
+    setNativeLiveChannel(null);
+    void KizilkanNativeCore.getItemsByIds<any>(activePlaylist.id, "live", [String(params.id)])
+      .then(async rows => {
+        if (cancelled) return;
+        let item = Array.isArray(rows) ? rows[0] || null : null;
+        if (!item) {
+          // Fail-safe regression path: Room satırı olağan dışı biçimde eksikse eski
+          // katalog dosyasını yalnız BU hata durumunda yükle; normal hot-path'i ağırlaştırma.
+          const hydrated = await ensureHeavyLoaded(activePlaylist.id);
+          if (cancelled) return;
+          item = hydrated?.channels?.find((c:any) => String(c.id) === String(params.id)) || null;
+        }
+        setNativeLiveChannel(item);
+        const elapsedMs = Date.now() - startedAt;
+        void recordDiagnostic("database", "PLAYER_CHANNEL_ROOM_LOOKUP", {
+          playlistId: String(activePlaylist.id), channelId: String(params.id), found: !!item, elapsedMs,
+        }, { stage: "playerChannelLookup", durationMs: elapsedMs, outcome: item ? "success" : "failed" });
+      })
+      .catch(error => {
+        if (cancelled) return;
+        void recordDiagnostic("database", "PLAYER_CHANNEL_ROOM_LOOKUP_FAILED", {
+          playlistId: String(activePlaylist.id), channelId: String(params.id), elapsedMs: Date.now() - startedAt, error: String((error as any)?.message || error),
+        }, { stage: "playerChannelLookup", durationMs: Date.now() - startedAt, outcome: "failed" });
+      });
+    return () => { cancelled = true; };
+  }, [activePlaylist?.id, ensureHeavyLoaded, isSynthetic, params.id]);
   const { setProgress: setLibProgress } = useLibrary();
 
   const [externalStream, setExternalStream] = useState<{ url: string; name: string; group: string; container_ext: string; poster?: string | null } | null>(null);
@@ -544,8 +586,9 @@ export default function PlayerHost() {
       } as any;
     }
     if (isSynthetic) return null;
+    if (KizilkanNativeCore.available) return nativeLiveChannel;
     return activePlaylist?.channels.find(c => c.id === params.id) || null;
-  }, [isSynthetic, externalStream, activePlaylist, params.id]);
+  }, [isSynthetic, externalStream, activePlaylist, params.id, nativeLiveChannel]);
 
   // v15.2.24-RC3: Flight Recorder aktif oynatma işini de bilir. Bu görev uzun
   // ömürlüdür; daha yeni refresh/MAG/scan görevleri token-seq modeliyle öncelik
@@ -553,6 +596,15 @@ export default function PlayerHost() {
   useEffect(() => {
     if (!visible || !channel?.id) return;
     return markTask(`player:${v2ProfileKey}`, { channelId: channel.id, sessionId: activeSessionId });
+  }, [visible, channel?.id, v2ProfileKey, activeSessionId]);
+
+  // v16.14.8 CRASH FORENSICS: Android process-state summary, native SIG/crash
+  // sonrasında hangi kanal/motor/oturumun aktif olduğunu 128-byte sınırında taşır.
+  useEffect(() => {
+    if (!visible || !channel?.id || !KizilkanNativeCore.available) return;
+    try {
+      KizilkanNativeCore.setBlackBoxCheckpoint?.(`player;${v2ProfileKey};ch:${String(channel.id).slice(0,28)};sid:${String(activeSessionId || '').slice(-18)}`);
+    } catch {}
   }, [visible, channel?.id, v2ProfileKey, activeSessionId]);
 
   /**
