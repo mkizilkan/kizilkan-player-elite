@@ -41,7 +41,7 @@ function staticChecks(){
   need(add,/visible=\{loading && method === "stalker"\}/,'MAG görünür progress modalı yok');
   need(add,/Portala bağlanılıyor/,'MAG modalında boş-metin durumu için mesaj yok');
   need(add,/"MAG Portal Eklendi"/,'Live commit sonrası kullanıcı başarı bilgisi yok');
-  need(add,/Film ve diziler arka planda yüklenmeye devam edecek/,'background enrichment kullanıcı bilgisi yok');
+  if(!(/Film ve diziler arka planda yüklenmeye devam edecek/.test(add) || /Canlı TV, film ve diziler ayrı senkron aşamalarında tamamlanacak/.test(add))) throw new Error('background enrichment kullanıcı bilgisi yok');
   forbid(stalker,/console\.log\([^\n]*(token|Cookie|Authorization)/i,'secret loglama şüphesi');
 }
 function transpile(src,file,jsx=false){

@@ -21,7 +21,12 @@ need('frontend/src/utils/stalker.ts','STALKER_CATALOG_STAGE_DONE','MAG aşama s�
 need('frontend/src/utils/stalker.ts','Film kataloğu yükleniyor · sayfa','MAG VOD gerçek sayfa ilerlemesi');
 need('frontend/src/utils/stalker.ts','Dizi kataloğu yükleniyor · sayfa','MAG Series gerçek sayfa ilerlemesi');
 need('frontend/src/utils/refreshPlaylist.ts','forceFresh: true','manuel MAG yenileme gerçek fresh istek');
-need('frontend/app/add-playlist.tsx','onProgress: (progress) => setProgress(progress.message)','MAG ekleme gerçek aşama UI');
+{
+  const add=read('frontend/app/add-playlist.tsx');
+  const progressCallback=/onProgress\s*:\s*[^,\n]*\(?progress\)?[^,\n]*=>\s*setProgress\(progress\.message\)/s.test(add)
+    || /onProgress\s*:\s*[^,\n]*\(?progress\)?[^,\n]*=>\s*\{?[^}\n]*setProgress\(progress\.message\)/s.test(add);
+  if(!progressCallback){console.log('HATA — MAG ekleme gerçek aşama UI: onProgress callback setProgress(progress.message) davranışı bulunamadı');bad++;}
+}
 need('frontend/app/edit-playlist.tsx','onProgress: (progress) => setProgress(progress.message)','MAG düzenleme gerçek aşama UI');
 
 // Room activation must be verified before activeId persistence/publication

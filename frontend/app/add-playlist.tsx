@@ -1445,12 +1445,6 @@ export default function AddPlaylist() {
 
       let id = "";
       let playlist: Playlist;
-      let magEnrichment: null | {
-        cred: any;
-        session: any;
-        run: () => Promise<void>;
-      } = null;
-
       if (method === "m3u_url") {
         if (!m3uUrl.trim()) throw new Error("M3U URL boş olamaz");
         const canonicalM3u = canonicalUrlIdentity(m3uUrl);
@@ -1508,7 +1502,7 @@ export default function AddPlaylist() {
           id, name: name.trim() || fileName || "M3U Dosyası", source: "m3u_file", contentSelection,
           channels:fileCatalog.channels, vod:fileCatalog.vod, series:fileCatalog.series, createdAt:new Date().toISOString(),
         };
-      } else {
+      } else if (method === "stalker") {
         /**
          * STALKER / MAG — ARTIK CİHAZ İÇİ (v9.1.0)
          * Eskiden backend proxy'ye bağımlıydı (emergent kalıntısı). Protokolün
@@ -1622,43 +1616,13 @@ export default function AddPlaylist() {
         return;
       }
 
+      // v16.14.6: Bu nokta yalnız M3U URL / M3U dosya legacy parser akışıdır.
+      // MAG dalı yukarıda doğrulanmış hesap persist + ayrı katalog senkronu ile terminal return yapar.
       const totalItems = (playlist.channels?.length || 0) + (playlist.vod?.length || 0) + (playlist.series?.length || 0);
       if (totalItems === 0) throw new Error("Hiç kanal/film/dizi bulunamadı. Kaynağı kontrol edin.");
       setProgress("Cihaza kaydediliyor...");
-      if (method === "stalker") {
-        void recordDiagnostic("catalog", "STALKER_ADD_COMMIT_START", {
-          playlistId: id,
-          live: playlist.channels?.length || 0,
-          vod: playlist.vod?.length || 0,
-          series: playlist.series?.length || 0,
-        });
-      }
-      const commitStartedAt = Date.now();
       if (!(await commitPlaylist(playlist))) return false;
-      if (method === "stalker") {
-        void recordDiagnostic("catalog", "STALKER_ADD_COMMIT_OK", {
-          playlistId: id,
-          elapsedMs: Date.now() - commitStartedAt,
-          live: playlist.channels?.length || 0,
-        });
-      }
-      setProgress(method === "stalker"
-        ? `Canlı TV hazır · ${playlist.channels?.length || 0} kanal kaydedildi. Film ve diziler arka planda tamamlanacak…`
-        : "Playlist hazır. +18 filtresi arka planda hazırlanıyor...");
-
-      // addPlaylist + Room verify başarıyla tamamlandıktan SONRA enrichment.
-      if (magEnrichment) void magEnrichment.run();
-
-      if (method === "stalker") {
-        await new Promise<void>((resolve) => {
-          Alert.alert(
-            "MAG Portal Eklendi",
-            `${playlist.channels?.length || 0} canlı kanal kullanıma hazır.\n\nFilm ve diziler arka planda yüklenmeye devam edecek; uygulamayı kullanabilirsiniz.`,
-            [{ text: "Listeye Git", onPress: () => resolve() }],
-            { cancelable: false },
-          );
-        });
-      }
+      setProgress("Playlist hazır. +18 filtresi arka planda hazırlanıyor...");
       router.replace("/(tabs)");
     } catch (e: any) {
       const message = e.message || "Bilinmeyen hata";
