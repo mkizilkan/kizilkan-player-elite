@@ -1,0 +1,15 @@
+# KIZILKAN PLAYER ELITE v15.2.24 RC1 — VERIFY FIRST
+# Main'e dogrudan push YOK.
+cd /sdcard/Download/gpt-kizilkan-player-elite || exit 1
+
+git status --short
+git branch --show-current
+git diff --check || exit 1
+
+# Dependency kuruluysa hard-gate:
+cd frontend || exit 1
+node ../tools/check-v15224-mag-room-stall.js || exit 1
+node ../tools/denetle.js || exit 1
+cd ..
+
+# once verify-v15.2.24 branch, sonra GitHub Actions. CI yesil olmadan main'e tasimayin.

@@ -1,0 +1,15 @@
+cd /sdcard/Download/gpt-kizilkan-player-elite
+git diff --check
+git status --short
+git add .
+git diff --cached --check
+git diff --cached --name-status
+git diff --cached --name-only | grep -Ei '\.(jks|keystore|p12|pfx|pem)$|release\.jks|base64'
+git commit -m "fix: KIZILKAN PLAYER ELITE v15.2.15 RC1 Stalker Series TypeScript contract build fix"
+git fetch origin
+git log --oneline HEAD..origin/main
+git log --oneline origin/main..HEAD
+git push origin main
+git fetch origin
+git status
+git log -1 --oneline --decorate

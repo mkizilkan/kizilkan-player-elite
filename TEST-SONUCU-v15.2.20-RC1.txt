@@ -1,0 +1,78 @@
+=== VERSION ===
+4:  "version": "15.2.20",
+40:      "versionCode": 150220,
+=== HARD GATES ===
+--- tools/checkplayercore.js
+
+TEMIZ — Player Core v15 sozlesmesi saglam
+--- tools/check-v15214-hardening.js
+[StalkerCatalog] {
+  live: 1,
+  vod: 1,
+  series: 1,
+  diagnostics: { vod: 'OK', seriesNative: 'EMPTY', seriesFromVod: 1, warnings: [] }
+}
+[StalkerCatalog] {
+  live: 1,
+  vod: 0,
+  series: 1,
+  diagnostics: {
+    vod: 'EMPTY',
+    seriesNative: 'UNSUPPORTED',
+    seriesFromVod: 1,
+    warnings: [
+      'Portal ayrı Series endpointini desteklemiyor; VOD is_series fallback kullanıldı.'
+    ]
+  }
+}
+TEMIZ — v15.2.14 Stalker/Backup fonksiyonel fixture kapisi
+--- tools/check-v15215-typescript-contract.js
+TEMIZ — v15.2.15 Stalker Series TypeScript contract kapisi
+--- tools/check-v15216-diagnostics.js
+TEMIZ — v15.2.16 diagnostics/session-cache contract
+--- tools/check-v15217-scan-transport.js
+TEMIZ — v15.2.17 scan transport / crash diagnostics / MAG connection contract
+--- tools/check-v15218-blackbox.js
+PASS version-consistency
+PASS blackbox-v2+
+PASS legacy-reader
+PASS capacity>=1500
+PASS playlist-switch-ready
+PASS playlist-switch-generation
+PASS seek-telemetry
+PASS appstate-live-refs
+PASS stale-spinner-state-recovery
+PASS binder-staging-preserved
+TEMIZ — v15.2.18 state consistency / Black Box V2 contract
+--- tools/check-v15219-corrective.js
+TEMIZ — v15.2.19 corrective gates / state consistency / persistent Black Box V2
+--- tools/check-v15220-flight-recorder.js
+TEMIZ — v15.2.20 TypeScript corrective + native Flight Recorder v3 contracts
+--- tools/check-v15220-typescript-semantic.js
+TEMIZ — v15.2.20 PlaylistContext Promise<void> semantik sözleşmesi
+--- tools/denetle.js
+═══ KIZILKAN PLAYER — DENETİM ═══
+
+✓ Tanımsız sembol (hook/JSX bileşeni)
+✓ Tanımsız fonksiyon çağrısı
+✓ Tanımsız context value alanı
+✓ Bayat kapanış (stale closure)
+✓ Tanımsız JSX prop değişkeni
+✓ Kullanım-önce-tanım (const hoisting)
+✓ Yanlış hook kaynağı
+✓ Eksik nokta-import (Modal/Alert/…)
+✓ Player Core v15 kritik regresyon kapisi
+✓ v15.2.14 Stalker/Backup fonksiyonel fixture
+✓ v15.2.15 Stalker Series TypeScript contract
+✓ v15.2.16 Tanılama/MAG session cache contract
+✓ v15.2.17 Scan transport/crash/MAG connection contract
+✓ v15.2.18 State consistency / Black Box V2 contract
+✓ v15.2.19 Corrective gate/test compatibility contract
+✓ v15.2.20 Flight Recorder v3 / TypeScript corrective contract
+✓ v15.2.20 Playlist Promise<void> semantic contract
+✓ TDZ denetleyici self-test (v14.2 crash)
+
+✅ TÜM DENETİMLER TEMİZ — paketlenebilir
+=== TS TRANSPILE ===
+files=109 diagnostics=0
+=== SENSITIVE FILE SCAN ===

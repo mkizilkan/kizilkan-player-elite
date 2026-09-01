@@ -1,0 +1,19 @@
+KIZILKAN PLAYER ELITE v15.2.17-RC1
+versionCode=150217
+
+YAPILAN YEREL KONTROLLER:
+- node tools/denetle.js: TEMİZ
+- check-v15217-scan-transport.js: TEMİZ
+- v15.2.14 Stalker/Backup fixture: TEMİZ
+- v15.2.15 TypeScript contract fixture: TEMİZ
+- v15.2.16 diagnostics/session-cache fixture: TEMİZ
+- TS/TSX syntax parse: 109 dosya / 0 hata
+- Kotlin kaynaklarında izole parser kontrolü: syntax-like hata yok (Android/Expo classpath mevcut olmadığı için tam Kotlin compile değildir)
+- signing/keystore dosyaları pakete dahil edilmez
+
+GERÇEK BUILD KANITI DEĞİL:
+- tam npx tsc --noEmit
+- Expo prebuild
+- Kotlin/Gradle release compile
+- APK gerçek cihaz testi
+Bunlar GitHub Actions ve cihaz acceptance ile doğrulanmalıdır.

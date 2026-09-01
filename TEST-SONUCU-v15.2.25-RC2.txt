@@ -1,0 +1,24 @@
+KIZILKAN PLAYER ELITE v15.2.25 RC2
+
+KANITLANAN KOK NEDEN
+- RC1 stalker.ts learned MAG cache, StorageItemValue = string|number|boolean|null sözleşmesine Record<string, LearnedMagCompat> geçiriyordu.
+- GitHub'daki TS2344/TS2345 hatalarının gösterdiği 206/216/219/229/231 bölgeleri bu ihlalle birebir eşleşti.
+
+RC2 DUZELTME
+- Learned cache JSON string persistence.
+- Parse sırasında runtime shape/profile/model/number doğrulaması.
+- Bozuk/eski cache güvenli boş-store fallback.
+- RC1 object-generic/object-write kalıplarını yasaklayan regression gate.
+- Master denetime gerçek full TypeScript --noEmit hard-gate.
+
+BU ORTAMDA GERCEKTEN CALISTIRILAN KONTROLLER
+- v15.2.25 RC2 storage contract: TEMIZ
+- v15.2.25 MAG254 architecture fixture: TEMIZ
+- v15.2.24 RC3 tools audit: TEMIZ (33 JS)
+- v15.2.14..v15.2.24 sürüm hard-gate'leri: TEMIZ
+- legacy defs/calls/jsx/tdz/hook/context/deps kontrolleri doğru frontend CWD ile: TEMIZ
+- RC2 yeni JS dosyaları node --check: TEMIZ
+
+TAM TSC NOTU
+- Kaynak ZIP node_modules içermediği için bu çalışma konteynerinde Expo/React bağımlılıkları yoktur; bu nedenle tam proje tsc sonucu burada başarı olarak iddia edilmemiştir.
+- RC2, tools/check-v15225-rc2-typescript-build.js ile bağımlılıkların kurulu olduğu Termux/GitHub ortamında gerçek tsc --noEmit'i zorunlu hard-gate yapar ve TypeScript yoksa fail eder.

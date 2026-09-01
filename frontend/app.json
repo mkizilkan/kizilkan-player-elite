@@ -1,0 +1,204 @@
+{
+  "expo": {
+    "name": "KIZILKAN PLAYER ELITE",
+    "slug": "frontend",
+    "version": "16.14.3",
+    "orientation": "default",
+    "icon": "./assets/images/icon.png",
+    "scheme": "kizilkan-gpt",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#000000",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.gpt.kizilkan.player",
+      "buildNumber": "16.14.3",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "audio"
+        ],
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
+        },
+        "NSLocalNetworkUsageDescription": "Chromecast cihazlarına yayın göndermek için yerel ağ erişimi",
+        "NSBonjourServices": [
+          "_googlecast._tcp"
+        ],
+        "NSMicrophoneUsageDescription": "Sesli komutlarla kanal aramak için mikrofon erişimi",
+        "NSPhotoLibraryAddUsageDescription": "Ekran görüntülerini galeriye kaydetmek için",
+        "NSPhotoLibraryUsageDescription": "DVR kayıtlarını galeriye eklemek için"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#000000"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "com.gpt.kizilkan.player",
+      "versionCode": 161403,
+      "usesCleartextTraffic": true,
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.WAKE_LOCK",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
+      ],
+      "splash": {
+        "image": "./assets/images/splash-image.png",
+        "resizeMode": "contain",
+        "backgroundColor": "#0A0000"
+      },
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "category": [
+            "DEFAULT",
+            "BROWSABLE"
+          ],
+          "data": [
+            {
+              "mimeType": "video/*"
+            },
+            {
+              "mimeType": "application/x-mpegURL"
+            },
+            {
+              "mimeType": "application/vnd.apple.mpegurl"
+            },
+            {
+              "mimeType": "application/dash+xml"
+            },
+            {
+              "mimeType": "audio/*"
+            }
+          ]
+        },
+        {
+          "action": "VIEW",
+          "category": [
+            "DEFAULT",
+            "BROWSABLE"
+          ],
+          "data": [
+            {
+              "scheme": "http",
+              "mimeType": "video/*"
+            },
+            {
+              "scheme": "https",
+              "mimeType": "video/*"
+            },
+            {
+              "scheme": "rtsp"
+            },
+            {
+              "scheme": "rtmp"
+            }
+          ]
+        }
+      ],
+      "softwareKeyboardLayoutMode": "resize"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      [
+        "@react-native-tvos/config-tv",
+        {
+          "isTV": true
+        }
+      ],
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-image.png",
+          "imageWidth": 240,
+          "resizeMode": "contain",
+          "backgroundColor": "#0A0000",
+          "dark": {
+            "image": "./assets/images/splash-image.png",
+            "backgroundColor": "#0A0000"
+          }
+        }
+      ],
+      "expo-video",
+      "expo-web-browser",
+      "expo-quick-actions",
+      [
+        "expo-notifications",
+        {
+          "color": "#E30A17"
+        }
+      ],
+      [
+        "react-native-google-cast",
+        {
+          "iosReceiverAppId": "CC1AD845",
+          "androidReceiverAppId": "CC1AD845"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26,
+            "usesCleartextTraffic": true,
+            "packagingOptions": {
+              "pickFirst": [
+                "**/libc++_shared.so",
+                "**/libjsc.so",
+                "**/libfbjni.so"
+              ]
+            }
+          }
+        }
+      ],
+      [
+        "./plugins/withCleartextTraffic",
+        {
+          "allowAll": true,
+          "allowedDomains": [],
+          "trustUserCerts": false
+        }
+      ],
+      [
+        "./plugins/withAndroidTV",
+        {
+          "banner": "assets/images/tv-banner.png",
+          "fallbackBanner": "@mipmap/ic_launcher",
+          "leanbackRequired": false
+        }
+      ],
+      "./plugins/withTvRemoteKeys",
+      [
+        "expo-libvlc-player",
+        {
+          "supportsPictureInPicture": true,
+          "localNetworkPermission": "KIZILKAN PLAYER ELITE yerel ağdaki yayınlara erişmek için ağ iznine ihtiyaç duyar."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "kizilkanReleaseLabel": "GPT ELITE v16.14.3 RC1"
+    }
+  }
+}

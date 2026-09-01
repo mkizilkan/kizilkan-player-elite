@@ -1,0 +1,14 @@
+# KIZILKAN PLAYER ELITE v15.2.17-RC1
+# Repo: /sdcard/Download/gpt-kizilkan-player-elite
+# Commit önerisi:
+# fix: KIZILKAN PLAYER ELITE v15.2.17 RC1 scan transport crash and MAG connection diagnostics
+
+# Güvenli rsync excludes:
+# --exclude='.git/'
+# --exclude='frontend/kizilkan-player-elite-release.jks'
+# --exclude='frontend/kizilkan-player-elite-release.jks.base64'
+# --exclude='frontend/kizilkan-player-elite-release-GITHUB.txt'
+
+# Commit:
+# git commit -m "fix: KIZILKAN PLAYER ELITE v15.2.17 RC1 scan transport crash and MAG connection diagnostics"
+# git push origin main

@@ -1,0 +1,15 @@
+KIZILKAN PLAYER ELITE v15.2.27-RC1 — DEĞİŞEN DOSYA SHA-256
+
+a21ac5c4e73fc726367e197bd53038d2a7313252790fce5096efb189f66e8099  frontend/app/add-playlist.tsx
+6bbcb914889f29c6cf0b6702d9c578ac54e1d449e3822f3afaac95a6016bf36f  frontend/app.json
+ecc5eb02a0214e5bc1c3c66ed6cff6adec872985bd1c3a279597797787b85f61  frontend/package.json
+837b74039073454186d8bbd5f5ed779a6ddf7e1a274911da9a697f2def63a535  frontend/src/player/PlayerHost.tsx
+9225ca1780c4a75027285588f8a3d872c3bce4d2654326595d83f709bd38faa3  frontend/src/player/v2/request.ts
+126ac35f9b8e4a0b3529ac44b769464649eac1aa4e34539f756300cb19d0909d  frontend/src/utils/stalker.ts
+4f93ceaaa35a9e6c0b3b21e8f28bdb8c89135d1cb580acbe57bcaab0c878427f  tools/check-v15225-mag-architecture.js
+146152ec865f539f96dd091cae357a0a09c938b223a7740f281c39bf6749806f  tools/check-v15227-mag-playback-pagination-ui.js
+82d99118c5cccc2267658fe36d308354aa9a088aaf6c2a75bdd48708cb11b631  tools/denetle.js
+80a37e3ba875e875fdc82fb37f1adb68a48528e21c851d7d684baa612e2c4d15  00-OKU-BENI-v15.2.27-RC1.md
+fdd966456dadc688ab47c518d861bd2e3c44376deb2c79136207ffffc7758e13  DUZELTME-YORUMU-v15.2.27-RC1.md
+4bc84eae728ae129a2fba4d992ae79b09d3617ed9687dd9475a36ac1488b351c  TEST-SONUCU-v15.2.27-RC1.txt
+26e496098cbe7203d0a85887b0934926b01a8aa5a099fd0a5ad62602a134acc7  TERMUX-GITHUB-v15.2.27-RC1.md

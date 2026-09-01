@@ -1,0 +1,12 @@
+cd /sdcard/Download/kizilkan-player-elite
+node tools/check-v15218-blackbox.js
+git diff --check
+git status --short
+git add .
+git diff --cached --check
+git diff --cached --name-only | grep -Ei '\.(jks|keystore|p12|pfx|pem)$|release\.jks|base64' || true
+git commit -m "fix: KIZILKAN PLAYER ELITE v15.2.18 RC1 state consistency and black box v2"
+git fetch origin
+git log --oneline HEAD..origin/main
+git log --oneline origin/main..HEAD
+git push origin main

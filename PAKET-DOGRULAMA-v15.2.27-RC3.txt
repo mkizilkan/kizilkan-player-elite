@@ -1,0 +1,6 @@
+KIZILKAN PLAYER ELITE v15.2.27-RC3 PAKET DOGRULAMA
+- RC3 source fix: frontend/src/utils/stalker.ts
+- RC3 hard gate: tools/check-v15227-rc3-stalker-ts2345-fix.js
+- Master gate registration: tools/denetle.js
+- Existing v15.2.27 P0 gate updated only to accept equivalent `long_lived` assignment syntax; functional fixture still asserts query value long_lived=1.
+- No feature removal intended.

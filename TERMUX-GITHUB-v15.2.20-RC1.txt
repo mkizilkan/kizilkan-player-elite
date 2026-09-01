@@ -1,0 +1,6 @@
+# v15.2.20 paketini indirdikten sonra doğrudan PUSH ETMEYIN.
+# Önce ayrı stage klasörüne açın, SHA/sürüm/signing/hard-gate kontrolü yapın.
+# ChatGPT ile birlikte kontrol sonrası rsync -> git diff -> stage -> commit -> fetch -> push uygulanacaktır.
+
+cd /sdcard/Download/kizilkan-player
+# Kullanıcının aktif repo klasörü konuşmada ayrıca doğrulanmalıdır.

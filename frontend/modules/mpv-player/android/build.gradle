@@ -1,0 +1,22 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.kizilkanmpv'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.kizilkanmpv"
+  defaultConfig {
+    minSdkVersion 26
+    versionCode 1
+    versionName "1.0.0"
+  }
+}
+
+dependencies {
+  // GPT ELITE v15.1: libmpv-android 1.0.0 multiple-instance API.
+  // Her KizilkanMpvView kendi MPVLib instance'ını yönetir; ZAP/session izolasyonu native seviyede korunur.
+  implementation 'dev.jdtech.mpv:libmpv:1.0.0'
+}

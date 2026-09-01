@@ -1,0 +1,11 @@
+KIZILKAN PLAYER ELITE v15.2.6-RC1 PAKET DOĞRULAMA
+- version: 15.2.6
+- versionCode: 150206
+- hedef: GitHub TypeScript HARD gate regresyon düzeltmesi
+- Search: native Room + fuzzy result shape normalize
+- Playlist: duplicate dead Xtream/code branch kaldırıldı; submitXtreamDirect tek giriş
+- v15.2.5 özellikleri korunur
+- Gerçek npx tsc / Expo / KSP / Kotlin / Gradle sonucu CI bekleniyor
+- denetle.js: 3 ardışık tur TEMİZ
+- checkplayercore.js: TEMİZ; v15.2.6 search/dead-branch regresyon kapıları eklendi
+- bağımlılık kurulumu: paketleme ortamında registry DNS erişimi yok; tam tsc burada çalıştırılmış sayılmaz

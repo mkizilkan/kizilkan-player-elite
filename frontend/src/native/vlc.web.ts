@@ -1,0 +1,6 @@
+// Web stub — VLC is a native-only module
+export const VLCPlayer: any = null;
+
+export const VLC_AVAILABLE = false as const;
+
+export type VlcFirstPlayInfo = { width: number; height: number; length: number; seekable: boolean };

@@ -1,0 +1,10 @@
+KIZILKAN PLAYER ELITE v15.2.25 RC3 TEST KAYDI
+
+PASS: ZIP kaynak bütünlüğü RC2 tabanından çıkarıldı.
+PASS: node --check ile RC3 gate ve master denetleyici syntax kontrolü.
+PASS: RC1 MAG254 architecture contract.
+PASS: RC2 storage contract.
+PASS: v15.2.24 RC1/RC2/RC3 fonksiyonel/statik gate'leri (TypeScript bağımlılığı gerektirmeyenler).
+EXPECTED FAIL-CLOSED (paketleme ortamı): Bu çalışma konteynerinde frontend/node_modules yoktur ve ağdan bağımlılık kurulumu erişilebilir değildir. RC3 full project tsc gate bu durumda başarı taklidi yapmaz; exit 2 ile durur.
+
+ÖNEMLİ: Full `tsc -p frontend/tsconfig.json --noEmit` PASS sonucu bu dosyada iddia edilmemektedir.

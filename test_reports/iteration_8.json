@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 8 (KIZILKAN PLAYER v4.0.0) — bug-fix verification for 'Link yüklerken network hatası veriyor'. Backend regression: 22/22 pytest cases PASS against production URL. Both prod (python-app-builder-13.emergent.host) and preview (python-app-builder-13.preview.emergentagent.com) URLs return HTTP 200 on /api/health. Frontend: /diagnostic screen auto-runs on mount, shows both URLs green (~500ms), displays 'Bağlantı Sağlandı' with active-server label; diag-run-btn re-runs successfully. Settings entry (feature-diagnostic-btn) visible and navigates to /diagnostic. Demo M3U flow (iptv-org TR) loads channels and navigates to home tab, confirming resolveBackend() picks the primary. Xtream with bogus server URL surfaces multiline error card and error-diagnostic-btn appears (message contains 'sunucu', so regex matches, which is correct because it IS a network-related error at backend layer). Metro bundle compiles cleanly (only pre-existing style-prop deprecation warnings from react-native-web, not regressions).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_kizilkan_api.py",
+    "/app/test_reports/pytest/iteration_8_results.xml"
+  ],
+  "action_items": [
+    "None from testing — all iteration-8 fixes verified. To reach the affected user, main agent should trigger a fresh APK build so that EXPO_PUBLIC_BACKEND_URL=production is baked in. The existing installed APK cannot be modified from the code side; a rebuild is the only path to fix the user's device."
+  ],
+  "critical_code_review_comments": [
+    "api.ts fallback logic is clean: resolveBackend() caches the first healthy URL and invalidates cache on network error, so a transient primary outage automatically flips to preview on the next call. Timeout 6s per URL is reasonable.",
+    "diagnostic.tsx correctly exposes forceResolveBackend which resets ACTIVE_BACKEND before re-probing — no stale state. Uses testIDs on all interactive elements (diag-back-btn, diag-retest-btn, diag-run-btn, diag-url-<url>).",
+    "add-playlist.tsx regex /sunucu|ulaş|network|erişil|internet/i is broad on purpose so DNS-resolution failures at the backend (which return 'Sunucuya bağlanılamadı') also show the diagnostic pill — this is intentional and helpful UX.",
+    "_layout.tsx correctly registers <Stack.Screen name=\"diagnostic\" options={{ presentation: 'modal' }} />.",
+    "Preview URL in FALLBACK_URLS is still redirected through the ingress; both URLs actually resolve to the same backend cluster, so 'fallback' is more of a defense-in-depth than a true independent failover. That's acceptable given the constraints."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "100% (22/22)", "frontend": "100% smoke (diagnostic + settings entry + demo M3U + xtream error)" },
+  "seed_data_creation": "None — pytest self-cleans TEST_ prefixed DVR records.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 8 introduced a diagnostic screen and a fallback URL system for the backend. Both prod and preview backends are healthy. The user's original bug required an APK rebuild (client-side); the code-side hardening is complete and verified on web preview. If retesting: run pytest at /app/backend/tests/test_kizilkan_api.py and hit /diagnostic on the web preview.",
+  "rca_of_issue": "Original bug: user's installed APK was built with the preview URL, which was less reliable than production. RCA and fixes applied by main agent: (1) switched EXPO_PUBLIC_BACKEND_URL to production, (2) added a 2-URL fallback probe in api.ts, (3) added an in-app diagnostic screen and error-actions in add-playlist. Verified: all 22 pytest cases pass; /diagnostic screen shows both URLs reachable; settings and add-playlist wiring correct."
+}

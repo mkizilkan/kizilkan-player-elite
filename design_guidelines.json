@@ -1,0 +1,243 @@
+{
+  "app_name": "KIZILKAN PLAYER",
+  "personality": "7 Dark-First Utility structure with 6 Glass / Luxe surfaces",
+  "personality_one_liner": "A cinematic, premium streaming environment that balances immersive glass surfaces with high-performance utility for live EPG tracking.",
+  "color": {
+    "surface": "#000000",
+    "onSurface": "#FFFFFF",
+    "surfaceSecondary": "#141414",
+    "onSurfaceSecondary": "#B3B3B3",
+    "surfaceTertiary": "#262626",
+    "onSurfaceTertiary": "#999999",
+    "surfaceInverse": "#FFFFFF",
+    "onSurfaceInverse": "#000000",
+    "brand": "#E50914",
+    "brandPrimary": "#E50914",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#B81D24",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#831010",
+    "onBrandTertiary": "#FFFFFF",
+    "success": "#2E7D32",
+    "onSuccess": "#FFFFFF",
+    "warning": "#ED6C02",
+    "onWarning": "#FFFFFF",
+    "error": "#D32F2F",
+    "onError": "#FFFFFF",
+    "info": "#0288D1",
+    "onInfo": "#FFFFFF",
+    "border": "#262626",
+    "borderStrong": "#404040",
+    "divider": "#1A1A1A"
+  },
+  "themes": {
+    "netflix": {
+      "surface": "#000000",
+      "onSurface": "#FFFFFF",
+      "surfaceSecondary": "#141414",
+      "onSurfaceSecondary": "#B3B3B3",
+      "surfaceTertiary": "#262626",
+      "onSurfaceTertiary": "#999999",
+      "surfaceInverse": "#FFFFFF",
+      "onSurfaceInverse": "#000000",
+      "brandPrimary": "#E50914",
+      "onBrandPrimary": "#FFFFFF",
+      "border": "#262626",
+      "success": "#2E7D32",
+      "error": "#D32F2F"
+    },
+    "turkish_flag": {
+      "surface": "#1A0205",
+      "onSurface": "#FFFFFF",
+      "surfaceSecondary": "#2E040C",
+      "onSurfaceSecondary": "#E0B3B9",
+      "surfaceTertiary": "#4A0A16",
+      "onSurfaceTertiary": "#F2D8DC",
+      "surfaceInverse": "#FFFFFF",
+      "onSurfaceInverse": "#1A0205",
+      "brandPrimary": "#E30A17",
+      "onBrandPrimary": "#FFFFFF",
+      "border": "#4A0A16",
+      "success": "#2E7D32",
+      "error": "#FF4D4D"
+    },
+    "modern": {
+      "surface": "#121212",
+      "onSurface": "#F5F5F5",
+      "surfaceSecondary": "#1E2024",
+      "onSurfaceSecondary": "#A0AAB5",
+      "surfaceTertiary": "#2A2E35",
+      "onSurfaceTertiary": "#C8D0D8",
+      "surfaceInverse": "#F5F5F5",
+      "onSurfaceInverse": "#121212",
+      "brandPrimary": "#0A84FF",
+      "onBrandPrimary": "#FFFFFF",
+      "border": "#2A2E35",
+      "success": "#32D74B",
+      "error": "#FF453A"
+    },
+    "vu_iptv": {
+      "surface": "#070D1F",
+      "onSurface": "#FFFFFF",
+      "surfaceSecondary": "#0F1934",
+      "onSurfaceSecondary": "#8E9BB8",
+      "surfaceTertiary": "#1A2547",
+      "onSurfaceTertiary": "#B5C1DE",
+      "surfaceInverse": "#FFFFFF",
+      "onSurfaceInverse": "#070D1F",
+      "brandPrimary": "#FF7A00",
+      "onBrandPrimary": "#FFFFFF",
+      "border": "#1A2547",
+      "success": "#00C853",
+      "error": "#FF3D00"
+    }
+  },
+  "typography": {
+    "displayFontFamily": "Outfit",
+    "textFontFamily": "Manrope",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous cinematic spacing for hero cards, tighter athletic spacing for EPG lists to allow quick scanning.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "0",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Use blur on the bottom tab bar.",
+      "Use blur on sticky horizontal category chips.",
+      "Use heavy tinted glass for the video player overlay controls."
+    ],
+    "dont's": [
+      "Do not use blur on standard channel list rows.",
+      "Do not use blur behind dense EPG timeline grids."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Onboarding",
+      "purpose": "Introduce KIZILKAN PLAYER and prompt the user to add their first playlist.",
+      "states": {
+        "loading": "Centered brand-colored spinner.",
+        "empty": "Cinematic dark background with abstract red/theme smoke (Netflix-style), a large logo, and a primary CTA 'Oynatma Listesi Ekle'.",
+        "error": "Standard error overlay with retry button."
+      },
+      "layout": "Full-screen background image with a dark gradient scrim (top to bottom). The primary CTA is positioned in the thumb zone (lower 1/3) using a glass container."
+    },
+    {
+      "name": "Add Playlist (M3U / Xtream)",
+      "purpose": "Provide three entry methods for IPTV credentials: M3U URL, File, or Xtream Codes.",
+      "states": {
+        "loading": "Validating credentials...",
+        "empty": "N/A",
+        "error": "Shows connection/auth error below the form inputs."
+      },
+      "layout": "Segmented control or 3 large selectable cards at the top to choose the method. Single-column form layout below with sticky 'Kaydet' (Save) CTA at the bottom inside KeyboardAvoidingView."
+    },
+    {
+      "name": "Live TV (Home)",
+      "purpose": "Browse and discover channels organized by categories with live EPG data.",
+      "states": {
+        "loading": "Skeleton rows simulating channel logos and progress bars.",
+        "empty": "Illustration indicating no channels found in this category.",
+        "error": "Message prompting to refresh the playlist."
+      },
+      "layout": "CRITICAL: A sticky horizontal scrollable row of category chips (Tümü, Ulusal, Spor, Sinema, etc.) sits at the top under the header. Below is a vertical list of channels. Each row features a channel logo (base64/URL), channel name, EPG 'Now / Next' text, and a horizontal progress bar indicating elapsed program time. Use Glass effect on the sticky category row."
+    },
+    {
+      "name": "EPG Timeline",
+      "purpose": "A full electronic program guide grid showing current and upcoming shows.",
+      "states": {
+        "loading": "Skeleton grid.",
+        "empty": "Message: 'EPG verisi bulunamadı.'",
+        "error": "Error fetching EPG data."
+      },
+      "layout": "A horizontal and vertical scrolling grid (like a traditional TV guide). Time blocks are mapped horizontally, channels vertically. Current time is highlighted with a vertical brand-colored line."
+    },
+    {
+      "name": "Video Player",
+      "purpose": "Immersive, distraction-free playback of HEVC/4K/TS streams.",
+      "states": {
+        "loading": "Centered spinner over black background.",
+        "empty": "N/A",
+        "error": "Clear playback error message with a 'Tekrar Dene' button."
+      },
+      "layout": "Forced landscape (or auto-rotate). Video fills the screen. A glassmorphic control overlay fades in on tap, featuring a play/pause button, progress scrubber, codec info overlay (HEVC/4K tags), aspect ratio toggle, quality selector, and PiP button."
+    },
+    {
+      "name": "Search & Favorites",
+      "purpose": "Quickly find channels or access saved favorites.",
+      "states": {
+        "loading": "Spinner.",
+        "empty": "Search: 'Kanal ara...'. Favorites: 'Henüz favori kanalınız yok.'",
+        "error": "N/A"
+      },
+      "layout": "Search tab has a prominent top search bar and a grid/list of results. Favorites tab displays a list identical to the Live TV channel rows (with EPG and progress)."
+    },
+    {
+      "name": "Settings",
+      "purpose": "Manage app preferences, themes, and parental controls.",
+      "states": {
+        "loading": "N/A",
+        "empty": "N/A",
+        "error": "N/A"
+      },
+      "layout": "Grouped list view. A prominent 'Tema Seçimi' (Theme Selection) section showing 4 selectable options (Netflix, Turkish Flag, Modern, Vu IPTV). Other settings include buffer size, external player toggle, playlist management, and a disabled/roadmap Parental PIN."
+    }
+  ],
+  "images": {
+    "onboarding_hero": {
+      "url": "https://images.pexels.com/photos/333850/pexels-photo-333850.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Cinematic dark abstract red smoke for splash"
+    },
+    "channel_placeholder": {
+      "url": "https://images.pexels.com/photos/35490296/pexels-photo-35490296.jpeg",
+      "alt": "TV placeholder screen"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Read the `themes` object in this JSON carefully. The app supports 4 themes. Ensure you implement a ThemeContext provider that allows swapping between `netflix`, `turkish_flag`, `modern`, and `vu_iptv` palettes. Default to `netflix`.",
+    "Implement the Turkish Flag theme subtly - use the colors (`#1A0205` / `#E30A17` / `#FFFFFF`) and perhaps a subtle crescent-star SVG watermark in the empty states or header, but avoid making it look tacky.",
+    "CRITICAL REQUIREMENT: The Live TV screen MUST have a sticky horizontal chip filter row for categories right below the header. It must remain visible while scrolling the channel list.",
+    "For the EPG in the channel list, ensure you render a horizontal progress bar under the 'Now' program text to indicate how much time has elapsed.",
+    "Ensure the UI is entirely in Turkish (e.g., 'Canlı TV', 'Arama', 'Favoriler', 'Ayarlar').",
+    "Use Phosphor icons. Keep them filled for active tabs, outlined for inactive.",
+    "Make the Video Player robust with controls (Play/Pause, Codec Info, AR, Quality) layered over the video using absolute positioning and a glass effect. Utilize expo-screen-orientation for landscape.",
+    "Settings should feature a visual theme picker.",
+    "Include gradient scrims (top-to-bottom) on the onboarding background image before overlaying text.",
+    "The parental PIN setting should be visible but marked as 'Yakında' (Coming Soon) or disabled for this phase."
+  ]
+}

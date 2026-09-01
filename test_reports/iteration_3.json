@@ -1,0 +1,40 @@
+{
+  "summary": "KIZILKAN PLAYER FAZ 3 tested end-to-end. Backend: 19/19 pytest tests pass — full FAZ 2 regression (18) plus new POST /api/xtream/catchup-epg (correctly returns 400 with Turkish 'Catch-up rehberi alınamadı' + detail on unreachable server, no 500). Frontend E2E on mobile viewport 390x844: (1) Onboarding → Add-Playlist → demo M3U parses 207 iptv-org channels → routes to /(tabs) with single default profile (no profile-select redirect). (2) Settings shows all 3 new sections: 'AİLE PLANI (PROFİLLER)' with default 'Ben' + manage-profiles-btn, 'EBEVEYN KONTROLÜ' with create-pin-btn, 'TV'YE YANSITMA' with chromecast-btn. (3) PIN flow: create-pin-btn opens modal → new-pin-1='1234' + new-pin-2='1234' + save-pin-btn → change-pin-btn+remove-pin-btn appear, lock-categories-btn appears. (4) Category lock modal: 21 toggle-cat-lock-* switches rendered, first toggled successfully. (5) Chromecast: chromecast-btn opens modal, cast-info-ok-btn dismisses. (6) Edit playlist: edit-playlist-{id} pencil icon navigates to /edit-playlist screen showing 'Değişiklikleri Kaydet'. (7) Profile-select route: 'Kim izliyor?' title, add-profile-btn opens form with new-profile-name-input, 8 color swatches, toggle-kids-btn, save-new-profile-btn — all present. (8) Catchup route /catchup?channel=demo renders correctly. (9) Player features: player-audio-btn, player-subtitle-btn, player-sleep-btn, player-seek-back-btn, player-seek-fwd-btn, player-fit-btn, player-reload-btn, player-playpause-btn, player-back-btn all present. player-catchup-btn CORRECTLY HIDDEN for iptv-org demo (no tv_archive). Sleep bottom sheet renders sleep-15/30/45/60/120-btn; selecting sleep-15-btn shows '🌙 14:57' countdown in top meta as expected. Audio button (no tracks) shows 'Bu yayında ek ses parçası yok' — perfect. All Turkish text preserved. No red-screen crashes anywhere.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "react-native-web (pre-existing)", "issue": "Console warnings 'props.pointerEvents is deprecated. Use style.pointerEvents' and 'Image: style.resizeMode is deprecated. Please use props.resizeMode'. Same as iteration 1/2. Non-blocking, likely from Expo Router/@expo/vector-icons internals or react-native-web build. Reference: root layout."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_kizilkan_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "No blocking issues. All 8 new FAZ 3 premium features work end-to-end.",
+    "Optional (pre-existing, non-blocking): silence 'props.pointerEvents' and 'style.resizeMode' deprecation warnings from react-native-web internals if/when upgrading expo/@expo/vector-icons.",
+    "Optional refactor: server.py is now ~800 lines with catchup-epg addition. If more Xtream routes coming in FAZ 4, split into m3u.py / xtream.py / stalker.py / epg.py modules."
+  ],
+  "critical_code_review_comments": [
+    "server.py POST /api/xtream/catchup-epg correctly base64-decodes titles/descriptions (with try/except guard), preserves has_archive flag for UI catch-up filtering, and wraps httpx errors as 400 with Turkish detail — verified.",
+    "player.tsx correctly gates player-catchup-btn on `supportsCatchup` (channel.tv_archive === 1) — iptv-org demo channels hide the button as required.",
+    "player.tsx uses expo-video (VideoView + useVideoPlayer) — NOT deprecated expo-av. Also expo-audio is not used but the picking of audio/subtitle tracks is via player.audioTrack setter which is the new API. Good.",
+    "ParentalContext + ProfileContext state hydrates from AsyncStorage on mount; PIN persists across reload (verified — after saving PIN, change/remove buttons stayed on subsequent visits).",
+    "Category lock modal iterates over groups derived from channels; 21 category toggles for 207-channel iptv-org playlist is correct.",
+    "Edit playlist route reads params.id and populates source-specific fields; 'İçeriği yeniden yükle' toggle is correctly conditional on non-m3u_file source (verified for m3u_url demo).",
+    "profile-select add-profile form validates required name field via save-new-profile-btn — 8 color swatches (color-*-btn) rendered as expected.",
+    "@app.on_event('shutdown') still uses deprecated FastAPI lifecycle (pre-existing note from iter 1) — non-blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_kizilkan_api.py (added TestXtream.test_xtream_catchup_epg_invalid — 19th test)"
+  ],
+  "success_rate": {"backend": "100% (19/19)", "frontend": "100% (all FAZ 3 UI flows verified)"},
+  "seed_data_creation": "EPG programs re-populated for playlist_id='TEST_kizilkan_pl_1' via test_epg_fetch. AsyncStorage populated during E2E with default 'Ben' profile + parental PIN '1234' + demo M3U playlist. No production data modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "FAZ 3 fully verified — 8 new features live and stable. New testIDs to remember: manage-profiles-btn, create-pin-btn / change-pin-btn / remove-pin-btn / new-pin-1 / new-pin-2 / save-pin-btn, lock-categories-btn, toggle-cat-lock-{group_name}, chromecast-btn / cast-info-ok-btn, edit-playlist-{id}, add-profile-btn / new-profile-name-input / color-{name}-btn / toggle-kids-btn / save-new-profile-btn, player-audio-btn / player-subtitle-btn / player-sleep-btn / player-seek-back-btn / player-seek-fwd-btn / player-fit-btn / player-reload-btn / player-catchup-btn / player-playpause-btn / player-back-btn, sleep-{15|30|45|60|120}-btn. Player controls auto-hide after 4s — click player-screen to reveal. Player-catchup-btn only visible when channel.tv_archive===1 (Xtream), always hidden for iptv-org demo/M3U. Sleep timer indicator format: '🌙 mm:ss' in channelMeta top bar. Route /catchup?channel=X handles demo channels gracefully. profile-select is only entered via Settings > manage-profiles-btn (or direct navigation) — single default profile bypasses redirect. Backend catchup endpoint: POST /api/xtream/catchup-epg body={server,username,password,stream_id,limit}. Working test creds: none (all Xtream/Stalker error-path only). Demo M3U: https://iptv-org.github.io/iptv/countries/tr.m3u (207 ch, 21 groups). Demo EPG: https://epgshare01.online/epgshare01/epg_ripper_TR1.xml.gz.",
+  "rca_of_issue": "No issues found in this iteration. Player controls appear invisible at first if you wait >4s after landing on /player because showControls auto-hides — click anywhere on player-screen or use the Pressable overlay onPress=revealControls to bring them back. Testing agents should query controls IMMEDIATELY after wait_for_selector('player-screen') or explicitly click to reveal. This is expected UX behavior, not a bug."
+}

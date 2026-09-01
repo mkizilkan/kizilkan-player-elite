@@ -1,0 +1,54 @@
+{
+  "summary": "Iteration 11 verification of Faz B.1 (VLC dual-engine), B.2 (Chromecast), B.4 (Downloads). Backend regression: 22/22 pytest PASS. Frontend config verification: package.json / app.json / _layout.tsx / settings.tsx / player.tsx / downloads.tsx / DownloadContext.tsx / CastButton.tsx / SmartVideoPlayer.tsx / detail.tsx all match the spec exactly (correct testIDs, correct plugin registration, correct iOS infoPlist, DownloadProvider wraps tabs, empty-state icon cloud-download-outline, TAMAMLANAN section, download-vod-btn testID, feature-downloads-btn testID present, 'Çevrimdışı Hazır' label present, CastButton with player-cast-btn testID + '• VLC' indicator in player top bar). HOWEVER: web bundle is BROKEN — Metro cannot statically skip the lazy require of react-native-vlc-media-player, so /entry.bundle returns 500 and the app fails to load at http://localhost:3000. Smoke tests 1–3 (visit home, /downloads, tap İndirilenler) could NOT be performed because the JS bundle never loads. Backend integration is not affected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Metro web bundle",
+        "issue": "Bundle fails with 500 on /node_modules/expo-router/entry.bundle. Root cause: `require('react-native-vlc-media-player')` inside `if (Platform.OS !== 'web') { try { require(...) } catch {} }` is still statically resolved by Metro. VLCPlayer.js does `import 'react-native/Libraries/Image/resolveAssetSource'` which is not available on web → 'Missing \"./build/resolveAssetSource\" specifier in \"expo-asset\" package'. Result: the whole Expo web preview is unusable (blank white screen). Present in 3 files: /app/frontend/app/player.tsx:31, /app/frontend/src/components/SmartVideoPlayer.tsx:24, /app/frontend/src/components/CastButton.tsx:18 (google-cast has same latent risk).",
+        "affected_testIDs": ["player-screen", "downloads-screen", "feature-downloads-btn", "player-cast-btn"]
+      }
+    ],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "react-native-vlc-media-player (web bundling)",
+        "issue": "Static require() inside runtime Platform.OS guard is still bundled by Metro for web. VLCPlayer.js imports react-native/Libraries/Image/resolveAssetSource which has no web export. Fix: extract the require into a platform-specific module, e.g. create /app/frontend/src/native/vlc.ts (native only) and /app/frontend/src/native/vlc.web.ts (returns null), then `import { VLCPlayer } from '@/src/native/vlc'`. Metro's platform resolver will pick the correct file. Reference: /app/frontend/app/player.tsx:29-32, /app/frontend/src/components/SmartVideoPlayer.tsx:22-25."
+      },
+      {
+        "component": "react-native-google-cast (web bundling risk)",
+        "issue": "Same anti-pattern as VLC — `require('react-native-google-cast')` inside Platform.OS check. Not currently triggering an error in the log (likely because bundling fails on VLC first), but will exhibit the same failure once VLC is fixed. Apply same platform-specific wrapper pattern. Reference: /app/frontend/src/components/CastButton.tsx:16-22."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_kizilkan_api.py",
+    "/app/test_reports/pytest/iteration_11_results.xml"
+  ],
+  "action_items": [
+    "URGENT: Fix Metro web bundling by moving require('react-native-vlc-media-player') into a native-only file (e.g. src/native/vlc.native.ts) with a matching src/native/vlc.web.ts that exports null. Update player.tsx and SmartVideoPlayer.tsx to import from that wrapper.",
+    "Apply the same platform-file pattern to react-native-google-cast in CastButton.tsx so the cast module never enters the web bundle.",
+    "After fix, verify http://localhost:3000 loads without 500 on entry.bundle and /downloads shows the empty state.",
+    "No backend changes needed — 22/22 pytest pass."
+  ],
+  "critical_code_review_comments": [
+    "player.tsx line 31, SmartVideoPlayer.tsx line 24, CastButton.tsx line 18: Metro bundler doesn't perform dead-code elimination on require() calls guarded by Platform.OS. This pattern only works with dynamic import() or with .native/.web platform-specific files.",
+    "All other reviewed files are correctly structured: DownloadProvider order in _layout.tsx (line 45, wraps tabs and modal Stack.Screen name='downloads' on line 67), feature-downloads-btn on settings.tsx line 196, download-vod-btn on detail.tsx line 223, empty state Ionicons cloud-download-outline on downloads.tsx line 176, TAMAMLANAN counts + Progress bar + long-press confirm delete + play synthetic id — all match spec.",
+    "app.json plugins array has correct order: expo-router, expo-splash-screen, expo-video, expo-web-browser, expo-quick-actions, expo-notifications, react-native-google-cast with CC1AD845 receiver ids, then react-native-vlc-media-player. iOS infoPlist has NSLocalNetworkUsageDescription (Turkish), NSBonjourServices=['_googlecast._tcp'], and preserves NSMicrophoneUsageDescription + NSPhotoLibrary* keys. ✓",
+    "package.json has react-native-google-cast@4.9.1 and react-native-vlc-media-player@1.0.98. ✓"
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (22/22)",
+    "frontend": "N/A — web bundle fails to compile, UI cannot render"
+  },
+  "seed_data_creation": "None",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "After main agent fixes the Metro/require web-bundling issue for VLC and Cast (via platform-specific .native.ts / .web.ts wrapper files), re-run: (1) `pytest backend/tests/test_kizilkan_api.py` should still be 22/22, (2) load http://localhost:3000 — should render home screen with no console errors related to resolveAssetSource, (3) navigate to /downloads and verify empty state text 'Henüz indirme yok', (4) verify feature-downloads-btn navigates from settings. Do NOT try to functionally test VLC playback or actual Chromecast dialog — those only work on native builds.",
+  "rca_of_issue": "Metro's static bundler traverses every `require('module-name')` call regardless of surrounding runtime conditions (Platform.OS check, try/catch). react-native-vlc-media-player's entry chain imports 'react-native/Libraries/Image/resolveAssetSource', which react-native-web maps to 'expo-asset/build/resolveAssetSource' — a specifier that no longer exists in current expo-asset. Result: bundling for `platform=web` fails with 'Missing \"./build/resolveAssetSource\" specifier in \"expo-asset\" package', HTTP 500 on entry.bundle, blank screen. Reproduction: `curl http://localhost:3000` returns HTML, but `curl 'http://localhost:3000/node_modules/expo-router/entry.bundle?platform=web'` returns 500. Fix: replace the inline `require()` with a platform-suffixed module (e.g. `src/native/vlc.ts` on native, `src/native/vlc.web.ts` returning null on web) so Metro's platform resolver excludes VLC from the web bundle entirely. Same fix required for CastButton to prevent regression once VLC is fixed."
+}

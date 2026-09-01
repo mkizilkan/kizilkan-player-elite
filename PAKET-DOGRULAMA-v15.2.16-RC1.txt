@@ -1,0 +1,30 @@
+KIZILKAN PLAYER ELITE v15.2.16-RC1 — PAKET DOĞRULAMA
+Tarih: 2026-08-25
+Version: 15.2.16
+Android versionCode: 150216
+
+GERÇEKTEN ÇALIŞTIRILAN KONTROLLER:
+- tools/denetle.js: TEMİZ
+- tools/checkplayercore.js: TEMİZ
+- tools/check-v15216-diagnostics.js: TEMİZ
+- v15.2.14 Stalker/Backup fixture: TEMİZ (denetle zinciri içinde)
+- v15.2.15 Stalker Series TypeScript contract: TEMİZ (denetle zinciri içinde)
+- TS/TSX parser: 109 dosya / 0 parse hatası
+- Değişen Kotlin kaynakları: kotlinc syntax-token taraması; expecting/unclosed/unexpected token yok
+
+HENÜZ GERÇEK KANIT SAYILMAYAN:
+- Tam npx tsc --noEmit (pakette node_modules yok)
+- Expo prebuild
+- Kotlin/Gradle Android release build
+- Release APK kurulumu / cihaz kabul testleri
+
+Bu dört alan için GitHub Actions + gerçek cihaz sonucu beklenmelidir.
+Signing/keystore materyali ZIP'e dahil edilmemelidir ve paket final taramasında ayrıca kontrol edilir.
+
+FINAL PAKET KONTROLÜ:
+- ZIP bağımsız klasöre yeniden açıldı.
+- ZIP içinden denetle.js / checkplayercore.js / check-v15216-diagnostics.js tekrar TEMİZ.
+- ZIP içinden TS/TSX parser: 109 / 0 hata.
+- Kaynak çalışma ağacı ile ZIP açılımı diff -qr: birebir.
+- ZIP signing/keystore taraması: temiz.
+- SHA-256 ayrıca .sha256 dosyasıyla doğrulanmalıdır.

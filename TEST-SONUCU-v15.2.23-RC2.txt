@@ -1,0 +1,24 @@
+KIZILKAN PLAYER ELITE v15.2.23 RC2
+
+GERÇEK ÇALIŞTIRILAN KONTROLLER:
+PASS  tüm tools/*.js -> node --check
+PASS  node tools/check-v15223-complete-corrective.js
+PASS  node tools/check-v15223-flight-recorder-mag.js
+PASS  cd frontend && node ../tools/denetle.js
+RESULT: TÜM DENETİMLER TEMİZ / exit 0
+
+Hard-gate/transpile çalıştırmasında runtime üzerinde mevcut TypeScript 5.8.3 kullanıldı. Projenin package.json sürümü 5.9.3'tür; tam dependency kurulumu + gerçek 5.9.3 `tsc --noEmit` bu runtime'da çalıştırılmadı ve GitHub Actions doğrulamasına bırakıldı. node_modules pakete dahil edilmedi.
+
+ÇALIŞTIRILMAYAN / BAŞARILIYMIŞ GİBİ GÖSTERİLMEYEN:
+- full project `tsc --noEmit` (frontend dependency ağacı bu runtime'da kurulu değil)
+- Android/Kotlin/Gradle release compile
+- APK signing/build
+- GitHub Actions
+- fiziksel cihaz testleri: gesture/orientation, audio-only black screen, Xtream refresh race, MAG portal, uzun süre playback
+
+NİHAİ ACCEPTANCE: verify-v15.2.23 branch GitHub Actions + cihaz testi.
+
+[RC2 FINAL ADDENDUM]
+- Xtream catalogYield cooperative-yield contract: REQUIRED
+- MAG stalkerCatalogYield cooperative-yield contract: REQUIRED
+- Both files are included in v15.2.23 complete-corrective TypeScript transpile gate.

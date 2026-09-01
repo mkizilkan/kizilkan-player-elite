@@ -1,0 +1,23 @@
+KIZILKAN PLAYER ELITE v15.2.2-RC1
+versionCode=150202
+Room=2.8.3
+libmpv=1.0.0
+KSP syntax fix: rootProject["kspVersion"]
+P0: native foreground bulk playlist import
+Beklenen GitHub gate: tsc -> prebuild -> KSP/Room -> Kotlin -> Gradle -> signing -> APK
+
+GERCEK YEREL KONTROLLER:
+- denetle.js: 3/3 temiz
+- checkplayercore.js: temiz
+- TS/TSX parse: 106 dosya / 0 parse diagnostics
+- package.json + app.json parse: OK
+- build-apk.yml YAML parse: OK
+- signing/private material taraması: temiz
+- KSP Groovy literal \\"kspVersion\\" regresyon taraması: temiz
+
+CALISTIRILAMAYAN / GITHUB'DA KANITLANACAK:
+- npx tsc --noEmit (pakette node_modules yok)
+- Expo prebuild
+- Room KSP code generation
+- Kotlin compile
+- Gradle release + APK
