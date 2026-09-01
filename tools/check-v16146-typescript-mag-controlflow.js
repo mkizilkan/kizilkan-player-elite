@@ -4,13 +4,15 @@ const R=path.resolve(__dirname,'..'); const read=p=>fs.readFileSync(path.join(R,
 const ok=(c,m)=>{console.log(`${c?'PASS':'FAIL'}: ${m}`); if(!c) bad++;};
 const pkg=JSON.parse(read('frontend/package.json')), app=JSON.parse(read('frontend/app.json')), add=read('frontend/app/add-playlist.tsx');
 const [M,m,p]=pkg.version.split('.').map(Number), expected=M*10000+m*100+p;
-ok(pkg.version==='16.14.6'&&app.expo.version===pkg.version&&app.expo.android.versionCode===expected,'v16.14.6 metadata synchronized');
+const semver=v=>{const m=String(v||'').match(/^(\d+)\.(\d+)\.(\d+)/);return m?Number(m[1])*1000000+Number(m[2])*1000+Number(m[3]):-1;};
+ok(semver(pkg.version)>=semver('16.14.6')&&app.expo.version===pkg.version&&app.expo.android.versionCode===expected,'v16.14.6+ metadata synchronized');
 ok(app.expo.ios.buildNumber===pkg.version&&String(app.expo.extra?.kizilkanReleaseLabel||'').includes(pkg.version),'iOS/release label synchronized');
 ok(add.includes('} else if (method === "stalker") {'),'MAG branch explicit TypeScript control-flow branch');
 ok(!add.includes('magEnrichment'),'obsolete unreachable magEnrichment bridge removed after behavior migration');
-const terminal=add.indexOf('// v16.14.6: Bu nokta yalnız M3U URL / M3U dosya legacy parser akışıdır.');
-ok(terminal>0,'M3U-only terminal marker exists');
-if(terminal>0){const tail=add.slice(terminal,add.indexOf('} catch (e: any)',terminal)); ok(!/method\s*===\s*["']stalker["']/.test(tail),'post-MAG generic commit contains no impossible stalker narrowing');}
+const stalker=add.indexOf('} else if (method === \"stalker\") {');
+const catchPos=add.indexOf('} catch (e: any)',stalker);
+ok(stalker>0&&catchPos>stalker,'explicit MAG terminal branch exists');
+if(stalker>0&&catchPos>stalker){const tail=add.slice(stalker,catchPos); ok(!/magEnrichment/.test(tail),'MAG branch has no obsolete unreachable enrichment bridge');}
 ok(add.indexOf('commitPlaylist(shell)')>0&&add.indexOf('commitPlaylist(shell)')<add.indexOf('stalkerCatalog(cred, session'),'verified MAG persist still precedes catalog');
 ok(/liveOnly:\s*true/.test(add)&&add.includes('void bootstrap(false)'),'live-first and non-blocking async catalog preserved');
 ok(add.includes('onProgress: interactiveSelection ? (progress) => setProgress(progress.message) : undefined'),'interactive MAG progress callback preserved');
@@ -32,5 +34,5 @@ try{
   if(regress.length) console.log(regress.join('\n'));
   fs.rmSync(tmp,{recursive:true,force:true});
 }catch(e){console.log('FAIL: TypeScript semantic probe could not run:',e.message);bad++;}
-if(bad){console.error(`FAIL — v16.14.6 TypeScript/MAG control-flow hard-gate: ${bad}`);process.exit(1)}
-console.log('TEMIZ — v16.14.6 TypeScript control-flow + MAG persistence/progress preservation');
+if(bad){console.error(`FAIL — v16.14.6+ TypeScript/MAG control-flow hard-gate: ${bad}`);process.exit(1)}
+console.log('TEMIZ — v16.14.6+ TypeScript control-flow + MAG persistence/progress preservation');

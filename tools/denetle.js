@@ -24,6 +24,7 @@ const CHECKS = [
   ["check-v16144-ci-hardening.js", "v16.14.4 CI/gate/MPV release-chain contract", ""],
   ["check-v16145-mag-persist-hardgate.js", "v16.14.5 MAG verified-account persistence / async catalog / gzip hard-gate", ""],
   ["check-v16146-typescript-mag-controlflow.js", "v16.14.6 TypeScript/MAG control-flow corrective hard-gate", ""],
+  ["check-v16147-definite-assignment.js", "v16.14.7 TypeScript definite-assignment corrective hard-gate", ""],
   ["check-v16142-integrated-hardgate.js", "v16.14.2 integrated recovery / sync / ownership / source-recovery / V7 contract", ""],
   ["checkdefs.js",     "Tanımsız sembol (hook/JSX bileşeni)",   ""],
   ["checkcalls.js",    "Tanımsız fonksiyon çağrısı",            ""],

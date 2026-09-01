@@ -1444,7 +1444,18 @@ export default function AddPlaylist() {
       }
 
       let id = "";
-      let playlist: Playlist;
+
+      // v16.14.7: M3U legacy parser çıktısını yalnız gerçekten oluşturulduğu branch içinde
+      // commit et. Böylece definite-assignment compiler garantisi ile runtime sahipliği aynı olur.
+      const commitLegacyParsedPlaylist = async (candidate: Playlist) => {
+        const totalItems = (candidate.channels?.length || 0) + (candidate.vod?.length || 0) + (candidate.series?.length || 0);
+        if (totalItems === 0) throw new Error("Hiç kanal/film/dizi bulunamadı. Kaynağı kontrol edin.");
+        setProgress("Cihaza kaydediliyor...");
+        if (!(await commitPlaylist(candidate))) return false;
+        setProgress("Playlist hazır. +18 filtresi arka planda hazırlanıyor...");
+        router.replace("/(tabs)");
+        return true;
+      };
       if (method === "m3u_url") {
         if (!m3uUrl.trim()) throw new Error("M3U URL boş olamaz");
         const canonicalM3u = canonicalUrlIdentity(m3uUrl);
@@ -1471,10 +1482,12 @@ export default function AddPlaylist() {
         let m3uCatalog={channels:res.channels,vod:res.vod || [],series:res.series || []};
         let contentSelection:PlaylistContentSelection|null=null;
         if(chooseCategories){contentSelection=await requestCategorySelection(m3uCatalog);if(!contentSelection)throw new Error("Kategori seçimi iptal edildi; playlist kaydedilmedi.");m3uCatalog=applyContentSelection(m3uCatalog,contentSelection);}
-        playlist = {
+        const m3uPlaylist: Playlist = {
           id, name: name.trim() || "M3U Listesi", source: "m3u_url", m3uUrl: m3uUrl.trim(), contentSelection,
           channels:m3uCatalog.channels, vod:m3uCatalog.vod, series:m3uCatalog.series, createdAt:new Date().toISOString(),
         };
+        if (!(await commitLegacyParsedPlaylist(m3uPlaylist))) return false;
+        return;
       } else if (method === "m3u_file") {
         if (!fileContent) throw new Error("Lütfen bir M3U dosyası seçin");
         id = stablePlaylistId("file", fileContent);
@@ -1498,10 +1511,12 @@ export default function AddPlaylist() {
         let fileCatalog={channels:res.channels,vod:res.vod || [],series:res.series || []};
         let contentSelection:PlaylistContentSelection|null=null;
         if(chooseCategories){contentSelection=await requestCategorySelection(fileCatalog);if(!contentSelection)throw new Error("Kategori seçimi iptal edildi; playlist kaydedilmedi.");fileCatalog=applyContentSelection(fileCatalog,contentSelection);}
-        playlist = {
+        const filePlaylist: Playlist = {
           id, name: name.trim() || fileName || "M3U Dosyası", source: "m3u_file", contentSelection,
           channels:fileCatalog.channels, vod:fileCatalog.vod, series:fileCatalog.series, createdAt:new Date().toISOString(),
         };
+        if (!(await commitLegacyParsedPlaylist(filePlaylist))) return false;
+        return;
       } else if (method === "stalker") {
         /**
          * STALKER / MAG — ARTIK CİHAZ İÇİ (v9.1.0)
@@ -1615,15 +1630,6 @@ export default function AddPlaylist() {
         router.replace("/(tabs)");
         return;
       }
-
-      // v16.14.6: Bu nokta yalnız M3U URL / M3U dosya legacy parser akışıdır.
-      // MAG dalı yukarıda doğrulanmış hesap persist + ayrı katalog senkronu ile terminal return yapar.
-      const totalItems = (playlist.channels?.length || 0) + (playlist.vod?.length || 0) + (playlist.series?.length || 0);
-      if (totalItems === 0) throw new Error("Hiç kanal/film/dizi bulunamadı. Kaynağı kontrol edin.");
-      setProgress("Cihaza kaydediliyor...");
-      if (!(await commitPlaylist(playlist))) return false;
-      setProgress("Playlist hazır. +18 filtresi arka planda hazırlanıyor...");
-      router.replace("/(tabs)");
     } catch (e: any) {
       const message = e.message || "Bilinmeyen hata";
       if (method === "stalker") void recordDiagnostic("catalog", "STALKER_ADD_ERROR", { message });
