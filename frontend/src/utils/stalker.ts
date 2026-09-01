@@ -1454,6 +1454,19 @@ async function stalkerCategories(cred: StalkerCreds, ses: StalkerSession, type: 
   return out;
 }
 
+export async function stalkerCategoryPreview(cred: StalkerCreds, ses: StalkerSession): Promise<{vod:string[];series:string[];warnings:string[]}> {
+  const warnings:string[]=[];
+  const [vodRes,seriesRes]=await Promise.allSettled([stalkerCategories(cred,ses,"vod"),stalkerCategories(cred,ses,"series")]);
+  const names=(r:PromiseSettledResult<Map<string,string>>,label:string):string[]=>{
+    if(r.status==="rejected"){ warnings.push(`${label}: ${String((r.reason as any)?.message || r.reason)}`); return []; }
+    return Array.from(new Set(Array.from(r.value.values()).map(v=>String(v||"Genel").trim()||"Genel"))).sort((a,b)=>a.localeCompare(b,"tr"));
+  };
+  const vod=names(vodRes,"VOD kategori önizleme");
+  const series=names(seriesRes,"Series kategori önizleme");
+  void recordDiagnostic("catalog","STALKER_CATEGORY_PREVIEW",{vod:vod.length,series:series.length,warnings});
+  return {vod,series,warnings};
+}
+
 const ORDERED_LIST_ABSOLUTE_MAX_PAGES = 120;
 const ORDERED_LIST_NO_NEW_LIMIT = 2;
 function pageFingerprint(rows:any[]):string {

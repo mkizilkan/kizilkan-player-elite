@@ -193,6 +193,9 @@ export interface Playlist {
     lastSkippedKinds?: Array<'live' | 'vod' | 'series'>;
     lastRepairedKinds?: Array<'live' | 'vod' | 'series'>;
     roomVerified?: boolean;
+    /** v16.14.5: doğrulanmış MAG hesabının katalog bootstrap durumu. */
+    initialSyncState?: 'pending' | 'live_ready' | 'enriching' | 'ready' | 'partial_error';
+    initialSyncError?: string;
     updatedAt?: string;
   };
   /** v16.14.2: MAG capability discovery yalnız gerçek session/catalog kanıtından türetilir. */

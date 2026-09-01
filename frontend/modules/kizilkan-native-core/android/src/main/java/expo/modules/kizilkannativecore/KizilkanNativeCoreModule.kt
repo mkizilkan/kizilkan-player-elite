@@ -12,6 +12,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.File
+import java.io.ByteArrayInputStream
 import java.util.UUID
 import java.io.BufferedWriter
 import java.io.FileOutputStream
@@ -118,7 +119,13 @@ class KizilkanNativeCoreModule : Module() {
           request = b.build(); redirects++
         }
         val r = response ?: throw IllegalStateException("MAG response yok")
-        val body = r.body?.string() ?: ""
+        val rawBody = r.body?.bytes() ?: ByteArray(0)
+        val gzipByHeader = r.header("Content-Encoding")?.contains("gzip", true) == true
+        val gzipByMagic = rawBody.size >= 2 && rawBody[0] == 0x1f.toByte() && rawBody[1] == 0x8b.toByte()
+        val decodedBody = if (gzipByHeader || gzipByMagic) {
+          try { GZIPInputStream(ByteArrayInputStream(rawBody)).use { it.readBytes() } } catch (_: Throwable) { rawBody }
+        } else rawBody
+        val body = decodedBody.toString(Charsets.UTF_8)
         val cookie = request.header("Cookie") ?: ""
         val auth = request.header("Authorization") ?: ""
         mapOf(
@@ -141,7 +148,9 @@ class KizilkanNativeCoreModule : Module() {
             InetAddress.getAllByName(r.request.url.host).map { if (it.address.size == 4) "IPv4" else "IPv6" }.distinct().joinToString(",")
           } catch (_: Throwable) { "" },
           "contentEncoding" to (r.header("Content-Encoding") ?: ""),
-          "bodyBytes" to body.toByteArray(Charsets.UTF_8).size,
+          "bodyBytes" to decodedBody.size,
+          "rawBodyBytes" to rawBody.size,
+          "gzipDecoded" to ((gzipByHeader || gzipByMagic) && decodedBody !== rawBody),
           "connectionHeader" to (r.request.header("Connection") ?: ""),
           "acceptHeader" to (r.request.header("Accept") ?: ""),
           "acceptEncodingHeader" to (r.request.header("Accept-Encoding") ?: ""),

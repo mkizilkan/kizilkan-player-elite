@@ -5,7 +5,8 @@ let bad=0; const ok=(c,m)=>{console.log(`${c?'PASS':'FAIL'}: ${m}`); if(!c)bad++
 const pkg=JSON.parse(read('frontend/package.json')), app=JSON.parse(read('frontend/app.json'));
 const wf=read('.github/workflows/build-apk.yml'), den=read('tools/denetle.js');
 const expected=(()=>{const [M,m,p]=pkg.version.split('.').map(Number);return M*10000+m*100+p})();
-ok(pkg.version==='16.14.4'&&app.expo.version===pkg.version&&app.expo.android.versionCode===expected,'v16.14.4 metadata synchronized');
+const [maj,min,pat]=pkg.version.split('.').map(Number);
+ok((maj>16||(maj===16&&(min>14||(min===14&&pat>=4))))&&app.expo.version===pkg.version&&app.expo.android.versionCode===expected,'v16.14.4+ metadata synchronized');
 ok(app.expo.ios.buildNumber===pkg.version&&String(app.expo.extra?.kizilkanReleaseLabel||'').includes(pkg.version),'iOS/release label synchronized');
 ok(wf.includes('workflow_dispatch:'),'manual workflow trigger preserved');
 ok(wf.includes('yarn install --frozen-lockfile --production=false'),'frozen lockfile + devDependencies CI install');

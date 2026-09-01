@@ -129,7 +129,7 @@ export default function AddPlaylist() {
 
   const router = useRouter();
   const { colors } = useTheme();
-  const { playlists, addPlaylist, addPreparedPlaylist, enrichPlaylistMedia, setActivePlaylist } = usePlaylists();
+  const { playlists, addPlaylist, addPreparedPlaylist, enrichPlaylistMedia, updatePlaylist, setActivePlaylist } = usePlaylists();
 
   // v16.13.6 — Aynı sağlayıcı hesabının yanlışlıkla tekrar eklenmesini görünür kıl.
   // Parola/token fingerprint'e girmez; canonical kimlik yalnız kaynak + normalize endpoint + kullanıcı/MAC bilgisidir.
@@ -1529,6 +1529,7 @@ export default function AddPlaylist() {
           stalkerLogin: stLogin,
           stalkerCatalog,
           stalkerEnrichment,
+          stalkerCategoryPreview,
           normalizeMac,
           normalizeStalkerAccountInfo,
         } = await import("@/src/utils/stalker");
@@ -1543,95 +1544,82 @@ export default function AddPlaylist() {
 
         setProgress("MAG320 Exact profiliyle native portala bağlanılıyor...");
         const { session, profile: prof } = await stLogin(cred);
-
-        setProgress("Canlı TV kataloğu alınıyor...");
-        let catalog;
-        try {
-          /**
-           * v16.6.0 — GERİ ALINDI: liveOnly TEKRAR true.
-           * ---------------------------------------------------------------
-           * v16.2.0'da film/dizi de ekleme akışında çekilsin diye liveOnly:false
-           * yapmıştım. Bu BENİM GERİLEMEM oldu — cihaz kaydı (29.08):
-           *     type: vod · page 68 · loaded 952 · total 103.662 · rows/page 14
-           *     _task: mag:catalog-vod · _taskAgeMs: 102.355 (102 saniye)
-           * Portal 103 binden fazla film bildiriyor ve sayfa başına yalnız 14
-           * satır veriyor; tamamı için binlerce sayfa gerekiyor. Kullanıcı
-           * "MAG portal ekleme çalışmaz olmuş" dedi — ekleme dakikalarca
-           * sürüyor ve ANR üretiyordu (16 donma kaydı).
-           *
-           * DOĞRU TASARIM ZATEN VARDI: canlı katalog hızlıca eklenir, film ve
-           * dizi ARKA PLANDA stalkerEnrichment ile doldurulur (aşağıda
-           * magEnrichment.run). Böylece kullanıcı hemen izlemeye başlar,
-           * film/dizi sekmeleri arkadan dolar.
-           */
-          catalog = await stalkerCatalog(cred, session, {
-            liveOnly: !chooseCategories,
-            onProgress: (progress) => setProgress(progress.message),
-          });
-        }
-        catch (e: any) {
-          throw new Error(`MAG canlı katalog yükleme başarısız: ${String(e?.message || e)}${session.profileError ? `\nProfil aşaması: ${session.profileError}` : ""}`);
-        }
-        if (catalog.channels.length === 0) {
-          throw new Error(
-            "Portal oturumu açıldı ancak Canlı TV listesi BOŞ.\n\n" +
-              (session.profileError ? `Profil aşaması: ${session.profileError}\n\n` : "") +
-              "MAG320 Exact ilk profil olarak kullanıldı; gerekirse MAG254/MAG250 fallbackleri denendi. Olası sebepler:\n" +
-              "• MAC adresi bu portalda yayın yetkisine sahip değil\n" +
-              "• Abonelik süresi dolmuş\n" +
-              "• Portal farklı cihaz kimliği/SN bekliyor (MAG250 fallback otomatik denenir)"
-          );
-        }
         const profile = prof || {};
-        let magCatalog={channels:catalog.channels,vod:catalog.vod || [],series:catalog.series || []};
-        let contentSelection:PlaylistContentSelection|null=null;
-        if (chooseCategories) {
-          contentSelection=await requestCategorySelection(magCatalog);
-          if(!contentSelection) throw new Error("Kategori seçimi iptal edildi; playlist kaydedilmedi.");
-          magCatalog=applyContentSelection(magCatalog,contentSelection);
-        }
-        playlist = {
+
+        // v16.14.5 P0 — VALIDATION/PERSISTENCE ayrımı. Handshake başarılıysa hesap
+        // ağır katalog tamamlanmasını beklemeden atomik olarak kaydedilir.
+        const shell: Playlist = {
           id, name: name.trim() || "MAG Portal", source: "stalker",
           stalkerPortal: stPortal.trim(), stalkerMac: stMac.trim().toUpperCase(),
           stalkerSerial: stSerial.trim() || undefined,
           accountInfo: normalizeStalkerAccountInfo(profile),
-          contentSelection,
-          // v16.6.0: canlı hemen eklenir; film/dizi arka planda (enrichment)
-          // doldurulur. catalog.vod/series varsa yine de kullanılır.
-          channels: magCatalog.channels, vod: magCatalog.vod, series: magCatalog.series,
+          channels: [], vod: [], series: [],
+          catalogSync: { initialSyncState: "pending", roomVerified: true, updatedAt: new Date().toISOString() },
           createdAt: new Date().toISOString(),
         };
+        setProgress("Portal doğrulandı · hesap cihaza kaydediliyor...");
+        void recordDiagnostic("catalog","STALKER_ACCOUNT_PERSIST_START",{playlistId:id,endpoint:session.endpoint});
+        if (!(await commitPlaylist(shell))) return false;
+        void recordDiagnostic("catalog","STALKER_ACCOUNT_PERSIST_OK",{playlistId:id,endpoint:session.endpoint});
 
-        // ENRICHMENT addPlaylist/Room verify BAŞARISINDAN ÖNCE başlatılmaz.
-        // Böylece Grok yamasındaki update-before-add race condition oluşmaz.
-        magEnrichment = chooseCategories ? null : {
-          cred,
-          session,
-          run: async () => {
-            const startedAt = Date.now();
-            void recordDiagnostic("catalog", "STALKER_ENRICH_START", { playlistId: id });
-            try {
-              const enrich = await stalkerEnrichment(cred, session);
-              await enrichPlaylistMedia(id, { vod: enrich.vod, series: enrich.series });
-              void recordDiagnostic("catalog", "STALKER_ENRICH_COMMIT_OK", {
-                playlistId: id,
-                elapsedMs: Date.now() - startedAt,
-                vod: enrich.vod.length,
-                series: enrich.series.length,
-              });
-            } catch (e:any) {
-              // Live playlist Room'da doğrulanmış olarak kalır; VOD/Series sorunu
-              // çalışan canlı hesabı geri almaz.
-              void recordDiagnostic("catalog", "STALKER_ENRICH_FAIL", {
-                playlistId: id,
-                elapsedMs: Date.now() - startedAt,
-                message: String(e?.message || e),
-                status: e?.status,
-                kind: e?.kind,
-              });
+        const bootstrap = async (interactiveSelection:boolean) => {
+          try {
+            const catalog = await stalkerCatalog(cred, session, {
+              liveOnly: true,
+              onProgress: interactiveSelection ? (progress) => setProgress(progress.message) : undefined,
+            });
+            let contentSelection: PlaylistContentSelection|null = null;
+            let liveCatalog={channels:catalog.channels,vod:[] as any[],series:[] as any[]};
+            if (interactiveSelection) {
+              const preview=await stalkerCategoryPreview(cred,session);
+              const pickerCatalog:any={
+                channels:catalog.channels,
+                vod:preview.vod.map((group,i)=>({id:`preview-vod-${i}`,name:group,group,url:""})),
+                series:preview.series.map((group,i)=>({id:`preview-series-${i}`,name:group,group,seasons:[]})),
+              };
+              contentSelection=await requestCategorySelection(pickerCatalog);
+              if(contentSelection) liveCatalog=applyContentSelection(liveCatalog as any,contentSelection) as any;
             }
-          },
+            await updatePlaylist(id,{
+              channels:liveCatalog.channels,
+              contentSelection,
+              catalogCapabilities:{live:liveCatalog.channels.length?"supported":"empty",vod:"empty",series:"empty",updatedAt:new Date().toISOString()},
+              catalogSync:{initialSyncState:"live_ready",roomVerified:true,updatedAt:new Date().toISOString()},
+              lastRefreshOk:true,lastRefreshedAt:new Date().toISOString(),
+            });
+            void recordDiagnostic("catalog","STALKER_LIVE_BOOTSTRAP_COMMIT_OK",{playlistId:id,live:liveCatalog.channels.length});
+            await updatePlaylist(id,{catalogSync:{initialSyncState:"enriching",roomVerified:true,updatedAt:new Date().toISOString()}});
+            const enrich=await stalkerEnrichment(cred,session);
+            const selected=contentSelection ? applyContentSelection({channels:[],vod:enrich.vod,series:enrich.series} as any,contentSelection) : {channels:[],vod:enrich.vod,series:enrich.series};
+            await enrichPlaylistMedia(id,{vod:selected.vod,series:selected.series});
+            await updatePlaylist(id,{
+              catalogCapabilities:{live:liveCatalog.channels.length?"supported":"empty",vod:selected.vod.length?"supported":"empty",series:selected.series.length?"supported":"empty",updatedAt:new Date().toISOString()},
+              catalogSync:{initialSyncState:"ready",roomVerified:true,updatedAt:new Date().toISOString()},
+              lastRefreshOk:true,lastRefreshedAt:new Date().toISOString(),
+            });
+            void recordDiagnostic("catalog","STALKER_INITIAL_SYNC_READY",{playlistId:id,live:liveCatalog.channels.length,vod:selected.vod.length,series:selected.series.length});
+          } catch(e:any) {
+            const message=String(e?.message||e);
+            try { await updatePlaylist(id,{catalogSync:{initialSyncState:"partial_error",initialSyncError:message,roomVerified:true,updatedAt:new Date().toISOString()},lastRefreshOk:false,lastRefreshedAt:new Date().toISOString()}); } catch {}
+            void recordDiagnostic("catalog","STALKER_INITIAL_SYNC_PARTIAL_ERROR",{playlistId:id,message,status:e?.status,kind:e?.kind});
+          }
         };
+
+        if (chooseCategories) {
+          setProgress("Hesap kaydedildi · kategori başlıkları hazırlanıyor...");
+          await bootstrap(true);
+        } else {
+          void bootstrap(false);
+        }
+
+        await new Promise<void>((resolve)=>Alert.alert(
+          "MAG Portal Eklendi",
+          "Hesap doğrulandı ve cihaza kaydedildi. Canlı TV, film ve diziler ayrı senkron aşamalarında tamamlanacak; bu işlem hesabın eklenmesini artık engellemez.",
+          [{text:"Listeye Git",onPress:()=>resolve()}],
+          {cancelable:false},
+        ));
+        router.replace("/(tabs)");
+        return;
       }
 
       const totalItems = (playlist.channels?.length || 0) + (playlist.vod?.length || 0) + (playlist.series?.length || 0);
