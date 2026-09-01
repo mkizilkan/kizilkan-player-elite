@@ -1,0 +1,27 @@
+{
+  "summary": "Iteration 10 (EPG group filter + client-side Xtream EPG + format compatibility) VERIFIED. Backend: 22/22 pytest PASS (test_kizilkan_api.py, unchanged). Frontend end-to-end: added TEST_TR playlist from https://iptv-org.github.io/iptv/countries/tr.m3u (206 channels, client-side parse), navigated to /epg-timeline, confirmed 23 chips render (Tümü (206) + 22 group chips like Animation;Kids (1), Sports (12), News (26), Undefined (57)), tapped 'Sports' chip → chip becomes active (brandPrimary bg), main list re-renders (empty state message correctly shows 'Bu liste için EPG kaynağı yok. Xtream Codes veya EPG URL\\'li M3U kullanın.' — correct because the tr.m3u has NO XMLTV epgUrl and is not Xtream, per iteration_10 explicit note). testIDs epg-close-btn / epg-chip-all / epg-chip-<group> all present. Navigated to Ayarlar tab → tapped 'Desteklenen Formatlar' (testID feature-formats-btn) → modal opened with full contents: MP4/MKV/TS/HLS/M3U8/DASH/WebM ✅ supported; AVI/WMV/FLV ⚠️ limited; HTTP + HTTPS both listed; auth URL note; DRM caveat. formats-ok-btn tappable and closes modal. iptv.ts exports xtreamShortEpg + xtreamNowNextBatch confirmed (with base64 atob decoding). Live TV index.tsx dual-source EPG confirmed (Xtream branch uses xtreamNowNextBatch, M3U+XMLTV branch uses api.epgNowNext). player.tsx status change Turkish error hints code confirmed. No red screen, no bundle errors, ~1450 modules compiled cleanly.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_kizilkan_api.py",
+    "/app/test_reports/pytest/iteration_10_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "epg-timeline.tsx line 238 uses `epg-chip-${g}` as testID — for groups containing special chars (e.g. 'Animation;Kids', 'Culture;Education;Lifestyle'), the raw semicolons render into the testID/data-testid attribute. Playwright still matches them, but for TV remote focus tracing or analytics logging you may want to slugify (replace non-alphanum with dash). Not blocking; verified working.",
+    "epg-timeline.tsx effect deps at L124 include both `channels` (memoized array) AND `channelIds` (derived from channels). Since channelIds is memo'd off channels, the extra dep is redundant but harmless — React will still only re-run when the memoized reference actually changes.",
+    "iptv.ts xtreamNowNextBatch fires up to 8 concurrent fetches to Xtream server; some providers rate-limit aggressively. Consider adding a small delay between waves or reducing default concurrency to 4 for shakier providers. Not blocking."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Ephemeral in-browser: TEST_TR playlist from https://iptv-org.github.io/iptv/countries/tr.m3u (206 live channels, 22 groups). AsyncStorage-based; cleared on next fresh browser context.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Real Xtream EPG (xtreamShortEpg base64 decode + xtreamNowNextBatch parallel now/next) can only be validated with a live Xtream provider — code path was verified via imports/structure only, per review request instruction. For public tr.m3u lists without XMLTV epgUrl, the empty state UI is correct behavior (documented in modal). For future iterations, if user reports EPG issue on a REAL Xtream account, ask them to enable Ayarlar → 'Bağlantıyı Test Et' and share the diag output; then confirm activePlaylist.source === 'xtream' and xtreamServer/username/password are populated before falling back to the M3U branch.",
+  "rca_of_issue": "BUG 1 (EPG not showing at all): RCA — old epg-timeline only called backend api.epgForChannel which requires XMLTV epgUrl to be set; Xtream playlists never had epgUrl → 0 programs returned. FIX verified: new code branches on isXtream and calls client-side xtreamShortEpg per stream_id (base64-decoded titles). BUG 2 (stuck on first group): RCA — old code loaded EPG once at mount; changing group re-rendered the channel column but the programs map was cached from the original full-channel fetch. FIX verified: useEffect deps now include `[selectedGroup, channels, channelIds]` + cancellation guard `let cancelled = false`; tapping Sports chip triggered a re-fetch and empty state re-evaluated correctly. BUG 3 (format questions): RCA — user was confused about MKV/M3U8/AVI/HTTPS support because there was no in-app documentation. FIX verified: comprehensive Formats modal in settings.tsx L629-663 lists all supported/limited codecs + protocols in Turkish with visual ✅/⚠️ markers."
+}

@@ -1,0 +1,24 @@
+KIZILKAN PLAYER ELITE v15.2.10-RC1
+version=15.2.10
+versionCode=150210
+
+P0 KAPSAM
+- Panel scan hard cancellation: active HttpURLConnection registry + disconnect + ExecutorService.shutdownNow.
+- CANCELLING -> final CANCELLED lifecycle; runId sahipliği korunur.
+- Analiz/seçim modalı tarama başında açılır; ilerleme, geçen/ETA, aktif panel/DNS, Duraklat/Devam/Durdur görünür.
+- Tarama bitmeden import butonu kapalıdır. Kullanıcı açıkça seçim yapmadan playlist eklenmez.
+- Tekli/çoklu server discovery CTA artık analiz semantiğindedir.
+- PIN'li profil için process-ömürlü authorization gate; route/session restore PIN'i atlayamaz.
+
+GERÇEK STATIK DENETIM
+- tools/denetle.js: 3/3 temiz
+- tools/checkplayercore.js: temiz
+- TS/TSX parser: 107 dosya, 0 diagnostic
+- package.json/app.json: parse temiz
+- GitHub Actions YAML: parse temiz
+- v15.2.9 -> v15.2.10 diff whitespace check: temiz
+- signing/private artifacts: pakette yok
+
+NOT
+- Bu ortamda gerçek Android Gradle/Kotlin release build çalıştırılmadı.
+- Gerçek derleme kanıtı GitHub Actions release build olacaktır.

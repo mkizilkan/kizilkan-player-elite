@@ -1,0 +1,14 @@
+const fs=require('fs'),path=require('path'); const root=path.resolve(__dirname,'..');
+const read=p=>fs.readFileSync(path.join(root,p),'utf8'); const must=(c,m)=>{if(!c)throw new Error(m)};
+const pkg=JSON.parse(read('frontend/package.json')), app=JSON.parse(read('frontend/app.json'));
+const types=read('frontend/src/types/index.ts'), add=read('frontend/app/add-playlist.tsx'), refresh=read('frontend/src/utils/refreshPlaylist.ts'), stalker=read('frontend/src/utils/stalker.ts');
+const v=String(pkg.version||'').split('.').map(Number); const atLeast=v[0]>16||(v[0]===16&&(v[1]>13||(v[1]===13&&v[2]>=5)));
+must(atLeast,'package version must preserve v16.13.5+'); must(app.expo.android.versionCode>=161305,'app versionCode must preserve v16.13.5+');
+must(types.includes('PlaylistContentSelection')&&types.includes('contentSelection?:'),'selection persistence missing');
+must(add.includes('İçerik kategorilerini seç')&&add.includes('requestCategorySelection')&&add.includes('applyContentSelection'),'add category picker missing');
+must(add.includes('&& !chooseCategories'),'native bypass for selective import missing');
+must(refresh.includes('applyContentSelection')&&refresh.includes('pl.contentSelection'),'refresh does not preserve selection');
+must(/HANDSHAKE_MAX_NETWORK_ATTEMPTS\s*=\s*12/.test(stalker),'network budget'); must(/HANDSHAKE_MAX_AUTH_REJECTS\s*=\s*8/.test(stalker),'auth budget'); must(/HANDSHAKE_MIN_SPACING_MS\s*=\s*650/.test(stalker),'spacing');
+must(stalker.includes('if (e?.kind === "MAG_RATE_LIMIT")'),'rate-limit-only persistent cooldown missing');
+must(stalker.includes('pcap320-minimal'),'PCAP profile lost');
+console.log('PASS: v16.13.5 category persistence + relaxed MAG self-ban policy TEMİZ');

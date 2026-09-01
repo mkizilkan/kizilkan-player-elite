@@ -1,0 +1,41 @@
+{
+  "summary": "KIZILKAN PLAYER iteration 2 (FAZ 2) tested end-to-end. Backend: 18/18 pytest tests pass — regression suite (health, M3U parse-url/content, Xtream login, EPG fetch/now-next/channel) PLUS new endpoints (xtream/vod, xtream/vod-info, xtream/series, xtream/series-info, stalker/login, stalker/load). All new endpoints properly return 400 on invalid credentials/unreachable hosts and 400 with Turkish message 'Geçersiz MAC formatı' on bad MAC. Frontend E2E on mobile viewport 390x844: onboarding → add-playlist navigation works; add-playlist now shows all 4 method cards (method-m3u_url-btn, method-m3u_file-btn, method-xtream-btn, method-stalker-btn). MAG method reveals stalker-portal-input, stalker-mac-input, stalker-serial-input + red info banner with Turkish MAC warning ('Sadece SİZE AİT MAG cihazının MAC adresini girin. Başkasının MAC adresini kullanmak yasadışıdır.'). Submitting invalid MAC 'AA:BB' + fake portal correctly surfaces the error 'Geçersiz MAC formatı. Örnek: 00:1A:79:AA:BB:CC' in the error-box (backend 400 propagates to UI). Demo M3U flow still works: demo URL fills, submit parses iptv-org TR channels, navigates to Live TV. For the pure-M3U demo the seg-live/seg-vod/seg-series segmented control is CORRECTLY hidden (playlist has no vod/series arrays). Category chips render (chip-all present). Settings screen loads with all 4 theme cards (theme-netflix-btn, theme-turkish_flag-btn, theme-modern-btn, theme-vu_iptv-btn). Account-info-card is CORRECTLY absent for pure M3U demo. /detail route renders gracefully with Turkish 'İçerik bulunamadı' — no React Native red screen. All UI text confirmed Turkish. No crashes anywhere. Deprecated packages detected: none. Only warning is a pre-existing react-native-web console warning 'props.pointerEvents is deprecated' (already flagged in iteration 1).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "react-native-web (pre-existing)", "issue": "Console warning 'props.pointerEvents is deprecated. Use style.pointerEvents'. Same as iteration 1; non-blocking. Likely from @expo/vector-icons or Tabs wrapper. Reference: root layout / tabs. Not caused by FAZ 2 changes."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_kizilkan_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "No blocking issues. FAZ 2 backend endpoints (VOD, Series, Stalker) and frontend UI (4-method add-playlist, MAG form + info banner, MAC validation, Account Info card conditional render, /detail route, Live TV segmented control conditional) all behave as specified.",
+    "Optional (pre-existing): silence 'props.pointerEvents' deprecation warning — likely resolved by upgrading @expo/vector-icons or react-native-web when convenient. Non-blocking.",
+    "Optional: server.py has grown to ~730 lines with the new Stalker + VOD/Series routes. Consider splitting into modules (m3u.py, xtream.py, stalker.py, epg.py) if it keeps growing in FAZ 3."
+  ],
+  "critical_code_review_comments": [
+    "server.py Stalker code correctly validates MAC before making network calls (regex ^([0-9A-F]{2}:){5}[0-9A-F]{2}$) and returns Turkish 400 message — verified in tests.",
+    "Stalker portal discovery tries 3 URL variants (/portal.php, /stalker_portal/server/load.php, /c/portal.php) and falls back gracefully; unreachable hosts return 400 (not 500).",
+    "xtream/vod-info and series-info correctly wrap httpx errors as 400 with Turkish detail messages.",
+    "Frontend MAG form uses autoCapitalize='characters' and uppercases MAC in onChangeText — good UX.",
+    "AccountInfoCard in settings.tsx correctly gates render on activePlaylist?.accountInfo — pure M3U playlists don't show the card, as required.",
+    "@app.on_event('shutdown') still deprecated (noted in iter 1); non-blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_kizilkan_api.py (extended with 8 new tests: 4 Xtream VOD/Series error paths + 4 Stalker MAC/portal error paths; total 18 tests)"
+  ],
+  "success_rate": {"backend": "100% (18/18)", "frontend": "100%"},
+  "seed_data_creation": "EPG programs collection re-populated for playlist_id='TEST_kizilkan_pl_1' via test_epg_fetch. No production data modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "FAZ 2 fully verified. New testIDs to remember: method-{m3u_url|m3u_file|xtream|stalker}-btn, stalker-portal-input, stalker-mac-input, stalker-serial-input, error-box (already existed), account-info-card, seg-live/seg-vod/seg-series (only appear when playlist.source==='xtream' AND provider returned vod/series). /detail route works and shows 'İçerik bulunamadı' when navigated without params — safe fallback. Backend endpoints to remember: POST /api/xtream/vod, /api/xtream/vod-info (needs vod_id), /api/xtream/series, /api/xtream/series-info (needs series_id), /api/stalker/login, /api/stalker/load. MAC regex validation happens BEFORE any network call. Working EPG URL: https://epgshare01.online/epgshare01/epg_ripper_TR1.xml.gz. Demo M3U: https://iptv-org.github.io/iptv/countries/tr.m3u (~207 channels). No real Xtream or MAG credentials available; verify only error paths.",
+  "rca_of_issue": "No new issues in this iteration. Iteration 1's pointerEvents deprecation warning persists (root cause: react-native-web / Expo Router internals passing prop instead of style — not fixable in app code without upstream package update)."
+}

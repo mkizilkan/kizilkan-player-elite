@@ -1,0 +1,6 @@
+# Önce verify branch üzerinde kontrol edin; doğrudan main'e push etmeyin.
+cd /sdcard/Download/gpt-kizilkan-player-elite || exit 1
+git status --short
+git diff --check || exit 1
+# Dependency kurulmuşsa:
+cd frontend && node ../tools/denetle.js || exit 1

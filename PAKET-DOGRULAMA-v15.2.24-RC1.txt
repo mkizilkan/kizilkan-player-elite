@@ -1,0 +1,6 @@
+KIZILKAN PLAYER ELITE v15.2.24 RC1
+Beklenen version: 15.2.24
+Beklenen versionCode: 150224
+Yeni gate: tools/check-v15224-mag-room-stall.js
+Signing/secret dosyalari ZIP icine ALINMAMALIDIR.
+SHA256 paket olusturulduktan sonra bu dosyanin altina eklenecektir.

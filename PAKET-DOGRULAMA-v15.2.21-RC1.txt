@@ -1,0 +1,19 @@
+KIZILKAN PLAYER ELITE v15.2.21 RC1 PAKET DOGRULAMA
+
+Beklenen:
+- version: 15.2.21
+- versionCode: 150221
+- signing/private key dosyaları ZIP içinde olmayacak
+- check-v15221-typescript-media3.js ana denetim zincirinde olacak
+- v15.2.20 Flight Recorder V3 özellikleri korunacak
+
+Gerçek doğrulama sonuçları ZIP üretiminden sonra bu dosyaya eklenir.
+
+Gerçek üretim ortamı kontrolleri:
+- Node: gerçek çalıştırıldı
+- tools/denetle.js: PASS (v15.2.14→v15.2.21 zinciri)
+- check-v15221-typescript-media3.js: PASS
+- TS/TSX transpile syntax: 109 dosya / 0 hata
+- kaynak signing/secret taraması: CLEAN
+- tam npx tsc --noEmit: ÇALIŞTIRILAMADI (frontend/node_modules yok)
+- Expo prebuild / Gradle / APK: ÇALIŞTIRILAMADI; verify branch GitHub Actions ile doğrulanmalı

@@ -1,0 +1,25 @@
+KIZILKAN PLAYER ELITE v15.1.1-RC1 PAKET DOĞRULAMA
+
+Hedef: v15.1.0-RC1 GitHub Kotlin buildinde kanıtlanan iki EventDispatcher nullability/type hatasını, libmpv 1.0.0 mimarisini geri almadan düzeltmek.
+
+Beklenen sürüm:
+- app version: 15.1.1
+- versionCode: 150101
+- libmpv: 1.0.0
+
+HARD gate:
+- EventDispatcher video-ready payload Map<String, Any>
+- diagnostic payload LinkedHashMap<String, Any>
+- linkedMapOf<String, Any?> diagnostic regresyonu yasak
+- signing/private material ZIP'e dahil edilmez
+
+Gerçek Android Kotlin/Gradle build bu çalışma ortamında çalıştırılmış sayılmaz; GitHub Actions sonucu nihai native doğrulamadır.
+
+Bu paket oluşturulurken gerçekten çalıştırılanlar:
+- node ../tools/denetle.js: 3 ayrı tur TEMİZ
+- tools/checkplayercore.js: TEMİZ
+- frontend/package.json + frontend/app.json JSON parse: OK
+- .github/workflows/build-apk.yml YAML parse: OK
+- tools/checkplayercore.js Node syntax: OK
+- nullable diagnostic linkedMap<String, Any?> taraması: NONE
+- signing/private material taraması: NONE

@@ -1,0 +1,34 @@
+KIZILKAN PLAYER ELITE v15.2.14-RC1 — PAKET DOĞRULAMA
+Tarih: 2026-08-25
+Sürüm: 15.2.14
+Android versionCode: 150214
+
+YEREL KAYNAK KONTROLLERİ
+- tools/denetle.js: TEMİZ
+- tools/checkplayercore.js: TEMİZ
+- tools/check-v15214-hardening.js: TEMİZ (denetle.js içine bağlı)
+- TS/TSX parser: 108 dosya / 0 parse hatası
+- frontend/package.json: JSON temiz
+- frontend/app.json: JSON temiz
+- Stalker fixture: VOD is_series fallback PASS
+- Stalker fixture: native Series explicit empty fallback PASS
+- Stalker fixture: native Series 404/unsupported fallback PASS
+- Stalker fixture: transient VOD HTTP 500 retry + surface PASS
+- Stalker fixture: VOD movie_id/season_id episode çözümü PASS
+- Backup fixture: başarılı atomik swap/finalize PASS
+- Backup fixture: metadata apply hatasında Room rollback PASS
+- Backup fixture: truncated/eksik backup canlı Room'a dokunmuyor PASS
+
+DIŞ KAYNAK ÇAPRAZ DOĞRULAMA
+- Expo SDK 54 FileSystem File/FileHandle/readBytes/writeBytes API: doğrulandı.
+- AndroidX Room runInTransaction transaction semantiği: doğrulandı.
+- Stalker ayrı type=series + VOD is_series varyasyonları: açık kaynak implementasyonlarla doğrulandı.
+- Stalker VOD movie_id/season_id/episode_id varyasyonu: açık kaynak implementasyonla doğrulandı.
+
+YAPILMADI / BAŞARILI SAYILMAMALI
+- Tam npx tsc --noEmit (paketleme ortamında node_modules yok)
+- Expo prebuild
+- Android KSP/Kotlin/Gradle release build
+- Release APK gerçek cihaz testleri
+
+Gerçek build kanıtı GitHub Actions'tır. Build başarılı olsa bile MAG/Xtream/M3U/backup/scan davranışları gerçek cihazda ayrıca acceptance testinden geçmelidir.

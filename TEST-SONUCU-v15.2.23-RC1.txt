@@ -1,0 +1,15 @@
+KIZILKAN PLAYER ELITE v15.2.23 RC1
+
+GERÇEK ÇALIŞTIRILAN:
+PASS  node tools/check-v15223-flight-recorder-mag.js
+PASS  node tools/check-v15222-flight-recorder-mag.js
+PASS  cd frontend && node ../tools/denetle.js
+RESULT: TÜM DENETİMLER TEMİZ / exit 0
+
+ÇALIŞTIRILMAYAN:
+- full npx tsc --noEmit
+- Android/Kotlin/Gradle release build
+- GitHub Actions
+- fiziksel APK cihaz acceptance
+
+Bunlar yapılmış gibi kabul edilmemelidir.

@@ -1,0 +1,48 @@
+KIZILKAN PLAYER ELITE v15.2.13-RC1 — TERMUX / GITHUB
+
+# 1) ZIP'i staging'e ac
+cd /sdcard/Download
+rm -rf kizilkan-v15.2.13-stage
+mkdir -p kizilkan-v15.2.13-stage
+unzip -q KIZILKAN-PLAYER-ELITE-v15.2.13-RC1-MEDIA-CATALOG-BACKUP-HARDENING.zip -d kizilkan-v15.2.13-stage
+
+# 2) Mevcut Git reposuna aktar; .git ve signing materyali korunur
+rsync -av --delete \
+  --exclude='.git/' \
+  --exclude='frontend/kizilkan-player-elite-release.jks' \
+  --exclude='frontend/kizilkan-player-elite-release.jks.base64' \
+  --exclude='frontend/kizilkan-player-elite-release-GITHUB.txt' \
+  /sdcard/Download/kizilkan-v15.2.13-stage/gpt-kizilkan-player-elite/ \
+  /sdcard/Download/gpt-kizilkan-player-elite/
+
+# 3) Surum ve repo durumunu dogrula
+cd /sdcard/Download/gpt-kizilkan-player-elite
+git status --short
+grep -n '"version"' frontend/package.json | head
+grep -n '"versionCode"' frontend/app.json
+
+# 4) Signing dosyalarinin ignore edildigini dogrula
+git check-ignore -v \
+  frontend/kizilkan-player-elite-release.jks \
+  frontend/kizilkan-player-elite-release.jks.base64 \
+  frontend/kizilkan-player-elite-release-GITHUB.txt
+
+# 5) Diff kalite kontrolu
+git diff --check
+git diff --stat
+git diff --name-status
+
+# 6) Stage + cached diff kontrolu
+git add .
+git status --short
+git diff --cached --check
+git diff --cached --stat
+git diff --cached --name-status
+
+# 7) Commit ve push
+git commit -m "fix: KIZILKAN PLAYER ELITE v15.2.13 RC1 media catalog and backup hardening"
+git push origin main
+
+# 8) Son kanit
+git status
+git log -1 --oneline

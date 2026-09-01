@@ -1,0 +1,30 @@
+{
+  "summary": "Iteration 9 (Faz A) — all 6 user bugs verified fixed. Backend: 22/22 pytest PASS. Frontend: bundle compiles with 1392 modules, 0 errors. End-to-end client-side M3U flow proven: fetched https://iptv-org.github.io/iptv/countries/tr.m3u DIRECTLY from the browser (0 /api/m3u/* or /api/xtream/* calls, 1 direct GET to iptv-org), parsed to 206 live channels + 0 vod + 0 series, saved and navigated to /(tabs). BUG 6 segment tabs render with counts (Canlı (206), Filmler, Diziler), Filmler/Diziler grayed out (segmentDisabled opacity 0.4) with hasTVPreferredFocus on active. BUG 1 startup: 0 playlists → /onboarding; profile tap → /playlist-select → auto-forwards to /add-playlist (0) or /(tabs) (fast path when 1). BUG 3 app.json Android usesCleartextTraffic + 12 permissions (RECORD_AUDIO, MODIFY_AUDIO_SETTINGS, POST_NOTIFICATIONS, READ_MEDIA_VIDEO/AUDIO, FOREGROUND_SERVICE_MEDIA_PLAYBACK, READ/WRITE_EXTERNAL_STORAGE) and iOS NSAppTransportSecurity.NSAllowsArbitraryLoads=true + NSMicrophoneUsageDescription + NSPhotoLibrary(Add)UsageDescription in Turkish all present. BUG 5 permissions.ts exports askPreConsent/offerSettings/requestMicrophone/requestNotifications/requestMediaLibrary/requestBaselinePermissions; _layout.tsx calls it 3s after splash. add-playlist.tsx contains ZERO api.parseM3UFromUrl/xtreamLogin/xtreamLoad/xtreamVod/xtreamSeries references; only api.stalkerLogin/stalkerLoad remain (intentional).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_kizilkan_api.py",
+    "/app/test_reports/pytest/iteration_9_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "iptv.ts uses `(globalThis as any).require(\"expo-audio\")` dynamic resolution — works because expo-audio is not installed, so it silently returns granted:false on native. Fine for Faz A (voice search is Faz B), but ensure Faz B adds expo-audio to package.json before shipping mic feature.",
+    "playlist-select.tsx auto-timer countdown is not cancelable via keyboard-only (D-Pad); only touch/click on 'cancel-auto-btn' stops it. TV Box users pressing D-Pad Down to focus the list will still trigger auto-advance at t=0. Consider cancelling on any onFocus event of a playlist cell.",
+    "add-playlist.tsx: after successful add, navigates directly to /(tabs) — skips playlist-select entirely. This is intentional (new playlist becomes active), but means the 'SON' badge/countdown flow is only reachable via existing multi-playlist users."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None. Public M3U https://iptv-org.github.io/iptv/countries/tr.m3u used for live client-side parse test.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Native-only surfaces (cleartext HTTP on Android WebView, runtime permission prompts, expo-notifications actual push registration) can only be validated after APK rebuild — web preview covers config-level correctness only. If Faz B lands (DVR/Chromecast native modules, expo-audio for voice), retest the permissions.ts dynamic-require branches on a real device. Backend /api/m3u/* and /api/xtream/* endpoints are still live but now unused by the client — safe to remove in a future cleanup pass, but keep for now (backward compat with any older builds).",
+  "rca_of_issue": "N/A — this iteration was a verification pass. All 6 bugs traced from user report to fix location: BUG 1 startup flow → app/index.tsx L38-50 + playlist-select.tsx L33-56 (unconditional profile-select, playlist-select intermediate); BUG 2 VPN bypass → src/utils/iptv.ts (new) + add-playlist.tsx L84-127 (client-side fetch); BUG 3 cleartext → app.json L32 + L14-23; BUG 5 permissions → src/utils/permissions.ts (new) + _layout.tsx L30; BUG 6 group chips → app/(tabs)/index.tsx L164-204 (segment with counts + disabled state)."
+}

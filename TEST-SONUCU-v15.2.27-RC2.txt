@@ -1,0 +1,12 @@
+KIZILKAN PLAYER ELITE v15.2.27-RC2 — TEST SONUCU
+================================================
+PASS  tools/check-v15227-rc2-ci-tsc-fix.js
+PASS  tools/check-v15227-mag-playback-pagination-ui.js
+PASS  tools/check-v15225-mag-architecture.js
+PASS  tools/check-v15226-rc1-lockfile.js
+PASS  node --check tools/denetle.js
+PASS  node --check tools/_tsc.js
+PASS  node --check tools/check-v15225-rc2-typescript-build.js
+PASS  node --check tools/check-v15225-rc3-typescript-project.js
+
+NOT: Bu çalışma ortamında frontend/node_modules yoktur ve dış npm registry DNS erişimi EAI_AGAIN ile kapalıdır. Bu yüzden gerçek tam proje `tsc --noEmit` burada çalıştırılmış gibi gösterilmemiştir. RC2'nin amacı GitHub CI'da dependency kurulumundan sonra bu kapının güvenilir şekilde çalışmasını sağlamaktır. GitHub Actions nihai CI doğrulamasıdır.

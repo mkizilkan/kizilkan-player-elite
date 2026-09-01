@@ -1,0 +1,30 @@
+KIZILKAN PLAYER ELITE v15.2.23 RC2 — PAKET DOĞRULAMA
+
+Sürüm:
+- frontend/package.json: 15.2.23
+- frontend/app.json expo.version: 15.2.23
+- Android versionCode: 150223
+- Paket revizyonu: RC2
+
+Kaynak üzerinde gerçekten çalıştırılan kontroller:
+- tüm tools/*.js -> node --check: PASS
+- tools/check-v15223-complete-corrective.js: PASS
+- tools/check-v15223-flight-recorder-mag.js: PASS
+- frontend/../tools/denetle.js: PASS (22/22 gate)
+- 109 TS/TSX dosyasına transpile diagnostics: 0 hata
+- değişen metin dosyalarında trailing whitespace: temiz
+- signing/secret kaynak taraması: temiz
+- v15.2.23 RC1 tabanına göre değişiklik kapsamı: yalnız planlanan RC2 kod/belge dosyaları
+
+RC2 P0 kapsamı:
+1) PanelScan dahil tam tanı temizleme + clear epoch görünürlüğü
+2) Media3 fatal codec fallback + VLC video-output HW->SW/terminal recovery
+3) Gesture/Reanimated worklet crash yolunun `.runOnJS(true)` ile JS-thread authority'ye alınması
+4) Xtream heavy catalog Room/bigStore commit doğrulaması öncesi React publish'in engellenmesi + index recovery
+5) Stall hardening: batched Flight Recorder persistence + bounded JS fallback + sampled journal + Xtream/MAG cooperative catalog yield
+
+Önemli doğrulama sınırı:
+- Runtime hard-gate/transpile için TypeScript 5.8.3 kullanıldı; proje dependency'si TypeScript 5.9.3.
+- Tam `tsc --noEmit` gerçek proje dependency ağacıyla burada çalıştırılmadı.
+- Kotlin/Gradle/APK build, signing, GitHub Actions ve fiziksel cihaz acceptance burada çalıştırılmadı.
+- Bu aşamalar verify-v15.2.23 dalında ayrıca geçmeden main'e merge yapılmamalıdır.

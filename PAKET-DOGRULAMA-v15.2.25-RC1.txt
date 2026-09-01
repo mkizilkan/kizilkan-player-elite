@@ -1,0 +1,4 @@
+Sürüm: 15.2.25
+versionCode: 150225
+Yeni hard gate: tools/check-v15225-mag-architecture.js
+Signing/keystore dosyaları dağıtım ZIP'ine dahil edilmemelidir.

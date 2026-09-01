@@ -1,0 +1,8 @@
+cd /sdcard/Download/kizilkan-player-elite || exit 1
+cd frontend || exit 1
+yarn install --frozen-lockfile || exit 1
+cd ..
+node tools/check-v15225-rc3-typescript-project.js || exit 1
+node tools/denetle.js || exit 1
+git diff --check || exit 1
+git status --short

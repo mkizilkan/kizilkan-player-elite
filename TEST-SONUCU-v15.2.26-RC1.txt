@@ -1,0 +1,19 @@
+KIZILKAN PLAYER ELITE v15.2.26 RC1 — TEST SONUCU
+
+PASS:
+- package.json / app.json sürüm kimliği: 15.2.26 / versionCode 150226
+- yarn.lock içinde @react-native-tvos/config-tv@^0.1.6 kaydı ve 0.1.6 tarball çözümü
+- package.json top-level dependency selector'larının yarn.lock kapsam kontrolü
+- tools/*.js Node syntax kontrolü
+- JSON parse kontrolü
+- v15.2.26 RC1 lockfile hard-gate
+- gerekli dosya/non-empty bütünlük kontrolü
+- master denetle çalıştırmasında görülen kapılar v15.2.23 dahil PASS
+- ZIP compressed-data bütünlük testi
+
+TAMAMLANAMAYAN / PASS SAYILMAYAN:
+- Bu çalışma ortamında npm/yarn registry DNS erişimi EAI_AGAIN verdiği için burada yeniden yarn install --frozen-lockfile çalıştırılamadı.
+- Master denetle tam zinciri ortam süre sınırı nedeniyle sonuna kadar tamamlanmadı; görülen bölümler PASS, tamamı PASS olarak raporlanmıyor.
+- Android/Gradle APK build bu ortamda çalıştırılmadı.
+
+Lockfile, Termux Linux HOME alanında Yarn 1.22.22 gerçek resolver ile yeniden üretildi ve bu pakete entegre edildi.

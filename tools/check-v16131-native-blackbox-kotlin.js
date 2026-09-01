@@ -1,0 +1,18 @@
+const fs = require('fs');
+const path = require('path');
+const root = path.resolve(__dirname, '..');
+const read = p => fs.readFileSync(path.join(root,p),'utf8');
+const bb = read('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/NativeBlackBox.kt');
+const pkg = JSON.parse(read('frontend/package.json'));
+const app = JSON.parse(read('frontend/app.json'));
+const fail = m => { console.error('FAIL:',m); process.exitCode=1; };
+const ok = (c,m) => c ? console.log('PASS:',m) : fail(m);
+const semverAtLeast=(v,min)=>{const a=String(v).split('.').map(Number),b=String(min).split('.').map(Number); if(a.length!==3||a.some(Number.isNaN))return false; for(let i=0;i<3;i++){if(a[i]>b[i])return true;if(a[i]<b[i])return false;}return true;};
+ok(semverAtLeast(pkg.version,'16.13.1'),'package version preserves v16.13.1+');
+ok(app.expo.version===pkg.version && semverAtLeast(app.expo.version,'16.13.1'),'app version preserves v16.13.1+');
+ok(Number(app.expo.android.versionCode) >= 161301,'Android versionCode preserves v16.13.1+');
+ok(!bb.includes('insertEvent(context, "system", "ANR_WATCHDOG_STALL"'),'legacy positional ANR insertEvent call removed');
+for (const token of ['event = "ANR_WATCHDOG_STALL"','traceId = "anr-$appSessionId"','operationId = "anr-watchdog"','stage = "main-thread-stall"','durationMs = lag','outcome = "failure"','errorClass = "MAIN_THREAD_STALL"','payloadJson = payload.toString()','critical = true']) ok(bb.includes(token), token);
+const calls = [...bb.matchAll(/insertEvent\s*\(/g)];
+ok(calls.length >= 4, `insertEvent definitions/calls found: ${calls.length}`);
+if (!process.exitCode) console.log('PASS: v16.13.1 NativeBlackBox Kotlin signature regression gate TEMİZ');

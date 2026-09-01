@@ -1,0 +1,2 @@
+# Paket indirildikten sonra güvenli verify branch akışı ayrıca verilecektir.
+# Commit/push yalnız cihazdaki hard-gate ve Android build başarılarından sonra yapılmalıdır.

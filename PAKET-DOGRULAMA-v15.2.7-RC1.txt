@@ -1,0 +1,15 @@
+KIZILKAN PLAYER ELITE v15.2.7-RC1 PAKET DOĞRULAMA
+- version: 15.2.7
+- versionCode: 150207
+- hedef: GitHub Kotlin HARD gate chunked staging writer API-signature düzeltmesi
+- kanıtlanan hata: KizilkanNativeCoreModule.kt:96 OutputStream.bufferedWriter(Charsets.UTF_8, 64*1024) -> Too many arguments
+- çözüm: BufferedWriter(OutputStreamWriter(FileOutputStream(...), UTF_8), 64 KiB)
+- aynı native-core ağacındaki bufferedWriter/bufferedReader kullanımları tarandı; aynı writer signature hatası başka yerde bulunmadı
+- v15.2.6 ve önceki Native Core/Room/Cast/Discovery/EPG/Player özellikleri korunur
+- gerçek Gradle/Kotlin sonucu GitHub Actions ile yeniden kanıtlanacaktır
+- denetle.js: 3 ayrı tur TEMİZ
+- checkplayercore.js: TEMİZ; v15.2.7 Kotlin writer signature guard aktif
+- TS/TSX syntax: 107 dosya, 0 parse diagnostic
+- package/app JSON parse: TEMİZ
+- GitHub Actions YAML parse: TEMİZ
+- signing/private dosya taraması: TEMİZ

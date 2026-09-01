@@ -1,0 +1,10 @@
+KIZILKAN PLAYER ELITE v15.2.0-RC1
+Native Core Phase 1 kaynak paketi.
+
+Yerel doğrulama hedefleri:
+- tools/denetle.js
+- tools/checkplayercore.js
+- JSON/YAML/syntax kontrolleri
+- ZIP bütünlüğü
+
+Gerçek TypeScript/Kotlin/Gradle doğrulaması GitHub Actions'ta yapılacaktır; yerelde yapılmamış bir gate geçmiş gibi gösterilmeyecektir.

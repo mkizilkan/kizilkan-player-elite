@@ -1,0 +1,191 @@
+# KIZILKAN PLAYER — GitHub Actions APK Derleyici
+# v16.14.4: frozen lockfile + TypeScript preflight + master hard-gate + final MPV APK gate
+name: GPT KIZILKAN APK Derle
+on:
+  workflow_dispatch:
+    inputs:
+      new_architecture:
+        description: "Yeni Mimari (VLC patlarsa false yap)"
+        type: choice
+        options: ["true", "false"]
+        default: "true"
+      build_type:
+        description: "Build tipi (release = kurulabilir APK)"
+        type: choice
+        options: ["release", "debug"]
+        default: "release"
+      make_release:
+        description: "GitHub Release olustur (dogrudan .apk linki)"
+        type: boolean
+        default: true
+  push:
+    branches: [main, master]
+    paths:
+      - "frontend/**"
+      - "tools/**"
+      - ".github/workflows/build-apk.yml"
+permissions:
+  contents: write
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      NEW_ARCH: ${{ github.event.inputs.new_architecture || 'true' }}
+      BUILD_TYPE: ${{ github.event.inputs.build_type || 'release' }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ANDROID_CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
+    steps:
+      - name: Depoyu indir
+        uses: actions/checkout@v4
+      - name: JDK 17 kur
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Node.js 22 kur
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+      - name: .env olustur (varsa)
+        run: |
+          if [ -n "${{ secrets.EXPO_PUBLIC_BACKEND_URL }}" ]; then echo "EXPO_PUBLIC_BACKEND_URL=${{ secrets.EXPO_PUBLIC_BACKEND_URL }}" >> .env; fi
+      - name: Bagimliliklari kur
+        run: yarn install --frozen-lockfile --production=false --network-timeout 600000
+      - name: TypeScript CLI on-kontrolu - HARD gate
+        run: |
+          node -e "console.log(require.resolve('typescript/bin/tsc'))"
+          yarn exec tsc --version
+      - name: Statik denetim (denetle.js) - HARD gate
+        run: node ../tools/denetle.js
+      - name: TypeScript semantik tip kontrolu (tsc --noEmit) - HARD gate
+        run: yarn exec tsc --noEmit
+      - name: Expo prebuild (android/ uret)
+        run: npx expo prebuild --platform android --clean --no-install
+      - name: Kalici release imzasini kur
+        if: ${{ env.BUILD_TYPE == 'release' }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for v in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD ANDROID_CERT_SHA256; do [ -n "${!v:-}" ] || { echo "::error::Eksik GitHub Secret: $v"; missing=1; }; done
+          [ "$missing" -eq 0 ] || exit 1
+          KEYSTORE="$GITHUB_WORKSPACE/frontend/android/app/gpt-kizilkan-release.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
+          chmod 600 "$KEYSTORE"
+          echo "GPT_KEYSTORE_FILE=$KEYSTORE" >> "$GITHUB_ENV"
+          cat > android/app/gpt-signing.gradle <<'GRADLE'
+          android {
+            signingConfigs { gptRelease { storeFile file(System.getenv("GPT_KEYSTORE_FILE")); storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD"); keyAlias System.getenv("ANDROID_KEY_ALIAS"); keyPassword System.getenv("ANDROID_KEY_PASSWORD") } }
+            buildTypes { release { signingConfig signingConfigs.gptRelease } }
+          }
+          GRADLE
+          printf '\napply from: "gpt-signing.gradle"\n' >> android/app/build.gradle
+          keytool -list -keystore "$KEYSTORE" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+      - name: Gradle ayarlarini uygula
+        run: |
+          set -euo pipefail
+          PROPS=android/gradle.properties
+          [ -n "$(tail -c1 "$PROPS")" ] && echo "" >> "$PROPS" || true
+          if grep -q '^newArchEnabled=' "$PROPS"; then sed -i "s/^newArchEnabled=.*/newArchEnabled=${NEW_ARCH}/" "$PROPS"; else printf '\nnewArchEnabled=%s\n' "$NEW_ARCH" >> "$PROPS"; fi
+          sed -i '/^org\.gradle\.jvmargs=/d;/^org\.gradle\.daemon=/d;/^org\.gradle\.parallel=/d' "$PROPS"
+          printf 'org.gradle.jvmargs=-Xmx5120m -XX:MaxMetaspaceSize=1024m\norg.gradle.daemon=false\norg.gradle.parallel=true\n' >> "$PROPS"
+      - name: Manifest dogrula (http + TV)
+        run: |
+          set -euo pipefail
+          MF=android/app/src/main/AndroidManifest.xml
+          grep -q 'android:usesCleartextTraffic="true"' "$MF"
+          grep -q 'LEANBACK_LAUNCHER' "$MF"
+          MA=$(find android/app/src/main/java \( -name MainActivity.kt -o -name MainActivity.java \) -print -quit)
+          [ -n "$MA" ]
+          grep -q 'KIZILKAN_REMOTE_KEYS' "$MA"
+          grep -q 'KEYCODE_DPAD_CENTER' "$MA"
+          grep -q 'putString("key", "select")' "$MA"
+      - name: Gradle onbellegi
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('frontend/yarn.lock') }}-${{ env.NEW_ARCH }}
+          restore-keys: gradle-${{ runner.os }}-
+      - name: APK derle
+        run: |
+          cd android
+          chmod +x gradlew
+          if [ "$BUILD_TYPE" = debug ]; then ./gradlew assembleDebug --no-daemon --stacktrace; else ./gradlew assembleRelease --no-daemon --stacktrace; fi
+      - name: MPV final APK native paketleme - HARD gate
+        run: |
+          set -euo pipefail
+          SRC=$(find android/app/build/outputs/apk -type f -name '*.apk' -print -quit)
+          [ -n "$SRC" ] && [ -f "$SRC" ]
+          node ../tools/check-mpv-packaging-v16143.js --apk "$SRC"
+      - name: APK paket + surum + imza dogrula
+        id: apkverify
+        run: |
+          set -euo pipefail
+          SRC=$(find android/app/build/outputs/apk -type f -name '*.apk' -print -quit)
+          [ -n "$SRC" ] && [ -f "$SRC" ]
+          BUILD_TOOLS=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -print | sort -V | tail -n1)
+          APKSIGNER="$BUILD_TOOLS/apksigner"; AAPT="$BUILD_TOOLS/aapt"
+          [ -x "$APKSIGNER" ] && [ -x "$AAPT" ]
+          EXPECTED_PACKAGE=$(node -p "require('./app.json').expo.android.package")
+          EXPECTED_VERSION_CODE=$(node -p "String(require('./app.json').expo.android.versionCode)")
+          "$AAPT" dump badging "$SRC" > /tmp/kizilkan-badging.txt
+          BADGING=$(sed -n '1p' /tmp/kizilkan-badging.txt)
+          ACTUAL_PACKAGE=$(printf '%s\n' "$BADGING" | sed -n "s/.*package: name='\([^']*\)'.*/\1/p")
+          ACTUAL_VERSION_CODE=$(printf '%s\n' "$BADGING" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")
+          [ "$ACTUAL_PACKAGE" = "$EXPECTED_PACKAGE" ] && [ "$ACTUAL_VERSION_CODE" = "$EXPECTED_VERSION_CODE" ]
+          "$APKSIGNER" verify --verbose --print-certs "$SRC" > /tmp/kizilkan-apksigner.txt 2>&1
+          CERT_SHA=$(sed -n -e 's/^Signer #1 certificate SHA-256 digest: *//p' -e 's/^V[0-9][^:]* Signer: certificate SHA-256 digest: *//p' /tmp/kizilkan-apksigner.txt | sed -n '1p' | tr -d '[:space:]')
+          NORMALIZED_CERT_SHA=$(printf '%s' "$CERT_SHA" | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')
+          EXPECTED_CERT_SHA256=$(printf '%s' "${ANDROID_CERT_SHA256:-}" | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')
+          printf '%s' "$EXPECTED_CERT_SHA256" | grep -Eq '^[0-9A-F]{64}$'
+          [ "$NORMALIZED_CERT_SHA" = "$EXPECTED_CERT_SHA256" ]
+          echo "cert_sha256=$CERT_SHA" >> "$GITHUB_OUTPUT"
+      - name: APK'yi adlandir
+        id: apk
+        run: |
+          VERSION=$(node -p "require('./app.json').expo.version")
+          SRC=$(find android/app/build/outputs/apk -type f -name '*.apk' -print -quit)
+          NAME="KIZILKAN-PLAYER-ELITE-v${VERSION}-build${{ github.run_number }}.apk"
+          mkdir -p ../artifacts
+          cp "$SRC" "../artifacts/$NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "path=artifacts/$NAME" >> "$GITHUB_OUTPUT"
+      - name: APK ABI ve native boyut raporu
+        run: node ../tools/analyze-apk.js "../${{ steps.apk.outputs.path }}" "../artifacts/APK-BOYUT-RAPORU-v${{ steps.apk.outputs.version }}.txt"
+      - name: Artifact olarak yukle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: |
+            artifacts/*.apk
+            artifacts/APK-BOYUT-RAPORU-*.txt
+          retention-days: 30
+          if-no-files-found: error
+      - name: GitHub Release olustur
+        if: ${{ github.event.inputs.make_release != 'false' }}
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="build-${{ github.run_number }}"
+          gh release create "$TAG" "artifacts/${{ steps.apk.outputs.name }}" --title "KIZILKAN PLAYER ELITE v${{ steps.apk.outputs.version }} (build ${{ github.run_number }})" --notes "Yeni Mimari: ${NEW_ARCH} · Build tipi: ${BUILD_TYPE}"
+      - name: Hata gunlugu (build patlarsa)
+        if: failure()
+        run: |
+          echo '## Build failure diagnostics' >> "$GITHUB_STEP_SUMMARY"
+          find android -maxdepth 5 -type f \( -name '*.log' -o -name '*.txt' \) -print 2>/dev/null | head -n 50 >> "$GITHUB_STEP_SUMMARY" || true
