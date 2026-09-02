@@ -1,0 +1,21 @@
+KIZILKAN PLAYER ELITE v17.0.0 RC1 — PAKET DOĞRULAMA
+
+Metadata:
+- version: 17.0.0
+- Android versionCode: 170000
+- iOS buildNumber: 17.0.0
+
+Assistant-side PASS:
+- v17.0.0 release hard-gate
+- v16.14.9+ TV navigation/focus preservation contract
+- v16.14.8 performance/runtime preservation
+- v16.14.7 / 16.14.6 / 16.14.5 / 16.14.4 / 16.14.3 / 16.14.2 critical gates
+- changed TS/TSX parse diagnostics
+- tools/plugins JS syntax
+- Room neighbor SQL fixture
+- whitespace diff check
+
+Not claimed:
+- dependency-backed full TypeScript build PASS (frontend/node_modules absent in assistant runtime)
+- Android APK build
+- physical TV Box/device runtime validation

@@ -6,6 +6,7 @@ import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { useTVFocus, rowFocusStyle } from "@/src/hooks/useTVFocus";
 import { useTv } from "@/src/store/TvContext";
 import { haptic } from "@/src/utils/haptic";
+import { useTvFocusMemory } from "@/src/store/TvFocusMemoryContext";
 import type { Channel, NowNext } from "@/src/types";
 
 interface Props {
@@ -49,6 +50,8 @@ function ChannelRowBase({ channel, onPress, onToggleFavorite, onLongPress, onFoc
   const { colors } = useTheme();
   const { isFocused, onFocus, onBlur } = useTVFocus();
   const { isTv: isTvLayout } = useTv();
+  const focusMemory = useTvFocusMemory();
+  const focusBinding = focusMemory.bind(`channel-row-${channel.id}`);
   const longPressedRef = React.useRef(0);
   /**
    * EPG GÖSTERİMİ (v8.9.1 — kullanıcı uyarısı üzerine düzeltildi)
@@ -87,8 +90,9 @@ function ChannelRowBase({ channel, onPress, onToggleFavorite, onLongPress, onFoc
        */
       onLongPress={onLongPress ? () => { longPressedRef.current = Date.now(); haptic.medium(); onLongPress(); } : undefined}
       delayLongPress={400}
-      onFocus={() => { onFocus(); onFocusItem?.(); }}
+      onFocus={() => { onFocus(); focusBinding.rememberFocus(); onFocusItem?.(); }}
       onBlur={onBlur}
+      hasTVPreferredFocus={focusBinding.hasTVPreferredFocus}
       focusable
       activeOpacity={0.7}
       testID={`channel-row-${channel.id}`}

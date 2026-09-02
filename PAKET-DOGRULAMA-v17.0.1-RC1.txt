@@ -1,0 +1,8 @@
+KIZILKAN PLAYER ELITE v17.0.1 RC1
+Amaç: v16.14.2 regression gate forward-semver corrective + v17.0.0 preservation
+Version: 17.0.1
+Android versionCode: 170001
+iOS buildNumber: 17.0.1
+Release label: GPT ELITE v17.0.1 RC1
+
+SHA-256 ve ZIP bütünlük sonucu paket oluşturma aşamasında üretilir.

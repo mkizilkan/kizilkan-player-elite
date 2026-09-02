@@ -23,12 +23,17 @@ import React from "react";
 import { TouchableOpacity, type TouchableOpacityProps } from "react-native";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { useTVFocus, focusStyle } from "@/src/hooks/useTVFocus";
+import { useTvFocusMemory } from "@/src/store/TvFocusMemoryContext";
 
 export interface FocusButtonProps extends TouchableOpacityProps {
   /** Odak çerçevesinin köşe yuvarlaklığı (öğenin kendi radius'una uysun). */
   focusRadius?: number;
   /** Bu düğme ekran açılınca otomatik odakta olsun mu? */
   autoFocus?: boolean;
+  /** TV focus restore için stable identity. Verilmezse string testID kullanılır. */
+  focusKey?: string;
+  /** Player/modal gibi ayrı bir focus scope gerekirse. */
+  focusScope?: string;
 }
 
 export function FocusButton({
@@ -36,6 +41,8 @@ export function FocusButton({
   children,
   focusRadius = 12,
   autoFocus,
+  focusKey,
+  focusScope,
   focusable = true,
   hasTVPreferredFocus,
   onFocus,
@@ -44,6 +51,9 @@ export function FocusButton({
 }: FocusButtonProps) {
   const { colors } = useTheme();
   const { isFocused, onFocus: markFocused, onBlur: markBlurred } = useTVFocus();
+  const focusMemory = useTvFocusMemory(focusScope);
+  const stableFocusKey = focusKey || (typeof rest.testID === "string" ? rest.testID : undefined);
+  const memoryBinding = focusMemory.bind(stableFocusKey);
 
   return (
     <TouchableOpacity
@@ -52,8 +62,8 @@ export function FocusButton({
       focusable={focusable}
       // v9.20.0: Dışarıdan verilen native preferred-focus değerini ezme.
       // autoFocus yalnız açıkça verilmişse önceliklidir.
-      hasTVPreferredFocus={autoFocus ?? hasTVPreferredFocus}
-      onFocus={(e) => { markFocused(); onFocus?.(e); }}
+      hasTVPreferredFocus={autoFocus ?? hasTVPreferredFocus ?? memoryBinding.hasTVPreferredFocus}
+      onFocus={(e) => { markFocused(); memoryBinding.rememberFocus(); onFocus?.(e); }}
       onBlur={(e) => { markBlurred(); onBlur?.(e); }}
       style={[style, focusStyle(colors.brandPrimary, isFocused, focusRadius)]}
     >

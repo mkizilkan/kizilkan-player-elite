@@ -27,11 +27,13 @@ import { FocusButton } from "@/src/components/FocusButton";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 const EPISODE_URL_KEY = "kizilkan.episode.url.";
+const PLAYER_NAV_KEY = "kizilkan.player.nav.";
+const PLAYER_SERIES_NAV_KEY = "kizilkan.player.seriesNav.";
 
 export default function DetailScreen() {
   const router = useRouter();
   const { colors } = useTheme();
-  const params = useLocalSearchParams<{ type: string; id: string }>();
+  const params = useLocalSearchParams<{ type: string; id: string; navOrigin?: string; navGroup?: string; navSearch?: string; focusKey?: string; navScopeKey?: string }>();
   const { activePlaylist, addToRecent, ensureHeavyLoaded } = usePlaylists();
 
   // v15.2.4: detay ekranı bütün VOD/Series koleksiyonunu hydrate etmez.
@@ -151,25 +153,58 @@ export default function DetailScreen() {
     await storage.setItem(EPISODE_URL_KEY + syntheticId, JSON.stringify({
       url: (item as any).url,
       name: item.name,
-      group: "Film",
+      group: (item as any).group || "Film",
       container_ext: (item as any).container_ext || "mp4",
+      poster,
     }));
     const resumeAt = await chooseResumePosition(watchProgress[item.id]);
     addToRecent(item.id);
-    router.push({ pathname: "/player", params: { id: syntheticId, ext: "true", ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}) } });
+    router.push({ pathname: "/player", params: {
+      id: syntheticId, ext: "true",
+      ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}),
+      navOrigin: params.navOrigin || "detail", navGroup: params.navGroup || (item as any).group || "__all__",
+      navSearch: params.navSearch || "", focusKey: params.focusKey || `detail:vod:${item.id}`, navScopeKey: params.navScopeKey,
+    } });
   };
 
   const handlePlayEpisode = async (ep: any) => {
-    const syntheticId = `epplay-${ep.id}`;
-    await storage.setItem(EPISODE_URL_KEY + syntheticId, JSON.stringify({
-      url: ep.url,
-      name: `${item.name} • ${ep.title}`,
+    // v17.0.0: Dizi navigation bundle yalnız BU dizinin bölüm listesini taşır;
+    // 20K-100K global katalog PlayerHost'a hydrate edilmez. Tek storage kaydı
+    // sayesinde sezon sınırında dahi unlimited next/previous deterministik kalır.
+    const orderedEpisodes = seasons.flatMap((season: any) => Array.isArray(season?.episodes) ? season.episodes : []);
+    const seriesNavKey = `${activePlaylist?.id || "playlist"}:${item.id}`;
+    const navItems = orderedEpisodes.map((candidate: any) => ({
+      id: `epplay-${candidate.id}`,
+      realId: String(candidate.id),
+      url: candidate.url,
+      name: `${item.name} • ${candidate.title}`,
       group: "Dizi",
-      container_ext: ep.container_ext || "mp4",
+      container_ext: candidate.container_ext || "mp4",
+      poster: poster || null,
+      episode_num: candidate.episode_num ?? null,
     }));
+    await storage.setItem(PLAYER_SERIES_NAV_KEY + seriesNavKey, JSON.stringify({ items: navItems }));
+
+    const syntheticId = `epplay-${ep.id}`;
+    const idx = navItems.findIndex((candidate: any) => candidate.id === syntheticId);
+    const currentPayload = idx >= 0 ? navItems[idx] : {
+      id: syntheticId, realId: String(ep.id), url: ep.url, name: `${item.name} • ${ep.title}`,
+      group: "Dizi", container_ext: ep.container_ext || "mp4", poster: poster || null,
+    };
+    await storage.setItem(EPISODE_URL_KEY + syntheticId, JSON.stringify({ ...currentPayload, seriesNavKey }));
+    // Geriye dönük küçük komşu kaydı da korunur; bundle okunamazsa fail-safe çalışır.
+    await storage.setItem(PLAYER_NAV_KEY + syntheticId, JSON.stringify({
+      previousId: idx > 0 ? navItems[idx - 1].id : null,
+      nextId: idx >= 0 && idx + 1 < navItems.length ? navItems[idx + 1].id : null,
+    }));
+
     const resumeAt = await chooseResumePosition(watchProgress[String(ep.id)]);
     addToRecent(item.id);
-    router.push({ pathname: "/player", params: { id: syntheticId, ext: "true", ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}) } });
+    router.push({ pathname: "/player", params: {
+      id: syntheticId, ext: "true", ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}),
+      navOrigin: params.navOrigin || "detail", navGroup: params.navGroup || (item as any).group || "__all__",
+      navSearch: params.navSearch || "", focusKey: params.focusKey || `detail:series:${item.id}:episode:${ep.id}`, navScopeKey: params.navScopeKey,
+    } });
   };
 
   return (
@@ -436,7 +471,7 @@ export default function DetailScreen() {
                 }));
                 const resumeAt = await chooseResumePosition(watchProgress[item.id]);
                 addToRecent(item.id);
-                router.push({ pathname: "/player", params: { id: syntheticId, ext: "true", ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}) } });
+                router.push({ pathname: "/player", params: { id: syntheticId, ext: "true", ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}), navOrigin: params.navOrigin || "detail", navGroup: params.navGroup || (item as any).group || "__all__", navSearch: params.navSearch || "", focusKey: params.focusKey || `detail:vod:${item.id}`, navScopeKey: params.navScopeKey } });
               }} focusable style={[styles.playBtn, { backgroundColor: colors.brandPrimary }]}>
                 <Ionicons name="play" size={20} color={colors.onBrandPrimary} />
                 <Text style={[styles.playBtnText, { color: colors.onBrandPrimary }]}>Oynat</Text>

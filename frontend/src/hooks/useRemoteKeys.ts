@@ -17,6 +17,9 @@ import { DeviceEventEmitter, Platform } from "react-native";
 export type RemoteKey =
   | "channelUp"
   | "channelDown"
+  /** MEDIA_NEXT/PREVIOUS, CH+/- ile aynı değildir: VOD/Series context-aware gezinir. */
+  | "contentNext"
+  | "contentPrevious"
   | "playPause"
   | "play"
   | "pause"
@@ -33,7 +36,9 @@ export type RemoteKey =
   /** OK / Enter / D-pad center — player kontrollerini açma/seçme. */
   | "select"
   /** Geri tuşu BASILI TUTULDU — kanal listesine dön (v7.6.0). */
-  | "backLongPress";
+  | "backLongPress"
+  | "digit0" | "digit1" | "digit2" | "digit3" | "digit4"
+  | "digit5" | "digit6" | "digit7" | "digit8" | "digit9";
 
 export type RemoteKeyHandlers = Partial<Record<RemoteKey, () => void>>;
 

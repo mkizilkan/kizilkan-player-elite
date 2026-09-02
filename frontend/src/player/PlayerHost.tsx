@@ -18,6 +18,7 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { usePlayer } from "@/src/player/PlayerContext";
+import { loadPlayerNavigationScope } from "@/src/player/navigationScope";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -72,6 +73,7 @@ import { useTv } from "@/src/store/TvContext";
 import { useTVFocus } from "@/src/hooks/useTVFocus";
 import { FocusButton } from "@/src/components/FocusButton";
 import { useRemoteKeys } from "@/src/hooks/useRemoteKeys";
+import { TvFocusScope, useTvFocusMemory } from "@/src/store/TvFocusMemoryContext";
 import { testStream, DEFAULT_USER_AGENT } from "@/src/utils/streamTest";
 import { loadOverrides, type OverrideMap } from "@/src/utils/overrides";
 import { BackHandler } from "react-native";
@@ -80,6 +82,9 @@ import { KizilkanMpvView, KIZILKAN_MPV_AVAILABLE, getKizilkanMpvRuntimeStatus, t
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 const EPISODE_URL_KEY = "kizilkan.episode.url.";
+const PLAYER_NAV_KEY = "kizilkan.player.nav.";
+const PLAYER_SERIES_NAV_KEY = "kizilkan.player.seriesNav.";
+const FocusGuide: any = (require("react-native") as any).TVFocusGuideView || View;
 type Fit = "contain" | "cover" | "fill";
 // v15.0.1 BUILD FIX: kayıt hedefi UI zaten mevcut; union gerçek ekran durumunu eksiksiz kapsar.
 type SheetType = "sleep" | "audio" | "subtitle" | "speed" | "stats" | "buffer" | "engine" | "audiodelay" | "jump" | "recordTarget" | null;
@@ -189,7 +194,9 @@ export default function PlayerHost() {
   const { isTv, overscan } = useTv();
   const { width: screenW } = useWindowDimensions();
   const { colors } = useTheme();
-  const { source, visible, closePlayer, switchChannel } = usePlayer();
+  const { source, visible, closePlayer, switchChannel, switchContent } = usePlayer();
+  const { requestRouteRestore } = useTvFocusMemory("player");
+  const wasVisibleRef = useRef(false);
   const params = (source ?? { id: "", ext: undefined, kind: "live" }) as {
     id: string;
     ext?: string;
@@ -198,6 +205,17 @@ export default function PlayerHost() {
   };
   const sessionKind = params.kind ?? (params.ext === "true" ? "external" : "live");
   const isSynthetic = sessionKind !== "live";
+
+  // v17.0.0 TV focus restore: kalıcı PlayerHost kapandığında alttaki route
+  // unmount edilmez; son stable focus key native TV focus engine'e yeniden istenir.
+  useEffect(() => {
+    const previous = wasVisibleRef.current;
+    wasVisibleRef.current = visible;
+    if (previous && !visible) {
+      const timer = setTimeout(() => requestRouteRestore(), 40);
+      return () => clearTimeout(timer);
+    }
+  }, [visible, requestRouteRestore]);
   const { activePlaylist, toggleFavorite, isFavorite, ensureHeavyLoaded } = usePlaylists();
   const [nativeLiveChannel, setNativeLiveChannel] = useState<any | null>(null);
 
@@ -247,7 +265,11 @@ export default function PlayerHost() {
   }, [activePlaylist?.id, ensureHeavyLoaded, isSynthetic, params.id]);
   const { setProgress: setLibProgress } = useLibrary();
 
-  const [externalStream, setExternalStream] = useState<{ url: string; name: string; group: string; container_ext: string; poster?: string | null } | null>(null);
+  const [externalStream, setExternalStream] = useState<{ url: string; name: string; group: string; container_ext: string; poster?: string | null; seriesNavKey?: string } | null>(null);
+  const [seriesNavigationItems, setSeriesNavigationItems] = useState<any[]>([]);
+  const [orderedNavigationScopeIds, setOrderedNavigationScopeIds] = useState<string[] | null>(null);
+  const [playbackNeighbors, setPlaybackNeighbors] = useState<{ previous:any|null; next:any|null; position:number; total:number; source:"room"|"legacy"|"synthetic" } | null>(null);
+  const [syntheticNav, setSyntheticNav] = useState<{ previousId?: string | null; nextId?: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   /**
    * KONTROL PANELİ BAŞLANGIÇ DURUMU (v8.6.0 — kullanıcı bildirimi)
@@ -266,6 +288,8 @@ export default function PlayerHost() {
    * (TV'de OK'a basınca) açılır.
    */
   const [showControls, setShowControls] = useState(false);
+  const [numericZapText, setNumericZapText] = useState("");
+  const numericZapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [fit, setFit] = useState<Fit>("contain");
   const [isPlaying, setIsPlaying] = useState(true);
   const [isBuffering, setIsBuffering] = useState(true);
@@ -508,6 +532,8 @@ export default function PlayerHost() {
   const nextSessionProfileRef = useRef<EngineProfile | null>(null);
   const successfulSessionRef = useRef<number | null>(null);
   const successfulSessionAtRef = useRef(0);
+  const rebufferActiveRef = useRef<{ sid: number; startedAt: number; engine: string } | null>(null);
+  const rebufferSequenceRef = useRef(0);
   const [activeSessionId, setActiveSessionId] = useState(0);
   const [profileReadySessionId, setProfileReadySessionId] = useState(0);
   const [v2Profile, setV2Profile] = useState<EngineProfile>({ engine: "media3", surface: "surfaceView" });
@@ -571,6 +597,33 @@ export default function PlayerHost() {
 
     return () => { alive = false; };
   }, [params.id, isSynthetic]);
+
+  // v17.0.0: Dizi bölüm gezinmesi için yalnız komşu synthetic ID'leri yüklenir.
+  // Bu veri Detail ekranında hazırlanır; PlayerHost bütün sezonu taşımaz.
+  useEffect(() => {
+    let alive = true;
+    if (sessionKind !== "series" || !params.id) { setSyntheticNav(null); return () => { alive = false; }; }
+    setSyntheticNav(null);
+    storage.getItem<string>(PLAYER_NAV_KEY + params.id, "").then(raw => {
+      if (!alive || !raw) return;
+      try { setSyntheticNav(JSON.parse(raw)); } catch { setSyntheticNav(null); }
+    }).catch(() => { if (alive) setSyntheticNav(null); });
+    return () => { alive = false; };
+  }, [params.id, sessionKind]);
+
+  useEffect(() => {
+    let alive = true;
+    const key = sessionKind === "series" ? externalStream?.seriesNavKey : undefined;
+    if (!key) { setSeriesNavigationItems([]); return () => { alive = false; }; }
+    storage.getItem<string>(PLAYER_SERIES_NAV_KEY + key, "").then(raw => {
+      if (!alive || !raw) return;
+      try {
+        const parsed = JSON.parse(raw);
+        setSeriesNavigationItems(Array.isArray(parsed?.items) ? parsed.items : []);
+      } catch { setSeriesNavigationItems([]); }
+    }).catch(() => { if (alive) setSeriesNavigationItems([]); });
+    return () => { alive = false; };
+  }, [sessionKind, externalStream?.seriesNavKey]);
 
   const channel = useMemo(() => {
     // externalStream yalnız synthetic session'da geçerlidir. Bu koşul,
@@ -911,21 +964,25 @@ export default function PlayerHost() {
    * 1 sn -> 5 sn düşürürüz; kontrol/yayın bilgi paneli açıkken 1 sn hassasiyet
    * geri gelir. Playback clock/stall watchdog seçilen event cadence ile çalışmayı sürdürür.
    */
+  const media3TimeUpdateIntervalRef = useRef<number | null>(null);
   useEffect(() => {
     if (!player) return;
     const intervalMs = (showControls || sheet === "stats" || isSynthetic)
       ? PLAYER_UI_TIME_UPDATE_MS
       : PLAYER_BACKGROUND_TIME_UPDATE_MS;
+    // v17.0.0: aynı değeri her render/sheet churn'ünde native IntervalUpdateClock'a
+    // tekrar yazma. Son logdaki emitTimeUpdate/IntervalUpdateClock stall hattında
+    // gereksiz scheduler yeniden kurulumunu azaltır; gerçek event cadence korunur.
+    if (media3TimeUpdateIntervalRef.current === intervalMs) return;
     try {
       (player as any).timeUpdateEventInterval = intervalMs / 1000;
+      media3TimeUpdateIntervalRef.current = intervalMs;
       void recordDiagnostic("player", "MEDIA3_TIMEUPDATE_INTERVAL", {
-        intervalMs,
-        controls: showControls,
-        sheet: sheet || "",
-        synthetic: isSynthetic,
+        intervalMs, controls: showControls, sheet: sheet || "", synthetic: isSynthetic, deduped: true,
       }, { sessionId: playerDiagnosticSessionRef.current });
     } catch {}
   }, [player, showControls, sheet, isSynthetic]);
+  useEffect(() => { media3TimeUpdateIntervalRef.current = null; }, [player]);
 
   /**
    * TAMPON AYARINI SONRADAN DA UYGULA (v9.5.0)
@@ -1422,51 +1479,187 @@ export default function PlayerHost() {
   };
 
   /**
-   * KANAL / BÖLÜM GEÇİŞİ (zapping)
-   * Canlı kanallarda listedeki önceki/sonraki kanala geçer.
+   * v17.0.0 — FAVORİ/ÖZEL GRUP NAVIGATION SCOPE
+   * Provider groupName ile ifade edilemeyen kullanıcı sıralarında yalnız ID dizisi
+   * okunur. Medya nesneleri JS'e hydrate edilmez; hedef komşular Room'dan iki ID
+   * ile çekilir. Scope yoksa normal indexed Room neighbor sorgusu kullanılır.
    */
-  const channelList = useMemo(() => activePlaylist?.channels || [], [activePlaylist]);
-  const currentIndex = useMemo(
-    () => channelList.findIndex((c: any) => c.id === params.id),
-    [channelList, params.id]
-  );
-  const canZap = !isSynthetic && currentIndex >= 0 && channelList.length > 1;
-
-  const zap = (delta: 1 | -1) => {
-    if (!canZap) { flashMessage("Bu içerikte kanal geçişi yok"); return; }
-    const next = (currentIndex + delta + channelList.length) % channelList.length;
-    const target: any = channelList[next];
-    if (!target) return;
-
-    haptic.medium();
-
-    // GPT v10.4.0 — ZAP TRANSACTION
-    // VLC aynı native view içinde source değiştirirken eski track/audio session
-    // kısa süre yaşayabiliyordu. Önce eski playback'i durdur, sonra track
-    // seçimlerini sıfırla ve yeni canlı source'a geç.
-    if (v2Profile.engine === "vlc") {
-      try { vlcRef.current?.stop?.(); } catch {}
-    } else if (v2Profile.engine === "mpv") {
-      try { void mpvRef.current?.stop?.(); } catch {}
+  useEffect(() => {
+    let cancelled = false;
+    const scopeKey = source?.nav?.scopeKey;
+    if (!visible || !scopeKey || !activePlaylist?.id || (sessionKind !== "live" && sessionKind !== "vod")) {
+      setOrderedNavigationScopeIds(null);
+      return () => { cancelled = true; };
     }
-    setAudioTracks([]);
-    setSubtitleTracks([]);
-    setVlcVideoTrackId(undefined);
-    setSelectedAudioTrack(undefined);
-    setSelectedSubtitleTrack(undefined);
-    setSelectedAudio(null);
-    setSelectedSubtitle(null);
-    setIsSeekable(false);
-    setError(null);
-    setIsBuffering(true);
+    void loadPlayerNavigationScope(scopeKey, { playlistId: String(activePlaylist.id), kind: sessionKind })
+      .then(ids => { if (!cancelled) setOrderedNavigationScopeIds(ids); })
+      .catch(() => { if (!cancelled) setOrderedNavigationScopeIds(null); });
+    return () => { cancelled = true; };
+  }, [visible, source?.nav?.scopeKey, activePlaylist?.id, sessionKind]);
 
-    // Auto motor bir önceki kanalın fallback tercihini yeni kanala taşımasın.
-    if (engine === "vlc") setUseVLC(true);
-    else setUseVLC(false);
+  /**
+   * v17.0.0 — NATIVE NEIGHBOR NAVIGATION + CAPABILITY-DRIVEN PREV/NEXT
+   * ----------------------------------------------------------------------
+   * v16.14.8 full catalog hydrate'ı doğru biçimde kaldırdı fakat eski zap()
+   * activePlaylist.channels[] dizisine bağlı kaldı. Bu blok o regresyonu
+   * full hydrate'ı geri getirmeden düzeltir. Live/VOD komşuları Room'dan,
+   * Series bölümleri Detail ekranının küçük synthetic komşu sözleşmesinden gelir.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    if (!visible || !activePlaylist?.id || !params.id) { setPlaybackNeighbors(null); return () => { cancelled = true; }; }
 
-    flashMessage(`${delta > 0 ? "⏭" : "⏮"} ${target.name}`);
-    switchChannel(target.id);
+    if (sessionKind === "series") {
+      const idx = seriesNavigationItems.findIndex((it:any) => String(it?.id) === String(params.id));
+      if (idx >= 0) {
+        setPlaybackNeighbors({
+          previous: idx > 0 ? seriesNavigationItems[idx - 1] : null,
+          next: idx + 1 < seriesNavigationItems.length ? seriesNavigationItems[idx + 1] : null,
+          position: idx + 1, total: seriesNavigationItems.length, source: "synthetic",
+        });
+      } else {
+        setPlaybackNeighbors({
+          previous: syntheticNav?.previousId ? { id: syntheticNav.previousId } : null,
+          next: syntheticNav?.nextId ? { id: syntheticNav.nextId } : null,
+          position: 0, total: 0, source: "synthetic",
+        });
+      }
+      return () => { cancelled = true; };
+    }
+
+    if (sessionKind !== "live" && sessionKind !== "vod") { setPlaybackNeighbors(null); return () => { cancelled = true; }; }
+    const realId = sessionKind === "vod" ? String(params.id).replace(/^vodplay-/, "") : String(params.id);
+    const nav = source?.nav;
+    const group = nav?.group || "__all__";
+    const search = nav?.search || "";
+    const wrap = sessionKind === "live";
+
+    if (KizilkanNativeCore.available && source?.nav?.scopeKey && orderedNavigationScopeIds) {
+      const idx = orderedNavigationScopeIds.findIndex(id => String(id) === realId);
+      if (idx < 0 || orderedNavigationScopeIds.length < 2) {
+        setPlaybackNeighbors(null);
+        return () => { cancelled = true; };
+      }
+      const previousId = idx > 0 ? orderedNavigationScopeIds[idx - 1] : (wrap ? orderedNavigationScopeIds[orderedNavigationScopeIds.length - 1] : null);
+      const nextId = idx + 1 < orderedNavigationScopeIds.length ? orderedNavigationScopeIds[idx + 1] : (wrap ? orderedNavigationScopeIds[0] : null);
+      const ids = Array.from(new Set([previousId, nextId].filter(Boolean) as string[]));
+      const startedAt = Date.now();
+      void KizilkanNativeCore.getItemsByIds<any>(activePlaylist.id, sessionKind, ids)
+        .then(rows => {
+          if (cancelled) return;
+          const byId = new Map((rows || []).map((row:any) => [String(row?.id || row?.stream_id || ""), row]));
+          setPlaybackNeighbors({
+            previous: previousId ? (byId.get(String(previousId)) || null) : null,
+            next: nextId ? (byId.get(String(nextId)) || null) : null,
+            position: idx + 1, total: orderedNavigationScopeIds.length, source: "room",
+          });
+          const elapsedMs = Date.now() - startedAt;
+          void recordDiagnostic("database", "PLAYER_SCOPED_NEIGHBOR_LOOKUP", {
+            playlistId: activePlaylist.id, kind: sessionKind, itemId: realId, scopeKey: "<runtime>",
+            previous: !!previousId, next: !!nextId, position: idx + 1, total: orderedNavigationScopeIds.length, elapsedMs,
+          }, { stage: "playerNeighborLookup", durationMs: elapsedMs, outcome: "success" });
+        })
+        .catch(error => {
+          if (cancelled) return;
+          setPlaybackNeighbors(null);
+          void recordDiagnostic("database", "PLAYER_SCOPED_NEIGHBOR_LOOKUP_FAILED", {
+            playlistId: activePlaylist.id, kind: sessionKind, itemId: realId, error: String((error as any)?.message || error),
+          }, { stage: "playerNeighborLookup", outcome: "failed" });
+        });
+      return () => { cancelled = true; };
+    }
+
+    if (KizilkanNativeCore.available) {
+      const startedAt = Date.now();
+      void KizilkanNativeCore.getPlaybackNeighbors<any>(activePlaylist.id, sessionKind, realId, { group, search, wrap })
+        .then(result => {
+          if (cancelled) return;
+          setPlaybackNeighbors({ previous: result.previous || null, next: result.next || null, position: Number(result.position || 0), total: Number(result.total || 0), source: "room" });
+          const elapsedMs = Date.now() - startedAt;
+          void recordDiagnostic("database", "PLAYER_NEIGHBOR_ROOM_LOOKUP", {
+            playlistId: activePlaylist.id, kind: sessionKind, itemId: realId, group, search: search ? "<set>" : "",
+            previous: !!result.previous, next: !!result.next, position: result.position, total: result.total, nativeElapsedMs: result.elapsedMs, elapsedMs,
+          }, { stage: "playerNeighborLookup", durationMs: elapsedMs, outcome: result.found ? "success" : "not_found" });
+        })
+        .catch(error => {
+          if (cancelled) return;
+          setPlaybackNeighbors(null);
+          void recordDiagnostic("database", "PLAYER_NEIGHBOR_ROOM_LOOKUP_FAILED", { playlistId: activePlaylist.id, kind: sessionKind, itemId: realId, error: String((error as any)?.message || error) }, { stage: "playerNeighborLookup", outcome: "failed" });
+        });
+      return () => { cancelled = true; };
+    }
+
+    // Web/legacy fail-safe: yalnız Native Core olmayan platformlarda mevcut JS
+    // listesi kullanılır. Android Native hot-path'te bu yol çalışmaz.
+    const list:any[] = sessionKind === "live" ? (activePlaylist.channels || []) : (activePlaylist.vod || []);
+    const idx = list.findIndex((it:any) => String(it.id) === realId);
+    if (idx < 0 || list.length < 2) setPlaybackNeighbors(null);
+    else {
+      const previous = idx > 0 ? list[idx - 1] : (wrap ? list[list.length - 1] : null);
+      const next = idx + 1 < list.length ? list[idx + 1] : (wrap ? list[0] : null);
+      setPlaybackNeighbors({ previous, next, position: idx + 1, total: list.length, source: "legacy" });
+    }
+    return () => { cancelled = true; };
+  }, [visible, activePlaylist?.id, params.id, sessionKind, source?.nav?.group, source?.nav?.search, source?.nav?.scopeKey, orderedNavigationScopeIds, syntheticNav?.previousId, syntheticNav?.nextId, seriesNavigationItems]);
+
+  const canPrevious = !!playbackNeighbors?.previous;
+  const canNext = !!playbackNeighbors?.next;
+  const canZap = canPrevious || canNext; // geriye dönük UI/test sözleşmesi; artık content-aware capability'dir.
+
+  const resetTracksForNavigation = () => {
+    if (v2Profile.engine === "vlc") { try { vlcRef.current?.stop?.(); } catch {} }
+    else if (v2Profile.engine === "mpv") { try { void mpvRef.current?.stop?.(); } catch {} }
+    setAudioTracks([]); setSubtitleTracks([]); setVlcVideoTrackId(undefined);
+    setSelectedAudioTrack(undefined); setSelectedSubtitleTrack(undefined); setSelectedAudio(null); setSelectedSubtitle(null);
+    setIsSeekable(false); setError(null); setIsBuffering(true);
+    if (engine === "vlc") setUseVLC(true); else setUseVLC(false);
   };
+
+  const navigateRelative = async (delta: 1 | -1) => {
+    const target:any = delta > 0 ? playbackNeighbors?.next : playbackNeighbors?.previous;
+    if (!target) { flashMessage(delta > 0 ? "Sonraki içerik yok" : "Önceki içerik yok"); return; }
+    haptic.medium();
+    resetTracksForNavigation();
+
+    if (sessionKind === "live") {
+      flashMessage(`${delta > 0 ? "⏭" : "⏮"} ${target.name || "Kanal"}`);
+      switchChannel(String(target.id), source?.nav);
+      return;
+    }
+
+    if (sessionKind === "vod") {
+      const targetId = String(target.id || target.stream_id || "");
+      if (!targetId || !target.url) { flashMessage("Komşu filmin oynatma kaynağı yok"); return; }
+      const syntheticId = `vodplay-${targetId}`;
+      await storage.setItem(EPISODE_URL_KEY + syntheticId, JSON.stringify({
+        url: target.url, name: target.name || "Film", group: target.group || "Film",
+        container_ext: target.container_ext || "mp4", poster: target.poster || null,
+      }));
+      flashMessage(`${delta > 0 ? "⏭" : "⏮"} ${target.name || "Film"}`);
+      switchContent({ id: syntheticId, ext: "true", kind: "vod", nav: source?.nav });
+      return;
+    }
+
+    if (sessionKind === "series") {
+      const syntheticId = String(target.id || "");
+      if (!syntheticId) return;
+      let payload = await storage.getItem<string>(EPISODE_URL_KEY + syntheticId, "");
+      if (!payload && target.url) {
+        const seriesNavKey = externalStream?.seriesNavKey;
+        payload = JSON.stringify({
+          url: target.url, name: target.name || "Bölüm", group: target.group || "Dizi",
+          container_ext: target.container_ext || "mp4", poster: target.poster || null, seriesNavKey,
+        });
+        await storage.setItem(EPISODE_URL_KEY + syntheticId, payload);
+      }
+      if (!payload) { flashMessage("Komşu bölümün oynatma kaynağı bulunamadı"); return; }
+      flashMessage(`${delta > 0 ? "⏭" : "⏮"} ${target.name || "Bölüm"}`);
+      switchContent({ id: syntheticId, ext: "true", kind: "series", nav: source?.nav });
+      return;
+    }
+  };
+
+  const zap = (delta: 1 | -1) => { void navigateRelative(delta); };
 
   /** Oynatmayı durdurup geri döner. */
   const stopPlayback = () => {
@@ -1612,6 +1805,9 @@ export default function PlayerHost() {
 
     const previousKind = lastSessionKindRef.current;
     if (previousKind !== "live") persistSyntheticProgress();
+    const releaseStartedAt = Date.now();
+    const memoryBefore = KizilkanNativeCore.available ? KizilkanNativeCore.getRuntimeMemory() : {};
+    let sourceDetached = false;
 
     try {
       if (v2Profile.engine === "mpv") {
@@ -1620,12 +1816,15 @@ export default function PlayerHost() {
         vlcRef.current?.stop?.();
       } else {
         player?.pause?.();
-        // Canlı yayında kalıcı Media3 source davranışını koru; VOD/series/
-        // catchup/external ise ses arkada kalmasın diye gerçek source detach yap.
-        if (previousKind !== "live") {
-          try { (player as any)?.replace?.(null); } catch {}
-          lastExoUrlRef.current = null;
-        }
+        /**
+         * v17.0.0 RESOURCE LIFECYCLE: PlayerHost/View kalıcı mount kalır fakat
+         * playback source/codec kalmak zorunda değildir. v16.14.8'de live source
+         * close sonrası bağlı tutulabiliyordu; bu native decoder/buffer belleğini
+         * gereksiz yaşatabilir. replace(null) yalnız media source'u detach eder,
+         * kalıcı surface/view mimarisini bozmaz.
+         */
+        try { (player as any)?.replace?.(null); sourceDetached = true; } catch {}
+        lastExoUrlRef.current = null;
       }
     } catch {}
 
@@ -1639,6 +1838,13 @@ export default function PlayerHost() {
     setVlcVideoTrackId(undefined);
     setIsPlaying(false);
     setIsBuffering(false);
+    rebufferActiveRef.current = null;
+
+    const memoryAfter = KizilkanNativeCore.available ? KizilkanNativeCore.getRuntimeMemory() : {};
+    void recordDiagnostic("player", "PLAYER_RESOURCE_RELEASE", {
+      previousKind, engine: v2Profile.engine, sourceDetached,
+      releaseMs: Date.now() - releaseStartedAt, memoryBefore, memoryAfter,
+    }, { sessionId: playerDiagnosticSessionRef.current, stage: "playerResourceRelease", durationMs: Date.now() - releaseStartedAt, outcome: "success" });
   }, [visible, useVLC, player, v2Profile.engine, persistSyntheticProgress]);
 
   useEffect(() => {
@@ -1786,6 +1992,36 @@ export default function PlayerHost() {
     setShowControls(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, channel?.id, channel?.url, activePlaylist?.id]);
+
+  /**
+   * v17.0.0 — Engine-bağımsız rebuffer süre telemetrisi. Startup buffering
+   * sayılmaz; yalnız ilk başarılı frame/oynatım sonrasındaki buffering ölçülür.
+   */
+  useEffect(() => {
+    const afterFirstFrame = firstFrameSeenRef.current || successfulSessionRef.current === activeSessionId;
+    const active = rebufferActiveRef.current;
+    if (!visible || activeSessionId <= 0 || !afterFirstFrame) {
+      if (!visible) rebufferActiveRef.current = null;
+      return;
+    }
+    if (isBuffering && !active) {
+      const startedAt = Date.now();
+      rebufferActiveRef.current = { sid: activeSessionId, startedAt, engine: v2ProfileKey };
+      const sequence = ++rebufferSequenceRef.current;
+      void recordDiagnostic("player", "REBUFFER_START", {
+        sequence, engine: v2ProfileKey, phase: v2Phase, channelId: String(channel?.id || ""),
+        afterSeek: Date.now() < userSeekGraceUntilRef.current, sourceCandidate: playbackUrlIndex,
+      }, { sessionId: playerDiagnosticSessionRef.current, stage: "rebuffer", outcome: "started" });
+      return;
+    }
+    if (!isBuffering && active && active.sid === activeSessionId) {
+      const durationMs = Math.max(0, Date.now() - active.startedAt);
+      rebufferActiveRef.current = null;
+      void recordDiagnostic("player", "REBUFFER_END", {
+        engine: active.engine, durationMs, phase: v2Phase, channelId: String(channel?.id || ""), sourceCandidate: playbackUrlIndex,
+      }, { sessionId: playerDiagnosticSessionRef.current, stage: "rebuffer", durationMs, outcome: "ended" });
+    }
+  }, [visible, activeSessionId, isBuffering, v2ProfileKey, v2Phase, channel?.id, playbackUrlIndex]);
 
   const togglePlay = () => {
     // YAYIN AKTİFSE komutu TV'deki oynatıcıya gönder (v7.4.0).
@@ -2197,9 +2433,57 @@ export default function PlayerHost() {
     }
   };
 
+  const commitNumericZap = React.useCallback(async (digits: string) => {
+    if (!isTv || sessionKind !== "live" || !activePlaylist?.id || !digits) return;
+    const displayPosition = Number(digits);
+    if (!Number.isInteger(displayPosition) || displayPosition <= 0) { setNumericZapText(""); return; }
+    const nav = source?.nav;
+    const group = nav?.group || "__all__";
+    const search = nav?.search || "";
+    try {
+      let target:any = null;
+      if (KizilkanNativeCore.available) {
+        const page = await KizilkanNativeCore.queryItems<any>(activePlaylist.id, "live", { group, search, offset: displayPosition - 1, limit: 1 });
+        target = page.items?.[0] || null;
+      } else {
+        const list = activePlaylist.channels || [];
+        target = list[displayPosition - 1] || null;
+      }
+      if (!target?.id) { flashMessage(`Kanal ${displayPosition} bulunamadı`); return; }
+      resetTracksForNavigation();
+      flashMessage(`#${displayPosition} • ${target.name || "Kanal"}`);
+      switchChannel(String(target.id), source?.nav);
+      void recordDiagnostic("player", "TV_NUMERIC_ZAP", { displayPosition, channelId: String(target.id), group, search: search ? "<set>" : "" }, { sessionId: playerDiagnosticSessionRef.current, stage: "numericZap", outcome: "success" });
+    } catch (error) {
+      flashMessage("Numaralı kanal geçişi başarısız");
+      void recordDiagnostic("player", "TV_NUMERIC_ZAP_FAILED", { displayPosition, error: String((error as any)?.message || error) }, { sessionId: playerDiagnosticSessionRef.current, stage: "numericZap", outcome: "failed" });
+    } finally { setNumericZapText(""); }
+  }, [isTv, sessionKind, activePlaylist?.id, activePlaylist?.channels, source?.nav?.group, source?.nav?.search, switchChannel]);
+
+  const pushNumericZapDigit = React.useCallback((digit: string) => {
+    if (!isTv || sessionKind !== "live" || showControls || sheet !== null) return;
+    setNumericZapText(prev => {
+      const next = (prev + digit).replace(/^0+(?=\d)/, "").slice(-4);
+      if (numericZapTimerRef.current) clearTimeout(numericZapTimerRef.current);
+      numericZapTimerRef.current = setTimeout(() => { void commitNumericZap(next); }, 1100);
+      return next;
+    });
+  }, [isTv, sessionKind, showControls, sheet, commitNumericZap]);
+
+  useEffect(() => () => { if (numericZapTimerRef.current) clearTimeout(numericZapTimerRef.current); }, []);
+
   useRemoteKeys({
-    channelUp: () => zap(1),
-    channelDown: () => zap(-1),
+    // Fiziksel CH+/- yalnız canlı kanal zapping semantiğidir.
+    channelUp: () => { if (sessionKind === "live") zap(1); },
+    channelDown: () => { if (sessionKind === "live") zap(-1); },
+    // MEDIA_NEXT/PREVIOUS içerik bağlamını izler: live kanal, VOD film, series bölüm.
+    contentNext: () => zap(1),
+    contentPrevious: () => zap(-1),
+    digit0: () => pushNumericZapDigit("0"), digit1: () => pushNumericZapDigit("1"),
+    digit2: () => pushNumericZapDigit("2"), digit3: () => pushNumericZapDigit("3"),
+    digit4: () => pushNumericZapDigit("4"), digit5: () => pushNumericZapDigit("5"),
+    digit6: () => pushNumericZapDigit("6"), digit7: () => pushNumericZapDigit("7"),
+    digit8: () => pushNumericZapDigit("8"), digit9: () => pushNumericZapDigit("9"),
     /**
      * GPT v10.4.0: OK/ENTER artık native plugin'den "select" olarak gelir.
      * Kontroller gizliyken panel açılır. Kontroller görünürken select handler
@@ -2226,8 +2510,8 @@ export default function PlayerHost() {
      * sol/sağ normal odak gezinmesi olarak kalır (düğmeler arasında gezinme
      * bozulmasın). Bu, TiviMate'in de uyguladığı davranıştır.
      */
-    dpadLeft: () => { if (!showControls) zap(-1); else scheduleHide(); },
-    dpadRight: () => { if (!showControls) zap(1); else scheduleHide(); },
+    dpadLeft: () => { if (!showControls && sessionKind === "live") zap(-1); else if (showControls) scheduleHide(); },
+    dpadRight: () => { if (!showControls && sessionKind === "live") zap(1); else if (showControls) scheduleHide(); },
 
     /**
      * YUKARI/AŞAĞI: kontroller gizliyken kanal bilgisini gösterir.
@@ -3629,8 +3913,8 @@ export default function PlayerHost() {
 
             {/* TRANSPORT KONTROLLERİ (v5.0.0) — IPTV Extreme'deki gibi */}
             <View style={styles.transportRow}>
-              <FocusButton testID="player-prev-btn" onPress={() => zap(-1)} hitSlop={8} focusable style={styles.transportBtn}>
-                <Ionicons name="play-skip-back" size={26} color={canZap ? "#fff" : "rgba(255,255,255,0.3)"} />
+              <FocusButton testID="player-prev-btn" onPress={() => zap(-1)} hitSlop={8} disabled={!canPrevious} focusable={canPrevious} style={styles.transportBtn}>
+                <Ionicons name="play-skip-back" size={26} color={canPrevious ? "#fff" : "rgba(255,255,255,0.3)"} />
               </FocusButton>
               <FocusButton testID="player-rew-btn" onPress={() => seekBy(-10)} hitSlop={8} focusable style={styles.transportBtn}>
                 <Ionicons name="play-back" size={26} color="#fff" />
@@ -3644,8 +3928,8 @@ export default function PlayerHost() {
               <FocusButton testID="player-ff-btn" onPress={() => seekBy(10)} hitSlop={8} focusable style={styles.transportBtn}>
                 <Ionicons name="play-forward" size={26} color="#fff" />
               </FocusButton>
-              <FocusButton testID="player-next-btn" onPress={() => zap(1)} hitSlop={8} focusable style={styles.transportBtn}>
-                <Ionicons name="play-skip-forward" size={26} color={canZap ? "#fff" : "rgba(255,255,255,0.3)"} />
+              <FocusButton testID="player-next-btn" onPress={() => zap(1)} hitSlop={8} disabled={!canNext} focusable={canNext} style={styles.transportBtn}>
+                <Ionicons name="play-skip-forward" size={26} color={canNext ? "#fff" : "rgba(255,255,255,0.3)"} />
               </FocusButton>
             </View>
             {/* ORTA IZGARA MENÜ (v5.6.0 — IPTV Extreme Pro yerleşimi)
@@ -3747,6 +4031,13 @@ export default function PlayerHost() {
       )}
 
       {/* SES GÖSTERGESİ (v7.7.0) — kaydırırken anlık seviye */}
+      {!!numericZapText && isTv && sessionKind === "live" && (
+        <View style={styles.numericZapOverlay} pointerEvents="none">
+          <Text style={styles.numericZapText}>{numericZapText}</Text>
+          <Text style={styles.numericZapHint}>Kanal sırası</Text>
+        </View>
+      )}
+
       {volumeHint !== null && (
         <View style={styles.volumeHint} pointerEvents="none">
           <Ionicons
@@ -3782,6 +4073,12 @@ export default function PlayerHost() {
           focusable={false}
           accessible={false}
         >
+          <TvFocusScope scope={`player-sheet:${sheet || "none"}`}>
+          <FocusGuide
+            autoFocus
+            {...(isTv ? { trapFocusUp: true, trapFocusDown: true, trapFocusLeft: true, trapFocusRight: true } : {})}
+            style={{ width: "100%", alignItems: "center", justifyContent: "flex-end" }}
+          >
           <Pressable
             style={[styles.sheet, { backgroundColor: colors.surface, borderColor: colors.border }]}
             onPress={e => e.stopPropagation()}
@@ -4195,6 +4492,8 @@ export default function PlayerHost() {
               )}
             </ScrollView>
           </Pressable>
+          </FocusGuide>
+          </TvFocusScope>
         </Pressable>
         </KeyboardAvoidingView>
       </Modal>
@@ -4365,6 +4664,13 @@ const styles = StyleSheet.create({
   },
   recDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: "#FF2D2D" },
   recText: { color: "#fff", fontWeight: "800", fontSize: 12, letterSpacing: 1 },
+  numericZapOverlay: {
+    position: "absolute", top: 48, right: 48, zIndex: 220, minWidth: 112,
+    alignItems: "center", paddingHorizontal: 18, paddingVertical: 12,
+    borderRadius: 12, backgroundColor: "rgba(0,0,0,0.82)",
+  },
+  numericZapText: { color: "#fff", fontSize: 34, fontWeight: "800", letterSpacing: 2 },
+  numericZapHint: { color: "rgba(255,255,255,0.72)", fontSize: 11, marginTop: 2 },
   volumeHint: {
     position: "absolute", alignSelf: "center", top: "40%",
     backgroundColor: "rgba(0,0,0,0.82)", paddingHorizontal: 20, paddingVertical: 14,

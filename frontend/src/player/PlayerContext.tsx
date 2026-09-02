@@ -14,12 +14,27 @@ import React, { createContext, useCallback, useContext, useMemo, useState } from
 
 export type PlayerSessionKind = "live" | "vod" | "series" | "catchup" | "external";
 
+/** v17.0.0 — Player navigation/focus scope. Büyük katalog taşınmaz; yalnız sorgu bağlamı. */
+export type PlayerNavigationContext = {
+  origin?: "library" | "search" | "favorites" | "tv-home" | "detail" | "epg" | "unknown";
+  group?: string;
+  search?: string;
+  wrap?: boolean;
+  focusKey?: string;
+  /** Favori/özel grup gibi provider groupName ile ifade edilemeyen sıralar için hafif ID-scope anahtarı. */
+  scopeKey?: string;
+  /** Series episode navigation için Detail ekranının ürettiği küçük komşu sözleşmesi. */
+  syntheticPreviousId?: string;
+  syntheticNextId?: string;
+};
+
 export type PlayerSource = {
   id: string;
   ext?: string;
   kind: PlayerSessionKind;
   /** VOD/series için kullanıcının seçtiği başlangıç konumu (saniye). */
   resumeAt?: number;
+  nav?: PlayerNavigationContext;
 } | null;
 
 function inferSessionKind(id: string, ext?: string): PlayerSessionKind {
@@ -33,9 +48,10 @@ function inferSessionKind(id: string, ext?: string): PlayerSessionKind {
 type PlayerContextValue = {
   source: PlayerSource;
   visible: boolean;
-  openPlayer: (s: { id: string; ext?: string; kind?: PlayerSessionKind; resumeAt?: number }) => void;
+  openPlayer: (s: { id: string; ext?: string; kind?: PlayerSessionKind; resumeAt?: number; nav?: PlayerNavigationContext }) => void;
   closePlayer: () => void;
-  switchChannel: (id: string) => void;
+  switchChannel: (id: string, nav?: PlayerNavigationContext) => void;
+  switchContent: (s: { id: string; ext?: string; kind: PlayerSessionKind; nav?: PlayerNavigationContext }) => void;
 };
 
 const PlayerContext = createContext<PlayerContextValue | null>(null);
@@ -43,10 +59,10 @@ const PlayerContext = createContext<PlayerContextValue | null>(null);
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [source, setSource] = useState<PlayerSource>(null);
 
-  const openPlayer = useCallback((s: { id: string; ext?: string; kind?: PlayerSessionKind; resumeAt?: number }) => {
+  const openPlayer = useCallback((s: { id: string; ext?: string; kind?: PlayerSessionKind; resumeAt?: number; nav?: PlayerNavigationContext }) => {
     const kind = s.kind ?? inferSessionKind(s.id, s.ext);
     const resumeAt = Number.isFinite(Number(s.resumeAt)) ? Math.max(0, Number(s.resumeAt)) : undefined;
-    setSource({ id: s.id, ext: s.ext, kind, ...(resumeAt ? { resumeAt } : {}) });
+    setSource({ id: s.id, ext: s.ext, kind, ...(resumeAt ? { resumeAt } : {}), ...(s.nav ? { nav: s.nav } : {}) });
   }, []);
 
   const closePlayer = useCallback(() => {
@@ -54,15 +70,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // Zap: katmanı yeniden mount ETME, sadece kanal id'sini değiştir.
-  const switchChannel = useCallback((id: string) => {
+  const switchChannel = useCallback((id: string, nav?: PlayerNavigationContext) => {
     // Zap yalnız canlı kanallarda kullanılır. Önceki VOD/ext bayrağını
-    // taşımak eski synthetic oturumu yeni kanala sızdırıyordu.
-    setSource({ id, ext: undefined, kind: "live" });
+    // taşımak eski synthetic oturumu yeni kanala sızdırıyordu. Navigation scope korunur.
+    setSource(prev => ({ id, ext: undefined, kind: "live", ...(nav || prev?.nav ? { nav: nav || prev?.nav } : {}) }));
+  }, []);
+
+  const switchContent = useCallback((s: { id: string; ext?: string; kind: PlayerSessionKind; nav?: PlayerNavigationContext }) => {
+    setSource(prev => ({ id: s.id, ext: s.ext, kind: s.kind, ...(s.nav || prev?.nav ? { nav: s.nav || prev?.nav } : {}) }));
   }, []);
 
   const value = useMemo<PlayerContextValue>(
-    () => ({ source, visible: source !== null, openPlayer, closePlayer, switchChannel }),
-    [source, openPlayer, closePlayer, switchChannel]
+    () => ({ source, visible: source !== null, openPlayer, closePlayer, switchChannel, switchContent }),
+    [source, openPlayer, closePlayer, switchChannel, switchContent]
   );
 
   return <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>;

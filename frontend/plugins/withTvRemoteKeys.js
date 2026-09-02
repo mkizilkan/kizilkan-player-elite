@@ -107,8 +107,8 @@ const KOTLIN_BLOCK = `
     val name = when (keyCode) {
       android.view.KeyEvent.KEYCODE_CHANNEL_UP -> "channelUp"
       android.view.KeyEvent.KEYCODE_CHANNEL_DOWN -> "channelDown"
-      android.view.KeyEvent.KEYCODE_MEDIA_NEXT -> "channelUp"
-      android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS -> "channelDown"
+      android.view.KeyEvent.KEYCODE_MEDIA_NEXT -> "contentNext"
+      android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS -> "contentPrevious"
       android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> "playPause"
       android.view.KeyEvent.KEYCODE_MEDIA_PLAY -> "play"
       android.view.KeyEvent.KEYCODE_MEDIA_PAUSE -> "pause"
@@ -117,6 +117,16 @@ const KOTLIN_BLOCK = `
       android.view.KeyEvent.KEYCODE_MEDIA_REWIND -> "rewind"
       android.view.KeyEvent.KEYCODE_INFO -> "info"
       android.view.KeyEvent.KEYCODE_GUIDE -> "guide"
+      android.view.KeyEvent.KEYCODE_0, android.view.KeyEvent.KEYCODE_NUMPAD_0 -> "digit0"
+      android.view.KeyEvent.KEYCODE_1, android.view.KeyEvent.KEYCODE_NUMPAD_1 -> "digit1"
+      android.view.KeyEvent.KEYCODE_2, android.view.KeyEvent.KEYCODE_NUMPAD_2 -> "digit2"
+      android.view.KeyEvent.KEYCODE_3, android.view.KeyEvent.KEYCODE_NUMPAD_3 -> "digit3"
+      android.view.KeyEvent.KEYCODE_4, android.view.KeyEvent.KEYCODE_NUMPAD_4 -> "digit4"
+      android.view.KeyEvent.KEYCODE_5, android.view.KeyEvent.KEYCODE_NUMPAD_5 -> "digit5"
+      android.view.KeyEvent.KEYCODE_6, android.view.KeyEvent.KEYCODE_NUMPAD_6 -> "digit6"
+      android.view.KeyEvent.KEYCODE_7, android.view.KeyEvent.KEYCODE_NUMPAD_7 -> "digit7"
+      android.view.KeyEvent.KEYCODE_8, android.view.KeyEvent.KEYCODE_NUMPAD_8 -> "digit8"
+      android.view.KeyEvent.KEYCODE_9, android.view.KeyEvent.KEYCODE_NUMPAD_9 -> "digit9"
       else -> null
     }
 

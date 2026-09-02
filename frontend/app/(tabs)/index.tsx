@@ -53,6 +53,7 @@ import { useFocusScroll } from "@/src/hooks/useFocusScroll";
 import { TvHomeContent } from "@/app/tv-home";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
+import { savePlayerNavigationScope } from "@/src/player/navigationScope";
 
 const ALL = "__all__";
 type Tab = "live" | "vod" | "series";
@@ -293,12 +294,21 @@ function ClassicLiveTvScreen() {
     return !isUnlockedInSession(group);
   };
 
+  const resolveCurrentCustomNavScope = async (): Promise<string | undefined> => {
+    if (!selectedIsCustomGroup || !activePlaylist?.id) return undefined;
+    return savePlayerNavigationScope({
+      playlistId: activePlaylist.id, origin: "library", kind: tab,
+      scopeId: `custom:${selectedCat}`, ids: (filtered as any[]).map((x:any) => x.id),
+    });
+  };
+
   /** Kanalı DOĞRUDAN açar (önizlemeden onaylanınca da bu çağrılır). */
-  const openChannelNow = (item: any) => {
+  const openChannelNow = async (item: any) => {
     haptic.light();
     addToRecent(item.id);
     setPreviewChannel(null);
-    router.push({ pathname: "/player", params: { id: item.id } });
+    const navScopeKey = await resolveCurrentCustomNavScope();
+    router.push({ pathname: "/player", params: { id: item.id, navOrigin: "library", navGroup: selectedIsCustomGroup ? "__all__" : (selectedCat === ALL ? "__all__" : selectedCat), navScopeKey, focusKey: `library:${tab}:${item.id}` } });
   };
 
   const guardedOpenChannel = (item: any) => {
@@ -312,7 +322,7 @@ function ClassicLiveTvScreen() {
      * KÖTÜLEŞTİ: OK tuşu kanalı açmak yerine fazladan bir onay penceresi
      * getiriyordu. Artık OK DOĞRUDAN kanalı açıyor (beklenen davranış).
      */
-    openChannelNow(item);
+    void openChannelNow(item);
   };
 
   // Uzun-bas menüsünü açar (artık zengin bottom sheet — IPTV Extreme tarzı).
@@ -396,7 +406,7 @@ function ClassicLiveTvScreen() {
       label: "Oynat",
       onPress: () => {
         if (isLive) guardedOpenChannel(item);
-        else guardedOpenDetail(item);
+        else void guardedOpenDetail(item);
       },
     });
 
@@ -417,7 +427,7 @@ function ClassicLiveTvScreen() {
       list.push({
         icon: "information-circle",
         label: "Bilgi / Detay",
-        onPress: () => router.push({ pathname: "/detail", params: { type: tab, id: item.id } }),
+        onPress: () => { void guardedOpenDetail(item); },
       });
     }
 
@@ -471,7 +481,7 @@ function ClassicLiveTvScreen() {
       list.push({
         icon: "cloud-download",
         label: "İndir",
-        onPress: () => router.push({ pathname: "/detail", params: { type: tab, id: item.id } }),
+        onPress: () => { void guardedOpenDetail(item); },
       });
     }
 
@@ -518,7 +528,7 @@ function ClassicLiveTvScreen() {
       list.push({
         icon: "refresh-circle",
         label: "Tekrar Oynat (baştan)",
-        onPress: () => router.push({ pathname: "/detail", params: { type: tab, id: item.id, restart: "1" } }),
+        onPress: () => { void (async () => { const navScopeKey = await resolveCurrentCustomNavScope(); router.push({ pathname: "/detail", params: { type: tab, id: item.id, restart: "1", navOrigin: "library", navGroup: selectedIsCustomGroup ? "__all__" : (selectedCat === ALL ? "__all__" : selectedCat), navScopeKey, focusKey: `library:${tab}:${item.id}` } }); })(); },
       });
     }
 
@@ -574,13 +584,14 @@ function ClassicLiveTvScreen() {
 
     return list;
   };
-  const guardedOpenDetail = (item: any) => {
+  const guardedOpenDetail = async (item: any) => {
     if (requiresPin(item.group)) {
       router.push({ pathname: "/pin-entry", params: { category: item.group } });
       return;
     }
     haptic.light();
-    router.push({ pathname: "/detail", params: { type: tab, id: item.id } });
+    const navScopeKey = await resolveCurrentCustomNavScope();
+    router.push({ pathname: "/detail", params: { type: tab, id: item.id, navOrigin: "library", navGroup: selectedIsCustomGroup ? "__all__" : (selectedCat === ALL ? "__all__" : selectedCat), navScopeKey, focusKey: `library:${tab}:${item.id}` } });
   };
 
   const currentList = useMemo(() => {
@@ -1029,7 +1040,7 @@ function ClassicLiveTvScreen() {
         <PosterGrid
           items={filtered as (VodItem | SeriesItem)[]}
           testIDPrefix={tab === "vod" ? "vod" : "series"}
-          onPressItem={(item) => guardedOpenDetail(item)}
+          onPressItem={(item) => { void guardedOpenDetail(item); }}
           onLongPressItem={(item) => showChannelActions(item)}
           ListHeaderComponent={StickyHeader as any}
           emptyText={tab === "vod" ? "Bu kategoride film yok" : "Bu kategoride dizi yok"}

@@ -5,7 +5,12 @@ const R = path.resolve(__dirname, '..');
 const read = p => fs.readFileSync(path.join(R,p),'utf8');
 const ok=(c,m)=>{if(!c){console.error('✗ '+m);process.exitCode=1;}else console.log('✓ '+m)};
 const pkg=JSON.parse(read('frontend/package.json')), app=JSON.parse(read('frontend/app.json'));
-ok(pkg.version==='16.14.2'&&app.expo.version==='16.14.2'&&app.expo.android.versionCode===161402,'current metadata');
+const semverAtLeast=(v,min)=>{
+  const a=String(v).split('.').map(Number), b=String(min).split('.').map(Number);
+  for(let i=0;i<3;i++){ if((a[i]||0)!==(b[i]||0)) return (a[i]||0)>(b[i]||0); }
+  return true;
+};
+ok(semverAtLeast(pkg.version,'16.14.2') && app.expo.version===pkg.version && app.expo.android.versionCode>=161402,'current metadata preserves v16.14.2+');
 const pm=read('frontend/src/utils/playlistManagement.ts');
 ok(pm.includes("'max_users_desc'")&&pm.includes("'max_users_asc'"),'v16.13.10 max-user sort preserved');
 ok(pm.includes('pref.pinnedFirst'),'v16.13.10 pinned-first preserved');
@@ -24,4 +29,4 @@ ok(add.includes('deviceModel: "MAG320"')&&add.includes('MAG320 Exact profili'),'
 const ph=read('frontend/src/player/PlayerHost.tsx');
 ok(ph.includes('XTREAM_PLAYBACK_PROVENANCE')&&ph.includes('<user>/<pass>'),'safe Xtream playback provenance preserved');
 if(process.exitCode){console.error('REGRESYON CONTRACT FAIL');process.exit(process.exitCode)}
-console.log('TEMIZ — v16.13.10 functional contract preserved in v16.14.2');
+console.log('TEMIZ — v16.13.10 functional contract preserved in v16.14.2+');

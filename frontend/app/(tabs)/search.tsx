@@ -190,7 +190,7 @@ export default function SearchTab() {
     }
     pushSearch(q);
     addToRecent(ch.id);
-    router.push({ pathname: "/player", params: { id: ch.id } });
+    router.push({ pathname: "/player", params: { id: ch.id, navOrigin: "search", navSearch: debouncedQ, focusKey: `search:live:${ch.id}` } });
   };
   const openDetail = (item: { id: string; group?: string | null }, type: "vod" | "series") => {
     haptic.light();
@@ -199,7 +199,7 @@ export default function SearchTab() {
       return;
     }
     pushSearch(q);
-    router.push({ pathname: "/detail", params: { type, id: item.id } });
+    router.push({ pathname: "/detail", params: { type, id: item.id, navOrigin: "search", navSearch: debouncedQ, focusKey: `search:${type}:${item.id}` } });
   };
 
   const trending = useMemo(() => {

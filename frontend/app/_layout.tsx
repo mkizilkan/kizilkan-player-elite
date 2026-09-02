@@ -49,6 +49,7 @@ import { AppState, View } from "react-native";
 import { PlayerProvider } from "@/src/player/PlayerContext";
 import PlayerHost from "@/src/player/PlayerHost";
 import { TvProvider, useTv } from "@/src/store/TvContext";
+import { TvFocusMemoryProvider, TvFocusScope } from "@/src/store/TvFocusMemoryContext";
 import { markAppBackground, markAppForeground, persistAppPath } from "@/src/utils/appSession";
 import { initializeDiagnostics, recordDiagnostic, setDiagnosticAppState, startMemorySampling } from "@/src/utils/diagnostics";
 
@@ -168,6 +169,7 @@ export default function RootLayout() {
           <ProfileProvider>
           <ProfileSessionGate>
           <TvProvider>
+          <TvFocusMemoryProvider>
           <ThemeProvider>
               <PlaylistProvider>
                 <ParentalProvider>
@@ -237,7 +239,9 @@ export default function RootLayout() {
                           hole-punch/alpha kompozisyonunda tema rengi şerit/tint
                           olarak sızamaz; surface de gereksiz detach edilmez. */}
                       <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }} pointerEvents="box-none">
-                        <PlayerHost />
+                        <TvFocusScope scope="player">
+                          <PlayerHost />
+                        </TvFocusScope>
                       </View>
                       </PlayerProvider>
                     </DownloadProvider>
@@ -245,6 +249,7 @@ export default function RootLayout() {
                 </ParentalProvider>
               </PlaylistProvider>
             </ThemeProvider>
+          </TvFocusMemoryProvider>
           </TvProvider>
           </ProfileSessionGate>
           </ProfileProvider>

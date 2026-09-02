@@ -17,6 +17,7 @@ import { ChannelRow } from "@/src/components/ChannelRow";
 import { haptic } from "@/src/utils/haptic";
 import { FocusButton } from "@/src/components/FocusButton";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
+import { savePlayerNavigationScope } from "@/src/player/navigationScope";
 
 type Tab = "continue" | "favorites" | "groups" | "watchlist" | "recent";
 
@@ -144,13 +145,17 @@ export default function LibraryTab() {
   const posterW = Math.min(140, (width - SPACING.lg * 2 - SPACING.sm * 2) / 3);
   const posterH = posterW * 1.5;
 
-  const openVideo = (id: string, kind: string) => {
+  const openVideo = async (id: string, kind: string, scopeId = "library", orderedIds?: string[]) => {
     haptic.light();
-    if (kind === "live") {
+    const safeKind = (kind === "series" ? "series" : kind === "vod" ? "vod" : "live") as "live" | "vod" | "series";
+    const navScopeKey = activePlaylist?.id && orderedIds?.length
+      ? await savePlayerNavigationScope({ playlistId: activePlaylist.id, origin: "favorites", kind: safeKind, scopeId, ids: orderedIds })
+      : undefined;
+    if (safeKind === "live") {
       addToRecent(id);
-      router.push({ pathname: "/player", params: { id } });
+      router.push({ pathname: "/player", params: { id, navOrigin: "favorites", navScopeKey, focusKey: `favorites:${scopeId}:${id}` } });
     } else {
-      router.push({ pathname: "/detail", params: { type: kind, id } });
+      router.push({ pathname: "/detail", params: { type: safeKind, id, navOrigin: "favorites", navScopeKey, focusKey: `favorites:${scopeId}:${id}` } });
     }
   };
 
@@ -206,7 +211,7 @@ export default function LibraryTab() {
           renderItem={({ item }) => (
             <FocusButton
               testID={`continue-${item.id}`}
-              onPress={() => openVideo(item.id, item.kind)}
+              onPress={() => { const ids = continueList.filter(x => x.kind === item.kind).map(x => x.id); void openVideo(item.id, item.kind, `continue:${item.kind}`, ids); }}
               activeOpacity={0.75}
               style={[styles.continueCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
             >
@@ -267,9 +272,7 @@ export default function LibraryTab() {
               isFavorite={isFavorite(item.id)}
               onToggleFavorite={() => { haptic.soft(); toggleFavorite(item.id); }}
               onPress={() => {
-                haptic.light();
-                addToRecent(item.id);
-                router.push({ pathname: "/player", params: { id: item.id } });
+                void openVideo(item.id, "live", "favorites", favChannels.map(x => x.id));
               }}
             />
           )}
@@ -301,9 +304,9 @@ export default function LibraryTab() {
                 isFavorite={isFavorite(item.id)}
                 onToggleFavorite={() => { haptic.soft(); toggleFavorite(item.id); }}
                 onPress={() => {
-                  haptic.light();
-                  addToRecent(item.id);
-                  router.push({ pathname: "/player", params: { id: item.id } });
+                  const kind = (activePlaylist?.vod || []).some((x:any) => x.id === item.id) ? "vod" : (activePlaylist?.series || []).some((x:any) => x.id === item.id) ? "series" : "live";
+                  const ids = openGroupItems.filter((x:any) => kind === "vod" ? (activePlaylist?.vod || []).some((v:any) => v.id === x.id) : kind === "series" ? (activePlaylist?.series || []).some((v:any) => v.id === x.id) : (activePlaylist?.channels || []).some((v:any) => v.id === x.id)).map((x:any) => x.id);
+                  void openVideo(item.id, kind, `group:${openGroup}`, ids);
                 }}
               />
             )}
@@ -357,7 +360,7 @@ export default function LibraryTab() {
           renderItem={({ item }) => (
             <FocusButton
               testID={`watchlist-${item.id}`}
-              onPress={() => openVideo(item.id, item.__kind)}
+              onPress={() => { const ids = watchlistItems.filter((x:any) => x.__kind === item.__kind).map((x:any) => x.id); void openVideo(item.id, item.__kind, `watchlist:${item.__kind}`, ids); }}
               style={{ width: posterW }}
               activeOpacity={0.8}
             >
@@ -396,9 +399,7 @@ export default function LibraryTab() {
               isFavorite={isFavorite(item.id)}
               onToggleFavorite={() => { haptic.soft(); toggleFavorite(item.id); }}
               onPress={() => {
-                haptic.light();
-                addToRecent(item.id);
-                router.push({ pathname: "/player", params: { id: item.id } });
+                void openVideo(item.id, "live", "recent", recentChannels.map(x => x.id));
               }}
             />
           )}

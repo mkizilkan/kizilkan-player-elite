@@ -52,6 +52,7 @@ import { useTVFocus, rowFocusStyle, focusStyle } from "@/src/hooks/useTVFocus";
 import { useFocusScroll } from "@/src/hooks/useFocusScroll";
 import { useRemoteKeys } from "@/src/hooks/useRemoteKeys";
 import { haptic } from "@/src/utils/haptic";
+import { savePlayerNavigationScope } from "@/src/player/navigationScope";
 import { normalize } from "@/src/utils/fuzzy";
 import { KizilkanNativeCore, type NativePlaylistSummary } from "@/modules/kizilkan-native-core";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
@@ -340,18 +341,27 @@ export function TvHomeContent() {
   }, [baseList, selectedCat, favorites, search, nativeMode]);
 
   const openItem = useCallback((item: any) => {
-    haptic.light();
-    if (tab === "live") {
-      // v9.8.0: Önizlemeyi TAM oynatıcıya geçmeden ANINDA durdur; böylece yeni
-      // kanal yüklenene kadar önizleme sesi çakışmaz. (useFocusEffect blur'u
-      // iç içe navigatörlerde biraz gecikebiliyor.)
-      setScreenFocused(false);
-      addToRecent(item.id);
-      router.push({ pathname: "/player", params: { id: item.id } });
-    } else {
-      router.push({ pathname: "/detail", params: { type: tab, id: item.id } });
-    }
-  }, [tab, addToRecent, router]);
+    void (async () => {
+      haptic.light();
+      const navScopeKey = selectedCat === FAV && activePlaylist?.id
+        ? await savePlayerNavigationScope({
+            playlistId: activePlaylist.id, origin: "tv-home", kind: tab,
+            scopeId: `favorites:${search.trim() || "all"}`, ids: channels.map((x:any) => x.id),
+          })
+        : undefined;
+      const navGroup = selectedCat === FAV ? "__all__" : (selectedCat === ALL ? "__all__" : selectedCat);
+      if (tab === "live") {
+        // v9.8.0: Önizlemeyi TAM oynatıcıya geçmeden ANINDA durdur; böylece yeni
+        // kanal yüklenene kadar önizleme sesi çakışmaz. (useFocusEffect blur'u
+        // iç içe navigatörlerde biraz gecikebiliyor.)
+        setScreenFocused(false);
+        addToRecent(item.id);
+        router.push({ pathname: "/player", params: { id: item.id, navOrigin: "tv-home", navGroup, navSearch: selectedCat === FAV ? "" : search, navScopeKey, focusKey: `tv-home:${tab}:${item.id}` } });
+      } else {
+        router.push({ pathname: "/detail", params: { type: tab, id: item.id, navOrigin: "tv-home", navGroup, navSearch: selectedCat === FAV ? "" : search, navScopeKey, focusKey: `tv-home:${tab}:${item.id}` } });
+      }
+    })();
+  }, [tab, addToRecent, router, selectedCat, activePlaylist?.id, search, channels]);
 
   /**
    * ══════════════════════════════════════════════════════════════════════

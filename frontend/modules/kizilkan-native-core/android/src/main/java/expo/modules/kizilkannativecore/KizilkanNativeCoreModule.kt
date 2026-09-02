@@ -591,6 +591,45 @@ class KizilkanNativeCoreModule : Module() {
       else database().mediaDao().getItemsRaw(id, normalizeKind(kind), itemIds.distinct().take(500)).map(::rawToMap)
     }
 
+    /**
+     * v17.0.0 TV/PLAYER NAVIGATION: Prev/Next için full playlist hydrate ETME.
+     * Room'un canonical sortOrder + group/search scope'u üzerinden yalnız iki
+     * komşuyu döndürür. wrap=true canlı TV zapping davranışını (son->ilk) korur.
+     */
+    AsyncFunction("getPlaybackNeighbors") { id: String, kind: String, itemId: String, group: String, search: String, wrap: Boolean ->
+      val started = SystemClock.elapsedRealtime()
+      ensureIndexed(id)
+      val dao = database().mediaDao()
+      val k = normalizeKind(kind)
+      val wantedGroup = group.trim().ifEmpty { "__all__" }
+      val q = normalizeSearch(search)
+      val currentSort = dao.getSortOrder(id, k, itemId)
+      if (currentSort == null) {
+        mapOf<String, Any?>(
+          "currentId" to itemId, "previous" to null, "next" to null,
+          "position" to 0, "total" to 0, "found" to false,
+          "elapsedMs" to (SystemClock.elapsedRealtime() - started),
+        )
+      } else {
+        val total = dao.scopedCount(id, k, wantedGroup, q)
+        var prevRaw = dao.previousRaw(id, k, wantedGroup, q, currentSort)
+        var nextRaw = dao.nextRaw(id, k, wantedGroup, q, currentSort)
+        if (wrap && total > 1) {
+          if (prevRaw == null) prevRaw = dao.lastRaw(id, k, wantedGroup, q)
+          if (nextRaw == null) nextRaw = dao.firstRaw(id, k, wantedGroup, q)
+        }
+        mapOf<String, Any?>(
+          "currentId" to itemId,
+          "previous" to prevRaw?.let(::rawToMap),
+          "next" to nextRaw?.let(::rawToMap),
+          "position" to (dao.scopedCountBefore(id, k, wantedGroup, q, currentSort) + 1),
+          "total" to total,
+          "found" to true,
+          "elapsedMs" to (SystemClock.elapsedRealtime() - started),
+        )
+      }
+    }
+
     AsyncFunction("fetchAndCacheEpg") { url: String, playlistId: String, userAgent: String ->
       val started = SystemClock.elapsedRealtime()
       val xml = downloadText(url, userAgent)

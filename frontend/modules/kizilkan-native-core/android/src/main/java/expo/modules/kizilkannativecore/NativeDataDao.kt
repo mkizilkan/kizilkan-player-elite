@@ -97,6 +97,66 @@ interface MediaItemDao {
   @Query("SELECT rawJson FROM media_items WHERE playlistId = :playlistId AND kind = :kind AND itemId IN (:itemIds)")
   fun getItemsRaw(playlistId: String, kind: String, itemIds: List<String>): List<String>
 
+  /** v17.0.0: Player hot-path komşu çözümü. Büyük kataloğu JS'e taşımadan
+   *  mevcut Room sırasına ve görünür group/search scope'una göre prev/next bulur. */
+  @Query("SELECT sortOrder FROM media_items WHERE playlistId = :playlistId AND kind = :kind AND itemId = :itemId ORDER BY sortOrder LIMIT 1")
+  fun getSortOrder(playlistId: String, kind: String, itemId: String): Int?
+
+  @Query("""
+    SELECT rawJson FROM media_items
+    WHERE playlistId = :playlistId AND kind = :kind
+      AND (:groupName = '__all__' OR groupName = :groupName)
+      AND (:query = '' OR searchText LIKE '%' || :query || '%')
+      AND sortOrder < :currentSortOrder
+    ORDER BY sortOrder DESC LIMIT 1
+  """)
+  fun previousRaw(playlistId: String, kind: String, groupName: String, query: String, currentSortOrder: Int): String?
+
+  @Query("""
+    SELECT rawJson FROM media_items
+    WHERE playlistId = :playlistId AND kind = :kind
+      AND (:groupName = '__all__' OR groupName = :groupName)
+      AND (:query = '' OR searchText LIKE '%' || :query || '%')
+      AND sortOrder > :currentSortOrder
+    ORDER BY sortOrder ASC LIMIT 1
+  """)
+  fun nextRaw(playlistId: String, kind: String, groupName: String, query: String, currentSortOrder: Int): String?
+
+  @Query("""
+    SELECT rawJson FROM media_items
+    WHERE playlistId = :playlistId AND kind = :kind
+      AND (:groupName = '__all__' OR groupName = :groupName)
+      AND (:query = '' OR searchText LIKE '%' || :query || '%')
+    ORDER BY sortOrder ASC LIMIT 1
+  """)
+  fun firstRaw(playlistId: String, kind: String, groupName: String, query: String): String?
+
+  @Query("""
+    SELECT rawJson FROM media_items
+    WHERE playlistId = :playlistId AND kind = :kind
+      AND (:groupName = '__all__' OR groupName = :groupName)
+      AND (:query = '' OR searchText LIKE '%' || :query || '%')
+    ORDER BY sortOrder DESC LIMIT 1
+  """)
+  fun lastRaw(playlistId: String, kind: String, groupName: String, query: String): String?
+
+  @Query("""
+    SELECT COUNT(*) FROM media_items
+    WHERE playlistId = :playlistId AND kind = :kind
+      AND (:groupName = '__all__' OR groupName = :groupName)
+      AND (:query = '' OR searchText LIKE '%' || :query || '%')
+  """)
+  fun scopedCount(playlistId: String, kind: String, groupName: String, query: String): Int
+
+  @Query("""
+    SELECT COUNT(*) FROM media_items
+    WHERE playlistId = :playlistId AND kind = :kind
+      AND (:groupName = '__all__' OR groupName = :groupName)
+      AND (:query = '' OR searchText LIKE '%' || :query || '%')
+      AND sortOrder < :currentSortOrder
+  """)
+  fun scopedCountBefore(playlistId: String, kind: String, groupName: String, query: String, currentSortOrder: Int): Int
+
   @Query("SELECT rawJson FROM media_items WHERE playlistId = :playlistId AND kind = :kind ORDER BY sortOrder")
   fun allRaw(playlistId: String, kind: String): List<String>
 }

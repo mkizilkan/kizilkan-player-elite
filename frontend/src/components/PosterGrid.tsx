@@ -7,6 +7,7 @@ import { useResponsive } from "@/src/hooks/useResponsive";
 import { useTVFocus, posterFocusStyle } from "@/src/hooks/useTVFocus";
 import type { VodItem, SeriesItem } from "@/src/types";
 import { useTv } from "@/src/store/TvContext";
+import { useTvFocusMemory } from "@/src/store/TvFocusMemoryContext";
 
 const H_PAD = SPACING.lg;
 const GAP = SPACING.sm;
@@ -93,14 +94,17 @@ export function PosterGrid({ items, onPressItem, onLongPressItem, ListHeaderComp
 function PosterCard({ item, width, height, testIDPrefix, onPress, onLongPress }: { item: any; width: number; height: number; testIDPrefix: string; onPress: () => void; onLongPress?: () => void }) {
   const { colors } = useTheme();
   const { isFocused, onFocus, onBlur } = useTVFocus();
+  const focusMemory = useTvFocusMemory();
+  const focusBinding = focusMemory.bind(`${testIDPrefix}-${item.id}`);
   return (
     <TouchableOpacity
       testID={`${testIDPrefix}-${item.id}`}
       onPress={onPress}
       onLongPress={onLongPress}
       delayLongPress={400}
-      onFocus={onFocus}
+      onFocus={() => { onFocus(); focusBinding.rememberFocus(); }}
       onBlur={onBlur}
+      hasTVPreferredFocus={focusBinding.hasTVPreferredFocus}
       activeOpacity={0.8}
       focusable
       // AFİŞ BÜYÜTMESİ (v6.4.0): TV'de odaklanan afiş belirgin şekilde büyür

@@ -105,6 +105,9 @@ export const KizilkanNativeCore = {
   },
   getItem: async <T = any>(id: string, kind: "live" | "vod" | "series", itemId: string): Promise<T | null> => native ? native.getItem(id, kind, itemId) : null,
   getItemsByIds: async <T = any>(id: string, kind: "live" | "vod" | "series", itemIds: string[]): Promise<T[]> => native ? (await native.getItemsByIds(id, kind, itemIds)) : [],
+  getPlaybackNeighbors: async <T = any>(id: string, kind: "live" | "vod" | "series", itemId: string, opts?: { group?: string; search?: string; wrap?: boolean }): Promise<{ currentId:string; previous:T|null; next:T|null; position:number; total:number; found:boolean; elapsedMs?:number }> => native
+    ? (await native.getPlaybackNeighbors(id, kind, itemId, opts?.group || "__all__", opts?.search || "", opts?.wrap !== false))
+    : { currentId:itemId, previous:null, next:null, position:0, total:0, found:false },
   reindexPlaylist: async (id: string): Promise<NativePlaylistSummary | null> => native ? native.reindexPlaylist(id) : null,
   invalidatePlaylist: (id: string) => native ? native.invalidatePlaylist(id) : false,
   removePlaylistIndex: async (id: string) => native ? native.removePlaylistIndex(id) : false,
