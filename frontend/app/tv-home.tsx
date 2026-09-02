@@ -872,12 +872,8 @@ function LivePreview({
     debRef.current = setTimeout(async () => {
       try {
         if (playlist?.source === "stalker") {
-          const { stalkerResolveStream, normalizeMac } = await import("@/src/utils/stalker");
-          const cred = {
-            portal: playlist.stalkerPortal,
-            mac: normalizeMac(playlist.stalkerMac || ""),
-            serial: playlist.stalkerSerial,
-          };
+          const { stalkerResolveStream, stalkerCredsFromPlaylist } = await import("@/src/utils/stalker");
+          const cred = stalkerCredsFromPlaylist(playlist);
           const { url: resolved } = await stalkerResolveStream(cred, null, String(channel.url));
           if (aliveRef.current) setUrl(resolved);
         } else {

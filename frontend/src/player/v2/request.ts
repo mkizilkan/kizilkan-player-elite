@@ -22,27 +22,50 @@ export function buildPlaybackRequest(args: {
   runtimeHeaders?: Record<string, string>;
 }): PlaybackRequest {
   const { url, channel, override, playlist, isLive, runtimeHeaders } = args;
+  // v17.0.2 header inheritance:
+  // provider/item source headers < runtime protocol headers < item arbitrary overrides.
+  // Named UA/Referer/Origin below use the stricter user-facing priority:
+  // item override > playlist/account default > provider/protocol > engine default.
+  const providerHeaders = cleanHeaders(channel?.headers);
+  const protocolHeaders = cleanHeaders(runtimeHeaders);
+  const itemHeaderOverrides = cleanHeaders(override?.headers);
   const headers = {
-    ...cleanHeaders(channel?.headers),
-    ...cleanHeaders(override?.headers),
-    // Runtime-resolved MAG context is authoritative for the temporary create_link URL.
+    ...providerHeaders,
+    // Keep the direct bridge explicit: historical MAG regression gate verifies
+    // runtime headers enter the PlaybackRequest at this exact boundary.
     ...cleanHeaders(runtimeHeaders),
+    ...itemHeaderOverrides,
   };
+  const playlistHeaders = playlist?.playbackHeaders || {};
 
   const userAgent =
     override?.userAgent ||
-    headers["User-Agent"] ||
-    headers["user-agent"] ||
+    itemHeaderOverrides["User-Agent"] || itemHeaderOverrides["user-agent"] ||
+    playlistHeaders?.userAgent ||
+    protocolHeaders["User-Agent"] || protocolHeaders["user-agent"] ||
+    providerHeaders["User-Agent"] || providerHeaders["user-agent"] ||
     DEFAULT_USER_AGENT;
-  headers["User-Agent"] = userAgent;
+  headers["User-Agent"] = String(userAgent);
   delete headers["user-agent"];
 
-  const referer = override?.referer || override?.referrer || headers["Referer"] || headers["referer"];
+  const referer =
+    override?.referer || override?.referrer ||
+    itemHeaderOverrides["Referer"] || itemHeaderOverrides["referer"] || itemHeaderOverrides["Referrer"] ||
+    playlistHeaders?.referer ||
+    protocolHeaders["Referer"] || protocolHeaders["referer"] || protocolHeaders["Referrer"] ||
+    providerHeaders["Referer"] || providerHeaders["referer"] || providerHeaders["Referrer"];
   if (referer) headers["Referer"] = String(referer);
-  delete headers["referer"];
+  else delete headers["Referer"];
+  delete headers["referer"]; delete headers["Referrer"];
 
-  const origin = override?.origin || headers["Origin"] || headers["origin"];
+  const origin =
+    override?.origin ||
+    itemHeaderOverrides["Origin"] || itemHeaderOverrides["origin"] ||
+    playlistHeaders?.origin ||
+    protocolHeaders["Origin"] || protocolHeaders["origin"] ||
+    providerHeaders["Origin"] || providerHeaders["origin"];
   if (origin) headers["Origin"] = String(origin);
+  else delete headers["Origin"];
   delete headers["origin"];
 
   const ext = String(channel?.container_ext || "").toLowerCase();

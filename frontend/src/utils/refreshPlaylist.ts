@@ -173,12 +173,8 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       if (!pl.stalkerPortal || !pl.stalkerMac) {
         return { ok: false, message: "Portal/MAC bilgisi eksik." };
       }
-      const { stalkerLogin, stalkerCatalog, normalizeMac } = await import("@/src/utils/stalker");
-      const cred = {
-        portal: pl.stalkerPortal,
-        mac: normalizeMac(pl.stalkerMac),
-        serial: pl.stalkerSerial || undefined,
-      };
+      const { stalkerLogin, stalkerCatalog, stalkerCredsFromPlaylist } = await import("@/src/utils/stalker");
+      const cred = stalkerCredsFromPlaylist(pl);
       onProgress?.({ phase: "login", message: "Portal doğrulanıyor..." });
       const { session } = await stalkerLogin(cred);
       onProgress?.({ phase: "content", message: "MAG katalog hazırlığı başlatılıyor..." });
@@ -196,6 +192,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       const seriesCap = d.seriesNative === 'UNSUPPORTED' && d.seriesFromVod > 0 ? 'vod_fallback' : d.seriesNative === 'UNSUPPORTED' ? 'unsupported_404' : d.seriesNative === 'ERROR' ? 'error' : (catalog.series.length ? 'supported' : 'empty');
       const endpointShape = (() => { try { return new URL(session.endpoint).pathname || '/'; } catch { return ''; } })();
       const capabilityPatch: Partial<Playlist> = {
+        ...(session.portalTimezone ? { stalkerPortalTimezone: session.portalTimezone } : {}),
         catalogCapabilities: { live: liveCap, vod: vodCap, series: seriesCap, updatedAt: new Date().toISOString() },
         magCapabilities: {
           live: liveCap === 'supported' ? 'supported' : liveCap === 'empty' ? 'empty' : 'error',

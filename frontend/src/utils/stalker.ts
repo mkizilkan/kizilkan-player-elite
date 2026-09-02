@@ -24,7 +24,7 @@
  * ===========================================================================
  */
 
-import type { AccountInfo, Channel, SeriesItem, VodItem } from "@/src/types";
+import type { AccountInfo, Channel, Playlist, SeriesItem, VodItem } from "@/src/types";
 import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
 import { storage } from "@/src/utils/storage";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
@@ -51,12 +51,30 @@ const PORTAL_PATHS = [
   "/c/portal.php",
 ];
 
+export type StalkerTimezoneMode = "auto" | "portal" | "device" | "manual";
+
 export interface StalkerCreds {
   portal: string;
   mac: string;
   serial?: string;
   deviceId?: string;
   deviceModel?: "MAG320" | "MAG254" | "MAG250";
+  timezoneMode?: StalkerTimezoneMode;
+  /** Manual timezone for manual mode. */
+  timezone?: string;
+  /** Verified timezone previously reported by portal profile. */
+  portalTimezone?: string;
+}
+
+export function stalkerCredsFromPlaylist(pl: Pick<Playlist, "stalkerPortal" | "stalkerMac" | "stalkerSerial" | "stalkerTimezoneMode" | "stalkerTimezone" | "stalkerPortalTimezone">): StalkerCreds {
+  return {
+    portal: String(pl.stalkerPortal || "").trim(),
+    mac: normalizeMac(String(pl.stalkerMac || "")),
+    serial: String(pl.stalkerSerial || "").trim() || undefined,
+    timezoneMode: pl.stalkerTimezoneMode || "auto",
+    timezone: String(pl.stalkerTimezone || "").trim() || undefined,
+    portalTimezone: String(pl.stalkerPortalTimezone || "").trim() || undefined,
+  };
 }
 
 
@@ -71,6 +89,8 @@ export interface StalkerPlaybackContext {
 export interface StalkerSession {
   token: string;
   endpoint: string;
+  /** v17.0.2: verified timezone discovered from get_profile, when present. */
+  portalTimezone?: string;
   profile?: any;
   profileError?: string;
   profileVariant?: string;
@@ -119,7 +139,11 @@ const PLAYBACK_LINK_CACHE_TTL_MS = 8_000;
 const PLAYBACK_LINK_CACHE_MAX = 24;
 const stalkerPlaybackLinkCache = new Map<string, { url: string; at: number }>();
 
-function sessionKey(cred: StalkerCreds): string { return `${baseOf(cred.portal).toLowerCase()}|${normalizeMac(cred.mac)}|${cred.serial || ""}|${cred.deviceId || ""}`; }
+function sessionKey(cred: StalkerCreds): string {
+  const mode = cred.timezoneMode || "auto";
+  const timezoneKey = mode === "manual" ? (cred.timezone || "") : mode === "portal" ? (cred.portalTimezone || "") : "";
+  return `${baseOf(cred.portal).toLowerCase()}|${normalizeMac(cred.mac)}|${cred.serial || ""}|${cred.deviceId || ""}|${mode}|${timezoneKey}`;
+}
 function getCachedSession(cred: StalkerCreds): { session: StalkerSession; profile: any } | null {
   const key = sessionKey(cred); const hit = stalkerSessionCache.get(key); if (!hit) return null;
   if (Date.now() - hit.at > SESSION_TTL_MS) { stalkerSessionCache.delete(key); return null; }
@@ -464,6 +488,34 @@ function fullDeviceCookie(cred: StalkerCreds, encodedMac: string, tz: string, ma
   ].join("; ");
 }
 
+function deviceTimezone(): string {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Istanbul"; }
+  catch { return "Europe/Istanbul"; }
+}
+
+function detectedProfileTimezone(profile: any): string | undefined {
+  const candidates = [profile?.timezone, profile?.default_timezone, profile?.time_zone, profile?.tz];
+  for (const raw of candidates) {
+    const value = String(raw || "").trim();
+    if (value && /^[A-Za-z_+\-]+(?:\/[A-Za-z0-9_+\-]+)+$/.test(value)) return value;
+  }
+  return undefined;
+}
+
+function explicitTimezone(cred: StalkerCreds): string | undefined {
+  const mode = cred.timezoneMode || "auto";
+  if (mode === "manual") return String(cred.timezone || "").trim() || undefined;
+  if (mode === "device") return deviceTimezone();
+  if (mode === "portal") return String(cred.portalTimezone || "").trim() || deviceTimezone();
+  return undefined; // auto: preserve proven per-profile wire defaults exactly.
+}
+
+function tzWire(cred: StalkerCreds, legacyDefault: string, encoded: boolean): string {
+  const chosen = explicitTimezone(cred);
+  if (!chosen) return legacyDefault;
+  return encoded ? encodeURIComponent(chosen) : chosen;
+}
+
 function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profile: MagCompatProfile = "mag254-encoded"): Record<string, string> {
   const mac = normalizeMac(cred.mac);
   const encodedMac = encodeURIComponent(mac);
@@ -504,7 +556,7 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
       Accept: "application/json",
       Referer: baseOf(cred.portal) + "/c/",
       "X-User-Agent": "Model: MAG320; Link: Ethernet",
-      Cookie: `mac=${encodedMac}; stb_lang=en; timezone=Europe%2FParis;`,
+      Cookie: `mac=${encodedMac}; stb_lang=en; timezone=${tzWire(cred, "Europe%2FParis", true)};`,
       "Accept-Encoding": "gzip",
     };
     if (token) p.Authorization = `Bearer ${token}`;
@@ -516,7 +568,7 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
       "User-Agent": MAG250_UA,
       Accept: "*/*",
       Referer: baseOf(cred.portal) + "/c/",
-      Cookie: `mac=${mac}; stb_lang=en; timezone=Europe/Kiev`,
+      Cookie: `mac=${mac}; stb_lang=en; timezone=${tzWire(cred, "Europe/Kiev", false)}`,
       "Accept-Charset": "UTF-8,*;q=0.8",
       "X-User-Agent": "Model: MAG250; Link: WiFi",
       Range: "bytes=0-",
@@ -535,7 +587,7 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
       Referer: baseOf(cred.portal) + "/c/",
       Accept: "*/*",
       "X-User-Agent": "Model: MAG254; Link: WiFi",
-      Cookie: fullDeviceCookie(cred, encodedMac, "Europe/Istanbul", macOnly),
+      Cookie: fullDeviceCookie(cred, encodedMac, tzWire(cred, "Europe/Istanbul", false), macOnly),
     };
     if (token) f.Authorization = `Bearer ${token}`;
     return f;
@@ -546,7 +598,7 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
       "User-Agent": MAG250_UA,
       Referer: baseOf(cred.portal) + "/c/",
       Accept: "*/*",
-      Cookie: `mac=${encodedMac}; stb_lang=en; timezone=Europe/Istanbul`,
+      Cookie: `mac=${encodedMac}; stb_lang=en; timezone=${tzWire(cred, "Europe/Istanbul", false)}`,
     };
     if (token) g.Authorization = `Bearer ${token}`;
     return g;
@@ -558,7 +610,7 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
     Accept: "*/*",
     "Accept-Language": "en-US,en;q=0.9",
     "X-User-Agent": `Model: ${model}; Link: Ethernet`,
-    Cookie: `mac=${encoded ? encodedMac : mac}; stb_lang=en; timezone=Europe%2FIstanbul`,
+    Cookie: `mac=${encoded ? encodedMac : mac}; stb_lang=en; timezone=${tzWire(cred, "Europe%2FIstanbul", encoded)}`,
   };
   if (encoded) h["Accept-Encoding"] = "gzip, deflate";
   if (token) h.Authorization = `Bearer ${token}`;
@@ -2003,6 +2055,14 @@ export async function stalkerLogin(
     // reddederken katalog çağrılarını kabul eder. Uyumluluğu bozmak yerine hata
     // session üzerinde taşınır; katalog da başarısız/boşsa kullanıcıya aşama bilgisi verilir.
   }
+  const portalTimezone = detectedProfileTimezone(profile);
+  if (portalTimezone) {
+    session.portalTimezone = portalTimezone;
+    // Caller-owned creds are intentionally enriched for the immediately following
+    // catalog/create_link calls. This never changes auto mode wire defaults.
+    cred.portalTimezone = portalTimezone;
+    void recordDiagnostic("mag", "STALKER_PORTAL_TIMEZONE_DISCOVERED", { timezone: portalTimezone, mode: cred.timezoneMode || "auto" });
+  }
   session.profile = profile; cacheSession(cred, session, profile); return { session, profile };
 }
 
@@ -2022,6 +2082,7 @@ export async function stalkerResolveStream(
   let refreshed = !!opts.forceFresh;
   if (opts.forceFresh) invalidateSession(cred);
   if (!session) session = (await stalkerLogin(cred, { forceFresh: !!opts.forceFresh })).session;
+  if (!cred.portalTimezone && session.portalTimezone) cred.portalTimezone = session.portalTimezone;
   const parsed = parseMediaCommand(cmd);
   const resolveWithSession = async (activeSession: StalkerSession, didRefresh: boolean): Promise<StalkerPlaybackContext> => {
     const playbackKey = `${sessionKey(cred)}|${String(activeSession.endpoint || "").toLowerCase()}|${parsed.kind}|${parsed.series}|${parsed.cmd}`;

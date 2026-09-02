@@ -36,6 +36,8 @@ export interface ItemOverride {
    */
   userAgent?: string;
   referer?: string;
+  /** v17.0.2: item-level Origin; overrides playlist/account default. */
+  origin?: string;
 }
 
 export type OverrideMap = Record<string, ItemOverride>;

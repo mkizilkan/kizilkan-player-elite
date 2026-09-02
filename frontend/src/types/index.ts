@@ -165,6 +165,18 @@ export interface Playlist {
   stalkerPortal?: string;
   stalkerMac?: string;
   stalkerSerial?: string;
+  /** v17.0.2: MAG/Stalker timezone policy. auto preserves proven profile defaults. */
+  stalkerTimezoneMode?: 'auto' | 'portal' | 'device' | 'manual';
+  /** Manual timezone when stalkerTimezoneMode=manual (IANA, e.g. Europe/Istanbul). */
+  stalkerTimezone?: string;
+  /** Last timezone reported by a verified MAG profile; used only in portal mode. */
+  stalkerPortalTimezone?: string;
+  /** v17.0.2: account/playlist playback defaults; item overrides still take precedence. */
+  playbackHeaders?: {
+    userAgent?: string;
+    referer?: string;
+    origin?: string;
+  };
   accountInfo?: AccountInfo | null;
   serverInfo?: ServerInfo | null;
   /** Kullanıcının girdiği sağlayıcı bilgileri (APK, destek, oynatıcı listesi). */

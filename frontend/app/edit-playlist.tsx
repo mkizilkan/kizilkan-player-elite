@@ -46,6 +46,11 @@ export default function EditPlaylist() {
   const [error, setError] = useState<string | null>(null);
   const [serverCode, setServerCode] = useState(pl?.serverCodeBinding?.code || "");
   const [serverCodeAutoResolve, setServerCodeAutoResolve] = useState(pl?.serverCodeBinding?.autoResolve ?? true);
+  const [playbackUserAgent, setPlaybackUserAgent] = useState(pl?.playbackHeaders?.userAgent || "");
+  const [playbackReferer, setPlaybackReferer] = useState(pl?.playbackHeaders?.referer || "");
+  const [playbackOrigin, setPlaybackOrigin] = useState(pl?.playbackHeaders?.origin || "");
+  const [stTimezoneMode, setStTimezoneMode] = useState<"auto" | "portal" | "device" | "manual">(pl?.stalkerTimezoneMode || "auto");
+  const [stTimezone, setStTimezone] = useState(pl?.stalkerTimezone || "");
 
   useEffect(() => {
     if (!pl) {
@@ -61,6 +66,12 @@ export default function EditPlaylist() {
     setProgress("");
     try {
       const patch: any = { name: name.trim() || pl.name };
+      const playbackHeaders = {
+        userAgent: playbackUserAgent.trim() || undefined,
+        referer: playbackReferer.trim() || undefined,
+        origin: playbackOrigin.trim() || undefined,
+      };
+      patch.playbackHeaders = Object.values(playbackHeaders).some(Boolean) ? playbackHeaders : undefined;
 
       if (pl.source === "m3u_url") {
         if (m3uUrl.trim() !== pl.m3uUrl) patch.m3uUrl = m3uUrl.trim();
@@ -198,17 +209,21 @@ export default function EditPlaylist() {
         patch.stalkerPortal = stPortal.trim() || pl.stalkerPortal;
         patch.stalkerMac = (stMac.trim().toUpperCase()) || pl.stalkerMac;
         patch.stalkerSerial = stSerial.trim() || pl.stalkerSerial;
+        patch.stalkerTimezoneMode = stTimezoneMode;
+        patch.stalkerTimezone = stTimezoneMode === "manual" ? stTimezone.trim() || undefined : undefined;
+        // A previously verified portal timezone is preserved until a new profile proves another value.
+        patch.stalkerPortalTimezone = pl.stalkerPortalTimezone;
+        if (stTimezoneMode === "manual" && !/^[A-Za-z_+\-]+(?:\/[A-Za-z0-9_+\-]+)+$/.test(stTimezone.trim())) {
+          throw new Error("Manuel MAG saat dilimi IANA biçiminde olmalı. Örnek: Europe/Istanbul");
+        }
         if (reloadContent) {
-          const { stalkerLogin, stalkerCatalog, normalizeMac, normalizeStalkerAccountInfo } = await import("@/src/utils/stalker");
-          const cred = {
-            portal: (patch.stalkerPortal || "").trim(),
-            mac: normalizeMac((patch.stalkerMac || "").trim()),
-            serial: (patch.stalkerSerial || "").trim() || undefined,
-          };
+          const { stalkerLogin, stalkerCatalog, stalkerCredsFromPlaylist, normalizeStalkerAccountInfo } = await import("@/src/utils/stalker");
+          const cred = stalkerCredsFromPlaylist({ ...pl, ...patch });
           setProgress("Portal doğrulanıyor...");
           const { session, profile: prof } = await stalkerLogin(cred);
           const profile = prof || {};
           patch.accountInfo = normalizeStalkerAccountInfo(profile);
+          if (session.portalTimezone) patch.stalkerPortalTimezone = session.portalTimezone;
           setProgress("MAG katalog hazırlığı başlatılıyor...");
           let catalog;
           try {
@@ -281,6 +296,37 @@ export default function EditPlaylist() {
             placeholderTextColor={colors.onSurfaceTertiary}
             style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
           />
+
+          <Label text="OYNATMA USER-AGENT (isteğe bağlı)" mt />
+          <TextInput
+            testID="edit-playback-ua-input"
+            value={playbackUserAgent} onChangeText={setPlaybackUserAgent}
+            autoCapitalize="none" autoCorrect={false}
+            placeholder="Boşsa sağlayıcı / motor varsayılanı"
+            placeholderTextColor={colors.onSurfaceTertiary}
+            style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+          />
+          <Label text="OYNATMA REFERER (isteğe bağlı)" mt />
+          <TextInput
+            testID="edit-playback-referer-input"
+            value={playbackReferer} onChangeText={setPlaybackReferer}
+            autoCapitalize="none" autoCorrect={false} keyboardType="url"
+            placeholder="https://panel.example/"
+            placeholderTextColor={colors.onSurfaceTertiary}
+            style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+          />
+          <Label text="OYNATMA ORIGIN (isteğe bağlı)" mt />
+          <TextInput
+            testID="edit-playback-origin-input"
+            value={playbackOrigin} onChangeText={setPlaybackOrigin}
+            autoCapitalize="none" autoCorrect={false} keyboardType="url"
+            placeholder="https://panel.example"
+            placeholderTextColor={colors.onSurfaceTertiary}
+            style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+          />
+          <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: 6 }}>
+            Öncelik: içerik özel ayarı → bu hesap ayarı → sağlayıcı/protokol → motor varsayılanı.
+          </Text>
 
           {pl.source === "m3u_url" && (
             <>
@@ -388,6 +434,38 @@ export default function EditPlaylist() {
                 autoCapitalize="none" autoCorrect={false}
                 placeholderTextColor={colors.onSurfaceTertiary}
                 style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]} />
+
+              <Label text="MAG SAAT DİLİ" mt />
+              <View style={styles.modeRow}>
+                {([
+                  ["auto", "Otomatik"],
+                  ["portal", "Portal"],
+                  ["device", "Cihaz"],
+                  ["manual", "Manuel"],
+                ] as const).map(([mode, label]) => (
+                  <TouchableOpacity
+                    key={mode}
+                    testID={`edit-st-timezone-${mode}`}
+                    onPress={() => setStTimezoneMode(mode)}
+                    style={[styles.modeBtn, { borderColor: stTimezoneMode === mode ? colors.brandPrimary : colors.border, backgroundColor: stTimezoneMode === mode ? colors.brandPrimary + "18" : colors.surfaceSecondary }]}
+                  >
+                    <Text style={{ color: stTimezoneMode === mode ? colors.brandPrimary : colors.onSurface, fontWeight: FONT.weight.bold, fontSize: FONT.size.sm }}>{label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              {stTimezoneMode === "manual" && (
+                <TextInput
+                  testID="edit-st-timezone-input"
+                  value={stTimezone} onChangeText={setStTimezone}
+                  autoCapitalize="none" autoCorrect={false}
+                  placeholder="Europe/Istanbul"
+                  placeholderTextColor={colors.onSurfaceTertiary}
+                  style={[styles.input, { marginTop: SPACING.sm, backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+                />
+              )}
+              <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: 6 }}>
+                Otomatik mevcut kanıtlanmış MAG profil varsayımlarını korur. Portal modu doğrulanmış get_profile saat dilimini, cihaz modu telefon/TV saat dilimini kullanır.
+              </Text>
             </>
           )}
 
@@ -475,6 +553,8 @@ const styles = StyleSheet.create({
     height: 52, borderWidth: 1, borderRadius: RADIUS.md,
     paddingHorizontal: SPACING.lg, fontSize: FONT.size.lg,
   },
+  modeRow: { flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm },
+  modeBtn: { minWidth: 88, height: 42, borderWidth: 1, borderRadius: RADIUS.pill, alignItems: "center", justifyContent: "center", paddingHorizontal: SPACING.md },
   reloadToggle: {
     flexDirection: "row", alignItems: "center", gap: SPACING.md,
     padding: SPACING.md, borderRadius: RADIUS.md, borderWidth: 1.5,

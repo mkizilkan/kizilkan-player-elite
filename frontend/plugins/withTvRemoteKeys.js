@@ -190,7 +190,34 @@ const KOTLIN_BLOCK = `
           params.putString("key", name)
           ctx.getJSModule(com.facebook.react.modules.core.DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
             .emit("KizilkanRemoteKey", params)
-          return true
+
+          // v17.0.2 P0 — sayı tuşları global olarak TÜKETİLMEZ.
+          // Android/IME bazı sayısal klavyeleri KeyEvent olarak MainActivity'ye
+          // gönderir. v17.0.0 numeric-zap eklemesi 0-9'u return true ile
+          // tükettiği için PIN/TextInput alanları odaklıyken rakamlar input'a
+          // ulaşamıyordu. Olayı JS'e yine yayıyoruz; böylece player numeric-zap
+          // korunur, fakat normal Android input zinciri de super üzerinden devam eder.
+          val isDigit = keyCode == android.view.KeyEvent.KEYCODE_0 ||
+            keyCode == android.view.KeyEvent.KEYCODE_1 ||
+            keyCode == android.view.KeyEvent.KEYCODE_2 ||
+            keyCode == android.view.KeyEvent.KEYCODE_3 ||
+            keyCode == android.view.KeyEvent.KEYCODE_4 ||
+            keyCode == android.view.KeyEvent.KEYCODE_5 ||
+            keyCode == android.view.KeyEvent.KEYCODE_6 ||
+            keyCode == android.view.KeyEvent.KEYCODE_7 ||
+            keyCode == android.view.KeyEvent.KEYCODE_8 ||
+            keyCode == android.view.KeyEvent.KEYCODE_9 ||
+            keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_0 ||
+            keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_1 ||
+            keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_2 ||
+            keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_3 ||
+            keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_4 ||
+            keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_5 ||
+            keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_6 ||
+            keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_7 ||
+            keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_8 ||
+            keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_9
+          if (!isDigit) return true
         }
       } catch (e: Exception) {
         // Olay gönderilemezse varsayılan davranışa düş — uygulama çökmemeli.

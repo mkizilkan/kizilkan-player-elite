@@ -95,8 +95,8 @@ export default function DetailScreen() {
     if (activePlaylist.source === "stalker" && isSeries && (item as any).series_id) {
       setLoading(true);
       (async () => {
-        const { stalkerLogin, stalkerSeriesInfo, normalizeMac } = await import("@/src/utils/stalker");
-        const cred = { portal: activePlaylist.stalkerPortal!, mac: normalizeMac(activePlaylist.stalkerMac || ""), serial: activePlaylist.stalkerSerial };
+        const { stalkerLogin, stalkerSeriesInfo, stalkerCredsFromPlaylist } = await import("@/src/utils/stalker");
+        const cred = stalkerCredsFromPlaylist(activePlaylist);
         const { session } = await stalkerLogin(cred);
         return stalkerSeriesInfo(cred, session, String((item as any).series_id));
       })().then(res => { setInfo(res.info || {}); setSeasons(res.seasons || []); })

@@ -29,6 +29,7 @@ const CHECKS = [
   ["check-v16149-tv-navigation-focus.js", "v16.14.9+ TV navigation / focus / lifecycle preservation contract", ""],
   ["check-v17000-tv-navigation-focus-player.js", "v17.0.0+ TV navigation / focus / player stability preservation hard-gate", ""],
   ["check-v17001-forward-semver-regression.js", "v17.0.1 forward-semver regression-gate corrective release hard-gate", ""],
+  ["check-v17002-pin-input-header-timezone.js", "v17.0.2 PIN/input safety + account header profile + MAG timezone hard-gate", ""],
   ["check-v16142-integrated-hardgate.js", "v16.14.2 integrated recovery / sync / ownership / source-recovery / V7 contract", ""],
   ["checkdefs.js",     "Tanımsız sembol (hook/JSX bileşeni)",   ""],
   ["checkcalls.js",    "Tanımsız fonksiyon çağrısı",            ""],

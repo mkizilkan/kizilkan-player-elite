@@ -800,13 +800,9 @@ export default function PlayerHost() {
     setResolving(true);
     (async () => {
       try {
-        const { stalkerResolveStream, normalizeMac, stripStreamPrefix } = await import("@/src/utils/stalker");
+        const { stalkerResolveStream, stalkerCredsFromPlaylist, stripStreamPrefix } = await import("@/src/utils/stalker");
         const pl: any = activePlaylist;
-        const cred = {
-          portal: pl.stalkerPortal,
-          mac: normalizeMac(pl.stalkerMac || ""),
-          serial: pl.stalkerSerial,
-        };
+        const cred = stalkerCredsFromPlaylist(pl);
         const forceFresh = stalkerForceFreshRequestedRef.current;
         stalkerForceFreshRequestedRef.current = false;
         const traceId = lifecycleTraceRef.current || getCurrentFlightRecorderTrace();
