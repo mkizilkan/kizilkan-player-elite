@@ -18,9 +18,26 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicLongArray
 import java.util.concurrent.atomic.AtomicReference
 
 class PanelScanService : Service() {
+  /**
+   * v17.0.8: En düşük hâlâ çalışan işi izleyerek yalnız tamamlandığı kesin olan
+   * contiguous prefix'i journal checkpoint olarak yazar. cursor-workerCount
+   * yaklaşımı, tek bir yavaş worker geride kalırken ilerideki işleri atlayabiliyordu.
+   */
+  private class ConservativeCursorTracker(workerCount: Int) {
+    private val inFlight = AtomicLongArray(workerCount)
+    init { for (i in 0 until workerCount) inFlight.set(i, Long.MAX_VALUE) }
+    fun begin(workerId: Int, index: Long) { inFlight.set(workerId, index) }
+    fun finish(workerId: Int) { inFlight.set(workerId, Long.MAX_VALUE) }
+    fun safeCursor(nextAssigned: Long): Long {
+      var safe = nextAssigned
+      for (i in 0 until inFlight.length()) safe = minOf(safe, inFlight.get(i))
+      return safe.coerceAtLeast(0L)
+    }
+  }
   companion object {
     const val ACTION_START = "expo.modules.panelscan.START"
     const val ACTION_BULK_START = "expo.modules.panelscan.BULK_START"
@@ -28,6 +45,7 @@ class PanelScanService : Service() {
     const val ACTION_CANCEL = "expo.modules.panelscan.CANCEL"
     const val ACTION_PAUSE = "expo.modules.panelscan.PAUSE"
     const val ACTION_RESUME = "expo.modules.panelscan.RESUME"
+    const val ACTION_RECOVER = "expo.modules.panelscan.RECOVER"
     const val PREFS = "gpt_elite_panel_scan"
     const val KEY_SNAPSHOT = "snapshot"
     const val KEY_EVENTS = "diagnostic_events"
@@ -205,6 +223,22 @@ class PanelScanService : Service() {
           getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("Panel taraması devam ediyor", 0, 0))
         }
       }
+      ACTION_RECOVER -> {
+        val rec = ScanJournalStore.get(applicationContext).recoverable() ?: return START_NOT_STICKY
+        val requestedRunId = rec.optString("runId")
+        if (requestedRunId.isBlank() || requestedRunId != activeRunId() || running) return START_NOT_STICKY
+        currentRunId=requestedRunId; running=true; cancelled.set(false); paused.set(false)
+        val mode=rec.optString("mode"); val payload=rec.optString("payload"); val concurrency=rec.optInt("concurrency",8); val timeoutMs=rec.optInt("timeoutMs",8000); val start=rec.optLong("cursor",0L)
+        val oldResults=ScanJournalStore.get(applicationContext).results(requestedRunId, 200)
+        writeSnapshot(JSONObject().put("mode",mode).put("runId",requestedRunId).put("state","RUNNING").put("running",true).put("tested",start).put("total",rec.optLong("total",0L)).put("found",oldResults.length()).put("matches",oldResults).put("recovered",true))
+        startForeground(NOTIF_ID, notification("Yarım kalan tarama devam ediyor…",0,0))
+        Thread { when(mode){
+          "single" -> { val o=JSONObject(payload); runScan(o.optString("candidates","[]"),o.optString("username"),o.optString("password"),concurrency,timeoutMs,start.toInt()) }
+          "bulk" -> { val o=JSONObject(payload); runBulkScan(o.optString("candidates","[]"),o.optString("accounts","[]"),concurrency,timeoutMs,start.toInt()) }
+          "unified" -> runUnifiedScan(payload,concurrency,timeoutMs,start)
+          else -> throw IllegalStateException("Bilinmeyen recovery modu: $mode")
+        } }.start()
+      }
       ACTION_BULK_START -> {
         val requestedRunId = intent.getStringExtra("runId") ?: ""
         if (requestedRunId.isBlank() || requestedRunId != activeRunId() || running) return START_NOT_STICKY
@@ -219,6 +253,7 @@ class PanelScanService : Service() {
         val candidateCount = try { JSONArray(candidatesJson).length() } catch (_: Throwable) { 0 }
         val accountCount = try { JSONArray(accountsJson).length() } catch (_: Throwable) { 0 }
         val initialTotal = candidateCount * accountCount
+        ScanJournalStore.get(applicationContext).createSession(requestedRunId, "bulk", JSONObject().put("candidates",candidatesJson).put("accounts",accountsJson).toString(), concurrency, timeoutMs, initialTotal.toLong())
         writeSnapshot(JSONObject().put("mode", "bulk").put("running", true).put("paused", false)
           .put("tested", 0).put("total", initialTotal).put("accountTested", 0).put("accountTotal", accountCount)
           .put("found", 0).put("matches", JSONArray()))
@@ -260,6 +295,7 @@ class PanelScanService : Service() {
         val concurrency = intent.getIntExtra("concurrency", 6).coerceIn(1,20)
         val timeoutMs = intent.getIntExtra("timeoutMs", 8000).coerceIn(2000,20000)
         val initialTotal = try { JSONArray(candidatesJson).length() } catch (_: Throwable) { 0 }
+        ScanJournalStore.get(applicationContext).createSession(requestedRunId, "single", JSONObject().put("candidates",candidatesJson).put("username",username).put("password",password).toString(), concurrency, timeoutMs, initialTotal.toLong())
         writeSnapshot(JSONObject()
           .put("running", true).put("paused", false).put("tested", 0).put("total", initialTotal)
           .put("panelTested", 0).put("panelTotal", 0)
@@ -394,33 +430,44 @@ class PanelScanService : Service() {
     return clean(input)
   }
 
-  private fun runBulkScan(candidatesRaw: String, accountsRaw: String, concurrency: Int, timeoutMs: Int) {
+  private fun runBulkScan(candidatesRaw: String, accountsRaw: String, concurrency: Int, timeoutMs: Int, startCursor: Int = 0) {
     try {
       val candidates = JSONArray(candidatesRaw); val accounts = JSONArray(accountsRaw)
       val candidateCount = candidates.length(); val accountCount = accounts.length(); val total = candidateCount * accountCount
       if (candidateCount == 0 || accountCount == 0) throw IllegalArgumentException("Tarama için hesap veya aday sunucu yok")
-      val cursor = AtomicInteger(0); val tested = AtomicInteger(0)
+      val safeStart = startCursor.coerceIn(0, total)
+      val cursor = AtomicInteger(safeStart); val tested = AtomicInteger(safeStart)
       val matches = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+      if (safeStart > 0) { val saved=ScanJournalStore.get(applicationContext).results(currentRunId); for(i in 0 until saved.length()) saved.optJSONObject(i)?.let { matches.add(it) } }
       val completedByAccount = Array(accountCount) { AtomicInteger(0) }; val accountDone = AtomicInteger(0)
+      for (ai in 0 until accountCount) {
+        val before = (safeStart - ai * candidateCount).coerceIn(0, candidateCount)
+        completedByAccount[ai].set(before)
+        if (before == candidateCount) accountDone.incrementAndGet()
+      }
       val panelSet = linkedSetOf<String>()
       for (i in 0 until candidateCount) { val c = candidates.getJSONObject(i); panelSet.add("${c.optString("code")}\u0000${c.optString("panelName")}") }
       val workerCount = concurrency.coerceIn(1, minOf(32L, total).toInt()); val pool = Executors.newFixedThreadPool(workerCount)
+      val checkpointTracker = ConservativeCursorTracker(workerCount)
       activeExecutor = pool
-      repeat(workerCount) {
+      repeat(workerCount) { workerId ->
         pool.submit {
           while (!cancelled.get()) {
             while (paused.get() && !cancelled.get()) Thread.sleep(100)
             if (cancelled.get()) break
             val flat = cursor.getAndIncrement(); if (flat >= total) break
+            checkpointTracker.begin(workerId, flat.toLong())
             val ai = flat / candidateCount; val ci = flat % candidateCount
             val account = accounts.getJSONObject(ai); val candidate = candidates.getJSONObject(ci)
             val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
-            if (login != null) matches.add(JSONObject()
+            if (login != null) { val hit=JSONObject()
               .put("accountIndex", ai).put("sourceRow", account.optInt("row", ai + 1)).put("username", account.optString("username"))
               .put("name", account.optString("name")).put("panelName", candidate.optString("panelName")).put("code", candidate.optString("code"))
-              .put("server", candidate.optString("server")).put("login", sanitizeLogin(login)))
+              .put("server", candidate.optString("server")).put("login", sanitizeLogin(login)); if (ScanJournalStore.get(applicationContext).addResult(currentRunId, "$ai|${candidate.optString("server")}", hit.toString())) matches.add(hit) }
             if (completedByAccount[ai].incrementAndGet() == candidateCount) accountDone.incrementAndGet()
             val done = tested.incrementAndGet()
+            checkpointTracker.finish(workerId)
+            if (done % 16 == 0 || login != null) ScanJournalStore.get(applicationContext).checkpoint(currentRunId, checkpointTracker.safeCursor(cursor.get().toLong()))
             if (done == total || done % 16 == 0 || login != null) writeBulkSnapshot(done,total,accountDone.get(),accountCount,panelSet.size,matches,candidate.optString("panelName"),ai)
             if (done % 16 == 0 || login != null) getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", if (total > Int.MAX_VALUE) ((done * Int.MAX_VALUE) / total).toInt() else done.toInt(), if (total > Int.MAX_VALUE) Int.MAX_VALUE else total.toInt()))
           }
@@ -433,6 +480,7 @@ class PanelScanService : Service() {
     } finally {
       val finishedRunId = currentRunId
       finalizeSnapshot("bulk")
+      ScanJournalStore.get(applicationContext).finish(finishedRunId, try { JSONObject(getSharedPreferences(PREFS,0).getString(KEY_SNAPSHOT,"{}") ?: "{}").optString("state","FAILED") } catch (_:Throwable) { "FAILED" })
       activeExecutor = null
       activeConnections.clear()
       running = false
@@ -478,7 +526,7 @@ class PanelScanService : Service() {
     writeSnapshot(snap)
   }
 
-  private fun runUnifiedScanFromStaging(stagingKey: String, concurrency: Int, timeoutMs: Int) {
+  private fun runUnifiedScanFromStaging(stagingKey: String, concurrency: Int, timeoutMs: Int, startCursor: Long = 0L) {
     val safeKey = stagingKey.replace(Regex("[^a-zA-Z0-9_.-]"), "_")
     val file = File(filesDir, "kizilkan/panel-scan-staging/$safeKey.json")
     try {
@@ -487,9 +535,14 @@ class PanelScanService : Service() {
         .put("state", "STAGING_READ").put("payloadBytes", file.length()))
       setProcessSummary(applicationContext, "scan:STAGING_READ:b${file.length()}")
       val raw = file.bufferedReader(Charsets.UTF_8).use { it.readText() }
+      val estimatedTotal = try {
+        val root = JSONObject(raw); val jobs = root.optJSONArray("jobs") ?: JSONArray(); var n=0L
+        val sets=root.optJSONArray("candidateSets"); for(i in 0 until jobs.length()){ val j=jobs.optJSONObject(i); val a=j?.optJSONArray("candidates") ?: sets?.optJSONArray(j?.optInt("candidateSet",-1) ?: -1); n += (a?.length() ?: 0) } ; n
+      } catch (_:Throwable){0L}
+      ScanJournalStore.get(applicationContext).createSession(currentRunId, "unified", raw, concurrency, timeoutMs, estimatedTotal)
       // Credential içeren staging payload'ı RAM'e alındıktan hemen sonra diskten kaldır.
       runCatching { file.delete() }
-      runUnifiedScan(raw, concurrency, timeoutMs)
+      runUnifiedScan(raw, concurrency, timeoutMs, startCursor)
     } catch (e: Throwable) {
       writeSnapshot(JSONObject().put("mode","unified").put("running",false)
         .put("error", "${e.javaClass.simpleName}: ${e.message ?: "Birleşik tarama staging hatası"}"))
@@ -508,7 +561,7 @@ class PanelScanService : Service() {
     }
   }
 
-  private fun runUnifiedScan(jobsRaw: String, concurrency: Int, timeoutMs: Int) {
+  private fun runUnifiedScan(jobsRaw: String, concurrency: Int, timeoutMs: Int, startCursor: Long = 0L) {
     try {
       val root = try { JSONObject(jobsRaw) } catch (_: Throwable) { null }
       val jobs = root?.optJSONArray("jobs") ?: JSONArray(jobsRaw)
@@ -567,11 +620,17 @@ class PanelScanService : Service() {
         }
         throw IndexOutOfBoundsException("scan work index=$index")
       }
-      val cursor = AtomicLong(0L)
-      val tested = AtomicLong(0L)
+      val safeStart = startCursor.coerceIn(0L, total)
+      val cursor = AtomicLong(safeStart)
+      val tested = AtomicLong(safeStart)
       val lastUiSnapshotAt = AtomicLong(0L)
-      val accountDone = AtomicInteger(expectedByAccount.count { it == 0 })
+      for (ai in 0 until accountCount) {
+        val before = (safeStart - offsets[ai]).coerceIn(0L, expectedByAccount[ai].toLong()).toInt()
+        completedByAccount[ai].set(before)
+      }
+      val accountDone = AtomicInteger(expectedByAccount.indices.count { expectedByAccount[it] == 0 || completedByAccount[it].get() >= expectedByAccount[it] })
       val matches = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+      if (safeStart > 0L) { val saved=ScanJournalStore.get(applicationContext).results(currentRunId); for(i in 0 until saved.length()) saved.optJSONObject(i)?.let { matches.add(it) } }
       val workerFailure = AtomicReference<Throwable?>(null)
       fun accountStatuses(currentIndex: Int): JSONArray {
         val foundCounts = IntArray(accountCount)
@@ -609,11 +668,12 @@ class PanelScanService : Service() {
       }
       val workerCount = concurrency.coerceIn(1, minOf(32L, total).toInt())
       val pool = Executors.newFixedThreadPool(workerCount)
+      val checkpointTracker = ConservativeCursorTracker(workerCount)
       activeExecutor = pool
       recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("mode", "unified")
         .put("state", "WORKERS_STARTED").put("total", total).put("accountTotal", accountCount))
       setProcessSummary(applicationContext, "scan:WORKERS:a$accountCount:t$total:w$workerCount")
-      repeat(workerCount) {
+      repeat(workerCount) { workerId ->
         pool.submit {
           try {
             while (!cancelled.get() && workerFailure.get() == null) {
@@ -621,12 +681,13 @@ class PanelScanService : Service() {
               if (cancelled.get() || workerFailure.get() != null) break
               val wi = cursor.getAndIncrement()
               if (wi >= total) break
+              checkpointTracker.begin(workerId, wi)
               val (accountIndex, candidateIndex) = resolveWork(wi)
               val account = jobs.getJSONObject(accountIndex)
               val candidates = candidateArrays[accountIndex]
               val candidate = candidates.getJSONObject(candidateIndex)
               val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
-              if (login != null) matches.add(JSONObject()
+              if (login != null) { val hit=JSONObject()
                 .put("accountIndex", accountIndex)
                 .put("sourceRow", account.optInt("row", accountIndex + 1))
                 .put("username", account.optString("username"))
@@ -634,9 +695,11 @@ class PanelScanService : Service() {
                 .put("panelName", candidate.optString("panelName"))
                 .put("code", candidate.optString("code"))
                 .put("server", candidate.optString("server"))
-                .put("login", sanitizeLogin(login)))
+                .put("login", sanitizeLogin(login)); if (ScanJournalStore.get(applicationContext).addResult(currentRunId, "$accountIndex|${candidate.optString("server")}", hit.toString())) matches.add(hit) }
               if (completedByAccount[accountIndex].incrementAndGet() == expectedByAccount[accountIndex]) accountDone.incrementAndGet()
               val done = tested.incrementAndGet()
+              checkpointTracker.finish(workerId)
+              if (done % 64L == 0L || login != null) ScanJournalStore.get(applicationContext).checkpoint(currentRunId, checkpointTracker.safeCursor(cursor.get()))
               val now = System.currentTimeMillis()
               val previousSnapshotAt = lastUiSnapshotAt.get()
               val snapshotDue = done == total || login != null || (now - previousSnapshotAt >= 250L && lastUiSnapshotAt.compareAndSet(previousSnapshotAt, now))
@@ -676,6 +739,7 @@ class PanelScanService : Service() {
     } finally {
       val finishedRunId = currentRunId
       finalizeSnapshot("unified")
+      ScanJournalStore.get(applicationContext).finish(finishedRunId, try { JSONObject(getSharedPreferences(PREFS,0).getString(KEY_SNAPSHOT,"{}") ?: "{}").optString("state","FAILED") } catch (_:Throwable) { "FAILED" })
       setProcessSummary(applicationContext, if (cancelled.get()) "scan:CANCELLED" else "scan:TERMINAL")
       activeExecutor = null
       activeConnections.clear()
@@ -686,42 +750,49 @@ class PanelScanService : Service() {
     }
   }
 
-  private fun runScan(raw: String, user: String, pass: String, concurrency: Int, timeoutMs: Int) {
+  private fun runScan(raw: String, user: String, pass: String, concurrency: Int, timeoutMs: Int, startCursor: Int = 0) {
     try {
       val arr = JSONArray(raw)
       val total = arr.length()
-      val cursor = AtomicInteger(0)
-      val tested = AtomicInteger(0)
+      val safeStart = startCursor.coerceIn(0, total)
+      val cursor = AtomicInteger(safeStart)
+      val tested = AtomicInteger(safeStart)
       val matches = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+      if (safeStart > 0) { val saved=ScanJournalStore.get(applicationContext).results(currentRunId); for(i in 0 until saved.length()) saved.optJSONObject(i)?.let { matches.add(it) } }
       val panelRemaining = mutableMapOf<String, AtomicInteger>()
-      val panelDone = AtomicInteger(0)
       for (i in 0 until total) {
         val c = arr.getJSONObject(i)
         val key = "${c.optString("code")}\u0000${c.optString("panelName")}"
         panelRemaining.getOrPut(key) { AtomicInteger(0) }.incrementAndGet()
       }
+      for (i in 0 until safeStart) {
+        val c = arr.getJSONObject(i)
+        val key = "${c.optString("code")}\u0000${c.optString("panelName")}"
+        panelRemaining[key]?.decrementAndGet()
+      }
       val panelTotal = panelRemaining.size
+      val panelDone = AtomicInteger(panelRemaining.values.count { it.get() == 0 })
       val pool = Executors.newFixedThreadPool(concurrency)
+      val checkpointTracker = ConservativeCursorTracker(concurrency)
       activeExecutor = pool
-      repeat(concurrency) {
+      repeat(concurrency) { workerId ->
         pool.submit {
           while (!cancelled.get()) {
             while (paused.get() && !cancelled.get()) Thread.sleep(120)
             if (cancelled.get()) break
             val i = cursor.getAndIncrement()
             if (i >= total) break
+            checkpointTracker.begin(workerId, i.toLong())
             val c = arr.getJSONObject(i)
             val panelName = c.optString("panelName")
             val server = c.optString("server")
             val data = probe(server, user, pass, timeoutMs)
             if (data != null) {
-              matches.add(JSONObject()
-                .put("panelName", panelName)
-                .put("code", c.optString("code"))
-                .put("server", server)
-                .put("login", sanitizeLogin(data)))
+              val hit=JSONObject().put("panelName", panelName).put("code", c.optString("code")).put("server", server).put("login", sanitizeLogin(data)); if (ScanJournalStore.get(applicationContext).addResult(currentRunId, server, hit.toString())) matches.add(hit)
             }
             val done = tested.incrementAndGet()
+            checkpointTracker.finish(workerId)
+            if (done % 8 == 0 || data != null) ScanJournalStore.get(applicationContext).checkpoint(currentRunId, checkpointTracker.safeCursor(cursor.get().toLong()))
             val pk = "${c.optString("code")}\u0000$panelName"
             if (panelRemaining[pk]?.decrementAndGet() == 0) panelDone.incrementAndGet()
             val resultArray = JSONArray()
@@ -751,6 +822,7 @@ class PanelScanService : Service() {
     } finally {
       val finishedRunId = currentRunId
       finalizeSnapshot("single")
+      ScanJournalStore.get(applicationContext).finish(finishedRunId, try { JSONObject(getSharedPreferences(PREFS,0).getString(KEY_SNAPSHOT,"{}") ?: "{}").optString("state","FAILED") } catch (_:Throwable) { "FAILED" })
       activeExecutor = null
       activeConnections.clear()
       running = false

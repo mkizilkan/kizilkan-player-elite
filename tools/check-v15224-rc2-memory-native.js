@@ -9,6 +9,10 @@ const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
 const need = (rel, token, label) => {
   if (!read(rel).includes(token)) { console.error("HATA:", label); bad++; }
 };
+const needAny = (rel, tokens, label) => {
+  const src = read(rel);
+  if (!tokens.some((token) => src.includes(token))) { console.error("HATA:", label); bad++; }
+};
 const forbid = (rel, token, label) => {
   if (read(rel).includes(token)) { console.error("HATA:", label); bad++; }
 };
@@ -21,7 +25,7 @@ need(idx, "KizilkanNativeCore.available ? (nativeSummary?.channels", "Room summa
 forbid(idx, "canlı sayfa sorgusu başarısız; legacy hydrate", "Room failure must not full-hydrate live catalog");
 forbid(idx, "VOD/Series sayfa sorgusu başarısız; legacy hydrate", "Room failure must not full-hydrate library");
 forbid(scan, "val work = ArrayList<Work>()", "scan must not materialize candidate×account Work matrix");
-need(scan, "fun resolveWork(index: Int): Pair<Int, Int>", "scan cursor resolver");
+needAny(scan, ["fun resolveWork(index: Int): Pair<Int, Int>", "fun resolveWork(index: Long): Pair<Int, Int>"], "scan cursor resolver (Int legacy / Long ultra-scale)");
 need(scan, "val start = (matches.size - 200).coerceAtLeast(0)", "bounded periodic scan snapshot");
 need(stalk, "STALKER_COMPAT_ATTEMPT", "MAG compatibility telemetry");
 need(stalk, "mag250-encoded", "encoded MAC compatibility");

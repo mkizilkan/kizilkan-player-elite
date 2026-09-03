@@ -21,7 +21,8 @@ import { isValidPinFormat, ensureRecoveryCode } from "@/src/utils/pin";
 import { FocusButton } from "@/src/components/FocusButton";
 import { useTv } from "@/src/store/TvContext";
 import { usePlaylists } from "@/src/store/PlaylistContext";
-import { haptic } from "@/src/utils/haptic"; // v15.0.1 BUILD FIX: eksik haptic bağını gerçek utility ile tamamla.
+import { haptic } from "@/src/utils/haptic";
+import { getScanRecoveryIntent, clearScanRecoveryIntent } from "@/src/utils/appSession"; // v15.0.1 BUILD FIX: eksik haptic bağını gerçek utility ile tamamla.
 
 export default function ProfileSelect() {
   // PDF Bulgu 5: TV'de klavye otomatik açılmamalı, odağı kaçırıyor.
@@ -44,6 +45,17 @@ export default function ProfileSelect() {
   const [busy, setBusy] = useState(false);
   const [pinBusy, setPinBusy] = useState(false);
   const [pendingNavigation, setPendingNavigation] = useState<{ profileId: string; to: "/playlist-select" | "/add-playlist" } | null>(null);
+
+  const postAuthRoute = async (profileId: string): Promise<"/playlist-select" | "/add-playlist"> => {
+    const recovery = await getScanRecoveryIntent();
+    if (recovery?.profileId === profileId) {
+      await clearScanRecoveryIntent();
+      return "/add-playlist";
+    }
+    // v17.0.7: Bayat /add-playlist appSession kaydı tek başına recovery kanıtı değildir.
+    // Yalnız profile bağlı açık scanRecoveryIntent tarama ekranına döndürebilir.
+    return "/playlist-select";
+  };
 
   /**
    * v11.5.0 — PROFİL GEÇİŞ BARİYERİ
@@ -85,7 +97,7 @@ export default function ProfileSelect() {
     }
     await switchProfile(pid);
     authorizeProfileSession(pid);
-    setPendingNavigation({ profileId: pid, to: "/playlist-select" });
+    setPendingNavigation({ profileId: pid, to: await postAuthRoute(pid) });
   };
 
   const submitPin = async () => {
@@ -101,7 +113,7 @@ export default function ProfileSelect() {
       }
       await switchProfile(pinFor);
       authorizeProfileSession(pinFor);
-      setPendingNavigation({ profileId: pinFor, to: "/playlist-select" });
+      setPendingNavigation({ profileId: pinFor, to: await postAuthRoute(pinFor) });
     } catch (e: any) {
       setPendingNavigation(null);
       setPinError(`PIN doğrulanamadı: ${String(e?.message || e)}`);

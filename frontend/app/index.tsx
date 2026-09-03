@@ -9,7 +9,8 @@ import { usePlaylists } from "@/src/store/PlaylistContext";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { useProfiles } from "@/src/store/ProfileContext";
 import { KizilkanLogo } from "@/src/components/KizilkanLogo";
-import { getRecentResumePath } from "@/src/utils/appSession";
+import { getRecentResumePath, setScanRecoveryIntent } from "@/src/utils/appSession";
+import { PanelScan } from "@/modules/panel-scan";
 
 export default function Index() {
   const router = useRouter();
@@ -67,22 +68,38 @@ export default function Index() {
 
       if (!hasProfile) {
         router.replace("/welcome");
-      } else if (profiles.length > 1 || activeProfile.hasPin) {
+      } else {
+        // v17.0.6: Native tarama Activity/React recreation'dan bağımsızdır.
+        // Bootstrap sırasında aktif veya kullanıcı tarafından henüz onaylanmamış
+        // terminal snapshot varsa hedef route kaybolmasın. PIN kapısı yine atlanmaz.
+        const scan = Platform.OS === "android" && PanelScan.available ? PanelScan.getSnapshot() : {};
+        const scanState = String(scan.state || "");
+        const recoverableScan = !!scan.runId && (
+          !!scan.running || ["STARTING", "RUNNING", "PAUSED", "CANCELLING", "COMPLETED", "FAILED", "CANCELLED"].includes(scanState)
+        );
+        if (recoverableScan) {
+          await setScanRecoveryIntent({ path: "/add-playlist", profileId: activeProfile.id, runId: String(scan.runId || ""), mode: scan.mode });
+        }
+
+        if (profiles.length > 1 || activeProfile.hasPin) {
         // v15.2.10 P0 SECURITY: process yeniden oluştuğunda aktif profil bilgisi
         // "yetkilendirildi" anlamına gelmez. Çok profil veya PIN varsa her cold
         // process başlangıcında profil/PIN kapısı zorunludur; son route restore
         // bu kapıyı asla atlayamaz.
-        router.replace("/profile-select");
-      } else if (!hasPlaylist) {
-        router.replace("/onboarding");
-      } else {
-        // Tek ve PIN'siz profilde kısa process recreation konforu korunur.
-        const resume = await getRecentResumePath();
-        router.replace((resume || "/profile-select") as any);
+          router.replace("/profile-select");
+        } else if (recoverableScan) {
+          router.replace("/add-playlist");
+        } else if (!hasPlaylist) {
+          router.replace("/onboarding");
+        } else {
+          // Tek ve PIN'siz profilde kısa process recreation konforu korunur.
+          const resume = await getRecentResumePath();
+          router.replace((resume || "/profile-select") as any);
+        }
       }
     }, 80);
     return () => clearTimeout(t);
-  }, [isLoading, themeLoading, profilesLoading, profiles.length, activeProfile.hasPin, playlists.length, router]);
+  }, [isLoading, themeLoading, profilesLoading, profiles.length, activeProfile.id, activeProfile.hasPin, playlists.length, router]);
 
   const logoStyle = useAnimatedStyle(() => ({
     opacity: opacity.value,

@@ -44,6 +44,7 @@ import { PanelScan, type NativeScanStartResult } from "@/modules/panel-scan";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { storage } from "@/src/utils/storage";
 import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
+import { clearScanRecoveryIntent } from "@/src/utils/appSession";
 import { buildKizilkanAccountArchive } from "@/src/utils/accountArchive";
 import {
   BULK_ACCOUNT_EXAMPLE,
@@ -238,6 +239,7 @@ export default function AddPlaylist() {
   const [error, setError] = useState<string | null>(null);
   const nativeScanTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const nativeScanSeenRef = React.useRef<Set<string>>(new Set());
+  const interruptedRecoveryAttemptedRef = React.useRef(false);
   const nativeScanRunIdRef = React.useRef<string>("");
   const bulkScanRunIdRef = React.useRef<string>("");
   const [nativeScanRunning, setNativeScanRunning] = useState(false);
@@ -486,7 +488,28 @@ export default function AddPlaylist() {
     throw new Error("Önceki tarama güvenli biçimde kapatılamadı. Ağ işçileri hâlâ aktif; yeni tarama başlatılmadı.");
   };
 
+  const confirmBackgroundScanProtection = async (): Promise<void> => {
+    if (Platform.OS !== "android" || !PanelScan.available) return;
+    const status = PanelScan.getBatteryOptimizationStatus();
+    if (!status.supported || status.ignoring) return;
+    const choice = await new Promise<"continue" | "settings" | "cancel">((resolve) => {
+      Alert.alert(
+        "Arka Planda Tarama",
+        "Uzun panel/hesap taramalarının ekran kapalıyken veya başka uygulamadayken daha güvenilir sürmesi için KIZILKAN PLAYER'ı Android pil optimizasyonunda kısıtlanmamış duruma almanız önerilir. Android yine de uygulamayı zorla kapatabilir; tarama sonuçları ayrıca kalıcı snapshot ile korunur.",
+        [
+          { text: "Vazgeç", style: "cancel", onPress: () => resolve("cancel") },
+          { text: "Şimdi Değil", onPress: () => resolve("continue") },
+          { text: "Pil Ayarlarını Aç", onPress: () => resolve("settings") },
+        ],
+        { cancelable: true, onDismiss: () => resolve("cancel") },
+      );
+    });
+    if (choice === "cancel") throw new Error("Tarama kullanıcı tarafından iptal edildi.");
+    if (choice === "settings") await PanelScan.openBatteryOptimizationSettings();
+  };
+
   const startAcceptedScan = async (starter: () => Promise<NativeScanStartResult | null>): Promise<string> => {
+    await confirmBackgroundScanProtection();
     let result = await starter();
     if (!result) throw new Error("Native tarama başlatılamadı.");
     if (!result.accepted && result.state === "BUSY") {
@@ -936,6 +959,39 @@ export default function AddPlaylist() {
       try {
         const scan = PanelScan.available ? PanelScan.getSnapshot() : {};
         const scanTerminal = ["COMPLETED", "CANCELLED", "FAILED"].includes(String(scan.state || ""));
+
+        // v17.0.7: Process gerçekten öldüyse journal'daki şifreli session + konservatif
+        // checkpoint kullanılarak tarama yeniden başlatılır. Sonuçlar DB'den korunur.
+        if (scan.recoverable && String(scan.terminalReason || "") === "PROCESS_RESTARTED_RECOVERABLE" && !interruptedRecoveryAttemptedRef.current) {
+          interruptedRecoveryAttemptedRef.current = true;
+          const resumed = await PanelScan.recoverInterruptedScan();
+          if (resumed) { setError(null); setProgress("Yarım kalan tarama güvenli checkpoint'ten devam ediyor…"); return; }
+        }
+
+        // v17.0.6: "Sunucuyu bilmiyorum" / tek hesap panel keşfi de bulk ile
+        // aynı Activity/process recovery sözleşmesine dahildir. Eski Promise
+        // kaybolsa bile native snapshot'taki gerçek sonuçlar yeniden ekrana kurulur.
+        if (scan.mode === "single" && (scan.running || scanTerminal || (scan.matches?.length || 0) > 0)) {
+          const matches = Array.isArray(scan.matches) ? scan.matches as PanelCredentialMatch[] : [];
+          if (!cancelled) {
+            setDiscoveryTitle("Panel taraması");
+            setDiscoverySubtitle(scan.running ? "Arka plandaki tarama geri yüklendi." : "Tarama sonucu geri yüklendi.");
+            setShowDiscoveryMatches(true);
+            mergeStreamingMatches(matches, "Panel taraması", scan.running ? "Arka plandaki tarama geri yüklendi." : "Tarama sonucu geri yüklendi.");
+            setNativeScanRunning(!!scan.running);
+            setNativeScanPaused(!!scan.paused);
+            setNativeScanStopping(String(scan.state || "") === "CANCELLING");
+            if (scan.running && scan.runId) nativeScanRunIdRef.current = String(scan.runId);
+            else if (!scan.running && nativeScanRunIdRef.current === scan.runId) nativeScanRunIdRef.current = "";
+            if (!bulkAdding) setLoading(!!scan.running);
+            if (scan.error) setError(String(scan.error));
+            const tested = Number(scan.tested || 0), total = Number(scan.total || 0), found = Number(scan.found || matches.length);
+            setProgress(scan.running
+              ? `Native panel taraması geri yüklendi · ${tested}/${total} · ${found} bulundu`
+              : `Panel tarama sonucu geri yüklendi · ${found} bulundu`);
+          }
+        }
+
         if ((scan.mode === "bulk" || scan.mode === "unified") && (scan.running || scanTerminal || (scan.matches?.length || 0) > 0)) {
           const saved = await storage.secureGet<string>(PENDING_BULK_SCAN_KEY, "");
           const accounts: BulkAccountInput[] = saved ? JSON.parse(saved) : [];
@@ -992,7 +1048,7 @@ export default function AddPlaylist() {
     void syncSnapshots();
     timer = setInterval(() => { void syncSnapshots(); }, 850);
     return () => { cancelled = true; if (timer) clearInterval(timer); };
-  }, [mergeBulkCandidates, addPreparedPlaylist, playlists, bulkAdding]);
+  }, [mergeStreamingMatches, mergeBulkCandidates, addPreparedPlaylist, playlists, bulkAdding]);
 
   const resolveOneBulkAccount = async (
     account: BulkAccountInput,
@@ -1267,8 +1323,17 @@ export default function AddPlaylist() {
     try {
       const scan = PanelScan.available ? PanelScan.getSnapshot() : {};
       if (scan.runId && !scan.running) PanelScan.acknowledgeSnapshot(String(scan.runId));
+      await clearScanRecoveryIntent();
       await storage.secureRemove(PENDING_BULK_SCAN_KEY);
     } catch (e) { console.warn("[v17.0.3 bulk-scan-ack]", e); }
+  }, []);
+
+  const acknowledgeDiscoveryResult = React.useCallback(async () => {
+    try {
+      const scan = PanelScan.available ? PanelScan.getSnapshot() : {};
+      if (scan.mode === "single" && scan.runId && !scan.running) PanelScan.acknowledgeSnapshot(String(scan.runId));
+      await clearScanRecoveryIntent();
+    } catch (e) { console.warn("[v17.0.6 single-scan-ack]", e); }
   }, []);
 
   const exportBulkCandidatesTxt = React.useCallback(async (safe: boolean) => {
@@ -2555,7 +2620,7 @@ export default function AddPlaylist() {
           transparent
           animationType="fade"
           onRequestClose={() => {
-            if (!nativeScanRunning && !bulkAdding) setShowDiscoveryMatches(false);
+            if (!nativeScanRunning && !bulkAdding) { void acknowledgeDiscoveryResult(); setShowDiscoveryMatches(false); }
           }}
         >
           <View style={styles.matchModalBackdrop}>
@@ -2574,7 +2639,7 @@ export default function AddPlaylist() {
                   focusable
                   disabled={nativeScanRunning || bulkAdding}
                   onPress={() => {
-                    if (!nativeScanRunning && !bulkAdding) setShowDiscoveryMatches(false);
+                    if (!nativeScanRunning && !bulkAdding) { void acknowledgeDiscoveryResult(); setShowDiscoveryMatches(false); }
                   }}
                   style={[styles.matchCloseBtn, { opacity: nativeScanRunning || bulkAdding ? 0.35 : 1 }]}
                 >
@@ -2687,7 +2752,7 @@ export default function AddPlaylist() {
                       );
                       if(added) ok++; else failed.push(displayName);
                     }
-                    setShowDiscoveryMatches(false); setDiscoveryMatches([]); setSelectedDiscoveryKeys([]);
+                    void acknowledgeDiscoveryResult(); setShowDiscoveryMatches(false); setDiscoveryMatches([]); setSelectedDiscoveryKeys([]);
                     Alert.alert("Panel Ekleme",`${ok}/${panelGroups.length} playlist eklendi.`+(failed.length?`\nEklenemeyen: ${failed.join(", ")}`:""));
                     if(ok>0) router.replace("/(tabs)");
                   } finally { setBulkAdding(false); setLoading(false); setProgress(""); }

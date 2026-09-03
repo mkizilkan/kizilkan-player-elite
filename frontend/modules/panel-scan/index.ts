@@ -11,7 +11,7 @@ type NativeSnapshot = {
   runId?: string; state?: "STARTING" | "RUNNING" | "PAUSED" | "CANCELLING" | "COMPLETED" | "FAILED" | "CANCELLED"; createdAt?: number; updatedAt?: number;
   mode?: "single" | "bulk" | "unified"; running?: boolean; cancelled?: boolean; paused?: boolean;
   tested?: number; total?: number; accountTested?: number; accountTotal?: number; accountIndex?: number;
-  panelTested?: number; panelTotal?: number; found?: number; panelName?: string; currentServer?: string; error?: string; terminalReason?: string; matches?: any[];
+  panelTested?: number; panelTotal?: number; found?: number; recoverable?: boolean; recovered?: boolean; panelName?: string; currentServer?: string; error?: string; terminalReason?: string; matches?: any[];
   accountStatuses?: Array<{ accountIndex:number; sourceRow?:number; name?:string; state:string; tested:number; total:number; remaining:number; found:number }>;
 };
 
@@ -59,6 +59,13 @@ export const PanelScan = {
   pauseScan: async (runId: string) => native && runId ? native.pauseScan(runId) : false,
   resumeScan: async (runId: string) => native && runId ? native.resumeScan(runId) : false,
   getActiveRunId: (): string => native ? String(native.getActiveRunId?.() || "") : "",
+  getRecoverableScan: (): any => { if (!native) return {}; try { return JSON.parse(native.getRecoverableScan?.() || "{}"); } catch { return {}; } },
+  recoverInterruptedScan: async (): Promise<boolean> => native ? !!(await native.recoverInterruptedScan?.()) : false,
+  getBatteryOptimizationStatus: (): { supported:boolean; ignoring:boolean } => {
+    if (!native) return { supported:false, ignoring:false };
+    try { const v=native.getBatteryOptimizationStatus?.() || {}; return { supported:!!v.supported, ignoring:!!v.ignoring }; } catch { return { supported:false, ignoring:false }; }
+  },
+  openBatteryOptimizationSettings: async (): Promise<boolean> => native ? !!(await native.openBatteryOptimizationSettings?.()) : false,
   getSnapshot: (): NativeSnapshot => { if (!native) return {}; try { return JSON.parse(native.getSnapshot() || "{}"); } catch { return {}; } },
   acknowledgeSnapshot: (runId: string): boolean => native && runId ? !!native.acknowledgeSnapshot?.(runId) : false,
   getDiagnosticEvents: (): any[] => { if (!native) return []; try { const v = JSON.parse(native.getDiagnosticEvents?.() || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } },

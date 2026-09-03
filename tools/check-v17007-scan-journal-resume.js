@@ -1,0 +1,15 @@
+const fs=require('fs'),p=require('path'),root=p.resolve(__dirname,'..');let f=0;const r=(x,m)=>{if(!x){console.error('HATA:',m);f++}else console.log('✓',m)};const rd=x=>fs.readFileSync(p.join(root,x),'utf8');
+const pkg=JSON.parse(rd('frontend/package.json')), app=JSON.parse(rd('frontend/app.json'));
+const store=rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/ScanJournalStore.kt');
+const svc=rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt');
+const mod=rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanModule.kt');
+const ui=rd('frontend/app/add-playlist.tsx'), prof=rd('frontend/app/profile-select.tsx');
+r(/^17\.0\.(?:[7-9]|[1-9]\d+)$/.test(pkg.version)&&app.expo.version===pkg.version&&Number(app.expo.android.versionCode)>=170007,'v17.0.7+ sürüm zinciri');
+r(store.includes('AndroidKeyStore')&&store.includes('AES/GCM/NoPadding'),'journal credential/payload Keystore AES-GCM');
+r(store.includes('UNIQUE(run_id,result_key)')&&store.includes('addResult'),'bulunan sonuç anında kalıcı + idempotent');
+r(store.includes('committed_cursor')&&svc.includes('coerceAtLeast(0L)'),'kalıcı konservatif checkpoint');
+r(svc.includes('ACTION_RECOVER')&&mod.includes('recoverInterruptedScan'),'process restart recovery yolu');
+r(ui.includes('PROCESS_RESTARTED_RECOVERABLE')&&ui.includes('recoverInterruptedScan'),'UI recovery yeniden bağlama');
+r(!prof.includes('recent === "/add-playlist"'),'bayat add-playlist resume kaldırıldı');
+r(svc.includes('ScanJournalStore.get(applicationContext).addResult'),'single/bulk/unified result journal entegrasyonu');
+if(f){console.error(`❌ ${f} v17.0.7 gate hatası`);process.exit(1)} console.log('PASS: v17.0.7 scan journal / process resume contract TEMİZ');

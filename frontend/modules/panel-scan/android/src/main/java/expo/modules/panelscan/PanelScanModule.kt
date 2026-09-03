@@ -1,6 +1,9 @@
 package expo.modules.panelscan
 
 import android.content.Intent
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import java.util.UUID
 import java.io.File
 import org.json.JSONObject
@@ -136,8 +139,47 @@ class PanelScanModule : Module() {
     }
 
 
+    Function("getRecoverableScan") {
+      val context = appContext.reactContext ?: return@Function "{}"
+      val rec = ScanJournalStore.get(context).recoverable() ?: return@Function "{}"
+      rec.remove("payload")
+      rec.put("matches", ScanJournalStore.get(context).results(rec.optString("runId"), 200))
+      rec.toString()
+    }
+
+    AsyncFunction("recoverInterruptedScan") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val rec = ScanJournalStore.get(context).recoverable() ?: return@AsyncFunction false
+      val runId = rec.optString("runId")
+      val claim = PanelScanService.claimRun(context, rec.optString("mode"), runId)
+      if (!claim.first) return@AsyncFunction false
+      try {
+        ContextCompat.startForegroundService(context, Intent(context, PanelScanService::class.java).apply { action=PanelScanService.ACTION_RECOVER; putExtra("runId",runId) })
+        true
+      } catch (e:Throwable) { PanelScanService.releaseRun(runId); false }
+    }
+
     Function("getActiveRunId") {
       PanelScanService.activeRunId()
+    }
+
+    // v17.0.6: Uzun tarama öncesi Android güç yönetimi durumunu kullanıcıya
+    // şeffaf biçimde göstermek için salt-okunur durum. Muafiyet otomatik verilmez.
+    Function("getBatteryOptimizationStatus") {
+      val context = appContext.reactContext ?: return@Function mapOf("supported" to false, "ignoring" to false)
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return@Function mapOf("supported" to false, "ignoring" to true)
+      val pm = context.getSystemService(PowerManager::class.java)
+      mapOf("supported" to true, "ignoring" to (pm?.isIgnoringBatteryOptimizations(context.packageName) == true))
+    }
+
+    AsyncFunction("openBatteryOptimizationSettings") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return@AsyncFunction false
+      val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      context.startActivity(intent)
+      true
     }
 
     Function("getSnapshot") {
@@ -148,10 +190,13 @@ class PanelScanModule : Module() {
       val state = obj.optString("state", "")
       val transient = state in setOf("STARTING", "RUNNING", "PAUSED", "CANCELLING") || obj.optBoolean("running", false)
       if (transient && PanelScanService.activeRunId().isBlank()) {
+        ScanJournalStore.get(context).markInterrupted()
+        val recoverable = ScanJournalStore.get(context).recoverable()
         obj.put("running", false)
           .put("paused", false)
           .put("state", "FAILED")
-          .put("terminalReason", "PROCESS_RESTARTED")
+          .put("terminalReason", if (recoverable != null) "PROCESS_RESTARTED_RECOVERABLE" else "PROCESS_RESTARTED")
+          .put("recoverable", recoverable != null)
           .put("error", "Tarama işlemi uygulama süreci yeniden başladığı için yarıda kaldı. O ana kadar bulunan sonuçlar korunuyor.")
           .put("updatedAt", System.currentTimeMillis())
         prefs.edit().putString(PanelScanService.KEY_SNAPSHOT, obj.toString()).commit()

@@ -79,3 +79,32 @@ export async function getRecentResumePath(): Promise<string | null> {
   const p = normalizePath(snap.path);
   return p === "/" ? null : p;
 }
+
+
+const SCAN_RECOVERY_KEY = "kizilkan.scanRecovery.v17.0.6";
+
+export type ScanRecoveryIntent = {
+  path: "/add-playlist";
+  profileId: string;
+  runId?: string;
+  mode?: "single" | "bulk" | "unified";
+  updatedAt: number;
+};
+
+export async function setScanRecoveryIntent(value: Omit<ScanRecoveryIntent, "updatedAt">): Promise<void> {
+  await storage.setItem(SCAN_RECOVERY_KEY, JSON.stringify({ ...value, updatedAt: Date.now() }));
+}
+
+export async function getScanRecoveryIntent(): Promise<ScanRecoveryIntent | null> {
+  const raw = await storage.getItem<string>(SCAN_RECOVERY_KEY, "");
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.path !== "/add-playlist" || typeof parsed.profileId !== "string") return null;
+    return parsed as ScanRecoveryIntent;
+  } catch { return null; }
+}
+
+export async function clearScanRecoveryIntent(): Promise<void> {
+  await storage.removeItem(SCAN_RECOVERY_KEY);
+}

@@ -5,8 +5,9 @@ const pkg=JSON.parse(read('frontend/package.json')), app=JSON.parse(read('fronte
 const ui=read('frontend/app/add-playlist.tsx'), svc=read('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt');
 const mod=read('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanModule.kt');
 const arch=read('frontend/src/utils/accountArchive.ts'), bulk=read('frontend/src/utils/bulkAccounts.ts');
-ok('package v17.0.4',pkg.version==='17.0.4'); ok('Expo v17.0.4',app.expo.version==='17.0.4'); ok('versionCode 170004',app.expo.android.versionCode===170004);
-ok('release label',app.expo.extra.kizilkanReleaseLabel==='GPT ELITE v17.0.4 RC1');
+const semverNum=v=>v.split('.').map(Number).reduce((a,n)=>a*1000+n,0);
+ok('package v17.0.4+',semverNum(pkg.version)>=semverNum('17.0.4')); ok('Expo v17.0.4+',semverNum(app.expo.version)>=semverNum('17.0.4')); ok('versionCode 170004+',app.expo.android.versionCode>=170004);
+ok('release label v17.0.4+',/^GPT ELITE v17\.0\.[4-9][0-9]* RC1$/.test(app.expo.extra.kizilkanReleaseLabel));
 ok('unified 64-bit cursor',svc.includes('AtomicLong(0L)')&&svc.includes('LongArray(maxCandidates)')&&svc.includes('fun resolveWork(index: Long)'));
 ok('64-bit initial total bridge',mod.includes('initialTotal: Double')&&mod.includes('toLong().coerceAtLeast(0L)'));
 ok('ultra account status window',svc.includes('accountCount <= 2000')&&svc.includes('startIndex + 250'));

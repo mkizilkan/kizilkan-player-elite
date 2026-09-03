@@ -1,5 +1,5 @@
 /**
- * KIZILKAN PLAYER ELITE v17.0.4 — taşınabilir, insan-okunur hesap arşivi.
+ * KIZILKAN PLAYER ELITE v17.0.5 — taşınabilir, insan-okunur hesap arşivi.
  * Tam arşiv tekrar içe aktarılabilir; güvenli rapor credential alanlarını maskeler.
  */
 export type AccountArchiveRecord = {
@@ -27,7 +27,7 @@ function xtreamLink(server: string, username: string, password: string): string 
 export function buildKizilkanAccountArchive(records: AccountArchiveRecord[], safe = false): string {
   const stamp = new Date().toLocaleString("tr-TR");
   const lines: string[] = [
-    "KIZILKAN PLAYER ELITE — HESAP ARŞİVİ", "Sürüm                : 17.0.4", `Oluşturulma           : ${stamp}`,
+    "KIZILKAN PLAYER ELITE — HESAP ARŞİVİ", "Sürüm                : 17.0.5", `Oluşturulma           : ${stamp}`,
     `Kayıt Sayısı          : ${records.length}`, `Mod                   : ${safe ? "GÜVENLİ RAPOR (MASKELİ)" : "TAM ARŞİV / YENİDEN İÇE AKTARILABİLİR"}`, "",
   ];
   records.forEach((r, i) => {
