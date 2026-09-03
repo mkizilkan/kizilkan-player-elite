@@ -142,8 +142,40 @@ class PanelScanModule : Module() {
 
     Function("getSnapshot") {
       val context = appContext.reactContext ?: return@Function "{}"
-      context.getSharedPreferences(PanelScanService.PREFS, 0)
-        .getString(PanelScanService.KEY_SNAPSHOT, "{}") ?: "{}"
+      val prefs = context.getSharedPreferences(PanelScanService.PREFS, 0)
+      val raw = prefs.getString(PanelScanService.KEY_SNAPSHOT, "{}") ?: "{}"
+      val obj = try { org.json.JSONObject(raw) } catch (_: Throwable) { org.json.JSONObject() }
+      val state = obj.optString("state", "")
+      val transient = state in setOf("STARTING", "RUNNING", "PAUSED", "CANCELLING") || obj.optBoolean("running", false)
+      if (transient && PanelScanService.activeRunId().isBlank()) {
+        obj.put("running", false)
+          .put("paused", false)
+          .put("state", "FAILED")
+          .put("terminalReason", "PROCESS_RESTARTED")
+          .put("error", "Tarama işlemi uygulama süreci yeniden başladığı için yarıda kaldı. O ana kadar bulunan sonuçlar korunuyor.")
+          .put("updatedAt", System.currentTimeMillis())
+        prefs.edit().putString(PanelScanService.KEY_SNAPSHOT, obj.toString()).commit()
+        PanelScanService.recordExternalDiagnostic(context, org.json.JSONObject()
+          .put("runId", obj.optString("runId", ""))
+          .put("mode", obj.optString("mode", ""))
+          .put("state", "ORPHANED_AFTER_PROCESS_RESTART")
+          .put("tested", obj.optInt("tested", 0))
+          .put("total", obj.optInt("total", 0))
+          .put("found", obj.optInt("found", 0)))
+      }
+      obj.toString()
+    }
+
+    Function("acknowledgeSnapshot") { runId: String ->
+      val context = appContext.reactContext ?: return@Function false
+      if (PanelScanService.activeRunId().isNotBlank()) return@Function false
+      val prefs = context.getSharedPreferences(PanelScanService.PREFS, 0)
+      val raw = prefs.getString(PanelScanService.KEY_SNAPSHOT, "{}") ?: "{}"
+      val obj = try { org.json.JSONObject(raw) } catch (_: Throwable) { org.json.JSONObject() }
+      val storedRunId = obj.optString("runId", "")
+      val state = obj.optString("state", "")
+      if (runId.isBlank() || storedRunId != runId || state !in setOf("COMPLETED", "FAILED", "CANCELLED")) return@Function false
+      prefs.edit().remove(PanelScanService.KEY_SNAPSHOT).commit()
     }
 
     Function("getDiagnosticEvents") {

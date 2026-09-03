@@ -1238,7 +1238,7 @@ export default function SettingsTab() {
               <FocusButton
                 key={opt.v}
                 testID={`tvlayout-${opt.v}`}
-                autoFocus={opt.v === "classic"}
+                autoFocus={tvLayout === opt.v}
                 onPress={async () => {
                   await setTvLayout(opt.v);
                   setTvLayoutPicker(false);

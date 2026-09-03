@@ -907,7 +907,10 @@ export default function AddPlaylist() {
   const isActiveBulkCandidate = (c: BulkResolvedCandidate) => String(c.login?.user_info?.status || "").toLowerCase() === "active";
 
   const mergeBulkCandidates = React.useCallback((incoming: BulkResolvedCandidate[], reveal = true) => {
-    if (!incoming.length) return;
+    if (!incoming.length) {
+      if (reveal) setShowBulkCandidates(true);
+      return;
+    }
     setBulkCandidates(prev => {
       const map = new Map(prev.map(x => [x.key, x]));
       incoming.forEach(x => map.set(x.key, x));
@@ -927,7 +930,8 @@ export default function AddPlaylist() {
     const syncSnapshots = async () => {
       try {
         const scan = PanelScan.available ? PanelScan.getSnapshot() : {};
-        if ((scan.mode === "bulk" || scan.mode === "unified") && (scan.running || (scan.matches?.length || 0) > 0)) {
+        const scanTerminal = ["COMPLETED", "CANCELLED", "FAILED"].includes(String(scan.state || ""));
+        if ((scan.mode === "bulk" || scan.mode === "unified") && (scan.running || scanTerminal || (scan.matches?.length || 0) > 0)) {
           const saved = await storage.secureGet<string>(PENDING_BULK_SCAN_KEY, "");
           const accounts: BulkAccountInput[] = saved ? JSON.parse(saved) : [];
           if (!cancelled && accounts.length) {
@@ -938,13 +942,17 @@ export default function AddPlaylist() {
               const panelName=String(m.panelName||"") || hostName(server), code=String(m.code||"");
               resolved.push({ key:bulkCandidateKey(a.row,a.username,code,panelName,server), sourceRow:a.row, name:a.name||panelName, username:a.username, password:a.password, panelName, code, server, login:m.login, validatedHosts:[server], direct:!!a.server });
             }
-            const shouldReveal = !!scan.running || bulkNativeScanRef.current;
+            // v17.0.3: terminal sonuç kullanıcı onayı olmadan kaybolmaz.
+            // COMPLETED/CANCELLED/FAILED snapshot Activity/process restore sonrası tekrar görünür.
+            const terminalState = ["COMPLETED", "CANCELLED", "FAILED"].includes(String(scan.state || ""));
+            const shouldReveal = !!scan.running || terminalState || bulkNativeScanRef.current || resolved.length > 0;
             mergeBulkCandidates(resolved, shouldReveal);
+            if (Array.isArray(scan.accountStatuses)) setBulkAccountProgress(scan.accountStatuses);
             setBulkScanPaused(!!scan.paused); setBulkScanFinished(!scan.running); bulkNativeScanRef.current=!!scan.running;
             if (scan.running && scan.runId) bulkScanRunIdRef.current = String(scan.runId);
             else if (!scan.running && bulkScanRunIdRef.current === scan.runId) bulkScanRunIdRef.current = "";
-            if (!scan.running) await storage.secureRemove(PENDING_BULK_SCAN_KEY);
             if (!bulkAdding) setLoading(!!scan.running);
+            if (scan.error) setError(String(scan.error));
             setProgress(scan.running ? `Native tarama geri yüklendi · ${Number(scan.tested||0)}/${Number(scan.total||0)} · ${Number(scan.found||0)} bulundu` : `Tarama sonucu geri yüklendi · ${Number(scan.found||0)} bulundu`);
           }
         }
@@ -1147,7 +1155,8 @@ export default function AddPlaylist() {
       setBulkScanPaused(!!snap.paused);
       setProgress(`${cfg.label} · NATIVE · %${pct}\nHesap ${completed}/${accounts.length} · Adres ${tested}/${total} · Kalan ${Math.max(0,total-tested)} · Bulunan ${raw.length}${snap.panelName?`\nŞu an: ${snap.panelName}${snap.currentServer ? ` · ${snap.currentServer}` : ""}`:""}\nGeçen: ${formatScanDuration(Date.now()-createdAt)} · Tahmini kalan: ${scanEta(createdAt,tested,total)}${snap.paused?"\nDURAKLATILDI":snap.state==="CANCELLING"?"\nDURDURULUYOR — aktif ağ istekleri kapatılıyor":""}`);
       if (!snap.running) {
-        await storage.secureRemove(PENDING_BULK_SCAN_KEY);
+        // v17.0.3: terminal scan snapshot + account map kullanıcı açıkça kapatana/ekleyene kadar korunur.
+        // Activity/process yeniden oluşsa bile bulunan sonuçlar tekrar hydrate edilir.
         bulkNativeScanRef.current = false;
         if (bulkScanRunIdRef.current === runId) bulkScanRunIdRef.current = "";
         return { found:raw.length, completed, cancelled:!!snap.cancelled };
@@ -1248,6 +1257,14 @@ export default function AddPlaylist() {
     }
   };
 
+  const acknowledgeBulkScanResult = React.useCallback(async () => {
+    try {
+      const scan = PanelScan.available ? PanelScan.getSnapshot() : {};
+      if (scan.runId && !scan.running) PanelScan.acknowledgeSnapshot(String(scan.runId));
+      await storage.secureRemove(PENDING_BULK_SCAN_KEY);
+    } catch (e) { console.warn("[v17.0.3 bulk-scan-ack]", e); }
+  }, []);
+
   const addSelectedBulkCandidates = async () => {
     const selectedRaw = bulkCandidates.filter(c => selectedBulkCandidateKeys.includes(c.key));
     if (!selectedRaw.length) return;
@@ -1346,7 +1363,7 @@ export default function AddPlaylist() {
       } finally {
         bulkImportOwnedByScreenRef.current = false;
         setBulkAdding(false); setLoading(false); setProgress(""); setBulkImportPaused(false);
-        if (ok > 0) { setShowBulkCandidates(false); setBulkCandidates([]); setSelectedBulkCandidateKeys([]); }
+        if (ok > 0) { await acknowledgeBulkScanResult(); setShowBulkCandidates(false); setBulkCandidates([]); setSelectedBulkCandidateKeys([]); }
       }
       return;
     }
@@ -1369,7 +1386,7 @@ export default function AddPlaylist() {
       if (ok > 0) router.replace("/(tabs)");
     } finally {
       setBulkAdding(false); setLoading(false); setProgress("");
-      if (ok > 0) { setShowBulkCandidates(false); setBulkCandidates([]); setSelectedBulkCandidateKeys([]); }
+      if (ok > 0) { await acknowledgeBulkScanResult(); setShowBulkCandidates(false); setBulkCandidates([]); setSelectedBulkCandidateKeys([]); }
     }
   };
 
@@ -2341,7 +2358,7 @@ export default function AddPlaylist() {
           visible={showBulkCandidates}
           transparent
           animationType="fade"
-          onRequestClose={() => { if (!bulkAdding && bulkScanFinished) setShowBulkCandidates(false); }}
+          onRequestClose={() => { if (!bulkAdding && bulkScanFinished) { void acknowledgeBulkScanResult(); setShowBulkCandidates(false); } }}
         >
           <View style={styles.matchModalBackdrop}>
             <View style={[styles.matchModalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -2353,8 +2370,11 @@ export default function AddPlaylist() {
                       ? `${bulkCandidates.length} kimlik doğrulaması başarılı panel/DNS adayı bulundu. Eklemek istediklerinizi seçin.`
                       : `Tarama sürüyor. Bulunan sonuçlar canlı ekleniyor; seçimleriniz korunur.`}
                   </Text>
+                  <Text style={{ color: bulkCandidates.length > 0 ? colors.brandPrimary : colors.onSurfaceSecondary, marginTop: 5, fontWeight: FONT.weight.bold }}>
+                    Bulunan {bulkCandidates.length}
+                  </Text>
                 </View>
-                <FocusButton focusable disabled={bulkAdding || !bulkScanFinished} onPress={() => { if (bulkScanFinished) setShowBulkCandidates(false); }} style={[styles.matchCloseBtn, { opacity: bulkScanFinished ? 1 : 0.35 }]}>
+                <FocusButton focusable disabled={bulkAdding || !bulkScanFinished} onPress={() => { if (bulkScanFinished) { void acknowledgeBulkScanResult(); setShowBulkCandidates(false); } }} style={[styles.matchCloseBtn, { opacity: bulkScanFinished ? 1 : 0.35 }]}>
                   <Ionicons name="close" size={24} color={colors.onSurface} />
                 </FocusButton>
               </View>
@@ -2366,7 +2386,7 @@ export default function AddPlaylist() {
                 </View>
               )}
 
-              {bulkAccountProgress.length > 0 && !bulkScanFinished && (
+              {bulkAccountProgress.length > 0 && (
                 <View style={{ gap: 6, marginBottom: SPACING.sm }}>
                   {bulkAccountProgress.map((a) => {
                     const pct = a.total ? Math.round((a.tested / a.total) * 100) : 0;
@@ -2378,7 +2398,7 @@ export default function AddPlaylist() {
                           <Text style={{ color: a.state === "completed" ? colors.success : colors.brandPrimary, fontWeight: FONT.weight.bold }}>{a.state === "completed" ? "✓" : `${pct}%`}</Text>
                         </View>
                         <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, marginTop: 3 }}>
-                          Adres {a.tested}/{a.total} · Kalan {a.remaining} · Bulunan {a.found} · {a.state === "completed" ? "Tamamlandı" : a.state === "running" ? "Analiz ediliyor" : "Bekliyor"}
+                          Adres {a.tested}/{a.total} · Kalan {a.remaining} · Bulunan <Text style={{ color: a.found > 0 ? colors.brandPrimary : colors.onSurfaceSecondary, fontWeight: a.found > 0 ? FONT.weight.bold : FONT.weight.regular }}>{a.found}</Text> · {a.state === "completed" ? "Tamamlandı" : a.state === "running" ? "Analiz ediliyor" : "Bekliyor"}
                         </Text>
                       </View>
                     );

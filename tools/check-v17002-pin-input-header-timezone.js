@@ -5,9 +5,9 @@ const R=path.resolve(__dirname,'..'); const read=p=>fs.readFileSync(path.join(R,
 const ok=(c,m)=>{console.log(`${c?'PASS':'FAIL'}: ${m}`);if(!c)bad++;};
 const pkg=JSON.parse(read('frontend/package.json')),app=JSON.parse(read('frontend/app.json'));
 const [M,m,p]=pkg.version.split('.').map(Number), expected=M*10000+m*100+p;
-ok(pkg.version==='17.0.2','frontend/package.json is v17.0.2');
+ok(expected>=170002,'frontend/package.json preserves v17.0.2+ contract');
 ok(app.expo.version===pkg.version&&app.expo.ios.buildNumber===pkg.version,'Expo/iOS metadata synchronized');
-ok(app.expo.android.versionCode===170002&&app.expo.android.versionCode===expected,'Android versionCode is 170002 and formula-consistent');
+ok(app.expo.android.versionCode===expected&&expected>=170002,'Android versionCode is formula-consistent and v17.0.2+');
 ok(String(app.expo.extra?.kizilkanReleaseLabel||'').includes(`v${pkg.version} RC1`),'release label synchronized');
 
 const plugin=read('frontend/plugins/withTvRemoteKeys.js');

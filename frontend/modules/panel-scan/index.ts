@@ -11,7 +11,7 @@ type NativeSnapshot = {
   runId?: string; state?: "STARTING" | "RUNNING" | "PAUSED" | "CANCELLING" | "COMPLETED" | "FAILED" | "CANCELLED"; createdAt?: number; updatedAt?: number;
   mode?: "single" | "bulk" | "unified"; running?: boolean; cancelled?: boolean; paused?: boolean;
   tested?: number; total?: number; accountTested?: number; accountTotal?: number; accountIndex?: number;
-  panelTested?: number; panelTotal?: number; found?: number; panelName?: string; currentServer?: string; error?: string; matches?: any[];
+  panelTested?: number; panelTotal?: number; found?: number; panelName?: string; currentServer?: string; error?: string; terminalReason?: string; matches?: any[];
   accountStatuses?: Array<{ accountIndex:number; sourceRow?:number; name?:string; state:string; tested:number; total:number; remaining:number; found:number }>;
 };
 
@@ -60,6 +60,7 @@ export const PanelScan = {
   resumeScan: async (runId: string) => native && runId ? native.resumeScan(runId) : false,
   getActiveRunId: (): string => native ? String(native.getActiveRunId?.() || "") : "",
   getSnapshot: (): NativeSnapshot => { if (!native) return {}; try { return JSON.parse(native.getSnapshot() || "{}"); } catch { return {}; } },
+  acknowledgeSnapshot: (runId: string): boolean => native && runId ? !!native.acknowledgeSnapshot?.(runId) : false,
   getDiagnosticEvents: (): any[] => { if (!native) return []; try { const v = JSON.parse(native.getDiagnosticEvents?.() || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } },
   getLastCrash: (): any => { if (!native) return {}; try { return JSON.parse(native.getLastCrash?.() || "{}"); } catch { return {}; } },
   clearDiagnostics: (): boolean => native ? !!native.clearDiagnostics?.() : false,

@@ -56,6 +56,7 @@ import { savePlayerNavigationScope } from "@/src/player/navigationScope";
 import { normalize } from "@/src/utils/fuzzy";
 import { KizilkanNativeCore, type NativePlaylistSummary } from "@/modules/kizilkan-native-core";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
+import { TvFocusScope } from "@/src/store/TvFocusMemoryContext";
 
 /**
  * TVFocusGuideView (v9.12.0) — yalnızca react-native-tvos fork'unda vardır.
@@ -470,6 +471,7 @@ export function TvHomeContent() {
   }
 
   return (
+    <TvFocusScope scope="tv-home">
     <SafeAreaView style={[styles.root, { backgroundColor: colors.surface }]} testID="tv-home">
       {/* ÜST ŞERİT: sekmeler + liste adı + araçlar */}
       <View style={[styles.topBar, { borderBottomColor: colors.border }]}>
@@ -480,7 +482,7 @@ export function TvHomeContent() {
         <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm }} numberOfLines={1}>
           {activePlaylist?.name || "—"}
         </Text>
-        <FocusButton testID="tvh-settings" onPress={() => router.push("/(tabs)/settings")} focusRadius={20} style={styles.iconBtn}>
+        <FocusButton testID="tvh-settings" focusKey="tv-home:settings" onPress={() => router.push("/(tabs)/settings")} focusRadius={20} style={styles.iconBtn}>
           <Ionicons name="settings-outline" size={20} color={colors.onSurface} />
         </FocusButton>
       </View>
@@ -495,7 +497,7 @@ export function TvHomeContent() {
                 <FocusButton
                   key={sec.key}
                   testID={`tvh-sec-${sec.key}`}
-                  autoFocus={sec.key === "live"}
+                  focusKey={`tv-home:section:${sec.key}`}
                   onPress={() => { setTab(sec.key); setSelectedCat(ALL); setHighlighted(null); haptic.soft(); }}
                   focusRadius={RADIUS.sm}
                   style={[
@@ -618,6 +620,7 @@ export function TvHomeContent() {
               renderItem={({ item }) => (
                 <FocusButton
                   testID={`tvh-vod-${item.id}`}
+                  focusKey={`tv-home:${tab}:${item.id}`}
                   onPress={() => openItem(item)}
                   onFocus={() => setHighlighted((p: any) => (p?.id === item.id ? p : item))}
                   focusRadius={RADIUS.sm}
@@ -733,6 +736,7 @@ export function TvHomeContent() {
         </View>
       </FocusGuide>
     </SafeAreaView>
+    </TvFocusScope>
   );
 }
 
@@ -753,6 +757,7 @@ function SideRow({
   return (
     <FocusButton
       testID={`tvh-side-${label}`}
+      focusKey={item.kind === "playlist" ? `tv-home:playlist:${item.id}` : `tv-home:category:${item.playlistId}:${item.name}`}
       onPress={onPress}
       onFocus={() => { onFocus(); onFocusItem(); }}
       onBlur={onBlur}
@@ -799,6 +804,7 @@ function ChanRow({
   return (
     <FocusButton
       testID={`tvh-chan-${item.id}`}
+      focusKey={`tv-home:live:${item.id}`}
       onPress={onPress}
       onFocus={() => { onFocus(); onFocusItem(); }}
       onBlur={onBlur}
@@ -852,17 +858,20 @@ function LivePreview({
   const [url, setUrl] = useState<string | null>(null);
   const debRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aliveRef = useRef(true);
+  const resolveGenerationRef = useRef(0);
 
   useEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
+      resolveGenerationRef.current += 1;
       if (debRef.current) clearTimeout(debRef.current);
     };
   }, []);
 
   useEffect(() => {
     if (debRef.current) clearTimeout(debRef.current);
+    const generation = ++resolveGenerationRef.current;
     // Ekran odakta değilse (player üstte) önizleme OYNAMAZ — çift ses/yüzey
     // çakışmasını önler.
     if (!active) { setUrl(null); return; }
@@ -875,15 +884,16 @@ function LivePreview({
           const { stalkerResolveStream, stalkerCredsFromPlaylist } = await import("@/src/utils/stalker");
           const cred = stalkerCredsFromPlaylist(playlist);
           const { url: resolved } = await stalkerResolveStream(cred, null, String(channel.url));
-          if (aliveRef.current) setUrl(resolved);
+          if (aliveRef.current && resolveGenerationRef.current === generation) setUrl(resolved);
         } else {
-          if (aliveRef.current) setUrl(String(channel.url));
+          if (aliveRef.current && resolveGenerationRef.current === generation) setUrl(String(channel.url));
         }
-      } catch {
-        if (aliveRef.current) setUrl(null);
+      } catch (error) {
+        if (aliveRef.current && resolveGenerationRef.current === generation) setUrl(null);
+        void recordDiagnostic("player", "TV_PREVIEW_RESOLVE_FAILED", { channelId: String(channel?.id || ""), playlistId: String(playlist?.id || ""), error: String((error as any)?.message || error) }, { stage: "tvPreviewResolve", outcome: "failed" });
       }
     }, 600);
-    return () => { if (debRef.current) clearTimeout(debRef.current); };
+    return () => { resolveGenerationRef.current += 1; if (debRef.current) clearTimeout(debRef.current); };
   }, [channel?.id, channel?.url, playlist?.id, playlist?.source, active]);
 
   const player = useVideoPlayer(url ?? null, (p) => { p.loop = false; p.play(); });

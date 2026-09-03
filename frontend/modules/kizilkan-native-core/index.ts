@@ -22,6 +22,8 @@ export type NativeIncrementalSyncResult = {
   repairedKinds?: Array<"live" | "vod" | "series">;
   fingerprints: { live?: string; vod?: string; series?: string };
   roomVerified: boolean;
+  snapshotRecovered?: boolean;
+  snapshotRecoveryState?: string;
   elapsedMs?: number;
 };
 

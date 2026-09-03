@@ -89,6 +89,28 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     initializeMpv()
   }
 
+  private fun throwableChain(t: Throwable): List<String> {
+    val out = mutableListOf<String>()
+    val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+    var cur: Throwable? = t
+    while (cur != null && out.size < 8 && seen.add(cur)) {
+      out += "${cur.javaClass.name}: ${cur.message.orEmpty()}".take(420)
+      cur = cur.cause
+    }
+    return out
+  }
+
+  private fun emitThrowable(stage: String, error: Throwable, fatal: Boolean) {
+    Log.e(TAG, "#$instanceId $stage", error)
+    emitDiagnostic("NATIVE_THROWABLE", mapOf(
+      "stage" to stage,
+      "fatal" to fatal,
+      "errorClass" to error.javaClass.name,
+      "message" to error.message.orEmpty().take(420),
+      "causeChain" to throwableChain(error),
+    ))
+  }
+
   private fun initializeMpv() {
     if (initialized || destroyed.get()) return
     try {
@@ -97,8 +119,10 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
 
       // libmpv-android 1.0.0 breaking change: her native view kendi MPVLib
       // instance'ına sahiptir. Global/static player state artık kullanılmaz.
+      emitDiagnostic("MPV_CREATE_BEGIN")
       val player = MPVLib.create(context) ?: throw IllegalStateException("MPVLib.create null döndürdü")
       mpv = player
+      emitDiagnostic("MPV_CREATE_OK")
       player.setOptionString("config", "no")
       player.setOptionString("config-dir", configDir.absolutePath)
       player.setOptionString("gpu-shader-cache-dir", cacheDir.absolutePath)
@@ -117,7 +141,9 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
       player.setOptionString("cache", "yes")
       player.setOptionString("cache-pause", "yes")
 
+      emitDiagnostic("MPV_INIT_BEGIN")
       player.init()
+      emitDiagnostic("MPV_INIT_OK")
       player.setOptionString("force-window", "no")
       player.setOptionString("idle", "yes")
       player.addObserver(this)
@@ -134,6 +160,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
       initialized = true
       emitDiagnostic("NATIVE_CREATE", mapOf("libmpv" to "1.0.0"))
     } catch (e: Throwable) {
+      emitThrowable("INITIALIZE_MPV", e, true)
       emitError("MPV başlatılamadı: ${e.message ?: e.javaClass.simpleName}")
     }
   }
@@ -154,12 +181,13 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
         }
       }
     } catch (e: Throwable) {
+      emitThrowable("SURFACE_ATTACH", e, true)
       emitError("MPV video yüzeyi bağlanamadı: ${e.message ?: e.javaClass.simpleName}")
     }
   }
 
   override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-    try { if (initialized) mpv?.setPropertyString("android-surface-size", "${width}x$height") } catch (_: Throwable) {}
+    try { if (initialized) mpv?.setPropertyString("android-surface-size", "${width}x$height") } catch (e: Throwable) { emitThrowable("SURFACE_RESIZE", e, false) }
   }
 
   override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -172,7 +200,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
         mpv?.detachSurface()
         emitDiagnostic("SURFACE_DETACH")
       }
-    } catch (_: Throwable) {}
+    } catch (e: Throwable) { emitThrowable("SURFACE_DETACH", e, false) }
   }
 
   fun setSource(source: Map<String, Any?>?) {
@@ -232,6 +260,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
       mpv?.setPropertyBoolean("pause", false)
       post { onLoad(mapOf("url" to url)) }
     } catch (e: Throwable) {
+      emitThrowable("LOAD_SOURCE", e, true)
       emitError("MPV kaynak yüklenemedi: ${e.message ?: e.javaClass.simpleName}")
     }
   }
@@ -430,13 +459,17 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   private fun cleanup() {
     if (!destroyed.compareAndSet(false, true)) return
     emitDiagnostic("NATIVE_DESTROY_BEGIN")
-    try { surfaceView.holder.removeCallback(this) } catch (_: Throwable) {}
     val player = mpv
-    try { if (initialized) player?.command(arrayOf("stop")) } catch (_: Throwable) {}
-    try { if (initialized && surfaceReady) player?.detachSurface() } catch (_: Throwable) {}
-    try { if (initialized) player?.removeObserver(this) } catch (_: Throwable) {}
-    try { if (initialized) player?.removeLogObserver(this) } catch (_: Throwable) {}
-    try { player?.destroy() } catch (_: Throwable) {}
+    fun cleanupStage(stage: String, block: () -> Unit) {
+      try { block(); emitDiagnostic("CLEANUP_STAGE_OK", mapOf("stage" to stage)) }
+      catch (e: Throwable) { emitThrowable(stage, e, false) }
+    }
+    cleanupStage("REMOVE_SURFACE_CALLBACK") { surfaceView.holder.removeCallback(this) }
+    cleanupStage("STOP_ON_DESTROY") { if (initialized) player?.command(arrayOf("stop")) }
+    cleanupStage("SURFACE_DETACH_ON_DESTROY") { if (initialized && surfaceReady) player?.detachSurface() }
+    cleanupStage("REMOVE_EVENT_OBSERVER") { if (initialized) player?.removeObserver(this) }
+    cleanupStage("REMOVE_LOG_OBSERVER") { if (initialized) player?.removeLogObserver(this) }
+    cleanupStage("MPV_DESTROY") { player?.destroy() }
     mpv = null
     surfaceReady = false
     initialized = false

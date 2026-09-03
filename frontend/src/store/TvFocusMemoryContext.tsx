@@ -18,7 +18,7 @@ type TvFocusMemoryValue = {
   scope: string;
   remember: (scope: string, key: string) => void;
   rememberedKey: (scope: string) => string | null;
-  requestRestore: (scope?: string) => void;
+  requestRestore: (scope?: string, key?: string) => void;
   restoreRequest: RestoreRequest;
   routeScope: string;
 };
@@ -42,11 +42,12 @@ export function TvFocusMemoryProvider({ children }: { children: React.ReactNode 
 
   const rememberedKey = useCallback((scope: string) => rememberedRef.current.get(scope) || null, []);
 
-  const requestRestore = useCallback((requestedScope?: string) => {
+  const requestRestore = useCallback((requestedScope?: string, requestedKey?: string) => {
     if (!isTv) return;
     const scope = requestedScope || routeScope;
-    const key = rememberedRef.current.get(scope);
+    const key = requestedKey || rememberedRef.current.get(scope);
     if (!key) return;
+    if (requestedKey) rememberedRef.current.set(scope, requestedKey);
     const nonce = ++restoreNonceRef.current;
     setRestoreRequest({ scope, key, nonce });
     if (clearTimerRef.current) clearTimeout(clearTimerRef.current);
@@ -88,7 +89,7 @@ export function useTvFocusMemory(explicitScope?: string) {
     };
   }, [ctx, scope]);
 
-  const requestRestore = useCallback((targetScope?: string) => { ctx?.requestRestore(targetScope || scope); }, [ctx, scope]);
+  const requestRestore = useCallback((targetScope?: string, targetKey?: string) => { ctx?.requestRestore(targetScope || scope, targetKey); }, [ctx, scope]);
   const requestRouteRestore = useCallback(() => { if (ctx) ctx.requestRestore(ctx.routeScope); }, [ctx]);
 
   return {

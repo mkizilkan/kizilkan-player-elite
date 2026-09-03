@@ -225,14 +225,41 @@ class KizilkanNativeCoreModule : Module() {
       if (arrays.isEmpty()) throw IllegalStateException("Incremental sync payload boş: $id")
       val db = database()
       val dao = db.mediaDao()
-      val before = db.snapshotDao().get(id) ?: throw IllegalStateException("Room snapshot bulunamadı: $id")
+      var snapshotRecovered = false
+      var snapshotRecoveryState = "SNAPSHOT_READY"
+      var before = db.snapshotDao().get(id)
+      if (before == null) {
+        val liveRows = dao.count(id, "live")
+        val vodRows = dao.count(id, "vod")
+        val seriesRows = dao.count(id, "series")
+        val hasRows = liveRows + vodRows + seriesRows > 0
+        val fullPayload = kinds.all { arrays.containsKey(it) }
+        if (hasRows) {
+          before = PlaylistSnapshotEntity(id, 0L, 0L, liveRows, vodRows, seriesRows, System.currentTimeMillis(), 0L)
+          db.snapshotDao().put(before!!)
+          snapshotRecovered = true
+          snapshotRecoveryState = "SNAPSHOT_REBUILT_FROM_ROWS"
+        } else if (fullPayload) {
+          before = PlaylistSnapshotEntity(id, 0L, 0L, 0, 0, 0, System.currentTimeMillis(), 0L)
+          db.snapshotDao().put(before!!)
+          snapshotRecovered = true
+          snapshotRecoveryState = "SNAPSHOT_BOOTSTRAP_EMPTY_FULL_PAYLOAD"
+        } else {
+          snapshotRecoveryState = "SNAPSHOT_MISSING_EMPTY_PARTIAL"
+          throw IllegalStateException("Room snapshot bulunamadı ve partial payload ile güvenli onarım mümkün değil: $id")
+        }
+      }
+      val verifiedBefore = before!!
+      if (dao.count(id, "live") != verifiedBefore.channelsCount || dao.count(id, "vod") != verifiedBefore.vodCount || dao.count(id, "series") != verifiedBefore.seriesCount) {
+        throw IllegalStateException("Room snapshot recovery verify başarısız: $id")
+      }
       val changed = mutableListOf<String>()
       val skipped = mutableListOf<String>()
       val repaired = mutableListOf<String>()
       fun snapshotCount(kind: String): Int = when (kind) {
-        "live" -> before.channelsCount
-        "vod" -> before.vodCount
-        "series" -> before.seriesCount
+        "live" -> verifiedBefore.channelsCount
+        "vod" -> verifiedBefore.vodCount
+        "series" -> verifiedBefore.seriesCount
         else -> -1
       }
       // v16.14.3 — fingerprint tek başına skip yetkisi VERMEZ. Metadata aynı olsa
@@ -261,10 +288,10 @@ class KizilkanNativeCoreModule : Module() {
             dao.deleteKind(id, kind)
             insertCollection(dao, id, kind, arr)
           }
-          val liveCount = arrays["live"]?.let { if ("live" in changed) it.length() else before.channelsCount } ?: before.channelsCount
-          val vodCount = arrays["vod"]?.let { if ("vod" in changed) it.length() else before.vodCount } ?: before.vodCount
-          val seriesCount = arrays["series"]?.let { if ("series" in changed) it.length() else before.seriesCount } ?: before.seriesCount
-          db.snapshotDao().put(before.copy(
+          val liveCount = arrays["live"]?.let { if ("live" in changed) it.length() else verifiedBefore.channelsCount } ?: verifiedBefore.channelsCount
+          val vodCount = arrays["vod"]?.let { if ("vod" in changed) it.length() else verifiedBefore.vodCount } ?: verifiedBefore.vodCount
+          val seriesCount = arrays["series"]?.let { if ("series" in changed) it.length() else verifiedBefore.seriesCount } ?: verifiedBefore.seriesCount
+          db.snapshotDao().put(verifiedBefore.copy(
             sourceStamp = 0L, sourceSize = 0L,
             channelsCount = liveCount, vodCount = vodCount, seriesCount = seriesCount,
             importedAtEpochMs = System.currentTimeMillis(),
@@ -306,6 +333,8 @@ class KizilkanNativeCoreModule : Module() {
         "changedKinds" to changed.joinToString(","),
         "skippedKinds" to skipped.joinToString(","),
         "repairedKinds" to repaired.joinToString(","),
+        "snapshotRecovered" to snapshotRecovered,
+        "snapshotRecoveryState" to snapshotRecoveryState,
         "syncMs" to (SystemClock.elapsedRealtime() - started),
         "channels" to snapshot.channelsCount, "vod" to snapshot.vodCount, "series" to snapshot.seriesCount,
       ))
@@ -316,6 +345,8 @@ class KizilkanNativeCoreModule : Module() {
         "repairedKinds" to repaired,
         "fingerprints" to outFp,
         "roomVerified" to true,
+        "snapshotRecovered" to snapshotRecovered,
+        "snapshotRecoveryState" to snapshotRecoveryState,
         "elapsedMs" to (SystemClock.elapsedRealtime() - started),
       )
     }
@@ -330,12 +361,27 @@ class KizilkanNativeCoreModule : Module() {
       val arr = JSONTokener(jsonArray).nextValue() as? JSONArray
         ?: throw IllegalStateException("Playlist kind JSON array değil: $id/$kind")
       val db = database()
+      val daoBefore = db.mediaDao()
+      var baseSnapshot = db.snapshotDao().get(id)
+      if (baseSnapshot == null) {
+        val liveRows = daoBefore.count(id, "live")
+        val vodRows = daoBefore.count(id, "vod")
+        val seriesRows = daoBefore.count(id, "series")
+        if (liveRows + vodRows + seriesRows <= 0) {
+          throw IllegalStateException("Room snapshot bulunamadı; boş canonical store üzerinde partial replace fail-closed: $id/$kind")
+        }
+        baseSnapshot = PlaylistSnapshotEntity(id, 0L, 0L, liveRows, vodRows, seriesRows, System.currentTimeMillis(), 0L)
+        db.snapshotDao().put(baseSnapshot!!)
+      }
+      val verifiedBase = baseSnapshot!!
+      if (daoBefore.count(id, "live") != verifiedBase.channelsCount || daoBefore.count(id, "vod") != verifiedBase.vodCount || daoBefore.count(id, "series") != verifiedBase.seriesCount) {
+        throw IllegalStateException("Room snapshot partial recovery verify başarısız: $id")
+      }
       db.runInTransaction {
         val dao = db.mediaDao()
         dao.deleteKind(id, kind)
         insertCollection(dao, id, kind, arr)
-        val old = db.snapshotDao().get(id)
-          ?: throw IllegalStateException("Room snapshot bulunamadı: $id")
+        val old = db.snapshotDao().get(id) ?: verifiedBase
         val liveCount = if (kind == "live") arr.length() else old.channelsCount
         val vodCount = if (kind == "vod") arr.length() else old.vodCount
         val seriesCount = if (kind == "series") arr.length() else old.seriesCount

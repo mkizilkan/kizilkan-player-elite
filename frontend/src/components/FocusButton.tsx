@@ -36,7 +36,7 @@ export interface FocusButtonProps extends TouchableOpacityProps {
   focusScope?: string;
 }
 
-export function FocusButton({
+export const FocusButton = React.forwardRef<React.ElementRef<typeof TouchableOpacity>, FocusButtonProps>(function FocusButton({
   style,
   children,
   focusRadius = 12,
@@ -48,7 +48,7 @@ export function FocusButton({
   onFocus,
   onBlur,
   ...rest
-}: FocusButtonProps) {
+}: FocusButtonProps, ref) {
   const { colors } = useTheme();
   const { isFocused, onFocus: markFocused, onBlur: markBlurred } = useTVFocus();
   const focusMemory = useTvFocusMemory(focusScope);
@@ -57,6 +57,7 @@ export function FocusButton({
 
   return (
     <TouchableOpacity
+      ref={ref}
       {...rest}
       // v9.20.0: Caller focusable={false} diyorsa artık zorla true yapılmaz.
       focusable={focusable}
@@ -70,6 +71,8 @@ export function FocusButton({
       {children}
     </TouchableOpacity>
   );
-}
+});
+
+FocusButton.displayName = "FocusButton";
 
 export default FocusButton;

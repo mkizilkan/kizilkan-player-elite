@@ -587,7 +587,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         }));
         loadedHeavy.current.delete(id);
         void recordDiagnostic('database', 'CATALOG_INCREMENTAL_SYNC_V2', {
-          playlistId: id, changedKinds: sync.changedKinds, skippedKinds: sync.skippedKinds, repairedKinds: sync.repairedKinds || [], elapsedMs: sync.elapsedMs || 0,
+          playlistId: id, changedKinds: sync.changedKinds, skippedKinds: sync.skippedKinds, repairedKinds: sync.repairedKinds || [], snapshotRecovered: !!sync.snapshotRecovered, snapshotRecoveryState: sync.snapshotRecoveryState || "SNAPSHOT_READY", elapsedMs: sync.elapsedMs || 0,
           clientSnapshotDiff: true, serverDelta: false, skipVerifiedAgainstRoom: true,
         });
       } else {
@@ -675,7 +675,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
             ...(sync.fingerprints.live ? { liveFingerprint: sync.fingerprints.live } : {}),
             ...(sync.fingerprints.vod ? { vodFingerprint: sync.fingerprints.vod } : {}),
             ...(sync.fingerprints.series ? { seriesFingerprint: sync.fingerprints.series } : {}),
-            lastChangedKinds: sync.changedKinds, lastSkippedKinds: sync.skippedKinds, lastRepairedKinds: sync.repairedKinds || [], roomVerified: true, updatedAt: new Date().toISOString(),
+            lastChangedKinds: sync.changedKinds, lastSkippedKinds: sync.skippedKinds, lastRepairedKinds: sync.repairedKinds || [], snapshotRecovered: !!sync.snapshotRecovered, snapshotRecoveryState: sync.snapshotRecoveryState || "SNAPSHOT_READY", roomVerified: true, updatedAt: new Date().toISOString(),
           },
         } as Playlist) : pl);
         playlistsRef.current = next;

@@ -76,6 +76,7 @@ import { useRemoteKeys } from "@/src/hooks/useRemoteKeys";
 import { TvFocusScope, useTvFocusMemory } from "@/src/store/TvFocusMemoryContext";
 import { testStream, DEFAULT_USER_AGENT } from "@/src/utils/streamTest";
 import { loadOverrides, type OverrideMap } from "@/src/utils/overrides";
+import { getNowNext } from "@/src/utils/epg";
 import { BackHandler } from "react-native";
 import { VLCPlayer as VLCPlayerLib, VLC_AVAILABLE } from "@/src/native/vlc";
 import { KizilkanMpvView, KIZILKAN_MPV_AVAILABLE, getKizilkanMpvRuntimeStatus, type KizilkanMpvHandle } from "@/modules/mpv-player";
@@ -87,7 +88,7 @@ const PLAYER_SERIES_NAV_KEY = "kizilkan.player.seriesNav.";
 const FocusGuide: any = (require("react-native") as any).TVFocusGuideView || View;
 type Fit = "contain" | "cover" | "fill";
 // v15.0.1 BUILD FIX: kayıt hedefi UI zaten mevcut; union gerçek ekran durumunu eksiksiz kapsar.
-type SheetType = "sleep" | "audio" | "subtitle" | "speed" | "stats" | "buffer" | "engine" | "audiodelay" | "jump" | "recordTarget" | null;
+type SheetType = "sleep" | "audio" | "subtitle" | "speed" | "stats" | "buffer" | "engine" | "audiodelay" | "jump" | "recordTarget" | "guide" | null;
 
 /** Ağ tamponu seçenekleri (ms). Yüksek = daha az takılma, daha geç açılış. */
 /**
@@ -195,7 +196,7 @@ export default function PlayerHost() {
   const { width: screenW } = useWindowDimensions();
   const { colors } = useTheme();
   const { source, visible, closePlayer, switchChannel, switchContent } = usePlayer();
-  const { requestRouteRestore } = useTvFocusMemory("player");
+  const { requestRestore, requestRouteRestore } = useTvFocusMemory("player");
   const wasVisibleRef = useRef(false);
   const params = (source ?? { id: "", ext: undefined, kind: "live" }) as {
     id: string;
@@ -212,11 +213,17 @@ export default function PlayerHost() {
     const previous = wasVisibleRef.current;
     wasVisibleRef.current = visible;
     if (previous && !visible) {
-      const timer = setTimeout(() => requestRouteRestore(), 40);
+      const navFocusKey = source?.nav?.focusKey;
+      const navOrigin = source?.nav?.origin;
+      const targetScope = navOrigin === "tv-home" ? "tv-home" : undefined;
+      const timer = setTimeout(() => {
+        if (targetScope && navFocusKey) requestRestore(targetScope, navFocusKey);
+        else requestRouteRestore();
+      }, 40);
       return () => clearTimeout(timer);
     }
-  }, [visible, requestRouteRestore]);
-  const { activePlaylist, toggleFavorite, isFavorite, ensureHeavyLoaded } = usePlaylists();
+  }, [visible, requestRestore, requestRouteRestore, source?.nav?.focusKey, source?.nav?.origin]);
+  const { activePlaylist, toggleFavorite, isFavorite, ensureHeavyLoaded, addToRecent } = usePlaylists();
   const [nativeLiveChannel, setNativeLiveChannel] = useState<any | null>(null);
 
   /**
@@ -269,6 +276,7 @@ export default function PlayerHost() {
   const [seriesNavigationItems, setSeriesNavigationItems] = useState<any[]>([]);
   const [orderedNavigationScopeIds, setOrderedNavigationScopeIds] = useState<string[] | null>(null);
   const [playbackNeighbors, setPlaybackNeighbors] = useState<{ previous:any|null; next:any|null; position:number; total:number; source:"room"|"legacy"|"synthetic" } | null>(null);
+  const [quickGuideEpg, setQuickGuideEpg] = useState<Record<string, any>>({});
   const [syntheticNav, setSyntheticNav] = useState<{ previousId?: string | null; nextId?: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -1602,6 +1610,23 @@ export default function PlayerHost() {
   const canNext = !!playbackNeighbors?.next;
   const canZap = canPrevious || canNext; // geriye dönük UI/test sözleşmesi; artık content-aware capability'dir.
 
+  useEffect(() => {
+    let cancelled = false;
+    if (sheet !== "guide" || sessionKind !== "live" || !activePlaylist?.id || !channel?.id) {
+      if (sheet !== "guide") setQuickGuideEpg({});
+      return () => { cancelled = true; };
+    }
+    const ids = [playbackNeighbors?.previous?.id, channel?.id, playbackNeighbors?.next?.id].filter(Boolean).map(String);
+    void getNowNext(String(activePlaylist.id), Array.from(new Set(ids)), activePlaylist.epgUrl)
+      .then(result => { if (!cancelled) setQuickGuideEpg(result.data || {}); })
+      .catch(error => {
+        if (!cancelled) setQuickGuideEpg({});
+        void recordDiagnostic("player", "TV_QUICK_GUIDE_EPG_FAILED", { error: String((error as any)?.message || error), ids: ids.length }, { sessionId: playerDiagnosticSessionRef.current, stage: "quickGuideEpg", outcome: "failed" });
+      });
+    void recordDiagnostic("player", "TV_QUICK_GUIDE_OPEN", { channelId: String(channel.id), neighborCount: ids.length }, { sessionId: playerDiagnosticSessionRef.current, stage: "quickGuide", outcome: "success" });
+    return () => { cancelled = true; };
+  }, [sheet, sessionKind, activePlaylist?.id, activePlaylist?.epgUrl, channel?.id, playbackNeighbors?.previous?.id, playbackNeighbors?.next?.id]);
+
   const resetTracksForNavigation = () => {
     if (v2Profile.engine === "vlc") { try { vlcRef.current?.stop?.(); } catch {} }
     else if (v2Profile.engine === "mpv") { try { void mpvRef.current?.stop?.(); } catch {} }
@@ -1619,6 +1644,9 @@ export default function PlayerHost() {
 
     if (sessionKind === "live") {
       flashMessage(`${delta > 0 ? "⏭" : "⏮"} ${target.name || "Kanal"}`);
+      void addToRecent(String(target.id)).catch((error:any) => {
+        void recordDiagnostic("player", "TV_RECENT_CHANNEL_WRITE_FAILED", { channelId: String(target.id), error: String(error?.message || error) }, { sessionId: playerDiagnosticSessionRef.current, stage: "recentChannel", outcome: "failed" });
+      });
       switchChannel(String(target.id), source?.nav);
       return;
     }
@@ -2439,8 +2467,19 @@ export default function PlayerHost() {
     try {
       let target:any = null;
       if (KizilkanNativeCore.available) {
-        const page = await KizilkanNativeCore.queryItems<any>(activePlaylist.id, "live", { group, search, offset: displayPosition - 1, limit: 1 });
-        target = page.items?.[0] || null;
+        if (nav?.scopeKey) {
+          let scopeIds = orderedNavigationScopeIds;
+          if (!scopeIds) scopeIds = await loadPlayerNavigationScope(nav.scopeKey, { playlistId: String(activePlaylist.id), kind: "live" });
+          const targetId = scopeIds?.[displayPosition - 1];
+          if (targetId) {
+            const rows = await KizilkanNativeCore.getItemsByIds<any>(activePlaylist.id, "live", [String(targetId)]);
+            target = rows?.[0] || null;
+          }
+          void recordDiagnostic("player", "TV_NUMERIC_ZAP_SCOPE", { displayPosition, scopeKey: nav.scopeKey, scopeSize: scopeIds?.length || 0, found: !!target }, { sessionId: playerDiagnosticSessionRef.current, stage: "numericZapScope", outcome: target ? "success" : "failed" });
+        } else {
+          const page = await KizilkanNativeCore.queryItems<any>(activePlaylist.id, "live", { group, search, offset: displayPosition - 1, limit: 1 });
+          target = page.items?.[0] || null;
+        }
       } else {
         const list = activePlaylist.channels || [];
         target = list[displayPosition - 1] || null;
@@ -2448,13 +2487,16 @@ export default function PlayerHost() {
       if (!target?.id) { flashMessage(`Kanal ${displayPosition} bulunamadı`); return; }
       resetTracksForNavigation();
       flashMessage(`#${displayPosition} • ${target.name || "Kanal"}`);
+      void addToRecent(String(target.id)).catch((error:any) => {
+        void recordDiagnostic("player", "TV_RECENT_CHANNEL_WRITE_FAILED", { channelId: String(target.id), error: String(error?.message || error) }, { sessionId: playerDiagnosticSessionRef.current, stage: "recentChannel", outcome: "failed" });
+      });
       switchChannel(String(target.id), source?.nav);
       void recordDiagnostic("player", "TV_NUMERIC_ZAP", { displayPosition, channelId: String(target.id), group, search: search ? "<set>" : "" }, { sessionId: playerDiagnosticSessionRef.current, stage: "numericZap", outcome: "success" });
     } catch (error) {
       flashMessage("Numaralı kanal geçişi başarısız");
       void recordDiagnostic("player", "TV_NUMERIC_ZAP_FAILED", { displayPosition, error: String((error as any)?.message || error) }, { sessionId: playerDiagnosticSessionRef.current, stage: "numericZap", outcome: "failed" });
     } finally { setNumericZapText(""); }
-  }, [isTv, sessionKind, activePlaylist?.id, activePlaylist?.channels, source?.nav?.group, source?.nav?.search, switchChannel]);
+  }, [isTv, sessionKind, activePlaylist?.id, activePlaylist?.channels, source?.nav?.group, source?.nav?.search, source?.nav?.scopeKey, orderedNavigationScopeIds, switchChannel, addToRecent]);
 
   const pushNumericZapDigit = React.useCallback((digit: string) => {
     if (!isTv || sessionKind !== "live" || showControls || sheet !== null) return;
@@ -2493,7 +2535,7 @@ export default function PlayerHost() {
     forward: () => seekBy(30),
     rewind: () => seekBy(-30),
     info: () => setSheet("stats"),
-    guide: () => { if (supportsCatchup) openCatchup(); },
+    guide: () => { if (sessionKind === "live") setSheet("guide"); else if (supportsCatchup) openCatchup(); },
 
     /**
      * SOL/SAĞ İLE KANAL DEĞİŞTİRME (v7.6.0) — TiviMate'in en çok kullanılan
@@ -3479,6 +3521,11 @@ export default function PlayerHost() {
                     codec: ev.codec || "",
                     format: ev.format || "",
                     hwdec: ev.hwdec || "",
+                    stage: ev.stage || "",
+                    fatal: !!ev.fatal,
+                    errorClass: ev.errorClass || "",
+                    message: ev.message || "",
+                    causeChain: Array.isArray(ev.causeChain) ? ev.causeChain : [],
                     phase: v2Phase,
                     fromSessionMs: Math.max(0, Date.now() - sessionStartedAtRef.current),
                   }, { sessionId: playerDiagnosticSessionRef.current });
@@ -4091,9 +4138,43 @@ export default function PlayerHost() {
                 : sheet === "engine" ? "Oynatıcı Motoru"
                 : sheet === "audiodelay" ? "Ses Senkronu (A/V)"
                 : sheet === "jump" ? "Süreye Git / Atla"
+                : sheet === "guide" ? "Hızlı Rehber"
                 : "Altyazı"}
             </Text>
             <ScrollView style={{ maxHeight: 380 }}>
+              {sheet === "guide" && sessionKind === "live" && (
+                <View style={{ gap: 8 }}>
+                  {[playbackNeighbors?.previous, channel, playbackNeighbors?.next].filter(Boolean).map((item:any, index:number) => {
+                    const id = String(item?.id || "");
+                    const epg = quickGuideEpg[id] || {};
+                    const isCurrent = id === String(channel?.id || "");
+                    return (
+                      <FocusButton
+                        key={`quick-guide-${id}-${index}`}
+                        focusable
+                        autoFocus={isCurrent}
+                        disabled={!id}
+                        onPress={() => {
+                          if (!id || isCurrent) return;
+                          void addToRecent(id).catch((error:any) => void recordDiagnostic("player", "TV_RECENT_CHANNEL_WRITE_FAILED", { channelId:id, error:String(error?.message || error) }, { sessionId: playerDiagnosticSessionRef.current, stage:"recentChannel", outcome:"failed" }));
+                          resetTracksForNavigation();
+                          switchChannel(id, source?.nav);
+                          setSheet(null);
+                        }}
+                        style={[styles.sheetOption, { borderColor: isCurrent ? colors.brandPrimary : colors.border, backgroundColor: isCurrent ? colors.brandPrimary + "18" : colors.surfaceSecondary }]}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold }} numberOfLines={1}>{isCurrent ? "Şimdi · " : ""}{item?.name || `Kanal ${id}`}</Text>
+                          {!!epg?.now?.title && <Text style={{ color: colors.onSurfaceSecondary, marginTop: 3 }} numberOfLines={1}>Şimdi: {epg.now.title}</Text>}
+                          {!!epg?.next?.title && <Text style={{ color: colors.onSurfaceTertiary, marginTop: 2, fontSize: FONT.size.xs }} numberOfLines={1}>Sırada: {epg.next.title}</Text>}
+                        </View>
+                        <Ionicons name={index === 0 ? "chevron-back" : index === 2 ? "chevron-forward" : "radio-button-on"} size={20} color={isCurrent ? colors.brandPrimary : colors.onSurfaceSecondary} />
+                      </FocusButton>
+                    );
+                  })}
+                </View>
+              )}
+
               {sheet === "speed" && SPEED_OPTIONS.map((rate, i) => (
                 <SheetItem
                   key={rate}
@@ -4714,6 +4795,11 @@ const styles = StyleSheet.create({
   sheetItem: {
     flexDirection: "row", alignItems: "center", gap: SPACING.md,
     paddingHorizontal: SPACING.md, paddingVertical: SPACING.md,
+    borderRadius: RADIUS.md, borderWidth: 1, marginBottom: SPACING.xs,
+  },
+  sheetOption: {
+    minHeight: 58, flexDirection: "row", alignItems: "center", gap: SPACING.sm,
+    paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm,
     borderRadius: RADIUS.md, borderWidth: 1, marginBottom: SPACING.xs,
   },
   sheetItemText: { flex: 1, fontSize: FONT.size.base, fontWeight: FONT.weight.semibold },

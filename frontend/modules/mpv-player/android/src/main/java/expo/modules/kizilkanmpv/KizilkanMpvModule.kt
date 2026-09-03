@@ -14,6 +14,16 @@ import java.util.zip.ZipFile
  * yeteneklerini Expo tarafına açar. AUTO fallback kararı PlayerHost/Player V2'dedir.
  */
 class KizilkanMpvModule : Module() {
+  private fun throwableChain(t: Throwable): List<String> {
+    val out = mutableListOf<String>()
+    val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+    var cur: Throwable? = t
+    while (cur != null && out.size < 8 && seen.add(cur)) {
+      out += "${cur.javaClass.name}: ${cur.message.orEmpty()}".take(420)
+      cur = cur.cause
+    }
+    return out
+  }
   override fun definition() = ModuleDefinition {
     Name("KizilkanMpv")
 
@@ -23,19 +33,35 @@ class KizilkanMpvModule : Module() {
     Function("getRuntimeStatus") {
       val info = appContext.reactContext?.applicationInfo
       var classLoadError = ""
+      var classLoadThrowable: List<String> = emptyList()
       val classLoaded = try {
         Class.forName("dev.jdtech.mpv.MPVLib", false, javaClass.classLoader)
         true
       } catch (t: Throwable) {
         classLoadError = "${t.javaClass.simpleName}:${t.message.orEmpty()}".take(220)
+        classLoadThrowable = throwableChain(t)
         false
       }
+
+      var classInitError = ""
+      var classInitThrowable: List<String> = emptyList()
+      val classInitialized = if (!classLoaded) false else try {
+        Class.forName("dev.jdtech.mpv.MPVLib", true, javaClass.classLoader)
+        true
+      } catch (t: Throwable) {
+        classInitError = "${t.javaClass.simpleName}:${t.message.orEmpty()}".take(220)
+        classInitThrowable = throwableChain(t)
+        false
+      }
+
       val nativeDir = try { info?.nativeLibraryDir ?: "" } catch (_: Throwable) { "" }
       val extractedLibmpv = nativeDir.isNotBlank() && File(nativeDir, "libmpv.so").exists()
       val extractedLibcxx = nativeDir.isNotBlank() && File(nativeDir, "libc++_shared.so").exists()
       var apkLibmpv = false
       var apkLibcxx = false
       var apkAbi = ""
+      var apkScanError = ""
+      var apkScanThrowable: List<String> = emptyList()
       try {
         val sourceDir = info?.sourceDir.orEmpty()
         if (sourceDir.isNotBlank()) {
@@ -49,10 +75,14 @@ class KizilkanMpvModule : Module() {
             }
           }
         }
-      } catch (_: Throwable) {}
-      val nativeLibrariesVerified = classLoaded && apkLibmpv && apkLibcxx && apkAbi.isNotBlank()
+      } catch (t: Throwable) {
+        apkScanError = "${t.javaClass.simpleName}:${t.message.orEmpty()}".take(220)
+        apkScanThrowable = throwableChain(t)
+      }
+      val nativeLibrariesVerified = classLoaded && classInitialized && apkLibmpv && apkLibcxx && apkAbi.isNotBlank()
       mapOf(
         "classLoaded" to classLoaded,
+        "classInitialized" to classInitialized,
         "libmpvApi" to "1.0.0",
         "supportedAbis" to Build.SUPPORTED_ABIS.toList(),
         "nativeLibraryDirPresent" to nativeDir.isNotBlank(),
@@ -63,6 +93,11 @@ class KizilkanMpvModule : Module() {
         "apkAbiMatch" to apkAbi,
         "nativeLibrariesVerified" to nativeLibrariesVerified,
         "classLoadError" to classLoadError,
+        "classLoadThrowable" to classLoadThrowable,
+        "classInitError" to classInitError,
+        "classInitThrowable" to classInitThrowable,
+        "apkScanError" to apkScanError,
+        "apkScanThrowable" to apkScanThrowable,
         "moduleClassLoader" to (javaClass.classLoader?.javaClass?.name ?: ""),
       )
     }
