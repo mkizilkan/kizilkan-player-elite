@@ -17,6 +17,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 class PanelScanService : Service() {
@@ -234,7 +235,7 @@ class PanelScanService : Service() {
         val stagingKey = intent.getStringExtra("stagingKey") ?: requestedRunId
         val concurrency = intent.getIntExtra("concurrency", 8).coerceIn(1,32)
         val timeoutMs = intent.getIntExtra("timeoutMs", 8000).coerceIn(2000,20000)
-        val initialTotal = intent.getIntExtra("initialTotal", 0).coerceAtLeast(0)
+        val initialTotal = intent.getLongExtra("initialTotal", 0L).coerceAtLeast(0L)
         val accountCount = intent.getIntExtra("accountCount", 0).coerceAtLeast(0)
         val payloadBytes = intent.getLongExtra("payloadBytes", 0L).coerceAtLeast(0L)
         writeSnapshot(JSONObject().put("mode", "unified").put("running", true).put("paused", false)
@@ -243,7 +244,7 @@ class PanelScanService : Service() {
         recordExternalDiagnostic(applicationContext, JSONObject().put("runId", requestedRunId).put("mode", "unified")
           .put("state", "SERVICE_ENTER").put("total", initialTotal).put("accountTotal", accountCount).put("payloadBytes", payloadBytes))
         setProcessSummary(applicationContext, "scan:SERVICE_ENTER:a$accountCount:t$initialTotal:b$payloadBytes")
-        startForeground(NOTIF_ID, notification("Birleşik panel taraması başlıyor…", 0, initialTotal))
+        startForeground(NOTIF_ID, notification("Birleşik panel taraması başlıyor…", 0, if (initialTotal > Int.MAX_VALUE) Int.MAX_VALUE else initialTotal.toInt()))
         Thread({ runUnifiedScanFromStaging(stagingKey, concurrency, timeoutMs) }, "kizilkan-panel-scan-$requestedRunId").start()
       }
       ACTION_START -> {
@@ -403,7 +404,7 @@ class PanelScanService : Service() {
       val completedByAccount = Array(accountCount) { AtomicInteger(0) }; val accountDone = AtomicInteger(0)
       val panelSet = linkedSetOf<String>()
       for (i in 0 until candidateCount) { val c = candidates.getJSONObject(i); panelSet.add("${c.optString("code")}\u0000${c.optString("panelName")}") }
-      val workerCount = concurrency.coerceIn(1, minOf(32, total)); val pool = Executors.newFixedThreadPool(workerCount)
+      val workerCount = concurrency.coerceIn(1, minOf(32L, total).toInt()); val pool = Executors.newFixedThreadPool(workerCount)
       activeExecutor = pool
       repeat(workerCount) {
         pool.submit {
@@ -421,7 +422,7 @@ class PanelScanService : Service() {
             if (completedByAccount[ai].incrementAndGet() == candidateCount) accountDone.incrementAndGet()
             val done = tested.incrementAndGet()
             if (done == total || done % 16 == 0 || login != null) writeBulkSnapshot(done,total,accountDone.get(),accountCount,panelSet.size,matches,candidate.optString("panelName"),ai)
-            if (done % 16 == 0 || login != null) getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", done, total))
+            if (done % 16 == 0 || login != null) getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", if (total > Int.MAX_VALUE) ((done * Int.MAX_VALUE) / total).toInt() else done.toInt(), if (total > Int.MAX_VALUE) Int.MAX_VALUE else total.toInt()))
           }
         }
       }
@@ -454,6 +455,23 @@ class PanelScanService : Service() {
       for (i in start until matches.size) resultArray.put(matches[i])
     }
     val snap = JSONObject().put("mode",mode).put("running",runningValue).put("paused",paused.get()).put("cancelled",cancelled.get())
+      .put("tested",tested).put("total",total).put("accountTested",accountTested).put("accountTotal",accountTotal).put("panelTotal",panelTotal)
+      .put("found",matches.size).put("panelName",panelName).put("currentServer",currentServer).put("accountIndex",accountIndex).put("matches",resultArray)
+    if (accountStatuses != null) snap.put("accountStatuses", accountStatuses)
+    writeSnapshot(snap)
+  }
+
+  private fun writeUnifiedSnapshot(
+    tested:Long,total:Long,accountTested:Int,accountTotal:Int,panelTotal:Int,matches:MutableList<JSONObject>,
+    panelName:String,accountIndex:Int,runningValue:Boolean = tested < total && !cancelled.get(),
+    currentServer:String = "", accountStatuses:JSONArray? = null
+  ) {
+    val resultArray = JSONArray()
+    synchronized(matches) {
+      val start = (matches.size - 200).coerceAtLeast(0)
+      for (i in start until matches.size) resultArray.put(matches[i])
+    }
+    val snap = JSONObject().put("mode","unified").put("running",runningValue).put("paused",paused.get()).put("cancelled",cancelled.get())
       .put("tested",tested).put("total",total).put("accountTested",accountTested).put("accountTotal",accountTotal).put("panelTotal",panelTotal)
       .put("found",matches.size).put("panelName",panelName).put("currentServer",currentServer).put("accountIndex",accountIndex).put("matches",resultArray)
     if (accountStatuses != null) snap.put("accountStatuses", accountStatuses)
@@ -524,22 +542,22 @@ class PanelScanService : Service() {
         }
       }
       // v15.2.11 round-robin sırası korunur; fakat Work listesi materialize edilmez.
-      val layerEnds = IntArray(maxCandidates)
-      var total = 0
+      val layerEnds = LongArray(maxCandidates)
+      var total = 0L
       for (ci in 0 until maxCandidates) {
         for (ai in 0 until accountCount) if (ci < expectedByAccount[ai]) total++
         layerEnds[ci] = total
       }
       if (total == 0) throw IllegalArgumentException("Tarama için aday sunucu yok")
 
-      fun resolveWork(index: Int): Pair<Int, Int> {
+      fun resolveWork(index: Long): Pair<Int, Int> {
         var lo = 0; var hi = layerEnds.lastIndex
         while (lo < hi) {
           val mid = (lo + hi) ushr 1
           if (index < layerEnds[mid]) hi = mid else lo = mid + 1
         }
         val ci = lo
-        val before = if (ci == 0) 0 else layerEnds[ci - 1]
+        val before = if (ci == 0) 0L else layerEnds[ci - 1]
         var ordinal = index - before
         for (ai in 0 until accountCount) {
           if (ci < expectedByAccount[ai]) {
@@ -549,8 +567,9 @@ class PanelScanService : Service() {
         }
         throw IndexOutOfBoundsException("scan work index=$index")
       }
-      val cursor = AtomicInteger(0)
-      val tested = AtomicInteger(0)
+      val cursor = AtomicLong(0L)
+      val tested = AtomicLong(0L)
+      val lastUiSnapshotAt = AtomicLong(0L)
       val accountDone = AtomicInteger(expectedByAccount.count { it == 0 })
       val matches = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
       val workerFailure = AtomicReference<Throwable?>(null)
@@ -563,7 +582,11 @@ class PanelScanService : Service() {
           }
         }
         val arr = JSONArray()
-        for (ai in 0 until accountCount) {
+        // v17.0.4: 100K+ hesapta her progress tick'inde dev JSON üretme.
+        // Küçük/normal taramada geriye dönük tam görünüm; ultra taramada aktif pencere.
+        val startIndex = if (accountCount <= 2000) 0 else (currentIndex - 100).coerceAtLeast(0)
+        val endIndex = if (accountCount <= 2000) accountCount else (startIndex + 250).coerceAtMost(accountCount)
+        for (ai in startIndex until endIndex) {
           val job = jobs.optJSONObject(ai) ?: JSONObject()
           val done = completedByAccount[ai].get()
           val expected = expectedByAccount[ai]
@@ -584,7 +607,7 @@ class PanelScanService : Service() {
         }
         return arr
       }
-      val workerCount = concurrency.coerceIn(1, minOf(32, total))
+      val workerCount = concurrency.coerceIn(1, minOf(32L, total).toInt())
       val pool = Executors.newFixedThreadPool(workerCount)
       activeExecutor = pool
       recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("mode", "unified")
@@ -614,18 +637,20 @@ class PanelScanService : Service() {
                 .put("login", sanitizeLogin(login)))
               if (completedByAccount[accountIndex].incrementAndGet() == expectedByAccount[accountIndex]) accountDone.incrementAndGet()
               val done = tested.incrementAndGet()
-              if (done == total || done % 12 == 0 || login != null) {
-                writeBulkSnapshot(
+              val now = System.currentTimeMillis()
+              val previousSnapshotAt = lastUiSnapshotAt.get()
+              val snapshotDue = done == total || login != null || (now - previousSnapshotAt >= 250L && lastUiSnapshotAt.compareAndSet(previousSnapshotAt, now))
+              if (snapshotDue) {
+                writeUnifiedSnapshot(
                   done, total, accountDone.get(), accountCount, panelSet.size, matches,
                   candidate.optString("panelName"), accountIndex,
                   currentServer = candidate.optString("server"),
                   accountStatuses = accountStatuses(accountIndex),
-                  mode = "unified",
                 )
               }
               if (done % 500 == 0) setProcessSummary(applicationContext, "scan:RUNNING:a$accountCount:d$done:t$total")
-              if (done % 12 == 0 || login != null) getSystemService(NotificationManager::class.java)
-                .notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", done, total))
+              if (snapshotDue) getSystemService(NotificationManager::class.java)
+                .notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", if (total > Int.MAX_VALUE) ((done * Int.MAX_VALUE) / total).toInt() else done.toInt(), if (total > Int.MAX_VALUE) Int.MAX_VALUE else total.toInt()))
             }
           } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
@@ -641,9 +666,9 @@ class PanelScanService : Service() {
       pool.shutdown()
       while (!pool.isTerminated) Thread.sleep(100)
       workerFailure.get()?.let { if (!cancelled.get()) throw it }
-      writeBulkSnapshot(
+      writeUnifiedSnapshot(
         tested.get(), total, accountDone.get(), accountCount, panelSet.size, matches, "", -1, false,
-        currentServer = "", accountStatuses = accountStatuses(-1), mode = "unified"
+        currentServer = "", accountStatuses = accountStatuses(-1)
       )
     } catch (e: Throwable) {
       writeSnapshot(JSONObject().put("mode","unified").put("running",false)
@@ -709,7 +734,7 @@ class PanelScanService : Service() {
               .put("matches", resultArray)
             writeSnapshot(snap)
             val nm = getSystemService(NotificationManager::class.java)
-            nm.notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", done, total))
+            nm.notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", if (total > Int.MAX_VALUE) ((done * Int.MAX_VALUE) / total).toInt() else done.toInt(), if (total > Int.MAX_VALUE) Int.MAX_VALUE else total.toInt()))
           }
         }
       }

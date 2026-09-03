@@ -23,6 +23,7 @@ export type BulkAccountInput = {
   server?: string;
   serverCode?: string;
   panelName?: string;
+  validatedHosts?: string[];
 };
 
 export type BulkAccountParseResult = {
@@ -179,6 +180,23 @@ export function parseBulkAccounts(text: string): BulkAccountParseResult {
   const raw = String(text || "").replace(/^\uFEFF/, "").trim();
   const warnings: string[] = [];
   if (!raw) return { accounts: [], warnings: ["İçe aktarılacak hesap verisi boş."] };
+
+  // v17.0.4: KIZILKAN insan-okunur TXT arşivini yeniden içe aktar.
+  // Güvenli/maskeli rapor credential içermediği için bilerek import edilmez.
+  if (/KIZILKAN PLAYER ELITE — HESAP ARŞİVİ/i.test(raw)) {
+    if (/GÜVENLİ RAPOR \(MASKELİ\)/i.test(raw)) return { accounts: [], warnings: ["Güvenli rapor maskeli olduğu için hesap olarak içe aktarılamaz. Tam Arşiv TXT kullanın."] };
+    const blocks = raw.split(/={20,}\s*\r?\nKIZILKAN PLAYER ELITE — HESAP #\d+\s*\r?\n={20,}/i).slice(1);
+    const accounts: BulkAccountInput[] = [];
+    blocks.forEach((block, i) => {
+      const get = (label: string) => { const m = block.match(new RegExp(`^${label}\\s*:\s*(.+)$`, "mi")); return String(m?.[1] || "").trim(); };
+      const username = get("Kullanıcı Adı"); const password = get("Şifre"); const server = get("Birincil Sunucu") || get("Panel / Sunucu");
+      const code = get("Sunucu Kodu"); const panelName = get("Panel Adı"); const name = get("Hesap Adı");
+      const validatedHosts = Array.from(block.matchAll(/^\s*\[\d+\]\s+(https?:\/\/\S+)\s*$/gmi)).map(m => normalizeServer(m[1]));
+      if (!username || !password || password.includes("********")) { warnings.push(`Arşiv kayıt ${i + 1}: credential eksik/maskeli, atlandı.`); return; }
+      accounts.push({ row:i+1, name:name === "Adsız Hesap" ? "" : name, username, password, ...(server ? {server:normalizeServer(server)} : {}), ...(code && !/^Yok/i.test(code) ? {serverCode:code} : {}), ...(panelName && !/^Sunucu bildirmedi/i.test(panelName) ? {panelName} : {}), ...(validatedHosts.length ? {validatedHosts} : {}) });
+    });
+    return { accounts, warnings };
+  }
 
   if (raw.startsWith("[") || raw.startsWith("{")) {
     try {

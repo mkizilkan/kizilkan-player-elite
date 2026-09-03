@@ -31,6 +31,7 @@ const CHECKS = [
   ["check-v17001-forward-semver-regression.js", "v17.0.1 forward-semver regression-gate corrective release hard-gate", ""],
   ["check-v17002-pin-input-header-timezone.js", "v17.0.2 PIN/input safety + account header profile + MAG timezone hard-gate", ""],
   ["check-v17003-mpv-room-tv-foundation.js", "v17.0.3 MPV/Room/scan terminal UI/TV foundation hard-gate", ""],
+  ["check-v17004-ultra-scale-account-archive.js", "v17.0.4 ultra-scale multi-account + TXT archive hard-gate", ""],
   ["check-v16142-integrated-hardgate.js", "v16.14.2 integrated recovery / sync / ownership / source-recovery / V7 contract", ""],
   ["checkdefs.js",     "Tanımsız sembol (hook/JSX bileşeni)",   ""],
   ["checkcalls.js",    "Tanımsız fonksiyon çağrısı",            ""],

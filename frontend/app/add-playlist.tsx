@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   TextInput,
   ScrollView,
+  FlatList,
   ActivityIndicator,
   KeyboardAvoidingView,
   Keyboard,
@@ -17,6 +18,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
+import * as Sharing from "expo-sharing";
+import * as FileSystem from "expo-file-system/legacy";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
@@ -41,6 +44,7 @@ import { PanelScan, type NativeScanStartResult } from "@/modules/panel-scan";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { storage } from "@/src/utils/storage";
 import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
+import { buildKizilkanAccountArchive } from "@/src/utils/accountArchive";
 import {
   BULK_ACCOUNT_EXAMPLE,
   bulkAccountFromManual,
@@ -211,6 +215,7 @@ export default function AddPlaylist() {
   const [bulkAccountProgress, setBulkAccountProgress] = useState<Array<{ accountIndex:number; sourceRow?:number; name?:string; state:string; tested:number; total:number; remaining:number; found:number }>>([]);
   const [bulkCandidates, setBulkCandidates] = useState<BulkResolvedCandidate[]>([]);
   const [selectedBulkCandidateKeys, setSelectedBulkCandidateKeys] = useState<string[]>([]);
+  const [bulkUseAllValidatedHosts, setBulkUseAllValidatedHosts] = useState(true);
   const [showBulkCandidates, setShowBulkCandidates] = useState(false);
   const [bulkScanFinished, setBulkScanFinished] = useState(false);
   const [bulkScanFailures, setBulkScanFailures] = useState<string[]>([]);
@@ -1098,7 +1103,8 @@ export default function AddPlaylist() {
     const jobs = accounts.map((a) => {
       let candidates: Array<{panelName:string; code:string; server:string}> = [];
       if (a.server) {
-        candidates = [{ panelName: a.panelName || a.name || hostName(a.server), code: a.serverCode || "", server: a.server }];
+        const restoredHosts = Array.from(new Set([a.server, ...(a.validatedHosts || [])]));
+        candidates = restoredHosts.map(server => ({ panelName: a.panelName || a.name || hostName(a.server!), code: a.serverCode || "", server }));
       } else if (a.serverCode) {
         const item = directory.find(x => x.code === a.serverCode);
         if (item) candidates = item.hosts.map(server => ({ panelName:item.panelName, code:item.code, server }));
@@ -1265,6 +1271,43 @@ export default function AddPlaylist() {
     } catch (e) { console.warn("[v17.0.3 bulk-scan-ack]", e); }
   }, []);
 
+  const exportBulkCandidatesTxt = React.useCallback(async (safe: boolean) => {
+    const selected = bulkCandidates.filter(c => selectedBulkCandidateKeys.includes(c.key));
+    if (!selected.length) { Alert.alert("Hesap Arşivi", "Önce dışa aktarılacak hesap/DNS satırlarını seçin."); return; }
+    const grouped = new Map<string, BulkResolvedCandidate[]>();
+    selected.forEach(c => { const k=bulkSubscriptionKey(c); grouped.set(k,[...(grouped.get(k)||[]),c]); });
+    const records = Array.from(grouped.values()).map(rows => {
+      const preferred=rows.find(isActiveBulkCandidate)||rows[0];
+      const allRows=bulkCandidates.filter(c=>bulkSubscriptionKey(c)===bulkSubscriptionKey(preferred));
+      const hosts=Array.from(new Set(bulkUseAllValidatedHosts ? allRows.flatMap(c=>c.validatedHosts?.length?c.validatedHosts:[c.server]) : rows.map(c=>c.server)));
+      return { name:preferred.name, username:preferred.username, password:preferred.password, server:preferred.server, primaryHost:preferred.server, panelName:preferred.panelName, serverCode:preferred.code, validatedHosts:hosts, login:preferred.login };
+    });
+    const text=buildKizilkanAccountArchive(records,safe);
+    const stamp=new Date().toISOString().replace(/[:.]/g,"-");
+    const fileName=`KIZILKAN-HESAP-ARSIVI-${safe?"GUVENLI-":""}${stamp}.txt`;
+    const uri=`${FileSystem.cacheDirectory}${fileName}`;
+    await FileSystem.writeAsStringAsync(uri,text,{encoding:FileSystem.EncodingType.UTF8});
+    if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
+      const perm=await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (perm.granted) {
+        const target=await FileSystem.StorageAccessFramework.createFileAsync(perm.directoryUri,fileName,"text/plain");
+        await FileSystem.writeAsStringAsync(target,text,{encoding:FileSystem.EncodingType.UTF8});
+        Alert.alert("Hesap Arşivi Kaydedildi", `${records.length} abonelik TXT dosyasına kaydedildi.\n${fileName}`);
+        return;
+      }
+    }
+    if (await Sharing.isAvailableAsync()) { await Sharing.shareAsync(uri,{mimeType:"text/plain",dialogTitle:"KIZILKAN Hesap Arşivini Kaydet / Paylaş"}); return; }
+    Alert.alert("Hesap Arşivi", `Dosya hazırlandı: ${fileName}`);
+  },[bulkCandidates,selectedBulkCandidateKeys,bulkUseAllValidatedHosts]);
+
+  const chooseBulkArchiveMode = React.useCallback(() => {
+    Alert.alert("TXT Hesap Arşivi","Tam arşiv tekrar içe aktarılabilir ve şifreleri içerir. Güvenli rapor credential alanlarını maskeler.",[
+      {text:"Vazgeç",style:"cancel"},
+      {text:"Güvenli Rapor",onPress:()=>void exportBulkCandidatesTxt(true)},
+      {text:"Tam Arşiv",onPress:()=>void exportBulkCandidatesTxt(false)},
+    ]);
+  },[exportBulkCandidatesTxt]);
+
   const addSelectedBulkCandidates = async () => {
     const selectedRaw = bulkCandidates.filter(c => selectedBulkCandidateKeys.includes(c.key));
     if (!selectedRaw.length) return;
@@ -1287,7 +1330,7 @@ export default function AddPlaylist() {
       const preferred = rows.find(isActiveBulkCandidate) || rows[0];
       return {
         ...preferred,
-        validatedHosts: Array.from(new Set(allRows.flatMap(x => x.validatedHosts?.length ? x.validatedHosts : [x.server]))),
+        validatedHosts: Array.from(new Set(bulkUseAllValidatedHosts ? allRows.flatMap(x => x.validatedHosts?.length ? x.validatedHosts : [x.server]) : rows.map(x => x.server))),
       };
     });
     if (!chosen.length) return;
@@ -2406,46 +2449,36 @@ export default function AddPlaylist() {
                 </View>
               )}
 
-              <ScrollView style={{ maxHeight: 430 }} contentContainerStyle={{ gap: SPACING.sm, paddingBottom: SPACING.sm }}>
-                {bulkCandidates.length === 0 ? (
-                  <View style={[styles.infoBanner,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
-                    <ActivityIndicator size="small" color={colors.brandPrimary} />
-                    <Text style={{ color: colors.onSurface, flex: 1 }}>Henüz kimlik doğrulaması başarılı aday bulunmadı.</Text>
-                  </View>
-                ) : bulkCandidates.map((c,index) => {
+              <FlatList
+                style={{ maxHeight: 430 }}
+                data={bulkCandidates}
+                keyExtractor={(c) => c.key}
+                initialNumToRender={16}
+                maxToRenderPerBatch={24}
+                windowSize={7}
+                removeClippedSubviews={Platform.OS === "android"}
+                contentContainerStyle={{ gap: SPACING.sm, paddingBottom: SPACING.sm }}
+                ListEmptyComponent={<View style={[styles.infoBanner,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}><ActivityIndicator size="small" color={colors.brandPrimary}/><Text style={{ color: colors.onSurface, flex: 1 }}>Henüz kimlik doğrulaması başarılı aday bulunmadı.</Text></View>}
+                renderItem={({item:c,index}) => {
                   const selected = selectedBulkCandidateKeys.includes(c.key);
                   const ui = c.login?.user_info || {};
                   const status = String(ui.status || (ui.auth === 1 || ui.auth === "1" ? "Aktif" : "Bilinmiyor"));
                   const importState = bulkImportStatuses[c.key];
-                  return (
-                    <FocusButton key={c.key} focusable autoFocus={index===0} disabled={bulkAdding}
-                      onPress={() => setSelectedBulkCandidateKeys(prev => selected ? prev.filter(k=>k!==c.key) : [...prev,c.key])}
-                      style={[styles.matchRow,{ backgroundColor:selected?colors.brandPrimary+"14":colors.surfaceSecondary,borderColor:selected?colors.brandPrimary:colors.border }]}>
-                      <View style={{flex:1}}>
-                        <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{c.name || c.panelName}</Text>
-                        <Text style={{color:colors.onSurfaceSecondary,marginTop:2}}>Kullanıcı: {c.username} · Durum: {status}</Text>
-                        <Text style={{color:colors.onSurfaceSecondary,marginTop:2}}>Panel: {c.panelName}{c.code ? ` · Kod: ${c.code}` : ""}</Text>
-                        <Text style={{color:colors.onSurfaceTertiary,marginTop:2,fontSize:FONT.size.xs}}>{c.server}</Text>
-                        {!!importState && (
-                          <Text style={{color: importState.state === "failed" ? colors.error : importState.state === "completed" ? colors.success : colors.brandPrimary, marginTop:6, fontSize:FONT.size.xs, fontWeight:FONT.weight.bold}}>
-                            {importState.state === "completed" ? "✓ " : importState.state === "failed" ? "✕ " : "• "}{importState.message}
-                            {importState.state === "completed" ? ` · ${importState.channels || 0} kanal · ${importState.vod || 0} film · ${importState.series || 0} dizi` : ""}
-                          </Text>
-                        )}
-                      </View>
-                      <Ionicons name={selected?"checkbox":"square-outline"} size={26} color={selected?colors.brandPrimary:colors.onSurfaceTertiary}/>
-                    </FocusButton>
-                  );
-                })}
-                {bulkScanFailures.length > 0 && (
-                  <View style={[styles.infoBanner,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
-                    <Ionicons name="warning-outline" size={18} color={colors.error}/>
-                    <Text style={{color:colors.onSurfaceSecondary,flex:1,fontSize:FONT.size.sm}}>
-                      Sonuç bulunamayanlar: {bulkScanFailures.slice(0,4).join(" · ")}{bulkScanFailures.length>4?` · +${bulkScanFailures.length-4} kayıt`:""}
-                    </Text>
-                  </View>
-                )}
-              </ScrollView>
+                  return <FocusButton focusable autoFocus={index===0} disabled={bulkAdding}
+                    onPress={() => setSelectedBulkCandidateKeys(prev => selected ? prev.filter(k=>k!==c.key) : [...prev,c.key])}
+                    style={[styles.matchRow,{ backgroundColor:selected?colors.brandPrimary+"14":colors.surfaceSecondary,borderColor:selected?colors.brandPrimary:colors.border }]}>
+                    <View style={{flex:1}}>
+                      <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{c.name || c.panelName}</Text>
+                      <Text style={{color:colors.onSurfaceSecondary,marginTop:2}}>Kullanıcı: {c.username} · Durum: {status}</Text>
+                      <Text style={{color:colors.onSurfaceSecondary,marginTop:2}}>Panel: {c.panelName}{c.code ? ` · Kod: ${c.code}` : ""}</Text>
+                      <Text style={{color:colors.onSurfaceTertiary,marginTop:2,fontSize:FONT.size.xs}}>{c.server}</Text>
+                      {!!importState && <Text style={{color: importState.state === "failed" ? colors.error : importState.state === "completed" ? colors.success : colors.brandPrimary, marginTop:6, fontSize:FONT.size.xs, fontWeight:FONT.weight.bold}}>{importState.state === "completed" ? "✓ " : importState.state === "failed" ? "✕ " : "• "}{importState.message}{importState.state === "completed" ? ` · ${importState.channels || 0} kanal · ${importState.vod || 0} film · ${importState.series || 0} dizi` : ""}</Text>}
+                    </View>
+                    <Ionicons name={selected?"checkbox":"square-outline"} size={26} color={selected?colors.brandPrimary:colors.onSurfaceTertiary}/>
+                  </FocusButton>;
+                }}
+                ListFooterComponent={bulkScanFailures.length > 0 ? <View style={[styles.infoBanner,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}><Ionicons name="warning-outline" size={18} color={colors.error}/><Text style={{color:colors.onSurfaceSecondary,flex:1,fontSize:FONT.size.sm}}>Sonuç bulunamayanlar: {bulkScanFailures.slice(0,4).join(" · ")}{bulkScanFailures.length>4?` · +${bulkScanFailures.length-4} kayıt`:""}</Text></View> : null}
+              />
 
               {bulkAdding && Platform.OS === "android" && KizilkanNativeCore.available && (
                 <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
@@ -2490,6 +2523,17 @@ export default function AddPlaylist() {
                   </FocusButton>
                 </View>
               )}
+
+              <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md,flexWrap:"wrap"}}>
+                <FocusButton focusable disabled={bulkAdding || bulkCandidates.length===0} onPress={()=>setBulkUseAllValidatedHosts(v=>!v)}
+                  style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
+                  <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>DNS: {bulkUseAllValidatedHosts?"Tüm Çalışanlar":"Yalnız Seçilenler"}</Text>
+                </FocusButton>
+                <FocusButton focusable disabled={bulkAdding || selectedBulkCandidateKeys.length===0 || !bulkScanFinished} onPress={chooseBulkArchiveMode}
+                  style={[styles.bulkBtn,{borderColor:colors.brandPrimary,backgroundColor:colors.surfaceSecondary,opacity:selectedBulkCandidateKeys.length&&bulkScanFinished?1:0.5}]}>
+                  <Text style={{color:colors.brandPrimary,fontWeight:FONT.weight.bold}}>TXT'ye Kaydet</Text>
+                </FocusButton>
+              </View>
 
               <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
                 <FocusButton focusable disabled={bulkAdding || bulkCandidates.length===0}

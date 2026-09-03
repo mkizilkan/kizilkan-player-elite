@@ -4,10 +4,10 @@ const fs=require('fs'),path=require('path'),cp=require('child_process');
 const R=path.resolve(__dirname,'..'); const read=p=>fs.readFileSync(path.join(R,p),'utf8'); let bad=0;
 const ok=(c,m)=>{console.log(`${c?'PASS':'FAIL'}: ${m}`);if(!c)bad++;};
 const pkg=JSON.parse(read('frontend/package.json')),app=JSON.parse(read('frontend/app.json'));
-ok(pkg.version==='17.0.3','frontend/package.json is v17.0.3');
-ok(app.expo.version==='17.0.3'&&app.expo.ios.buildNumber==='17.0.3','Expo/iOS metadata synchronized');
-ok(app.expo.android.versionCode===170003,'Android versionCode is 170003');
-ok(String(app.expo.extra?.kizilkanReleaseLabel||'').includes('v17.0.3 RC1'),'release label synchronized');
+ok(/^17\.0\.[3-9]$/.test(pkg.version)||/^17\.[1-9]\./.test(pkg.version),'frontend/package.json preserves v17.0.3+');
+ok(app.expo.version===pkg.version&&app.expo.ios.buildNumber===pkg.version,'Expo/iOS metadata synchronized');
+ok(Number(app.expo.android.versionCode)>=170003,'Android versionCode preserves 170003+');
+ok(String(app.expo.extra?.kizilkanReleaseLabel||'').includes(`v${pkg.version} RC1`),'release label synchronized');
 
 const mpvMod=read('frontend/modules/mpv-player/android/src/main/java/expo/modules/kizilkanmpv/KizilkanMpvModule.kt');
 ok(mpvMod.includes('Class.forName("dev.jdtech.mpv.MPVLib", true')&&mpvMod.includes('classInitialized'),'MPV runtime gate forces class initialization separately');

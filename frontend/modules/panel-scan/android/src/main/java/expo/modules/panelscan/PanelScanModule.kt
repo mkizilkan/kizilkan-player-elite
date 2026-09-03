@@ -57,7 +57,7 @@ class PanelScanModule : Module() {
       }
     }
 
-    AsyncFunction("startUnifiedScan") { jobsJson: String, accountCount: Int, initialTotal: Int, concurrency: Int, timeoutMs: Int ->
+    AsyncFunction("startUnifiedScan") { jobsJson: String, accountCount: Int, initialTotal: Double, concurrency: Int, timeoutMs: Int ->
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
       PanelScanService.installCrashRecorder(context)
       val runId = UUID.randomUUID().toString()
@@ -73,7 +73,7 @@ class PanelScanModule : Module() {
         stagingFile.bufferedWriter(Charsets.UTF_8).use { it.write(jobsJson) }
         val payloadBytes = stagingFile.length()
         val safeAccountCount = accountCount.coerceAtLeast(0)
-        val safeInitialTotal = initialTotal.coerceAtLeast(0)
+        val safeInitialTotal = initialTotal.toLong().coerceAtLeast(0L)
         PanelScanService.recordExternalDiagnostic(context, JSONObject()
           .put("runId", runId).put("mode", "unified").put("state", "STAGED")
           .put("total", safeInitialTotal).put("accountTotal", safeAccountCount).put("payloadBytes", payloadBytes))

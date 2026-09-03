@@ -1,0 +1,21 @@
+const fs=require('fs'),path=require('path'); const root=path.resolve(__dirname,'..');
+const read=p=>fs.readFileSync(path.join(root,p),'utf8'); let fail=0;
+function ok(name,cond){console.log(`${cond?'PASS':'FAIL'} — ${name}`); if(!cond) fail++;}
+const pkg=JSON.parse(read('frontend/package.json')), app=JSON.parse(read('frontend/app.json'));
+const ui=read('frontend/app/add-playlist.tsx'), svc=read('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt');
+const mod=read('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanModule.kt');
+const arch=read('frontend/src/utils/accountArchive.ts'), bulk=read('frontend/src/utils/bulkAccounts.ts');
+ok('package v17.0.4',pkg.version==='17.0.4'); ok('Expo v17.0.4',app.expo.version==='17.0.4'); ok('versionCode 170004',app.expo.android.versionCode===170004);
+ok('release label',app.expo.extra.kizilkanReleaseLabel==='GPT ELITE v17.0.4 RC1');
+ok('unified 64-bit cursor',svc.includes('AtomicLong(0L)')&&svc.includes('LongArray(maxCandidates)')&&svc.includes('fun resolveWork(index: Long)'));
+ok('64-bit initial total bridge',mod.includes('initialTotal: Double')&&mod.includes('toLong().coerceAtLeast(0L)'));
+ok('ultra account status window',svc.includes('accountCount <= 2000')&&svc.includes('startIndex + 250'));
+ok('UI snapshot throttle',svc.includes('now - previousSnapshotAt >= 250L'));
+ok('virtualized result list',ui.includes('<FlatList')&&ui.includes('windowSize={7}')&&ui.includes('removeClippedSubviews'));
+ok('user can choose all vs selected DNS',ui.includes('DNS: {bulkUseAllValidatedHosts?"Tüm Çalışanlar":"Yalnız Seçilenler"}')&&ui.includes('rows.map(x => x.server)'));
+ok('TXT archive export',ui.includes('TXT\'ye Kaydet')&&ui.includes('buildKizilkanAccountArchive')&&arch.includes('TAM ARŞİV / YENİDEN İÇE AKTARILABİLİR'));
+ok('safe masked report',arch.includes('GÜVENLİ RAPOR (MASKELİ)')&&arch.includes('********'));
+ok('archive re-import',bulk.includes('KIZILKAN PLAYER ELITE — HESAP ARŞİVİ')&&bulk.includes('Güvenli rapor maskeli olduğu için')&&bulk.includes('validatedHosts = Array.from(block.matchAll'));
+ok('archive restores validatedHosts candidates',ui.includes('...(a.validatedHosts || [])'));
+ok('server code + validatedHosts preserved',ui.includes('makeBinding(c.code, c.panelName, c.server, c.validatedHosts)'));
+if(fail){console.error(`\n${fail} hard-gate başarısız.`);process.exit(1)} console.log('\nTEMIZ — v17.0.4 RC1 ultra-scale + TXT archive hard-gate');
