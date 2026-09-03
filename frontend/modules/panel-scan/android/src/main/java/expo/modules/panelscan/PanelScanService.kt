@@ -447,7 +447,7 @@ class PanelScanService : Service() {
       }
       val panelSet = linkedSetOf<String>()
       for (i in 0 until candidateCount) { val c = candidates.getJSONObject(i); panelSet.add("${c.optString("code")}\u0000${c.optString("panelName")}") }
-      val workerCount = concurrency.coerceIn(1, minOf(32L, total).toInt()); val pool = Executors.newFixedThreadPool(workerCount)
+      val workerCount = concurrency.coerceIn(1, minOf(32, total)); val pool = Executors.newFixedThreadPool(workerCount)
       val checkpointTracker = ConservativeCursorTracker(workerCount)
       activeExecutor = pool
       repeat(workerCount) { workerId ->
@@ -601,7 +601,7 @@ class PanelScanService : Service() {
         for (ai in 0 until accountCount) if (ci < expectedByAccount[ai]) total++
         layerEnds[ci] = total
       }
-      if (total == 0) throw IllegalArgumentException("Tarama için aday sunucu yok")
+      if (total == 0L) throw IllegalArgumentException("Tarama için aday sunucu yok")
 
       fun resolveWork(index: Long): Pair<Int, Int> {
         var lo = 0; var hi = layerEnds.lastIndex
@@ -614,7 +614,7 @@ class PanelScanService : Service() {
         var ordinal = index - before
         for (ai in 0 until accountCount) {
           if (ci < expectedByAccount[ai]) {
-            if (ordinal == 0) return ai to ci
+            if (ordinal == 0L) return ai to ci
             ordinal--
           }
         }
@@ -624,9 +624,36 @@ class PanelScanService : Service() {
       val cursor = AtomicLong(safeStart)
       val tested = AtomicLong(safeStart)
       val lastUiSnapshotAt = AtomicLong(0L)
-      for (ai in 0 until accountCount) {
-        val before = (safeStart - offsets[ai]).coerceIn(0L, expectedByAccount[ai].toLong()).toInt()
-        completedByAccount[ai].set(before)
+      // v17.0.9: Resume ilerlemesini round-robin/layer sırasının gerçek prefixinden yeniden kur.
+      // `safeStart` [0, safeStart) aralığındaki tamamlandığı kesin iş sayısıdır.
+      // Önce tamamen bitmiş candidate katmanlarını, sonra varsa kısmi katmandaki
+      // account-order prefixini dağıtırız. Böylece artık var olmayan lineer `offsets`
+      // varsayımına dönmeden O(accountCount + log(maxCandidates)) bellek/zamanla doğru
+      // account progress elde edilir.
+      if (safeStart > 0L) {
+        val fullLayers: Int
+        var partialInLayer = 0L
+        if (safeStart >= total) {
+          fullLayers = maxCandidates
+        } else {
+          var lo = 0
+          var hi = layerEnds.lastIndex
+          while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (safeStart < layerEnds[mid]) hi = mid else lo = mid + 1
+          }
+          fullLayers = lo
+          val layerStart = if (fullLayers == 0) 0L else layerEnds[fullLayers - 1]
+          partialInLayer = safeStart - layerStart
+        }
+        for (ai in 0 until accountCount) {
+          var before = minOf(fullLayers, expectedByAccount[ai])
+          if (partialInLayer > 0L && fullLayers < expectedByAccount[ai]) {
+            before++
+            partialInLayer--
+          }
+          completedByAccount[ai].set(before)
+        }
       }
       val accountDone = AtomicInteger(expectedByAccount.indices.count { expectedByAccount[it] == 0 || completedByAccount[it].get() >= expectedByAccount[it] })
       val matches = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
@@ -711,7 +738,7 @@ class PanelScanService : Service() {
                   accountStatuses = accountStatuses(accountIndex),
                 )
               }
-              if (done % 500 == 0) setProcessSummary(applicationContext, "scan:RUNNING:a$accountCount:d$done:t$total")
+              if (done % 500L == 0L) setProcessSummary(applicationContext, "scan:RUNNING:a$accountCount:d$done:t$total")
               if (snapshotDue) getSystemService(NotificationManager::class.java)
                 .notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", if (total > Int.MAX_VALUE) ((done * Int.MAX_VALUE) / total).toInt() else done.toInt(), if (total > Int.MAX_VALUE) Int.MAX_VALUE else total.toInt()))
             }
