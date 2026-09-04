@@ -44,6 +44,7 @@ const CHECKS = [
   ["check-v17014-txt-export-dbhealth.js", "v17.0.14 TXT export write-verify + custom filename + DB health gate corrective", ""],
   ["check-v17015-typescript-theme-token.js", "v17.0.15 TypeScript theme-token corrective hard-gate", ""],
   ["check-v1710-ultrascale-scan.js", "v17.1.0 ultra-scale batch / backpressure / resume hard-gate", ""],
+  ["check-v1710-engineprofile-closure-typesafety.js", "v17.1.0 EngineProfile async-closure TypeScript corrective hard-gate", ""],
   ["check-v16142-integrated-hardgate.js", "v16.14.2 integrated recovery / sync / ownership / source-recovery / V7 contract", ""],
   ["checkdefs.js",     "Tanımsız sembol (hook/JSX bileşeni)",   ""],
   ["checkcalls.js",    "Tanımsız fonksiyon çağrısı",            ""],

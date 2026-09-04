@@ -2861,6 +2861,10 @@ export default function PlayerHost() {
   useEffect(() => {
     if (!visible || !channel || !v2ProfileReady || !playbackRequest?.expectsVideo) return;
     if (v2Profile.engine !== "vlc" || !useVLC || vlcVideoReady) return;
+    // v17.1.0 build corrective — EngineProfile discriminant daraltmasını async
+    // timeout sınırının dışına taşır. TypeScript closure içinde v2Profile'ın
+    // media3 olasılığını yeniden açabildiği için decoder primitive olarak yakalanır.
+    const vlcDecoder = v2Profile.decoder;
     const sid = activeSessionId;
     const profileKey = v2ProfileKey;
     const timeoutMs = sessionKind === "live" ? FIRST_FRAME_TIMEOUT_LIVE_MS + 3500 : FIRST_FRAME_TIMEOUT_VOD_MS + 4500;
@@ -2869,7 +2873,7 @@ export default function PlayerHost() {
       if (v2Profile.engine !== "vlc" || vlcVideoReady) return;
       const clock = vlcClockRef.current;
       void recordDiagnostic("player", "VLC_VIDEO_OUTPUT_TIMEOUT", {
-        decoder: v2Profile.decoder,
+        decoder: vlcDecoder,
         playing: vlcPlayingRef.current,
         buffering: isBufferingRef.current,
         videoMetaReady: vlcVideoMetaReady,
@@ -2878,7 +2882,7 @@ export default function PlayerHost() {
         timeoutMs,
       }, { sessionId: playerDiagnosticSessionRef.current });
       try { void vlcRef.current?.stop?.(); } catch {}
-      if (v2Profile.decoder === "hw") {
+      if (vlcDecoder === "hw") {
         setRecoveryMessage("VLC görüntü üretmedi; yazılım decoder deneniyor…");
         setError(null);
         setTechnicalError("VLC HW video-output timeout");
