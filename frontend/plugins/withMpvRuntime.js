@@ -1,5 +1,5 @@
 /**
- * KIZILKAN PLAYER ELITE v17.0.10 — MPV native runtime C++ ABI hardening.
+ * KIZILKAN PLAYER ELITE v17.0.12 — MPV native runtime C++ ABI/task-graph hardening.
  *
  * libmpv 1.0.0 is built against the libc++ shipped inside its own AAR. A generic
  * "pick any libc++_shared.so" rule can package another dependency's older C++
@@ -14,6 +14,7 @@ const path = require('path');
 
 const DEP = "implementation 'dev.jdtech.mpv:libmpv:1.0.0'";
 const MARKER = '// KIZILKAN v17.0.10: libmpv-owned libc++ runtime';
+const TASK_GRAPH_MARKER = '// KIZILKAN v17.0.12: explicit MPV libc++ producer-consumer task dependency';
 const KEEP = [
   '',
   '# KIZILKAN PLAYER ELITE v16.14.8+ — libmpv runtime class keep',
@@ -28,7 +29,7 @@ def kizilkanMpvLibcxxDir = file("$buildDir/generated/kizilkanMpvLibcxx")
 def kizilkanMpvAar = configurations.detachedConfiguration(
     dependencies.create("dev.jdtech.mpv:libmpv:1.0.0@aar")
 )
-tasks.register("prepareKizilkanMpvLibcxx") {
+def prepareKizilkanMpvLibcxx = tasks.register("prepareKizilkanMpvLibcxx") {
     outputs.dir(kizilkanMpvLibcxxDir)
     doLast {
         delete(kizilkanMpvLibcxxDir)
@@ -43,8 +44,11 @@ tasks.register("prepareKizilkanMpvLibcxx") {
 }
 android.sourceSets.main.jniLibs.srcDir(kizilkanMpvLibcxxDir)
 android.packagingOptions.jniLibs.pickFirsts += ["**/libc++_shared.so"]
+${TASK_GRAPH_MARKER}
 tasks.configureEach { t ->
-    if (t.name =~ /merge.*NativeLibs/) t.dependsOn("prepareKizilkanMpvLibcxx")
+    if (t.name =~ /merge.*JniLibFolders/ || t.name =~ /merge.*NativeLibs/) {
+        t.dependsOn(prepareKizilkanMpvLibcxx)
+    }
 }
 `;
 
