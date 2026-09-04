@@ -1,10 +1,12 @@
+// v17.1.0 BUILD-GATE CORRECTIVE: forward-semver version acceptance; feature assertions unchanged.
 const fs=require('fs'),p=require('path'),root=p.resolve(__dirname,'..');let f=0;const r=(x,m)=>{if(!x){console.error('HATA:',m);f++}else console.log('✓',m)};const rd=x=>fs.readFileSync(p.join(root,x),'utf8');
 const pkg=JSON.parse(rd('frontend/package.json')), app=JSON.parse(rd('frontend/app.json'));
 const store=rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/ScanJournalStore.kt');
 const svc=rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt');
 const mod=rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanModule.kt');
 const ui=rd('frontend/app/add-playlist.tsx'), prof=rd('frontend/app/profile-select.tsx');
-r(/^17\.0\.(?:[7-9]|[1-9]\d+)$/.test(pkg.version)&&app.expo.version===pkg.version&&Number(app.expo.android.versionCode)>=170007,'v17.0.7+ sürüm zinciri');
+const semver=v=>String(v||'').split('.').map(Number); const atLeast=(v,a,b,c)=>{const x=semver(v);return (x[0]>a)||(x[0]===a&&x[1]>b)||(x[0]===a&&x[1]===b&&x[2]>=c)};
+r(atLeast(pkg.version,17,0,7)&&app.expo.version===pkg.version&&Number(app.expo.android.versionCode)>=170007,'v17.0.7+ sürüm zinciri');
 r(store.includes('AndroidKeyStore')&&store.includes('AES/GCM/NoPadding'),'journal credential/payload Keystore AES-GCM');
 r(store.includes('UNIQUE(run_id,result_key)')&&store.includes('addResult'),'bulunan sonuç anında kalıcı + idempotent');
 r(store.includes('committed_cursor')&&svc.includes('coerceAtLeast(0L)'),'kalıcı konservatif checkpoint');

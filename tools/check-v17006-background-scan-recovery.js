@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// v17.1.0 BUILD-GATE CORRECTIVE: forward-semver version acceptance; feature assertions unchanged.
 const fs=require('fs'), path=require('path');
 const root=path.resolve(__dirname,'..');
 const read=p=>fs.readFileSync(path.join(root,p),'utf8');
@@ -14,7 +15,8 @@ const mod=read('frontend/modules/panel-scan/android/src/main/java/expo/modules/p
 const service=read('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt');
 const bridge=read('frontend/modules/panel-scan/index.ts');
 const manifest=read('frontend/modules/panel-scan/android/src/main/AndroidManifest.xml');
-req(/^17\.0\.(?:[6-9]|[1-9]\d+)$/.test(pkg.version),'package version 17.0.6+ değil');
+const semver=v=>String(v||'').split('.').map(Number); const atLeast=(v,a,b,c)=>{const x=semver(v);return (x[0]>a)||(x[0]===a&&x[1]>b)||(x[0]===a&&x[1]===b&&x[2]>=c)};
+req(atLeast(pkg.version,17,0,6),'package version 17.0.6+ değil');
 req(app.expo?.version===pkg.version && Number(app.expo?.android?.versionCode)>=170006,'app/versionCode 17.0.6+ değil');
 req(index.includes('recoverableScan') && index.includes('setScanRecoveryIntent') && index.includes('router.replace("/add-playlist")'),'bootstrap scan recovery route eksik');
 req(profile.includes('postAuthRoute') && profile.includes('getScanRecoveryIntent') && !profile.includes('recent === "/add-playlist"'),'PIN/profile recovery intent veya bayat route koruması eksik');

@@ -1,3 +1,4 @@
+// v17.1.0 BUILD-GATE CORRECTIVE: release/version checks are forward-semver compatible.
 const fs=require('fs'),p=require('path'),root=p.resolve(__dirname,'..');let f=0;
 const r=(x,m)=>{if(!x){console.error('HATA:',m);f++}else console.log('✓',m)};
 const rd=x=>fs.readFileSync(p.join(root,x),'utf8');
@@ -5,12 +6,13 @@ const pkg=JSON.parse(rd('frontend/package.json')), app=JSON.parse(rd('frontend/a
 const svc=rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt');
 const gate8=rd('tools/check-v17008-conservative-checkpoint.js');
 const semver=v=>String(v||'').split('.').map(Number); const atLeast=(v,a,b,c)=>{const x=semver(v);return (x[0]>a)||(x[0]===a&&x[1]>b)||(x[0]===a&&x[1]===b&&x[2]>=c)};
-r(atLeast(pkg.version,17,0,9)&&atLeast(app.expo.version,17,0,9)&&atLeast(app.expo.ios.buildNumber,17,0,9)&&app.expo.android.versionCode>=170009&&/^GPT ELITE v17\.0\.(?:9|[1-9][0-9]+) RC1$/.test(app.expo.extra?.kizilkanReleaseLabel||''),'v17.0.9+ sürüm zinciri');
+const releaseVersion=String(app.expo.extra?.kizilkanReleaseLabel||'').match(/^GPT ELITE v(\d+\.\d+\.\d+) RC1$/)?.[1]||'';
+r(atLeast(pkg.version,17,0,9)&&atLeast(app.expo.version,17,0,9)&&atLeast(app.expo.ios.buildNumber,17,0,9)&&app.expo.android.versionCode>=170009&&atLeast(releaseVersion,17,0,9),'v17.0.9+ sürüm zinciri');
 r(svc.includes('minOf(32, total)')&&!svc.includes('minOf(32L, total).toInt(); val pool'),'bulk workerCount Int/Long compile uyumu');
 r(svc.includes('if (total == 0L)')&&svc.includes('if (ordinal == 0L)')&&svc.includes('done % 500L == 0L'),'unified Long literal compile uyumu');
 r(!svc.includes('offsets[ai]'),'eski unresolved offsets kalıntısı yok');
 r(svc.includes('fullLayers')&&svc.includes('partialInLayer')&&svc.includes('layerStart'),'round-robin resume progress reconstruction mevcut');
-r(gate8.includes('17\\.0\\.')&&gate8.includes('170008'),'v17.0.8 koruma gate forward-compatible');
+r(gate8.includes('atLeast(pkg.version,17,0,8)')&&gate8.includes('170008'),'v17.0.8 koruma gate forward-compatible');
 
 // Deterministik asimetrik fixture: expected=[3,1,2], round-robin işler
 // (a0c0,a1c0,a2c0,a0c1,a2c1,a0c2). Her prefix için yeniden kurulan

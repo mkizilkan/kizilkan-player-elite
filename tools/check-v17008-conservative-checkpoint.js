@@ -1,8 +1,10 @@
+// v17.1.0 BUILD-GATE CORRECTIVE: forward-semver version acceptance; feature assertions unchanged.
 const fs=require('fs'),p=require('path'),root=p.resolve(__dirname,'..');let f=0;const r=(x,m)=>{if(!x){console.error('HATA:',m);f++}else console.log('✓',m)};const rd=x=>fs.readFileSync(p.join(root,x),'utf8');
 const pkg=JSON.parse(rd('frontend/package.json')), app=JSON.parse(rd('frontend/app.json'));
 const svc=rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt');
 const gate7=rd('tools/check-v17007-scan-journal-resume.js');
-r(/^17\.0\.(?:[89]|[1-9]\d+)$/.test(pkg.version)&&app.expo.version===pkg.version&&Number(app.expo.android.versionCode)>=170008,'v17.0.8+ sürüm zinciri');
+const semver=v=>String(v||'').split('.').map(Number); const atLeast=(v,a,b,c)=>{const x=semver(v);return (x[0]>a)||(x[0]===a&&x[1]>b)||(x[0]===a&&x[1]===b&&x[2]>=c)};
+r(atLeast(pkg.version,17,0,8)&&app.expo.version===pkg.version&&Number(app.expo.android.versionCode)>=170008,'v17.0.8+ sürüm zinciri');
 r(svc.includes('class ConservativeCursorTracker')&&svc.includes('AtomicLongArray'),'in-flight tabanlı konservatif cursor tracker');
 r(svc.includes('checkpointTracker.safeCursor(cursor.get().toLong())'),'single/bulk güvenli contiguous checkpoint');
 r(svc.includes('checkpointTracker.safeCursor(cursor.get())'),'unified güvenli 64-bit contiguous checkpoint');
@@ -11,7 +13,7 @@ r((svc.match(/checkpointTracker\.begin\(workerId/g)||[]).length>=3&&(svc.match(/
 r(svc.includes('val before = (safeStart - ai * candidateCount).coerceIn(0, candidateCount)'),'bulk resume hesap ilerlemesi yeniden kurulur');
 r(svc.includes('fullLayers')&&svc.includes('partialInLayer')&&svc.includes('completedByAccount[ai].set(before)'),'unified resume hesap ilerlemesi round-robin prefixinden yeniden kurulur');
 r(svc.includes('for (i in 0 until safeStart)')&&svc.includes('panelRemaining[key]?.decrementAndGet()'),'single resume panel ilerlemesi yeniden kurulur');
-r(gate7.includes('17\\.0\\.')&&gate7.includes('170007'),'v17.0.7 koruma gate forward-compatible');
+r(gate7.includes('atLeast(pkg.version,17,0,7)')&&gate7.includes('170007'),'v17.0.7 koruma gate forward-compatible');
 
 // Deterministik adversarial fixture: worker#0 indeks 1'de takılıyken diğerleri 100+'e ilerlesin.
 // Eski cursor-workerCount formülü 1'i atlayabilirdi; yeni minimum in-flight cursor 1'de kalmalıdır.
