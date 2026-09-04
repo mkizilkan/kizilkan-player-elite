@@ -15,6 +15,7 @@ import {
   useWindowDimensions,
   KeyboardAvoidingView,
   AppState,
+  BackHandler,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { usePlayer } from "@/src/player/PlayerContext";
@@ -78,7 +79,6 @@ import { TvFocusScope, useTvFocusMemory } from "@/src/store/TvFocusMemoryContext
 import { testStream, DEFAULT_USER_AGENT } from "@/src/utils/streamTest";
 import { loadOverrides, type OverrideMap } from "@/src/utils/overrides";
 import { getNowNext } from "@/src/utils/epg";
-import { BackHandler } from "react-native";
 import { VLCPlayer as VLCPlayerLib, VLC_AVAILABLE } from "@/src/native/vlc";
 import { KizilkanMpvView, KIZILKAN_MPV_AVAILABLE, getKizilkanMpvRuntimeStatus, isKizilkanMpvNativeReady, type KizilkanMpvHandle } from "@/modules/mpv-player";
 

@@ -2499,6 +2499,74 @@ export default function AddPlaylist() {
                 </View>
               )}
 
+              {/* v17.0.11: critical bulk controls stay outside/above the virtualized data body so account volume cannot clip them. */}
+              {bulkAdding && Platform.OS === "android" && KizilkanNativeCore.available && (
+                <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
+                  <FocusButton focusable onPress={async () => {
+                    const next = !bulkImportPaused;
+                    if (next) await KizilkanNativeCore.pauseBulkImport(); else await KizilkanNativeCore.resumeBulkImport();
+                    setBulkImportPaused(next);
+                  }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
+                    <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{bulkImportPaused ? "Eklemeye Devam Et" : "Eklemeyi Duraklat"}</Text>
+                  </FocusButton>
+                  <FocusButton focusable onPress={async () => {
+                    await KizilkanNativeCore.cancelBulkImport();
+                    setProgress(prev => `${prev || "Native ekleme"}\nDurdurma isteği gönderildi. Tamamlanan hesaplar cihazda korunur.`);
+                  }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surfaceSecondary}]}>
+                    <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>Eklemeyi Durdur</Text>
+                  </FocusButton>
+                </View>
+              )}
+
+              {!bulkScanFinished && (
+                <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
+                  <FocusButton focusable disabled={bulkAdding || bulkScanStopping || !bulkScanRunIdRef.current} onPress={async () => {
+                    const next = !bulkScanPausedRef.current;
+                    bulkScanPausedRef.current = next;
+                    setBulkScanPaused(next);
+                    if (bulkScanRunIdRef.current) { if (next) await PanelScan.pauseScan(bulkScanRunIdRef.current); else await PanelScan.resumeScan(bulkScanRunIdRef.current); }
+                    setProgress(prev => `${prev || "Çoklu hesap taraması"}\n${next ? "DURAKLATILDI — aktif istekler tamamlanır, yeni iş başlatılmaz." : "Tarama devam ediyor…"}`);
+                  }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary,opacity:bulkScanRunIdRef.current && !bulkScanStopping ? 1 : 0.5}]}>
+                    <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{!bulkScanRunIdRef.current ? "Hazırlanıyor" : bulkScanPaused ? "Devam Et" : "Duraklat"}</Text>
+                  </FocusButton>
+                  <FocusButton focusable disabled={bulkAdding || bulkScanStopping} onPress={async () => {
+                    if (bulkScanStopping) return;
+                    setBulkScanStopping(true);
+                    bulkScanCancelledRef.current = true;
+                    bulkScanPausedRef.current = false;
+                    setBulkScanPaused(false);
+                    bulkPreparationAbortRef.current?.abort();
+                    if (bulkScanRunIdRef.current) await PanelScan.cancelScan(bulkScanRunIdRef.current);
+                    setProgress("DURDURULUYOR — katalog hazırlığı/ağ istekleri kesiliyor; bulunan sonuçlar korunacak.");
+                  }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surfaceSecondary,opacity:bulkScanStopping?0.55:1}]}>
+                    <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>{bulkScanStopping ? "Durduruluyor…" : "Durdur"}</Text>
+                  </FocusButton>
+                </View>
+              )}
+
+              <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md,flexWrap:"wrap"}}>
+                <FocusButton focusable disabled={bulkAdding || bulkCandidates.length===0} onPress={()=>setBulkUseAllValidatedHosts(v=>!v)}
+                  style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
+                  <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>DNS: {bulkUseAllValidatedHosts?"Tüm Çalışanlar":"Yalnız Seçilenler"}</Text>
+                </FocusButton>
+                <FocusButton focusable disabled={bulkAdding || selectedBulkCandidateKeys.length===0 || !bulkScanFinished} onPress={chooseBulkArchiveMode}
+                  style={[styles.bulkBtn,{borderColor:colors.brandPrimary,backgroundColor:colors.surfaceSecondary,opacity:selectedBulkCandidateKeys.length&&bulkScanFinished?1:0.5}]}>
+                  <Text style={{color:colors.brandPrimary,fontWeight:FONT.weight.bold}}>TXT'ye Kaydet</Text>
+                </FocusButton>
+              </View>
+
+              <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
+                <FocusButton focusable disabled={bulkAdding || bulkCandidates.length===0}
+                  onPress={() => setSelectedBulkCandidateKeys(selectedBulkCandidateKeys.length===bulkCandidates.length?[]:bulkCandidates.map(c=>c.key))}
+                  style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
+                  <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{selectedBulkCandidateKeys.length===bulkCandidates.length && bulkCandidates.length?"Seçimi Kaldır":"Tümünü Seç"}</Text>
+                </FocusButton>
+                <FocusButton focusable disabled={bulkAdding || selectedBulkCandidateKeys.length===0 || !bulkScanFinished} onPress={addSelectedBulkCandidates}
+                  style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedBulkCandidateKeys.length && bulkScanFinished?1:0.5}]}>
+                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{!bulkScanFinished ? "Taramanın Bitmesini Bekleyin" : `${new Set(bulkCandidates.filter(c=>selectedBulkCandidateKeys.includes(c.key)).map(bulkSubscriptionKey)).size} Aboneliği Doğrula ve Ekle`}</Text>}
+                </FocusButton>
+              </View>
+
               <SectionList
                 style={styles.bulkScrollableBody}
                 sections={[
@@ -2551,75 +2619,7 @@ export default function AddPlaylist() {
                   </FocusButton>;
                 }}
                 ListFooterComponent={bulkScanFailures.length > 0 ? <View style={[styles.infoBanner,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}><Ionicons name="warning-outline" size={18} color={colors.error}/><Text style={{color:colors.onSurfaceSecondary,flex:1,fontSize:FONT.size.sm}}>Sonuç bulunamayanlar: {bulkScanFailures.slice(0,4).join(" · ")}{bulkScanFailures.length>4?` · +${bulkScanFailures.length-4} kayıt`:""}</Text></View> : null}
-              />
-
-              {bulkAdding && Platform.OS === "android" && KizilkanNativeCore.available && (
-                <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
-                  <FocusButton focusable onPress={async () => {
-                    const next = !bulkImportPaused;
-                    if (next) await KizilkanNativeCore.pauseBulkImport(); else await KizilkanNativeCore.resumeBulkImport();
-                    setBulkImportPaused(next);
-                  }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
-                    <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{bulkImportPaused ? "Eklemeye Devam Et" : "Eklemeyi Duraklat"}</Text>
-                  </FocusButton>
-                  <FocusButton focusable onPress={async () => {
-                    await KizilkanNativeCore.cancelBulkImport();
-                    setProgress(prev => `${prev || "Native ekleme"}\nDurdurma isteği gönderildi. Tamamlanan hesaplar cihazda korunur.`);
-                  }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surfaceSecondary}]}>
-                    <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>Eklemeyi Durdur</Text>
-                  </FocusButton>
-                </View>
-              )}
-
-              {!bulkScanFinished && (bulkNativeScanRef.current || !!bulkPreparationAbortRef.current || bulkScanPaused || bulkScanStopping) && (
-                <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
-                  <FocusButton focusable disabled={bulkAdding || bulkScanStopping || !bulkScanRunIdRef.current} onPress={async () => {
-                    const next = !bulkScanPausedRef.current;
-                    bulkScanPausedRef.current = next;
-                    setBulkScanPaused(next);
-                    if (bulkScanRunIdRef.current) { if (next) await PanelScan.pauseScan(bulkScanRunIdRef.current); else await PanelScan.resumeScan(bulkScanRunIdRef.current); }
-                    setProgress(prev => `${prev || "Çoklu hesap taraması"}\n${next ? "DURAKLATILDI — aktif istekler tamamlanır, yeni iş başlatılmaz." : "Tarama devam ediyor…"}`);
-                  }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary,opacity:bulkScanRunIdRef.current && !bulkScanStopping ? 1 : 0.5}]}>
-                    <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{!bulkScanRunIdRef.current ? "Hazırlanıyor" : bulkScanPaused ? "Devam Et" : "Duraklat"}</Text>
-                  </FocusButton>
-                  <FocusButton focusable disabled={bulkAdding || bulkScanStopping} onPress={async () => {
-                    if (bulkScanStopping) return;
-                    setBulkScanStopping(true);
-                    bulkScanCancelledRef.current = true;
-                    bulkScanPausedRef.current = false;
-                    setBulkScanPaused(false);
-                    bulkPreparationAbortRef.current?.abort();
-                    if (bulkScanRunIdRef.current) await PanelScan.cancelScan(bulkScanRunIdRef.current);
-                    setProgress("DURDURULUYOR — katalog hazırlığı/ağ istekleri kesiliyor; bulunan sonuçlar korunacak.");
-                  }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surfaceSecondary,opacity:bulkScanStopping?0.55:1}]}>
-                    <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>{bulkScanStopping ? "Durduruluyor…" : "Durdur"}</Text>
-                  </FocusButton>
-                </View>
-              )}
-
-              <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md,flexWrap:"wrap"}}>
-                <FocusButton focusable disabled={bulkAdding || bulkCandidates.length===0} onPress={()=>setBulkUseAllValidatedHosts(v=>!v)}
-                  style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
-                  <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>DNS: {bulkUseAllValidatedHosts?"Tüm Çalışanlar":"Yalnız Seçilenler"}</Text>
-                </FocusButton>
-                <FocusButton focusable disabled={bulkAdding || selectedBulkCandidateKeys.length===0 || !bulkScanFinished} onPress={chooseBulkArchiveMode}
-                  style={[styles.bulkBtn,{borderColor:colors.brandPrimary,backgroundColor:colors.surfaceSecondary,opacity:selectedBulkCandidateKeys.length&&bulkScanFinished?1:0.5}]}>
-                  <Text style={{color:colors.brandPrimary,fontWeight:FONT.weight.bold}}>TXT'ye Kaydet</Text>
-                </FocusButton>
-              </View>
-
-              <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
-                <FocusButton focusable disabled={bulkAdding || bulkCandidates.length===0}
-                  onPress={() => setSelectedBulkCandidateKeys(selectedBulkCandidateKeys.length===bulkCandidates.length?[]:bulkCandidates.map(c=>c.key))}
-                  style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
-                  <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{selectedBulkCandidateKeys.length===bulkCandidates.length && bulkCandidates.length?"Seçimi Kaldır":"Tümünü Seç"}</Text>
-                </FocusButton>
-                <FocusButton focusable disabled={bulkAdding || selectedBulkCandidateKeys.length===0 || !bulkScanFinished} onPress={addSelectedBulkCandidates}
-                  style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedBulkCandidateKeys.length && bulkScanFinished?1:0.5}]}>
-                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{!bulkScanFinished ? "Taramanın Bitmesini Bekleyin" : `${new Set(bulkCandidates.filter(c=>selectedBulkCandidateKeys.includes(c.key)).map(bulkSubscriptionKey)).size} Aboneliği Doğrula ve Ekle`}</Text>}
-                </FocusButton>
-              </View>
-            </View>
+              />            </View>
           </View>
         </Modal>
 
@@ -2951,12 +2951,12 @@ const styles = StyleSheet.create({
   matchModalCard: {
     width: "100%",
     maxWidth: 760,
-    maxHeight: "86%",
+    maxHeight: "92%",
     borderWidth: 1,
     borderRadius: RADIUS.lg,
     padding: SPACING.lg,
   },
-  bulkScrollableBody: { flexGrow: 0, flexShrink: 1, minHeight: 120 },
+  bulkScrollableBody: { flexGrow: 0, flexShrink: 1, minHeight: 120, marginTop: SPACING.sm },
   bulkSectionTitle: { fontSize: FONT.size.sm, fontWeight: FONT.weight.bold, marginTop: 4, marginBottom: 2 },
   bulkFoundTotal: { marginTop: 7, fontSize: FONT.size.xl, lineHeight: 30, fontWeight: FONT.weight.bold },
   bulkAccountMetaRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
