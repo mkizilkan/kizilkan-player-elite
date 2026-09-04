@@ -13,6 +13,23 @@ type NativeSnapshot = {
   tested?: number; total?: number; accountTested?: number; accountTotal?: number; accountIndex?: number;
   panelTested?: number; panelTotal?: number; found?: number; recoverable?: boolean; recovered?: boolean; panelName?: string; currentServer?: string; error?: string; terminalReason?: string; matches?: any[];
   accountStatuses?: Array<{ accountIndex:number; sourceRow?:number; name?:string; state:string; tested:number; total:number; remaining:number; found:number }>;
+  batchIndex?: number; batchCount?: number; batchSize?: number; batchStart?: number; batchEnd?: number;
+  requestedConcurrency?: number; effectiveConcurrency?: number; sourceFingerprint?: string;
+};
+
+
+export type UnifiedScanCompactJob = {
+  row?: number;
+  name?: string;
+  username: string;
+  password: string;
+  candidateSet: number;
+};
+
+export type UnifiedScanCompactPayload = {
+  version: 3;
+  candidateSets: any[][];
+  jobs: UnifiedScanCompactJob[];
 };
 
 let native: any = null;
@@ -54,6 +71,19 @@ export const PanelScan = {
     const payload = { version: 2, candidateSets, jobs: compactJobs };
     const initialTotal = jobs.reduce((sum, job) => sum + (job.candidates?.length || 0), 0);
     return normalizeStartResult(await native.startUnifiedScan(JSON.stringify(payload), jobs.length, initialTotal, concurrency, timeoutMs));
+  },
+  startUnifiedScanV171: async (payload: UnifiedScanCompactPayload, requestedConcurrency: number, timeoutMs: number, batchSize: number, sourceFingerprint: string): Promise<NativeScanStartResult | null> => {
+    if (!native) return null;
+    const initialTotal = payload.jobs.reduce((sum, job) => sum + (payload.candidateSets[job.candidateSet]?.length || 0), 0);
+    return normalizeStartResult(await native.startUnifiedScanV171(
+      JSON.stringify(payload),
+      payload.jobs.length,
+      initialTotal,
+      requestedConcurrency,
+      timeoutMs,
+      batchSize,
+      sourceFingerprint,
+    ));
   },
   cancelScan: async (runId: string) => native && runId ? native.cancelScan(runId) : false,
   pauseScan: async (runId: string) => native && runId ? native.pauseScan(runId) : false,

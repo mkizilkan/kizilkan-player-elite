@@ -58,6 +58,37 @@ class PanelScanService : Service() {
     private val crashRecorderInstalled = AtomicBoolean(false)
 
 
+    fun computeEffectiveConcurrency(context: Context, requested: Int, batchSize: Int): Int {
+      val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+      val memoryClass = am?.memoryClass ?: 256
+      // v17.1.0: kullanıcı 1..250 ister; gerçek worker sayısı cihaz sınıfı ve aktif batch ile sınırlandırılır.
+      // Bu bir gizli profil değil: requested/effective değerleri snapshot ve telemetry'de ayrı görünür.
+      val memoryCap = when {
+        memoryClass <= 192 -> 16
+        memoryClass <= 256 -> 24
+        memoryClass <= 384 -> 32
+        memoryClass <= 512 -> 48
+        else -> 64
+      }
+      val batchCap = (batchSize.coerceAtLeast(1) * 4).coerceAtLeast(8)
+      // Aktif process çalışma seti yükselirse sonraki batch worker sayısını otomatik düşür.
+      // Böylece kullanıcı yüksek bir requestedConcurrency seçse bile 1–2 GB PSS'e doğru
+      // büyüyen tarama kendi üzerinde backpressure uygular.
+      val pssMb = (Debug.getPss() / 1024).coerceAtLeast(0)
+      val pressureCap = when {
+        pssMb >= 1536 -> 8
+        pssMb >= 1024 -> 12
+        pssMb >= 768 -> 16
+        pssMb >= 512 -> 24
+        else -> 64
+      }
+      return requested.coerceIn(1, 250)
+        .coerceAtMost(memoryCap)
+        .coerceAtMost(batchCap)
+        .coerceAtMost(pressureCap)
+        .coerceAtLeast(1)
+    }
+
     private fun sanitizedCrashMessage(value: String): String = value
       .replace(Regex("https?://[^\\s]+", RegexOption.IGNORE_CASE), "<url>")
       .replace(Regex("(?i)(username|password|token|authorization|cookie|mac)=([^&\\s]+)"), "\$1=<redacted>")
@@ -87,6 +118,10 @@ class PanelScanService : Service() {
           .put("accountIndex", obj.optInt("accountIndex", -1))
           .put("accountTotal", obj.optInt("accountTotal", 0))
           .put("payloadBytes", obj.optLong("payloadBytes", 0L))
+          .put("batchIndex", obj.optInt("batchIndex", -1))
+          .put("batchSize", obj.optInt("batchSize", 0))
+          .put("requestedConcurrency", obj.optInt("requestedConcurrency", 0))
+          .put("effectiveConcurrency", obj.optInt("effectiveConcurrency", 0))
           .put("pssKb", Debug.getPss())
           .put("error", obj.optString("error", "").take(300))
         val next = JSONArray(); next.put(event)
@@ -235,7 +270,21 @@ class PanelScanService : Service() {
         Thread { when(mode){
           "single" -> { val o=JSONObject(payload); runScan(o.optString("candidates","[]"),o.optString("username"),o.optString("password"),concurrency,timeoutMs,start.toInt()) }
           "bulk" -> { val o=JSONObject(payload); runBulkScan(o.optString("candidates","[]"),o.optString("accounts","[]"),concurrency,timeoutMs,start.toInt()) }
-          "unified" -> runUnifiedScan(payload,concurrency,timeoutMs,start)
+          "unified" -> {
+            val batchSize = rec.optInt("batchSize", 0)
+            if (batchSize > 0) {
+              runUnifiedScanV171(
+                payload,
+                rec.optInt("requestedConcurrency", concurrency).coerceIn(1, 250),
+                rec.optInt("effectiveConcurrency", concurrency).coerceAtLeast(1),
+                timeoutMs,
+                batchSize,
+                rec.optString("sourceFingerprint", ""),
+                rec.optInt("accountCursor", 0),
+                rec.optLong("committedTested", start),
+              )
+            } else runUnifiedScan(payload,concurrency,timeoutMs,start)
+          }
           else -> throw IllegalStateException("Bilinmeyen recovery modu: $mode")
         } }.start()
       }
@@ -268,7 +317,11 @@ class PanelScanService : Service() {
         cancelled.set(false)
         paused.set(false)
         val stagingKey = intent.getStringExtra("stagingKey") ?: requestedRunId
-        val concurrency = intent.getIntExtra("concurrency", 8).coerceIn(1,32)
+        val concurrency = intent.getIntExtra("concurrency", 8).coerceIn(1,64)
+        val requestedConcurrency = intent.getIntExtra("requestedConcurrency", concurrency).coerceIn(1,250)
+        val batchSize = intent.getIntExtra("batchSize", 0).coerceIn(0,50)
+        val sourceFingerprint = intent.getStringExtra("sourceFingerprint") ?: ""
+        val v171 = intent.getBooleanExtra("v171", false) && batchSize > 0
         val timeoutMs = intent.getIntExtra("timeoutMs", 8000).coerceIn(2000,20000)
         val initialTotal = intent.getLongExtra("initialTotal", 0L).coerceAtLeast(0L)
         val accountCount = intent.getIntExtra("accountCount", 0).coerceAtLeast(0)
@@ -280,7 +333,14 @@ class PanelScanService : Service() {
           .put("state", "SERVICE_ENTER").put("total", initialTotal).put("accountTotal", accountCount).put("payloadBytes", payloadBytes))
         setProcessSummary(applicationContext, "scan:SERVICE_ENTER:a$accountCount:t$initialTotal:b$payloadBytes")
         startForeground(NOTIF_ID, notification("Birleşik panel taraması başlıyor…", 0, if (initialTotal > Int.MAX_VALUE) Int.MAX_VALUE else initialTotal.toInt()))
-        Thread({ runUnifiedScanFromStaging(stagingKey, concurrency, timeoutMs) }, "kizilkan-panel-scan-$requestedRunId").start()
+        Thread({
+          runUnifiedScanFromStaging(
+            stagingKey, concurrency, timeoutMs,
+            requestedConcurrency = requestedConcurrency,
+            batchSize = if (v171) batchSize else 0,
+            sourceFingerprint = sourceFingerprint,
+          )
+        }, "kizilkan-panel-scan-$requestedRunId").start()
       }
       ACTION_START -> {
         val requestedRunId = intent.getStringExtra("runId") ?: ""
@@ -319,6 +379,10 @@ class PanelScanService : Service() {
       .put("total", obj.optInt("total", 0))
       .put("found", obj.optInt("found", 0))
       .put("accountIndex", obj.optInt("accountIndex", -1))
+      .put("batchIndex", obj.optInt("batchIndex", -1))
+      .put("batchSize", obj.optInt("batchSize", 0))
+      .put("requestedConcurrency", obj.optInt("requestedConcurrency", 0))
+      .put("effectiveConcurrency", obj.optInt("effectiveConcurrency", 0))
       .put("pssKb", Debug.getPss())
       .put("error", obj.optString("error", "").take(300))
     val next = JSONArray(); next.put(event)
@@ -506,13 +570,17 @@ class PanelScanService : Service() {
       .put("tested",tested).put("total",total).put("accountTested",accountTested).put("accountTotal",accountTotal).put("panelTotal",panelTotal)
       .put("found",matches.size).put("panelName",panelName).put("currentServer",currentServer).put("accountIndex",accountIndex).put("matches",resultArray)
     if (accountStatuses != null) snap.put("accountStatuses", accountStatuses)
+    if (extra != null) {
+      val keys = extra.keys()
+      while (keys.hasNext()) { val key = keys.next(); snap.put(key, extra.opt(key)) }
+    }
     writeSnapshot(snap)
   }
 
   private fun writeUnifiedSnapshot(
     tested:Long,total:Long,accountTested:Int,accountTotal:Int,panelTotal:Int,matches:MutableList<JSONObject>,
     panelName:String,accountIndex:Int,runningValue:Boolean = tested < total && !cancelled.get(),
-    currentServer:String = "", accountStatuses:JSONArray? = null
+    currentServer:String = "", accountStatuses:JSONArray? = null, extra:JSONObject? = null
   ) {
     val resultArray = JSONArray()
     synchronized(matches) {
@@ -523,10 +591,22 @@ class PanelScanService : Service() {
       .put("tested",tested).put("total",total).put("accountTested",accountTested).put("accountTotal",accountTotal).put("panelTotal",panelTotal)
       .put("found",matches.size).put("panelName",panelName).put("currentServer",currentServer).put("accountIndex",accountIndex).put("matches",resultArray)
     if (accountStatuses != null) snap.put("accountStatuses", accountStatuses)
+    if (extra != null) {
+      val keys = extra.keys()
+      while (keys.hasNext()) { val key = keys.next(); snap.put(key, extra.opt(key)) }
+    }
     writeSnapshot(snap)
   }
 
-  private fun runUnifiedScanFromStaging(stagingKey: String, concurrency: Int, timeoutMs: Int, startCursor: Long = 0L) {
+  private fun runUnifiedScanFromStaging(
+    stagingKey: String,
+    concurrency: Int,
+    timeoutMs: Int,
+    startCursor: Long = 0L,
+    requestedConcurrency: Int = concurrency,
+    batchSize: Int = 0,
+    sourceFingerprint: String = "",
+  ) {
     val safeKey = stagingKey.replace(Regex("[^a-zA-Z0-9_.-]"), "_")
     val file = File(filesDir, "kizilkan/panel-scan-staging/$safeKey.json")
     try {
@@ -539,10 +619,27 @@ class PanelScanService : Service() {
         val root = JSONObject(raw); val jobs = root.optJSONArray("jobs") ?: JSONArray(); var n=0L
         val sets=root.optJSONArray("candidateSets"); for(i in 0 until jobs.length()){ val j=jobs.optJSONObject(i); val a=j?.optJSONArray("candidates") ?: sets?.optJSONArray(j?.optInt("candidateSet",-1) ?: -1); n += (a?.length() ?: 0) } ; n
       } catch (_:Throwable){0L}
-      ScanJournalStore.get(applicationContext).createSession(currentRunId, "unified", raw, concurrency, timeoutMs, estimatedTotal)
+      if (batchSize > 0) {
+        ScanJournalStore.get(applicationContext).createSessionV171(
+          currentRunId, "unified", raw,
+          requestedConcurrency.coerceIn(1,250), concurrency.coerceAtLeast(1), timeoutMs,
+          estimatedTotal, batchSize.coerceIn(5,15), sourceFingerprint,
+        )
+      } else {
+        ScanJournalStore.get(applicationContext).createSession(currentRunId, "unified", raw, concurrency, timeoutMs, estimatedTotal)
+      }
       // Credential içeren staging payload'ı RAM'e alındıktan hemen sonra diskten kaldır.
       runCatching { file.delete() }
-      runUnifiedScan(raw, concurrency, timeoutMs, startCursor)
+      if (batchSize > 0) runUnifiedScanV171(
+        raw,
+        requestedConcurrency.coerceIn(1,250),
+        concurrency.coerceAtLeast(1),
+        timeoutMs,
+        batchSize.coerceIn(5,15),
+        sourceFingerprint,
+        0,
+        startCursor,
+      ) else runUnifiedScan(raw, concurrency, timeoutMs, startCursor)
     } catch (e: Throwable) {
       writeSnapshot(JSONObject().put("mode","unified").put("running",false)
         .put("error", "${e.javaClass.simpleName}: ${e.message ?: "Birleşik tarama staging hatası"}"))
@@ -558,6 +655,269 @@ class PanelScanService : Service() {
       stopSelf()
     } finally {
       runCatching { file.delete() }
+    }
+  }
+
+  /**
+   * v17.1.0 Ultra-Scale unified scan.
+   *
+   * Temel fark: bütün hesap×DNS uzayını aynı anda worker'lara açmaz. En fazla
+   * `batchSize` hesap aktif çalışma setindedir. Batch tamamlandığında journal
+   * atomik checkpoint alır; process ölürse yarım batch güvenle yeniden taranır.
+   */
+  private fun runUnifiedScanV171(
+    jobsRaw: String,
+    requestedConcurrency: Int,
+    initialEffectiveConcurrency: Int,
+    timeoutMs: Int,
+    batchSize: Int,
+    sourceFingerprint: String,
+    startAccount: Int = 0,
+    committedTestedStart: Long = 0L,
+  ) {
+    try {
+      val root = JSONObject(jobsRaw)
+      val jobs = root.optJSONArray("jobs") ?: throw IllegalArgumentException("Tarama işleri yok")
+      val candidateSets = root.optJSONArray("candidateSets") ?: JSONArray()
+      val accountCount = jobs.length()
+      if (accountCount == 0) throw IllegalArgumentException("Tarama için hesap yok")
+
+      fun candidatesFor(accountIndex: Int): JSONArray {
+        val job = jobs.optJSONObject(accountIndex) ?: return JSONArray()
+        job.optJSONArray("candidates")?.let { return it }
+        val setIndex = job.optInt("candidateSet", -1)
+        return if (setIndex in 0 until candidateSets.length()) candidateSets.optJSONArray(setIndex) ?: JSONArray() else JSONArray()
+      }
+
+      var total = 0L
+      val panelSet = linkedSetOf<String>()
+      for (si in 0 until candidateSets.length()) {
+        val arr = candidateSets.optJSONArray(si) ?: continue
+        for (ci in 0 until arr.length()) {
+          val c = arr.optJSONObject(ci) ?: continue
+          panelSet.add("${c.optString("code")}\u0000${c.optString("panelName")}")
+        }
+      }
+      for (ai in 0 until accountCount) total += candidatesFor(ai).length().toLong()
+      if (total <= 0L) throw IllegalArgumentException("Tarama için aday sunucu yok")
+
+      val safeBatchSize = batchSize.coerceIn(5, 15)
+      val batchCount = ((accountCount + safeBatchSize - 1) / safeBatchSize).coerceAtLeast(1)
+      var batchStart = startAccount.coerceIn(0, accountCount)
+      val tested = AtomicLong(committedTestedStart.coerceIn(0L, total))
+      val matches = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+      val saved = ScanJournalStore.get(applicationContext).results(currentRunId)
+      for (i in 0 until saved.length()) saved.optJSONObject(i)?.let { matches.add(it) }
+      val journal = ScanJournalStore.get(applicationContext)
+      val lastUiSnapshotAt = AtomicLong(0L)
+      val requested = requestedConcurrency.coerceIn(1, 250)
+      var lastEffective = initialEffectiveConcurrency.coerceAtLeast(1)
+
+      recordExternalDiagnostic(applicationContext, JSONObject()
+        .put("runId", currentRunId).put("mode", "unified").put("state", "V171_BATCH_RUNTIME_START")
+        .put("tested", tested.get()).put("total", total).put("accountIndex", batchStart)
+        .put("accountTotal", accountCount).put("batchSize", safeBatchSize)
+        .put("requestedConcurrency", requested).put("effectiveConcurrency", lastEffective))
+
+      while (batchStart < accountCount && !cancelled.get()) {
+        while (paused.get() && !cancelled.get()) Thread.sleep(100)
+        if (cancelled.get()) break
+
+        val batchEnd = minOf(accountCount, batchStart + safeBatchSize)
+        val batchIndex = batchStart / safeBatchSize
+        val batchAccountCount = batchEnd - batchStart
+        val expected = IntArray(batchAccountCount)
+        val completed = Array(batchAccountCount) { AtomicInteger(0) }
+        val foundCounts = IntArray(batchAccountCount)
+        var batchWork = 0L
+        for (local in 0 until batchAccountCount) {
+          val ai = batchStart + local
+          expected[local] = candidatesFor(ai).length()
+          batchWork += expected[local].toLong()
+        }
+        if (batchWork == 0L) {
+          journal.checkpointUnified(currentRunId, batchEnd, tested.get())
+          batchStart = batchEnd
+          continue
+        }
+
+        val effective = computeEffectiveConcurrency(applicationContext, requested, safeBatchSize)
+          .coerceAtMost(batchWork.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(1))
+        lastEffective = effective
+        val cursor = AtomicLong(0L)
+        val workerFailure = AtomicReference<Throwable?>(null)
+        val pool = Executors.newFixedThreadPool(effective)
+        activeExecutor = pool
+
+        var maxCandidate = 0
+        for (n in expected) maxCandidate = maxOf(maxCandidate, n)
+        val layerEnds = LongArray(maxCandidate)
+        var cumulative = 0L
+        for (ci in 0 until maxCandidate) {
+          for (local in 0 until batchAccountCount) if (ci < expected[local]) cumulative++
+          layerEnds[ci] = cumulative
+        }
+
+        fun resolveBatchWork(index: Long): Pair<Int, Int> {
+          var lo = 0
+          var hi = layerEnds.lastIndex
+          while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (index < layerEnds[mid]) hi = mid else lo = mid + 1
+          }
+          val ci = lo
+          val before = if (ci == 0) 0L else layerEnds[ci - 1]
+          var ordinal = index - before
+          for (local in 0 until batchAccountCount) {
+            if (ci < expected[local]) {
+              if (ordinal == 0L) return local to ci
+              ordinal--
+            }
+          }
+          throw IndexOutOfBoundsException("batch work index=$index")
+        }
+
+        fun statusArray(activeLocal: Int): JSONArray {
+          val arr = JSONArray()
+          for (local in 0 until batchAccountCount) {
+            val ai = batchStart + local
+            val job = jobs.optJSONObject(ai) ?: JSONObject()
+            val done = completed[local].get()
+            val state = when {
+              done >= expected[local] && expected[local] > 0 -> "completed"
+              done > 0 || local == activeLocal -> "running"
+              else -> "queued"
+            }
+            arr.put(JSONObject()
+              .put("accountIndex", ai)
+              .put("sourceRow", job.optInt("row", ai + 1))
+              .put("name", job.optString("name"))
+              .put("state", state)
+              .put("tested", done)
+              .put("total", expected[local])
+              .put("remaining", (expected[local] - done).coerceAtLeast(0))
+              .put("found", foundCounts[local]))
+          }
+          return arr
+        }
+
+        val batchStartTested = tested.get()
+        recordExternalDiagnostic(applicationContext, JSONObject()
+          .put("runId", currentRunId).put("mode", "unified").put("state", "BATCH_START")
+          .put("tested", tested.get()).put("total", total).put("accountIndex", batchStart)
+          .put("accountTotal", accountCount).put("batchIndex", batchIndex).put("batchSize", safeBatchSize)
+          .put("requestedConcurrency", requested).put("effectiveConcurrency", effective))
+        setProcessSummary(applicationContext, "scan:BATCH_${batchIndex+1}_OF_$batchCount:a$batchStart-$batchEnd:w$effective")
+
+        repeat(effective) {
+          pool.submit {
+            try {
+              while (!cancelled.get() && workerFailure.get() == null) {
+                while (paused.get() && !cancelled.get()) Thread.sleep(100)
+                if (cancelled.get() || workerFailure.get() != null) break
+                val wi = cursor.getAndIncrement()
+                if (wi >= batchWork) break
+                val (local, candidateIndex) = resolveBatchWork(wi)
+                val accountIndex = batchStart + local
+                val account = jobs.getJSONObject(accountIndex)
+                val candidate = candidatesFor(accountIndex).getJSONObject(candidateIndex)
+                val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
+                if (login != null) {
+                  val hit = JSONObject()
+                    .put("accountIndex", accountIndex)
+                    .put("sourceRow", account.optInt("row", accountIndex + 1))
+                    .put("username", account.optString("username"))
+                    .put("name", account.optString("name"))
+                    .put("panelName", candidate.optString("panelName"))
+                    .put("code", candidate.optString("code"))
+                    .put("server", candidate.optString("server"))
+                    .put("login", sanitizeLogin(login))
+                  if (journal.addResult(currentRunId, "$accountIndex|${candidate.optString("server")}", hit.toString())) {
+                    matches.add(hit)
+                    synchronized(foundCounts) { foundCounts[local]++ }
+                  }
+                }
+                completed[local].incrementAndGet()
+                val done = tested.incrementAndGet()
+                val now = System.currentTimeMillis()
+                val prev = lastUiSnapshotAt.get()
+                val snapshotDue = login != null || done == total || (now - prev >= 300L && lastUiSnapshotAt.compareAndSet(prev, now))
+                if (snapshotDue) {
+                  val completedAccounts = batchStart + completed.indices.count { expected[it] == 0 || completed[it].get() >= expected[it] }
+                  writeUnifiedSnapshot(
+                    done, total, completedAccounts, accountCount, panelSet.size, matches,
+                    candidate.optString("panelName"), accountIndex,
+                    currentServer = candidate.optString("server"),
+                    accountStatuses = statusArray(local),
+                    extra = JSONObject()
+                      .put("batchIndex", batchIndex)
+                      .put("batchCount", batchCount)
+                      .put("batchSize", safeBatchSize)
+                      .put("batchStart", batchStart)
+                      .put("batchEnd", batchEnd)
+                      .put("requestedConcurrency", requested)
+                      .put("effectiveConcurrency", effective)
+                      .put("sourceFingerprint", sourceFingerprint.take(128)),
+                  )
+                }
+              }
+            } catch (e: InterruptedException) {
+              Thread.currentThread().interrupt()
+              if (!cancelled.get()) workerFailure.compareAndSet(null, e)
+            } catch (e: Throwable) {
+              workerFailure.compareAndSet(null, e)
+            }
+          }
+        }
+        pool.shutdown()
+        while (!pool.isTerminated) Thread.sleep(100)
+        workerFailure.get()?.let { if (!cancelled.get()) throw it }
+        if (cancelled.get()) break
+
+        // Atomik ilerleme sınırı: yalnız batch bütünü başarıyla bittikten sonra commit.
+        journal.checkpointUnified(currentRunId, batchEnd, tested.get())
+        recordExternalDiagnostic(applicationContext, JSONObject()
+          .put("runId", currentRunId).put("mode", "unified").put("state", "BATCH_COMPLETE")
+          .put("tested", tested.get()).put("total", total).put("accountIndex", batchEnd)
+          .put("accountTotal", accountCount).put("batchIndex", batchIndex).put("batchSize", safeBatchSize)
+          .put("batchWork", tested.get() - batchStartTested).put("found", matches.size)
+          .put("requestedConcurrency", requested).put("effectiveConcurrency", effective))
+        batchStart = batchEnd
+      }
+
+      writeUnifiedSnapshot(
+        tested.get(), total, batchStart.coerceAtMost(accountCount), accountCount, panelSet.size, matches,
+        "", -1, false, currentServer = "", accountStatuses = JSONArray(),
+        extra = JSONObject()
+          .put("batchIndex", (batchStart / safeBatchSize).coerceAtMost(batchCount))
+          .put("batchCount", batchCount)
+          .put("batchSize", safeBatchSize)
+          .put("batchStart", batchStart)
+          .put("batchEnd", batchStart)
+          .put("requestedConcurrency", requested)
+          .put("effectiveConcurrency", lastEffective)
+          .put("sourceFingerprint", sourceFingerprint.take(128)),
+      )
+    } catch (e: Throwable) {
+      writeSnapshot(JSONObject().put("mode","unified").put("running",false)
+        .put("error", "${e.javaClass.simpleName}: ${e.message ?: "v17.1 birleşik tarama hatası"}"))
+      recordExternalDiagnostic(applicationContext, JSONObject()
+        .put("runId", currentRunId).put("mode", "unified").put("state", "V171_RUNTIME_FAILED")
+        .put("error", "${e.javaClass.simpleName}: ${e.message ?: ""}"))
+    } finally {
+      val finishedRunId = currentRunId
+      finalizeSnapshot("unified")
+      ScanJournalStore.get(applicationContext).finish(
+        finishedRunId,
+        try { JSONObject(getSharedPreferences(PREFS,0).getString(KEY_SNAPSHOT,"{}") ?: "{}").optString("state","FAILED") }
+        catch (_:Throwable) { "FAILED" }
+      )
+      activeExecutor = null
+      activeConnections.clear()
+      running = false
+      releaseRun(finishedRunId)
+      stopForeground(STOP_FOREGROUND_REMOVE)
+      stopSelf()
     }
   }
 

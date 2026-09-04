@@ -12,7 +12,7 @@ const plugin=read('frontend/plugins/withMpvRuntime.js');
 const denetle=read('tools/denetle.js');
 function ok(c,m){if(!c){console.error('FAIL — '+m);process.exit(1)}console.log('✓ '+m)}
 const semverAtLeast=(v,min)=>{const a=String(v).split('.').map(Number),b=String(min).split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)>(b[i]||0))return true;if((a[i]||0)<(b[i]||0))return false}return true};
-ok(semverAtLeast(pkg.version,'17.0.13')&&semverAtLeast(app.expo.version,'17.0.13')&&semverAtLeast(app.expo.ios.buildNumber,'17.0.13')&&app.expo.android.versionCode>=170013&&String(app.expo.extra?.kizilkanReleaseLabel||'').startsWith('GPT ELITE v17.0.'),'v17.0.13+ sürüm zinciri');
+ok(semverAtLeast(pkg.version,'17.0.13')&&semverAtLeast(app.expo.version,'17.0.13')&&semverAtLeast(app.expo.ios.buildNumber,'17.0.13')&&app.expo.android.versionCode>=170013&&String(app.expo.extra?.kizilkanReleaseLabel||'').startsWith('GPT ELITE v17.'),'v17.0.13+ sürüm zinciri');
 ok(add.includes('const [bulkFileParsed, setBulkFileParsed]')&&add.includes('const file = bulkFileParsed ??'),'büyük dosya tek-parse sonucu state ile tekrar kullanıluyor');
 ok(!add.includes('bulkFileText.trim() ? parseBulkAccounts(bulkFileText)'),'dosya ikinci kez parse edilmiyor');
 ok(add.includes('removeClippedSubviews={false}'),'Android/Fabric clipping crash yolu kapalı');

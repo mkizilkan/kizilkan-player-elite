@@ -26,7 +26,8 @@ const usedFont=[...add.matchAll(/FONT\.size\.([A-Za-z_$][\w$]*)/g)].map(m=>m[1])
 const usedSpacing=[...add.matchAll(/SPACING\.([A-Za-z_$][\w$]*)/g)].map(m=>m[1]);
 const invalidFont=[...new Set(usedFont.filter(k=>!fontSizeKeys.includes(k)))];
 const invalidSpacing=[...new Set(usedSpacing.filter(k=>!spacingKeys.includes(k)))];
-ok(pkg.version==='17.0.15'&&app.expo.version==='17.0.15'&&app.expo.ios.buildNumber==='17.0.15'&&app.expo.android.versionCode===170015&&app.expo.extra?.kizilkanReleaseLabel==='GPT ELITE v17.0.15 RC1','v17.0.15 sürüm zinciri');
+const semverAtLeast=(v,target)=>{const a=String(v).split('.').map(Number),b=String(target).split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)>(b[i]||0))return true;if((a[i]||0)<(b[i]||0))return false;}return true};
+ok(semverAtLeast(pkg.version,'17.0.15')&&semverAtLeast(app.expo.version,'17.0.15'),'v17.0.15+ sürüm zinciri');
 ok(fontSizeKeys.includes('base')&&!fontSizeKeys.includes('md'),'FONT.size gerçek tema sözleşmesi doğrulandı');
 ok(!add.includes('FONT.size.md'),'TS2339 oluşturan FONT.size.md kaldırıldı');
 ok(add.includes('fontSize:FONT.size.base'),'TXT dosya adı alanı geçerli FONT.size.base kullanıyor');

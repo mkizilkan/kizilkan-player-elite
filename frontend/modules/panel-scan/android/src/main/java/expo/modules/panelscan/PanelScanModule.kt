@@ -109,6 +109,54 @@ class PanelScanModule : Module() {
       }
     }
 
+    AsyncFunction("startUnifiedScanV171") { jobsJson: String, accountCount: Int, initialTotal: Double, requestedConcurrency: Int, timeoutMs: Int, batchSize: Int, sourceFingerprint: String ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      PanelScanService.installCrashRecorder(context)
+      val runId = UUID.randomUUID().toString()
+      val claim = PanelScanService.claimRun(context, "unified", runId)
+      if (!claim.first) return@AsyncFunction mapOf("accepted" to false, "state" to "BUSY", "runId" to runId, "activeRunId" to claim.second)
+      val stagingDir = File(context.filesDir, "kizilkan/panel-scan-staging").apply { mkdirs() }
+      val stagingFile = File(stagingDir, "$runId.json")
+      try {
+        stagingDir.listFiles()?.filter { it.isFile && System.currentTimeMillis() - it.lastModified() > 24L * 60L * 60L * 1000L }?.forEach { runCatching { it.delete() } }
+        stagingFile.bufferedWriter(Charsets.UTF_8).use { it.write(jobsJson) }
+        val payloadBytes = stagingFile.length()
+        val safeAccountCount = accountCount.coerceAtLeast(0)
+        val safeInitialTotal = initialTotal.toLong().coerceAtLeast(0L)
+        val safeRequested = requestedConcurrency.coerceIn(1, 250)
+        val safeBatch = batchSize.coerceIn(5, 15)
+        val effective = PanelScanService.computeEffectiveConcurrency(context, safeRequested, safeBatch)
+        PanelScanService.recordExternalDiagnostic(context, JSONObject()
+          .put("runId", runId).put("mode", "unified").put("state", "V171_STAGED")
+          .put("total", safeInitialTotal).put("accountTotal", safeAccountCount).put("payloadBytes", payloadBytes)
+          .put("batchSize", safeBatch).put("requestedConcurrency", safeRequested).put("effectiveConcurrency", effective))
+        PanelScanService.setProcessSummary(context, "scan:V171_STAGED:a$safeAccountCount:t$safeInitialTotal:b$payloadBytes")
+        val intent = Intent(context, PanelScanService::class.java).apply {
+          action = PanelScanService.ACTION_UNIFIED_START
+          putExtra("stagingKey", runId)
+          putExtra("initialTotal", safeInitialTotal)
+          putExtra("accountCount", safeAccountCount)
+          putExtra("payloadBytes", payloadBytes)
+          putExtra("concurrency", effective)
+          putExtra("requestedConcurrency", safeRequested)
+          putExtra("batchSize", safeBatch)
+          putExtra("sourceFingerprint", sourceFingerprint.take(128))
+          putExtra("v171", true)
+          putExtra("timeoutMs", timeoutMs.coerceIn(2000, 20000))
+          putExtra("runId", runId)
+        }
+        ContextCompat.startForegroundService(context, intent)
+        mapOf("accepted" to true, "state" to "STARTING", "runId" to runId, "activeRunId" to runId)
+      } catch (e: Throwable) {
+        runCatching { stagingFile.delete() }
+        PanelScanService.recordExternalDiagnostic(context, JSONObject()
+          .put("runId", runId).put("mode", "unified").put("state", "V171_DISPATCH_FAILED")
+          .put("error", "${e.javaClass.simpleName}: ${e.message ?: ""}"))
+        PanelScanService.releaseRun(runId)
+        throw e
+      }
+    }
+
     AsyncFunction("cancelScan") { runId: String ->
       val context = appContext.reactContext ?: return@AsyncFunction false
       if (runId.isBlank()) return@AsyncFunction false

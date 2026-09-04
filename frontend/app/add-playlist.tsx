@@ -76,6 +76,25 @@ type BulkResolvedCandidate = {
 const PENDING_BULK_SCAN_KEY = "kizilkan.pendingBulkScan.v15.2.3";
 const PENDING_BULK_IMPORT_KEY = "kizilkan.pendingBulkImport.v15.2.3";
 
+function stableScanSourceFingerprint(accounts: BulkAccountInput[], directorySource: string): string {
+  // v17.1.0: credential değerlerini telemetry'ye taşımadan aynı kaynak setini ayırt et.
+  // FNV-1a benzeri non-cryptographic fingerprint yalnız recovery eşleşmesi içindir.
+  let h = 0x811c9dc5;
+  const feed = (value: string) => {
+    for (let i = 0; i < value.length; i++) {
+      h ^= value.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+  };
+  feed(String(accounts.length));
+  feed(directorySource.trim());
+  for (const a of accounts) {
+    feed(String(a.row)); feed(a.username); feed(a.password);
+    feed(a.server || ""); feed(a.serverCode || ""); feed(a.panelName || "");
+  }
+  return `v171-${accounts.length}-${h.toString(16).padStart(8, "0")}`;
+}
+
 function stablePlaylistId(prefix: string, identity: string): string {
   const key = String(identity || "").trim().toLowerCase();
   let h = 0x811c9dc5;
@@ -265,6 +284,10 @@ export default function AddPlaylist() {
     const resolve=categoryResolveRef.current; categoryResolveRef.current=null; setCategoryPicker(null); resolve?.(value);
   }, []);
   const [scanSpeed, setScanSpeed] = useState<ScanSpeed>("balanced");
+  // v17.1.0 ultra-scale: bulk tarama için kullanıcı kontrollü değerler.
+  const [bulkCustomConcurrencyEnabled, setBulkCustomConcurrencyEnabled] = useState(false);
+  const [bulkRequestedConcurrency, setBulkRequestedConcurrency] = useState("32");
+  const [bulkBatchSize, setBulkBatchSize] = useState("15");
   const [error, setError] = useState<string | null>(null);
   const nativeScanTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const nativeScanSeenRef = React.useRef<Set<string>>(new Set());
@@ -290,6 +313,8 @@ export default function AddPlaylist() {
   // gereksiz yere tutma. Seçim anındaki tek parse sonucu saklanır.
   const [bulkFileParsed, setBulkFileParsed] = useState<BulkAccountParseResult | null>(null);
   const [bulkFileName, setBulkFileName] = useState("");
+  const [bulkFilePicking, setBulkFilePicking] = useState(false);
+  const bulkFilePickerInFlightRef = React.useRef(false);
   const [bulkPreviewOpen, setBulkPreviewOpen] = useState(false);
   // v17.0.14: TXT dışa aktarmada kullanıcı dosya adını düzenleyebilir;
   // kaydetme işi ayrı state ile izlenir, ana tarama loading durumuna karışmaz.
@@ -945,6 +970,12 @@ export default function AddPlaylist() {
   };
 
   const pickBulkFile = async () => {
+    if (bulkFilePickerInFlightRef.current) {
+      void recordDiagnostic("import", "BULK_FILE_PICKER_SUPPRESSED", { reason: "single-flight" }, { stage: "bulk-file-preview", outcome: "suppressed" });
+      return;
+    }
+    bulkFilePickerInFlightRef.current = true;
+    setBulkFilePicking(true);
     const startedAt = Date.now();
     let pickedAt = startedAt;
     let readAt = startedAt;
@@ -989,6 +1020,9 @@ export default function AddPlaylist() {
         totalMs: Date.now() - startedAt,
       }, { stage: "bulk-file-preview", outcome: "failed", durationMs: Date.now() - startedAt, errorClass: e?.name || "BulkFileImportError" });
       setError("Toplu hesap dosyası okunamadı: " + String(e?.message || e));
+    } finally {
+      bulkFilePickerInFlightRef.current = false;
+      setBulkFilePicking(false);
     }
   };
 
@@ -1213,7 +1247,7 @@ export default function AddPlaylist() {
     }
   };
 
-  const runNativeBulkAccounts = async (accounts: BulkAccountInput[], cfg: { concurrency:number; timeoutMs:number; accountConcurrency:number; label:string }, signal?: AbortSignal): Promise<{ found:number; completed:number; cancelled:boolean }> => {
+  const runNativeBulkAccounts = async (accounts: BulkAccountInput[], cfg: { concurrency:number; timeoutMs:number; accountConcurrency:number; label:string; requestedConcurrency?:number; batchSize?:number }, signal?: AbortSignal): Promise<{ found:number; completed:number; cancelled:boolean }> => {
     const finishScanTask = markTask("scan:panel-unified", { mode: "unified", accounts: accounts.length });
     try {
     if (!PanelScan.available || Platform.OS !== "android") throw new Error("__NATIVE_SCAN_UNAVAILABLE__");
@@ -1225,40 +1259,83 @@ export default function AddPlaylist() {
       : await fetchPanelDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
     if (signal?.aborted || bulkScanCancelledRef.current) return { found: 0, completed: 0, cancelled: true };
     const normalizeName = (v:string) => v.trim().toLocaleLowerCase("tr");
-    const jobs = accounts.map((a) => {
-      let candidates: Array<{panelName:string; code:string; server:string}> = [];
+    // v17.1.0: Aynı dev panel listesini 50K hesabın her birinde yeniden materialize etme.
+    // Hesaplar yalnız candidateSet indeksini taşır; büyük auto-directory dizisi tek kopyadır.
+    const candidateSets: Array<Array<{panelName:string; code:string; server:string}>> = [];
+    const candidateSetByKey = new Map<string, number>();
+    const compactJobs: Array<{ row:number; name:string; username:string; password:string; candidateSet:number }> = [];
+    const missingAccounts: string[] = [];
+    const getCandidateSet = (key: string, factory: () => Array<{panelName:string; code:string; server:string}>) => {
+      const existing = candidateSetByKey.get(key);
+      if (existing !== undefined) return existing;
+      const candidates = factory();
+      if (!candidates.length) return -1;
+      const index = candidateSets.length;
+      candidateSets.push(candidates);
+      candidateSetByKey.set(key, index);
+      return index;
+    };
+    for (const a of accounts) {
+      let setKey = "";
+      let factory: () => Array<{panelName:string; code:string; server:string}>;
       if (a.server) {
         const restoredHosts = Array.from(new Set([a.server, ...(a.validatedHosts || [])]));
-        candidates = restoredHosts.map(server => ({ panelName: a.panelName || a.name || hostName(a.server!), code: a.serverCode || "", server }));
+        setKey = `server:${a.server}|${restoredHosts.join("|")}`;
+        factory = () => restoredHosts.map(server => ({ panelName: a.panelName || a.name || hostName(a.server!), code: a.serverCode || "", server }));
       } else if (a.serverCode) {
-        const item = directory.find(x => x.code === a.serverCode);
-        if (item) candidates = item.hosts.map(server => ({ panelName:item.panelName, code:item.code, server }));
+        setKey = `code:${a.serverCode}`;
+        factory = () => {
+          const item = directory.find(x => x.code === a.serverCode);
+          return item ? item.hosts.map(server => ({ panelName:item.panelName, code:item.code, server })) : [];
+        };
       } else if (a.panelName) {
         const wanted = normalizeName(a.panelName);
-        const exactCode = directory.find(x => x.code === a.panelName);
-        const byName = directory.filter(x => normalizeName(x.panelName) === wanted);
-        const item = exactCode || (byName.length === 1 ? byName[0] : undefined);
-        if (item) candidates = item.hosts.map(server => ({ panelName:item.panelName, code:item.code, server }));
+        setKey = `panel:${wanted}`;
+        factory = () => {
+          const exactCode = directory.find(x => x.code === a.panelName);
+          const byName = directory.filter(x => normalizeName(x.panelName) === wanted);
+          const item = exactCode || (byName.length === 1 ? byName[0] : undefined);
+          return item ? item.hosts.map(server => ({ panelName:item.panelName, code:item.code, server })) : [];
+        };
       } else {
-        for (const item of directory) for (const server of item.hosts) candidates.push({ panelName:item.panelName, code:item.code, server });
+        setKey = "auto:all-directory";
+        factory = () => {
+          const candidates: Array<{panelName:string; code:string; server:string}> = [];
+          for (const item of directory) for (const server of item.hosts) candidates.push({ panelName:item.panelName, code:item.code, server });
+          return candidates;
+        };
       }
-      return { row:a.row, name:a.name, username:a.username, password:a.password, candidates };
-    });
-    if (jobs.some(j => !j.candidates.length)) {
-      const missing = jobs.filter(j => !j.candidates.length).map(j => j.name || j.username).slice(0,5).join(", ");
-      throw new Error(`Bazı hesaplar için panel/DNS adayı hazırlanamadı: ${missing}`);
+      const candidateSet = getCandidateSet(setKey, factory);
+      if (candidateSet < 0) {
+        if (missingAccounts.length < 5) missingAccounts.push(a.name || a.username);
+        continue;
+      }
+      compactJobs.push({ row:a.row, name:a.name, username:a.username, password:a.password, candidateSet });
     }
+    if (compactJobs.length !== accounts.length) {
+      throw new Error(`Bazı hesaplar için panel/DNS adayı hazırlanamadı: ${missingAccounts.join(", ")}`);
+    }
+    const compactPayload = { version: 3 as const, candidateSets, jobs: compactJobs };
+    const sourceFingerprint = stableScanSourceFingerprint(accounts, src);
+    void recordDiagnostic("scan", "V171_COMPACT_PAYLOAD_READY", {
+      accounts: compactJobs.length,
+      candidateSetCount: candidateSets.length,
+      batchSize: cfg.batchSize || 15,
+      requestedConcurrency: cfg.requestedConcurrency || Math.max(1, Math.min(250, cfg.concurrency * Math.max(1, cfg.accountConcurrency))),
+      sourceFingerprint,
+    }, { stage: "scan-prepare", outcome: "success" });
     await storage.secureSet(PENDING_BULK_SCAN_KEY, JSON.stringify(accounts));
     if (signal?.aborted || bulkScanCancelledRef.current) {
       await storage.secureRemove(PENDING_BULK_SCAN_KEY);
       return { found: 0, completed: 0, cancelled: true };
     }
     bulkPreparationAbortRef.current = null;
-    const nativeConcurrency = Math.max(1, Math.min(32, cfg.concurrency * Math.max(1, cfg.accountConcurrency)));
+    const requestedConcurrency = Math.max(1, Math.min(250, cfg.requestedConcurrency ?? (cfg.concurrency * Math.max(1, cfg.accountConcurrency))));
+    const batchSize = Math.max(5, Math.min(50, cfg.batchSize ?? 15));
     bulkNativeScanRef.current = true;
     let runId = "";
     try {
-      runId = await startAcceptedScan(() => PanelScan.startUnifiedScan(jobs, nativeConcurrency, cfg.timeoutMs));
+      runId = await startAcceptedScan(() => PanelScan.startUnifiedScanV171(compactPayload, requestedConcurrency, cfg.timeoutMs, batchSize, sourceFingerprint));
       bulkScanRunIdRef.current = runId;
     } catch (e) {
       bulkNativeScanRef.current = false;
@@ -1284,7 +1361,12 @@ export default function AddPlaylist() {
       completed=Number(snap.accountTested||0); const tested=Number(snap.tested||0), total=Number(snap.total||0), pct=total?Math.round(tested/total*100):0;
       const createdAt = Number(snap.createdAt || Date.now());
       setBulkScanPaused(!!snap.paused);
-      setProgress(`${cfg.label} · NATIVE · %${pct}\nHesap ${completed}/${accounts.length} · Adres ${tested}/${total} · Kalan ${Math.max(0,total-tested)} · Bulunan ${raw.length}${snap.panelName?`\nŞu an: ${snap.panelName}${snap.currentServer ? ` · ${snap.currentServer}` : ""}`:""}\nGeçen: ${formatScanDuration(Date.now()-createdAt)} · Tahmini kalan: ${scanEta(createdAt,tested,total)}${snap.paused?"\nDURAKLATILDI":snap.state==="CANCELLING"?"\nDURDURULUYOR — aktif ağ istekleri kapatılıyor":""}`);
+      const foundCount = Number(snap.found ?? raw.length);
+      const batchLabel = Number.isFinite(Number(snap.batchIndex)) && Number(snap.batchCount || 0) > 0
+        ? ` · Parti ${Math.min(Number(snap.batchCount), Number(snap.batchIndex) + 1)}/${Number(snap.batchCount)}` : "";
+      const concurrencyLabel = snap.requestedConcurrency
+        ? `\nParalellik: istenen ${snap.requestedConcurrency} · etkin ${snap.effectiveConcurrency || snap.requestedConcurrency} · parti ${snap.batchSize || batchSize}` : "";
+      setProgress(`${cfg.label} · NATIVE · %${pct}${batchLabel}\nHesap ${completed}/${accounts.length} · Adres ${tested}/${total} · Kalan ${Math.max(0,total-tested)} · Bulunan ${foundCount}${snap.panelName?`\nŞu an: ${snap.panelName}${snap.currentServer ? ` · ${snap.currentServer}` : ""}`:""}${concurrencyLabel}\nGeçen: ${formatScanDuration(Date.now()-createdAt)} · Tahmini kalan: ${scanEta(createdAt,tested,total)}${snap.paused?"\nDURAKLATILDI":snap.state==="CANCELLING"?"\nDURDURULUYOR — aktif ağ istekleri kapatılıyor":""}`);
       if (!snap.running) {
         // v17.0.3: terminal scan snapshot + account map kullanıcı açıkça kapatana/ekleyene kadar korunur.
         // Activity/process yeniden oluşsa bile bulunan sonuçlar tekrar hydrate edilir.
@@ -1320,7 +1402,12 @@ export default function AddPlaylist() {
     bulkPreparationAbortRef.current = preparationController;
     const directoryCache: { value?: PanelDirectoryItem[]; promise?: Promise<PanelDirectoryItem[]> } = {};
     const failures: string[] = [];
-    const cfg = scanConfigForSpeed();
+    const baseCfg = scanConfigForSpeed();
+    const requestedCustom = Math.max(1, Math.min(250, Number.parseInt(bulkRequestedConcurrency, 10) || 32));
+    const configuredBatchSize = Math.max(5, Math.min(15, Number.parseInt(bulkBatchSize, 10) || 15));
+    const cfg = bulkCustomConcurrencyEnabled
+      ? { ...baseCfg, label: "Özel", requestedConcurrency: requestedCustom, batchSize: configuredBatchSize }
+      : { ...baseCfg, requestedConcurrency: Math.max(1, Math.min(250, baseCfg.concurrency * Math.max(1, baseCfg.accountConcurrency))), batchSize: configuredBatchSize };
     let found = 0;
     let completed = 0;
     let cursor = 0;
@@ -2373,6 +2460,46 @@ export default function AddPlaylist() {
               <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: SPACING.sm, lineHeight: 18 }}>
                 Aynı profil tüm hesapların panel/DNS worker sayısını ve timeout değerini birlikte yönetir.
               </Text>
+              <FocusButton
+                testID="bulk-custom-concurrency-toggle"
+                focusable
+                onPress={() => setBulkCustomConcurrencyEnabled(v => !v)}
+                style={[styles.fileBtn, { marginTop: SPACING.md, backgroundColor: bulkCustomConcurrencyEnabled ? colors.brandPrimary + "18" : colors.surfaceSecondary, borderColor: bulkCustomConcurrencyEnabled ? colors.brandPrimary : colors.border }]}
+              >
+                <Ionicons name="options-outline" size={20} color={bulkCustomConcurrencyEnabled ? colors.brandPrimary : colors.onSurfaceSecondary} />
+                <Text style={[styles.fileText, { color: colors.onSurface }]}>Özel paralellik {bulkCustomConcurrencyEnabled ? "açık" : "kapalı"}</Text>
+              </FocusButton>
+              {bulkCustomConcurrencyEnabled && (
+                <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.sm }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, marginBottom: 5 }}>İstenen paralellik (1–250)</Text>
+                    <TextInput
+                      testID="bulk-requested-concurrency-input"
+                      value={bulkRequestedConcurrency}
+                      onChangeText={v => setBulkRequestedConcurrency(v.replace(/[^0-9]/g, "").slice(0, 3))}
+                      keyboardType="number-pad"
+                      placeholder="32"
+                      placeholderTextColor={colors.onSurfaceTertiary}
+                      style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, marginBottom: 5 }}>Parti boyutu (5–15)</Text>
+                    <TextInput
+                      testID="bulk-batch-size-input"
+                      value={bulkBatchSize}
+                      onChangeText={v => setBulkBatchSize(v.replace(/[^0-9]/g, "").slice(0, 2))}
+                      keyboardType="number-pad"
+                      placeholder="15"
+                      placeholderTextColor={colors.onSurfaceTertiary}
+                      style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
+                    />
+                  </View>
+                </View>
+              )}
+              <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: 6, lineHeight: 17 }}>
+                v17.1 motoru hesapları varsayılan 15'lik partiler halinde işler. İstenen paralellik 250'ye kadar ayarlanabilir; cihazın bellek sınıfına göre güvenli etkin worker sayısı ayrıca sınırlandırılır ve tarama ekranında gösterilir.
+              </Text>
 
               <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary, marginTop: SPACING.lg }]}>FORM İLE HESAP EKLE</Text>
               {bulkManualRows.map((row, rowIndex) => (
@@ -2414,9 +2541,9 @@ export default function AddPlaylist() {
               <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, lineHeight: 17, marginBottom: 7 }}>
                 Manuel giriş ve dosya aynı anda kullanılabilir; hesaplar tek önizlemede birleştirilir.
               </Text>
-              <FocusButton testID="bulk-pick-file-btn" focusable onPress={pickBulkFile} style={[styles.fileBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
-                <Ionicons name="document-attach" size={22} color={colors.brandPrimary} />
-                <Text style={[styles.fileText, { color: colors.onSurface }]} numberOfLines={1}>{bulkFileName || "CSV / TXT / JSON dosyası seç"}</Text>
+              <FocusButton testID="bulk-pick-file-btn" focusable={!bulkFilePicking} disabled={bulkFilePicking} onPress={pickBulkFile} style={[styles.fileBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, opacity: bulkFilePicking ? 0.65 : 1 }]}>
+                {bulkFilePicking ? <ActivityIndicator size="small" color={colors.brandPrimary} /> : <Ionicons name="document-attach" size={22} color={colors.brandPrimary} />}
+                <Text style={[styles.fileText, { color: colors.onSurface }]} numberOfLines={1}>{bulkFilePicking ? "Dosya seçimi açık…" : (bulkFileName || "CSV / TXT / JSON dosyası seç")}</Text>
               </FocusButton>
               {bulkFileLoaded && (
                 <FocusButton focusable onPress={() => { setBulkFileLoaded(false); setBulkFileParsed(null); setBulkFileName(""); }} style={{ alignSelf: "flex-start", paddingVertical: 8, paddingHorizontal: 4 }}>
