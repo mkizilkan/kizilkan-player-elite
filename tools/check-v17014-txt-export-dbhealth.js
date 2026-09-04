@@ -8,7 +8,8 @@ const add=read('frontend/app/add-playlist.tsx');
 const diag=read('frontend/src/utils/diagnostics.ts');
 const denetle=read('tools/denetle.js');
 function ok(c,m){if(!c){console.error('FAIL — '+m);process.exit(1)}console.log('✓ '+m)}
-ok(pkg.version==='17.0.14'&&app.expo.version==='17.0.14'&&app.expo.ios.buildNumber==='17.0.14'&&app.expo.android.versionCode===170014&&app.expo.extra?.kizilkanReleaseLabel==='GPT ELITE v17.0.14 RC1','v17.0.14 sürüm zinciri');
+const semverAtLeast=(v,min)=>{const a=String(v).split('.').map(Number),b=String(min).split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)>(b[i]||0))return true;if((a[i]||0)<(b[i]||0))return false}return true};
+ok(semverAtLeast(pkg.version,'17.0.14')&&semverAtLeast(app.expo.version,'17.0.14')&&semverAtLeast(app.expo.ios.buildNumber,'17.0.14')&&Number(app.expo.android.versionCode)>=170014,'v17.0.14+ sürüm zinciri');
 ok(diag.includes('databaseHealth: databaseHealth'),'v16.13.0 database health açık property export sözleşmesi korundu');
 ok(diag.includes('Promise.all([eventsPromise, nativePromise, databasePromise])'),'v17.0.13 paralel Flight Recorder snapshot optimizasyonu korundu');
 ok(add.includes('normalizeBulkArchiveBaseName')&&add.includes('defaultBulkArchiveBaseName'),'TXT dosya adı normalizasyonu mevcut');

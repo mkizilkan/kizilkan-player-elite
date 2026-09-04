@@ -2930,7 +2930,7 @@ export default function AddPlaylist() {
               onSubmitEditing={confirmBulkArchiveName}
               placeholder="KIZILKAN-HESAP-ARSIVI"
               placeholderTextColor={colors.onSurfaceTertiary}
-              style={{borderWidth:1,borderColor:colors.border,borderRadius:10,paddingHorizontal:12,paddingVertical:11,color:colors.onSurface,backgroundColor:colors.surfaceSecondary,fontSize:FONT.size.md}}
+              style={{borderWidth:1,borderColor:colors.border,borderRadius:10,paddingHorizontal:12,paddingVertical:11,color:colors.onSurface,backgroundColor:colors.surfaceSecondary,fontSize:FONT.size.base}}
             />
             <Text style={{color:colors.onSurfaceTertiary,fontSize:FONT.size.xs,marginTop:SPACING.xs}}>Kaydedilecek uzantı: .txt</Text>
             <View style={styles.categoryActions}>
