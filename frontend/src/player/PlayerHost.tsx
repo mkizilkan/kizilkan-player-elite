@@ -30,6 +30,7 @@ import {
   defaultProfile,
   alternateMedia3Surface,
   setMpvAvailable,   // v16.2.0: MPV kütüphanesi yoksa motoru zincirden çıkar
+  isMpvAvailable,
   fallbackFromError,
   loadEngineProfile,
   recordEngineSuccess,
@@ -79,7 +80,14 @@ import { loadOverrides, type OverrideMap } from "@/src/utils/overrides";
 import { getNowNext } from "@/src/utils/epg";
 import { BackHandler } from "react-native";
 import { VLCPlayer as VLCPlayerLib, VLC_AVAILABLE } from "@/src/native/vlc";
-import { KizilkanMpvView, KIZILKAN_MPV_AVAILABLE, getKizilkanMpvRuntimeStatus, type KizilkanMpvHandle } from "@/modules/mpv-player";
+import { KizilkanMpvView, KIZILKAN_MPV_AVAILABLE, getKizilkanMpvRuntimeStatus, isKizilkanMpvNativeReady, type KizilkanMpvHandle } from "@/modules/mpv-player";
+
+function mpvEngineUsable(): boolean {
+  return KIZILKAN_MPV_AVAILABLE && isMpvAvailable();
+}
+
+// First engine decision must see actual native initialization state, not only Expo view presence.
+try { setMpvAvailable(isKizilkanMpvNativeReady()); } catch { setMpvAvailable(false); }
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 const EPISODE_URL_KEY = "kizilkan.episode.url.";
@@ -899,7 +907,7 @@ export default function PlayerHost() {
       nextSessionProfileRef.current = null;
 
       if (forcedProfile) {
-        profile = forcedProfile.engine === "mpv" && !KIZILKAN_MPV_AVAILABLE
+        profile = forcedProfile.engine === "mpv" && !mpvEngineUsable()
           ? { engine: "vlc", decoder: "hw" }
           : forcedProfile;
       } else if (engine === "exo") {
@@ -910,13 +918,13 @@ export default function PlayerHost() {
       } else if (engine === "vlc") {
         profile = { engine: "vlc", decoder: hwAccel ? "hw" : "sw" };
       } else if (engine === "mpv") {
-        profile = KIZILKAN_MPV_AVAILABLE
+        profile = mpvEngineUsable()
           ? { engine: "mpv", decoder: "auto" }
           : { engine: "vlc", decoder: hwAccel ? "hw" : "sw" };
       } else {
         const memo = await loadEngineProfile(String(channel.id)).catch(() => null);
         profile = memo && memo.confidence > 0 ? memo.profile : defaultProfile(isTv);
-        if (profile.engine === "mpv" && !KIZILKAN_MPV_AVAILABLE) {
+        if (profile.engine === "mpv" && !mpvEngineUsable()) {
           profile = { engine: "vlc", decoder: "hw" };
         }
       }
@@ -1030,7 +1038,7 @@ export default function PlayerHost() {
       // Android-only MPV modülü herhangi bir nedenle autolink edilmemişse
       // fallback zinciri bozulmaz; aynı karar VLC'ye güvenli biçimde normalize edilir.
       const effectiveNext: EngineProfile =
-        next.engine === "mpv" && !KIZILKAN_MPV_AVAILABLE
+        next.engine === "mpv" && !mpvEngineUsable()
           ? { engine: "vlc", decoder: "hw" }
           : next;
 
@@ -2731,7 +2739,7 @@ export default function PlayerHost() {
       try { (player as any)?.replace?.(null); } catch {}
       lastExoUrlRef.current = null;
 
-      if (engine === "auto" && KIZILKAN_MPV_AVAILABLE) {
+      if (engine === "auto" && mpvEngineUsable()) {
         setRecoveryMessage("Media3 görüntü üretmedi; MPV / FFmpeg motoru deneniyor…");
         setV2Phase("switch_engine");
         setV2Profile({ engine: "mpv", decoder: "auto" });
@@ -3361,7 +3369,7 @@ export default function PlayerHost() {
             />
           )}
 
-          {v2ProfileReady && resolvedMediaReadyForCurrentChannel && !!playbackRequest?.url && useMPV && KIZILKAN_MPV_AVAILABLE && channel && mpvSource && (
+          {v2ProfileReady && resolvedMediaReadyForCurrentChannel && !!playbackRequest?.url && useMPV && mpvEngineUsable() && channel && mpvSource && (
             <KizilkanMpvView
               key={`kizilkan-mpv-core-${activeSessionId}-${mpvRecoveryGeneration}`}
               ref={mpvRef}
@@ -4203,7 +4211,7 @@ export default function PlayerHost() {
                     onPress={async () => { setEngine("vlc"); await storage.setItem(ENGINE_KEY, "vlc"); setSheet(null); setPlaybackRetryNonce(n => n + 1); flashMessage("Motor: VLC"); }}
                     active={engine === "vlc"}
                   />
-                  {KIZILKAN_MPV_AVAILABLE && (
+                  {mpvEngineUsable() && (
                     <SheetItem
                       testID="engine-mpv-btn"
                       label="MPV / FFmpeg (geniş codec desteği)"

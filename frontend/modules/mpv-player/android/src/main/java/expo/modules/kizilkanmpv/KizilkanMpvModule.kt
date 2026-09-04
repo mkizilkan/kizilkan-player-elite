@@ -14,6 +14,11 @@ import java.util.zip.ZipFile
  * yeteneklerini Expo tarafına açar. AUTO fallback kararı PlayerHost/Player V2'dedir.
  */
 class KizilkanMpvModule : Module() {
+  companion object {
+    init {
+      try { System.loadLibrary("c++_shared") } catch (_: Throwable) { }
+    }
+  }
   private fun throwableChain(t: Throwable): List<String> {
     val out = mutableListOf<String>()
     val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())

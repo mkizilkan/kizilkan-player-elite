@@ -32,6 +32,35 @@ const verifyEntries=(entries,prefix,label)=>{
   return true;
 };
 
+
+const verifyCxxSymbolCompatibility=(apk,entries)=>{
+  const complete=supported.filter(abi=>entries.includes(`lib/${abi}/libmpv.so`)&&entries.includes(`lib/${abi}/libc++_shared.so`));
+  if(!complete.length){console.error('FAIL — MPV C++ ABI gate: ortak ABI bulunamadı');return false}
+  const candidates=[process.env.LLVM_READELF,'llvm-readelf','readelf'].filter(Boolean);
+  let tool=''; for(const c of candidates){const r=cp.spawnSync(c,['--version'],{encoding:'utf8'});if(r.status===0){tool=c;break}}
+  if(!tool){console.error('FAIL — MPV C++ ABI gate: llvm-readelf/readelf bulunamadı');return false}
+  for(const abi of complete){
+    const tmp=fs.mkdtempSync(path.join(os.tmpdir(),`kizilkan-mpv-${abi}-`));
+    try{
+      for(const name of ['libmpv.so','libc++_shared.so']){
+        const out=cp.spawnSync('unzip',['-p',apk,`lib/${abi}/${name}`],{encoding:null,maxBuffer:512*1024*1024});
+        if(out.status!==0||!out.stdout) throw new Error(`${abi}/${name} APK'dan çıkarılamadı`);
+        fs.writeFileSync(path.join(tmp,name),out.stdout);
+      }
+      const sym=(file)=>cp.execFileSync(tool,['--wide','-Ws',file],{encoding:'utf8',maxBuffer:64*1024*1024});
+      const mpv=sym(path.join(tmp,'libmpv.so')); const cxx=sym(path.join(tmp,'libc++_shared.so'));
+      const required=[...new Set(mpv.split(/\r?\n/).filter(l=>/\bUND\b/.test(l)&&l.includes('__ndk1')).map(l=>l.trim().split(/\s+/).pop()).filter(Boolean))];
+      const provided=new Set(cxx.split(/\r?\n/).filter(l=>!/\bUND\b/.test(l)).map(l=>l.trim().split(/\s+/).pop()).filter(Boolean));
+      const missing=required.filter(x=>!provided.has(x));
+      if(missing.length){console.error(`FAIL — ${abi}: FINAL APK libc++ libmpv C++ ABI'sini karşılamıyor; eksik ${missing.length} sembol`);console.error(missing.slice(0,12).join('\n'));return false}
+      const floating=required.some(x=>x.includes('__from_chars_floating_point'));
+      console.log(`✓ FINAL APK C++ ABI ${abi}: ${required.length} __ndk1 sembolü karşılanıyor${floating?' · from_chars dahil':''}`);
+    }catch(e){console.error(`FAIL — MPV C++ ABI gate ${abi}: `+e.message);return false}
+    finally{try{fs.rmSync(tmp,{recursive:true,force:true})}catch{}}
+  }
+  return true;
+};
+
 const verifyMpvDexClass=(apk,entries)=>{
   const dexEntries=entries.filter(x=>/^classes(?:\d+)?\.dex$/.test(x));
   if(!dexEntries.length){console.error('FAIL — FINAL APK: classes*.dex bulunamadı');return false}
@@ -73,6 +102,7 @@ if(apk){
   let entries;try{entries=listZip(apk)}catch{console.error('FAIL — APK açılamadı: '+apk);process.exit(1)}
   if(!verifyEntries(entries,'lib/','FINAL APK')) process.exit(1);
   if(!verifyMpvDexClass(apk,entries)) process.exit(1);
+  if(!verifyCxxSymbolCompatibility(apk,entries)) process.exit(1);
   console.log('✓ final APK native + DEX packaging doğrulandı:',apk);
   console.log('TEMIZ — MPV 1.0.0 FINAL APK packaging VERIFIED');
   process.exit(0);

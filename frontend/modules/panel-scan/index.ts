@@ -65,6 +65,7 @@ export const PanelScan = {
     if (!native) return { supported:false, ignoring:false };
     try { const v=native.getBatteryOptimizationStatus?.() || {}; return { supported:!!v.supported, ignoring:!!v.ignoring }; } catch { return { supported:false, ignoring:false }; }
   },
+  requestBatteryOptimizationExemption: async (): Promise<boolean> => native ? !!(await native.requestBatteryOptimizationExemption?.()) : false,
   openBatteryOptimizationSettings: async (): Promise<boolean> => native ? !!(await native.openBatteryOptimizationSettings?.()) : false,
   getSnapshot: (): NativeSnapshot => { if (!native) return {}; try { return JSON.parse(native.getSnapshot() || "{}"); } catch { return {}; } },
   acknowledgeSnapshot: (runId: string): boolean => native && runId ? !!native.acknowledgeSnapshot?.(runId) : false,

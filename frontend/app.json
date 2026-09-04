@@ -2,7 +2,7 @@
   "expo": {
     "name": "KIZILKAN PLAYER ELITE",
     "slug": "frontend",
-    "version": "17.0.9",
+    "version": "17.0.10",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "kizilkan-gpt",
@@ -12,7 +12,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gpt.kizilkan.player",
-      "buildNumber": "17.0.9",
+      "buildNumber": "17.0.10",
       "infoPlist": {
         "UIBackgroundModes": [
           "audio"
@@ -37,7 +37,7 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.gpt.kizilkan.player",
-      "versionCode": 170009,
+      "versionCode": 170010,
       "usesCleartextTraffic": true,
       "permissions": [
         "android.permission.INTERNET",
@@ -53,7 +53,8 @@
         "android.permission.READ_MEDIA_VIDEO",
         "android.permission.READ_MEDIA_AUDIO",
         "android.permission.ACCESS_WIFI_STATE",
-        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE",
+        "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
       ],
       "splash": {
         "image": "./assets/images/splash-image.png",
@@ -161,7 +162,6 @@
             "usesCleartextTraffic": true,
             "packagingOptions": {
               "pickFirst": [
-                "**/libc++_shared.so",
                 "**/libjsc.so",
                 "**/libfbjni.so"
               ]
@@ -199,7 +199,7 @@
       "typedRoutes": true
     },
     "extra": {
-      "kizilkanReleaseLabel": "GPT ELITE v17.0.9 RC1"
+      "kizilkanReleaseLabel": "GPT ELITE v17.0.10 RC1"
     }
   }
 }

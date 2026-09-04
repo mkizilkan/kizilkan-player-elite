@@ -44,6 +44,17 @@ if (Platform.OS === "android") {
 }
 
 export const KIZILKAN_MPV_AVAILABLE = Platform.OS === "android" && !!NativeMpvView;
+
+/** v17.0.10 — Expo view presence is not proof that libmpv can initialize. */
+export function isKizilkanMpvNativeReady(): boolean {
+  if (!KIZILKAN_MPV_AVAILABLE) return false;
+  try {
+    const st = getKizilkanMpvRuntimeStatus();
+    return !!(st?.classInitialized && st?.apkLibmpvPresent);
+  } catch {
+    return false;
+  }
+}
 export const getKizilkanMpvRuntimeStatus = (): Record<string, any> => {
   try { return NativeMpvModule?.getRuntimeStatus?.() || { classLoaded: false, reason: "module-unavailable" }; }
   catch (e: any) { return { classLoaded: false, reason: String(e?.message || e) }; }

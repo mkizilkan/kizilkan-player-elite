@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import android.net.Uri
 import java.util.UUID
 import java.io.File
 import org.json.JSONObject
@@ -172,14 +173,28 @@ class PanelScanModule : Module() {
       mapOf("supported" to true, "ignoring" to (pm?.isIgnoringBatteryOptimizations(context.packageName) == true))
     }
 
-    AsyncFunction("openBatteryOptimizationSettings") {
+    AsyncFunction("requestBatteryOptimizationExemption") {
       val context = appContext.reactContext ?: return@AsyncFunction false
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return@AsyncFunction false
-      val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return@AsyncFunction true
+      val pm = context.getSystemService(PowerManager::class.java)
+      if (pm?.isIgnoringBatteryOptimizations(context.packageName) == true) return@AsyncFunction true
+      val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+        data = Uri.parse("package:${context.packageName}")
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
       }
-      context.startActivity(intent)
-      true
+      try { context.startActivity(intent); true } catch (_: Throwable) { false }
+    }
+
+    AsyncFunction("openBatteryOptimizationSettings") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val direct = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+        data = Uri.parse("package:${context.packageName}")
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      try { context.startActivity(direct); true } catch (_: Throwable) {
+        val fallback = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+        try { context.startActivity(fallback); true } catch (_: Throwable) { false }
+      }
     }
 
     Function("getSnapshot") {

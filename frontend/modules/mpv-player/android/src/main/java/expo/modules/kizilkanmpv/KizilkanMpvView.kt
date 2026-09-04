@@ -33,6 +33,10 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     private const val TAG = "KizilkanMpv"
     private const val PROGRESS_INTERVAL_MS = 1000L
     private val NEXT_INSTANCE_ID = java.util.concurrent.atomic.AtomicLong(0)
+
+    init {
+      try { System.loadLibrary("c++_shared") } catch (_: Throwable) { }
+    }
   }
 
   val onLoad by EventDispatcher()
@@ -102,12 +106,22 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
 
   private fun emitThrowable(stage: String, error: Throwable, fatal: Boolean) {
     Log.e(TAG, "#$instanceId $stage", error)
+    val chain = throwableChain(error)
+    val joined = chain.joinToString(" | ")
+    val nativeLinkError = joined.contains("UnsatisfiedLinkError") || joined.contains("cannot locate symbol", ignoreCase = true)
+    val missingCxxSymbol = nativeLinkError && (joined.contains("libc++_shared.so") || joined.contains("__ndk1"))
+    val classification = when {
+      missingCxxSymbol -> "MPV_NATIVE_LINK_ERROR_MISSING_CXX_SYMBOL"
+      nativeLinkError -> "MPV_NATIVE_LINK_ERROR"
+      else -> "MPV_RUNTIME_ERROR"
+    }
     emitDiagnostic("NATIVE_THROWABLE", mapOf(
       "stage" to stage,
       "fatal" to fatal,
+      "classification" to classification,
       "errorClass" to error.javaClass.name,
       "message" to error.message.orEmpty().take(420),
-      "causeChain" to throwableChain(error),
+      "causeChain" to chain,
     ))
   }
 

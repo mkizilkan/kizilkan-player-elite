@@ -7,6 +7,7 @@ import {
   TextInput,
   ScrollView,
   FlatList,
+  SectionList,
   ActivityIndicator,
   KeyboardAvoidingView,
   Keyboard,
@@ -492,20 +493,24 @@ export default function AddPlaylist() {
     if (Platform.OS !== "android" || !PanelScan.available) return;
     const status = PanelScan.getBatteryOptimizationStatus();
     if (!status.supported || status.ignoring) return;
-    const choice = await new Promise<"continue" | "settings" | "cancel">((resolve) => {
+    const choice = await new Promise<"continue" | "request" | "settings" | "cancel">((resolve) => {
       Alert.alert(
         "Arka Planda Tarama",
         "Uzun panel/hesap taramalarının ekran kapalıyken veya başka uygulamadayken daha güvenilir sürmesi için KIZILKAN PLAYER'ı Android pil optimizasyonunda kısıtlanmamış duruma almanız önerilir. Android yine de uygulamayı zorla kapatabilir; tarama sonuçları ayrıca kalıcı snapshot ile korunur.",
         [
           { text: "Vazgeç", style: "cancel", onPress: () => resolve("cancel") },
           { text: "Şimdi Değil", onPress: () => resolve("continue") },
-          { text: "Pil Ayarlarını Aç", onPress: () => resolve("settings") },
+          { text: "Muafiyet İste", onPress: () => resolve("request") },
+          { text: "Uygulama Ayarları", onPress: () => resolve("settings") },
         ],
         { cancelable: true, onDismiss: () => resolve("cancel") },
       );
     });
     if (choice === "cancel") throw new Error("Tarama kullanıcı tarafından iptal edildi.");
-    if (choice === "settings") await PanelScan.openBatteryOptimizationSettings();
+    if (choice === "request") {
+      const opened = await PanelScan.requestBatteryOptimizationExemption();
+      if (!opened) await PanelScan.openBatteryOptimizationSettings();
+    } else if (choice === "settings") await PanelScan.openBatteryOptimizationSettings();
   };
 
   const startAcceptedScan = async (starter: () => Promise<NativeScanStartResult | null>): Promise<string> => {
@@ -2478,7 +2483,7 @@ export default function AddPlaylist() {
                       ? `${bulkCandidates.length} kimlik doğrulaması başarılı panel/DNS adayı bulundu. Eklemek istediklerinizi seçin.`
                       : `Tarama sürüyor. Bulunan sonuçlar canlı ekleniyor; seçimleriniz korunur.`}
                   </Text>
-                  <Text style={{ color: bulkCandidates.length > 0 ? colors.brandPrimary : colors.onSurfaceSecondary, marginTop: 5, fontWeight: FONT.weight.bold }}>
+                  <Text style={[styles.bulkFoundTotal,{ color: bulkCandidates.length > 0 ? colors.brandPrimary : colors.onSurfaceSecondary }]}>
                     Bulunan {bulkCandidates.length}
                   </Text>
                 </View>
@@ -2494,37 +2499,40 @@ export default function AddPlaylist() {
                 </View>
               )}
 
-              {bulkAccountProgress.length > 0 && (
-                <View style={{ gap: 6, marginBottom: SPACING.sm }}>
-                  {bulkAccountProgress.map((a) => {
-                    const pct = a.total ? Math.round((a.tested / a.total) * 100) : 0;
-                    const label = a.name || `Hesap ${a.sourceRow || a.accountIndex + 1}`;
-                    return (
-                      <View key={`bulk-progress-${a.accountIndex}`} style={{ borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, borderRadius: RADIUS.md, padding: 9 }}>
-                        <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
-                          <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.semibold, flex: 1 }} numberOfLines={1}>{label}</Text>
-                          <Text style={{ color: a.state === "completed" ? colors.success : colors.brandPrimary, fontWeight: FONT.weight.bold }}>{a.state === "completed" ? "✓" : `${pct}%`}</Text>
-                        </View>
-                        <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, marginTop: 3 }}>
-                          Adres {a.tested}/{a.total} · Kalan {a.remaining} · Bulunan <Text style={{ color: a.found > 0 ? colors.brandPrimary : colors.onSurfaceSecondary, fontWeight: a.found > 0 ? FONT.weight.bold : FONT.weight.regular }}>{a.found}</Text> · {a.state === "completed" ? "Tamamlandı" : a.state === "running" ? "Analiz ediliyor" : "Bekliyor"}
-                        </Text>
-                      </View>
-                    );
-                  })}
-                </View>
-              )}
-
-              <FlatList
-                style={{ maxHeight: 430 }}
-                data={bulkCandidates}
-                keyExtractor={(c) => c.key}
-                initialNumToRender={16}
+              <SectionList
+                style={styles.bulkScrollableBody}
+                sections={[
+                  { title: "accounts", data: bulkAccountProgress.map(a => ({ kind: "account" as const, value: a })) },
+                  { title: "candidates", data: bulkCandidates.map(c => ({ kind: "candidate" as const, value: c })) },
+                ] as any}
+                keyExtractor={(item:any) => item.kind === "account" ? `bulk-progress-${item.value.accountIndex}` : `bulk-candidate-${item.value.key}`}
+                initialNumToRender={18}
                 maxToRenderPerBatch={24}
                 windowSize={7}
                 removeClippedSubviews={Platform.OS === "android"}
-                contentContainerStyle={{ gap: SPACING.sm, paddingBottom: SPACING.sm }}
-                ListEmptyComponent={<View style={[styles.infoBanner,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}><ActivityIndicator size="small" color={colors.brandPrimary}/><Text style={{ color: colors.onSurface, flex: 1 }}>Henüz kimlik doğrulaması başarılı aday bulunmadı.</Text></View>}
-                renderItem={({item:c,index}) => {
+                contentContainerStyle={{ gap: 6, paddingBottom: SPACING.sm }}
+                renderSectionHeader={({section}) => section.title === "candidates" ? (
+                  <Text style={[styles.bulkSectionTitle,{color:colors.onSurface}]}>Bulunan Hesaplar ({bulkCandidates.length})</Text>
+                ) : bulkAccountProgress.length > 0 ? (
+                  <Text style={[styles.bulkSectionTitle,{color:colors.onSurface}]}>Hesap İlerlemesi ({bulkAccountProgress.length})</Text>
+                ) : null}
+                renderItem={({item,index}:any) => {
+                  if (item.kind === "account") {
+                    const a = item.value;
+                    const pct = a.total ? Math.round((a.tested / a.total) * 100) : 0;
+                    const label = a.name || `Hesap ${a.sourceRow || a.accountIndex + 1}`;
+                    return <View style={{ borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, borderRadius: RADIUS.md, padding: 9 }}>
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
+                        <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.semibold, flex: 1 }} numberOfLines={1}>{label}</Text>
+                        <Text style={{ color: a.state === "completed" ? colors.success : colors.brandPrimary, fontWeight: FONT.weight.bold, fontSize: FONT.size.lg }}>{a.state === "completed" ? "✓" : `${pct}%`}</Text>
+                      </View>
+                      <View style={styles.bulkAccountMetaRow}>
+                        <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, flex: 1 }}>Adres {a.tested}/{a.total} · Kalan {a.remaining} · {a.state === "completed" ? "Tamamlandı" : a.state === "running" ? "Analiz ediliyor" : "Bekliyor"}</Text>
+                        <Text style={[styles.bulkFoundBadgeText,{color:a.found > 0 ? colors.brandPrimary : colors.onSurfaceTertiary}]}>Bulunan {a.found}</Text>
+                      </View>
+                    </View>;
+                  }
+                  const c = item.value;
                   const selected = selectedBulkCandidateKeys.includes(c.key);
                   const ui = c.login?.user_info || {};
                   const status = String(ui.status || (ui.auth === 1 || ui.auth === "1" ? "Aktif" : "Bilinmiyor"));
@@ -2948,6 +2956,11 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS.lg,
     padding: SPACING.lg,
   },
+  bulkScrollableBody: { flexGrow: 0, flexShrink: 1, minHeight: 120 },
+  bulkSectionTitle: { fontSize: FONT.size.sm, fontWeight: FONT.weight.bold, marginTop: 4, marginBottom: 2 },
+  bulkFoundTotal: { marginTop: 7, fontSize: FONT.size.xl, lineHeight: 30, fontWeight: FONT.weight.bold },
+  bulkAccountMetaRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
+  bulkFoundBadgeText: { fontSize: FONT.size.base, fontWeight: FONT.weight.bold },
   matchModalHeader: {
     flexDirection: "row",
     alignItems: "flex-start",

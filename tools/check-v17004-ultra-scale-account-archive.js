@@ -7,12 +7,13 @@ const mod=read('frontend/modules/panel-scan/android/src/main/java/expo/modules/p
 const arch=read('frontend/src/utils/accountArchive.ts'), bulk=read('frontend/src/utils/bulkAccounts.ts');
 const semverNum=v=>v.split('.').map(Number).reduce((a,n)=>a*1000+n,0);
 ok('package v17.0.4+',semverNum(pkg.version)>=semverNum('17.0.4')); ok('Expo v17.0.4+',semverNum(app.expo.version)>=semverNum('17.0.4')); ok('versionCode 170004+',app.expo.android.versionCode>=170004);
-ok('release label v17.0.4+',/^GPT ELITE v17\.0\.[4-9][0-9]* RC1$/.test(app.expo.extra.kizilkanReleaseLabel));
+const releaseMatch=/^GPT ELITE v(\d+)\.(\d+)\.(\d+) RC1$/.exec(app.expo.extra.kizilkanReleaseLabel||'');
+ok('release label v17.0.4+',!!releaseMatch&&semverNum(releaseMatch.slice(1).join('.'))>=semverNum('17.0.4'));
 ok('unified 64-bit cursor',svc.includes('AtomicLong(0L)')&&svc.includes('LongArray(maxCandidates)')&&svc.includes('fun resolveWork(index: Long)'));
 ok('64-bit initial total bridge',mod.includes('initialTotal: Double')&&mod.includes('toLong().coerceAtLeast(0L)'));
 ok('ultra account status window',svc.includes('accountCount <= 2000')&&svc.includes('startIndex + 250'));
 ok('UI snapshot throttle',svc.includes('now - previousSnapshotAt >= 250L'));
-ok('virtualized result list',ui.includes('<FlatList')&&ui.includes('windowSize={7}')&&ui.includes('removeClippedSubviews'));
+ok('virtualized result list',(ui.includes('<FlatList')||ui.includes('<SectionList'))&&ui.includes('windowSize={7}')&&ui.includes('removeClippedSubviews'));
 ok('user can choose all vs selected DNS',ui.includes('DNS: {bulkUseAllValidatedHosts?"Tüm Çalışanlar":"Yalnız Seçilenler"}')&&ui.includes('rows.map(x => x.server)'));
 ok('TXT archive export',ui.includes('TXT\'ye Kaydet')&&ui.includes('buildKizilkanAccountArchive')&&arch.includes('TAM ARŞİV / YENİDEN İÇE AKTARILABİLİR'));
 ok('safe masked report',arch.includes('GÜVENLİ RAPOR (MASKELİ)')&&arch.includes('********'));

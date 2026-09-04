@@ -37,6 +37,7 @@ const CHECKS = [
   ["check-v17007-scan-journal-resume.js", "v17.0.7 durable scan journal / process resume hard-gate", ""],
   ["check-v17008-conservative-checkpoint.js", "v17.0.8 conservative checkpoint / resume progress corrective hard-gate", ""],
   ["check-v17009-kotlin-roundrobin-resume.js", "v17.0.9 Kotlin compile / round-robin resume corrective hard-gate", ""],
+  ["check-v17010-mpv-multiscan-battery.js", "v17.0.10 MPV + multi-scan UX + battery corrective hard-gate", ""],
   ["check-v16142-integrated-hardgate.js", "v16.14.2 integrated recovery / sync / ownership / source-recovery / V7 contract", ""],
   ["checkdefs.js",     "Tanımsız sembol (hook/JSX bileşeni)",   ""],
   ["checkcalls.js",    "Tanımsız fonksiyon çağrısı",            ""],
