@@ -114,7 +114,7 @@ requireText(mpvKt, 'MpvLogLevel.MPV_LOG_LEVEL_ERROR', 'libmpv 1.0 nested log con
 requireText(mpvKt, 'mapOf<String, Any>(', 'MPV EventDispatcher non-null video-ready payload');
 requireText(mpvKt, 'linkedMapOf<String, Any>(', 'MPV EventDispatcher non-null diagnostic payload');
 forbidText(mpvKt, 'linkedMapOf<String, Any?>(', 'nullable MPV diagnostic EventDispatcher payload');
-requireText(mpvKt, 'emitDiagnostic("SURFACE_ATTACH")', 'MPV surface telemetry');
+requireText(mpvKt, 'emitDiagnostic("SURFACE_ATTACH"', 'MPV surface telemetry');
 requireText(mpvKt, 'emitDiagnostic("NATIVE_DESTROY_BEGIN")', 'MPV destroy telemetry');
 requireText(mpvModKt, '"onDiagnostic"', 'Expo MPV diagnostic bridge');
 requireText(mpvKt, 'source["softwareDecode"]', 'MPV source-controlled software decode recovery');

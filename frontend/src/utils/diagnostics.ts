@@ -700,11 +700,37 @@ function finalRedactionPass(serialized: string): { text: string; replacements: n
 }
 
 export async function exportDiagnosticReport(extra: Record<string, any> = {}): Promise<string> {
+  const exportStartedAt = Date.now();
   ensureNativeBlackBox();
-  const events = await loadDiagnostics(MAX_EXPORT_EVENTS);
+
+  // v17.0.13: Birbirinden bağımsız büyük snapshot okumalarını seri bekletme.
+  // Rapor içeriği aynen korunur; yalnız pre-share kritik yol kısalır.
+  let eventsReadMs = 0;
+  let nativeSnapshotMs = 0;
+  let databaseHealthMs = 0;
+  const eventsPromise = (async () => {
+    const at = Date.now();
+    const value = await loadDiagnostics(MAX_EXPORT_EVENTS);
+    eventsReadMs = Date.now() - at;
+    return value;
+  })();
+  const nativePromise = (async () => {
+    const at = Date.now();
+    try { return await KizilkanNativeCore.getBlackBoxSnapshot?.(MAX_EXPORT_EVENTS) || {}; }
+    catch { return {}; }
+    finally { nativeSnapshotMs = Date.now() - at; }
+  })();
+  const databasePromise = (async () => {
+    const at = Date.now();
+    try { return await KizilkanNativeCore.getDatabaseHealth?.(true) || {}; }
+    catch { return {}; }
+    finally { databaseHealthMs = Date.now() - at; }
+  })();
+
+  const [events, nativeFlightRecorder, databaseHealth] = await Promise.all([eventsPromise, nativePromise, databasePromise]);
+  const snapshotsReadyAt = Date.now();
   const critical = events.filter((e) => e.critical || CRITICAL_EVENT_RE.test(e.event)).slice(0, 250);
-  let nativeFlightRecorder: Record<string, any> = {};
-  try { nativeFlightRecorder = await KizilkanNativeCore.getBlackBoxSnapshot?.(MAX_EXPORT_EVENTS) || {}; } catch {}
+  const sanitizeStartedAt = Date.now();
   const payload = sanitizeValue({
     format: 'KIZILKAN_FLIGHT_RECORDER_V7',
     // v16.2.0: kök nedeni en başta göster
@@ -716,13 +742,13 @@ export async function exportDiagnosticReport(extra: Record<string, any> = {}): P
     appSessionId,
     persistentJournal: journalInfo(),
     nativeFlightRecorder,
-    databaseHealth: await (async () => { try { return await KizilkanNativeCore.getDatabaseHealth?.(true) || {}; } catch { return {}; } })(),
+    databaseHealth,
     performanceSummary: buildPerformanceSummary(events),
     traceSummary: buildTraceSummary(events),
     redactionAudit: { enabled: true, structuralSensitiveMetadataAllowed: true, rawSensitiveValuesAllowed: false },
     processExitHistory: (() => {
       try {
-        const clearEpoch = Number(nativeFlightRecorder?.health?.clearEpochMs || 0);
+        const clearEpoch = Number((nativeFlightRecorder as any)?.health?.clearEpochMs || 0);
         return (KizilkanNativeCore.getExitHistory?.(10) || []).filter((x:any) => Number(x?.timestamp || 0) >= clearEpoch);
       } catch { return []; }
     })(),
@@ -738,17 +764,55 @@ export async function exportDiagnosticReport(extra: Record<string, any> = {}): P
     anomalies: deriveAnomalies(events),
     events,
   });
+  const sanitizeMs = Date.now() - sanitizeStartedAt;
   const name = `kizilkan-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
   const file = new File(Paths.cache, name);
   if (file.exists) file.delete();
   file.create();
-  const redacted = finalRedactionPass(JSON.stringify(payload, null, 2));
+
+  const stringifyStartedAt = Date.now();
+  const serialized = JSON.stringify(payload, null, 2);
+  const stringifyMs = Date.now() - stringifyStartedAt;
+  const redactionStartedAt = Date.now();
+  const redacted = finalRedactionPass(serialized);
+  const redactionMs = Date.now() - redactionStartedAt;
+  const writeStartedAt = Date.now();
   file.write(redacted.text);
+  const writeMs = Date.now() - writeStartedAt;
+  const preShareReadyAt = Date.now();
+
   if (redacted.replacements > 0) {
     void recordDiagnostic('system', 'TELEMETRY_REDACTION_APPLIED', { replacements: redacted.replacements }, { stage: 'export', outcome: 'success' });
   }
-  if (await Sharing.isAvailableAsync()) {
+  let sharingAvailable = false;
+  try { sharingAvailable = await Sharing.isAvailableAsync(); } catch {}
+  const shareRequestedAt = Date.now();
+  if (sharingAvailable) {
     await Sharing.shareAsync(file.uri, { mimeType: 'application/json', dialogTitle: 'KIZILKAN Flight Recorder Raporunu Paylaş' });
   }
+  const shareFinishedAt = Date.now();
+
+  // Kullanıcının bir sonraki raporunda "paylaş geç geliyor" kök nedenini aşama
+  // aşama gösterecek tek, küçük timing olayı. Mevcut export payload'ına olay
+  // ekleyip yeniden stringify edilmez; dolayısıyla bu export'u büyütmez.
+  void recordDiagnostic('system', 'FLIGHT_EXPORT_TIMING', {
+    eventCount: events.length,
+    serializedChars: serialized.length,
+    redactedChars: redacted.text.length,
+    replacements: redacted.replacements,
+    eventsReadMs,
+    nativeSnapshotMs,
+    databaseHealthMs,
+    snapshotWallMs: snapshotsReadyAt - exportStartedAt,
+    sanitizeMs,
+    stringifyMs,
+    redactionMs,
+    writeMs,
+    preShareMs: preShareReadyAt - exportStartedAt,
+    shareAvailabilityMs: shareRequestedAt - preShareReadyAt,
+    shareDialogLifetimeMs: shareFinishedAt - shareRequestedAt,
+    sharingAvailable,
+    parallelSnapshots: true,
+  }, { stage: 'export', outcome: 'success', durationMs: preShareReadyAt - exportStartedAt });
   return file.uri;
 }

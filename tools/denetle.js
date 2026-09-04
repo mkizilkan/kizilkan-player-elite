@@ -40,6 +40,7 @@ const CHECKS = [
   ["check-v17010-mpv-multiscan-battery.js", "v17.0.10 MPV + multi-scan UX + battery corrective hard-gate", ""],
   ["check-v17011-buildgate-multiscan-ui.js", "v17.0.11 build-gate + multi-account UI corrective hard-gate", ""],
   ["check-v17012-gradle-mpv-taskgraph.js", "v17.0.12 MPV libc++ Gradle task-graph corrective hard-gate", ""],
+  ["check-v17013-multiscan-mpv-export.js", "v17.0.13 multi-account Fabric/import + MPV surface + Flight export hard-gate", ""],
   ["check-v16142-integrated-hardgate.js", "v16.14.2 integrated recovery / sync / ownership / source-recovery / V7 contract", ""],
   ["checkdefs.js",     "Tanımsız sembol (hook/JSX bileşeni)",   ""],
   ["checkcalls.js",    "Tanımsız fonksiyon çağrısı",            ""],

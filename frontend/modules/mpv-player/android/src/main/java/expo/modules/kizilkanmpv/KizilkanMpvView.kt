@@ -76,7 +76,11 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     // - RGBA/transparent surface kullanılmaz; tema/arka plan rengi hole-punch
     //   üzerinden sızamaz.
     setBackgroundColor(Color.BLACK)
-    surfaceView.setBackgroundColor(Color.BLACK)
+    // v17.0.13: SurfaceView pencerenin arkasındaki ayrı video surface'ini
+    // hole-punch ile gösterir. Child SurfaceView'e opak background vermek bu
+    // görünür alanı yeniden boyayıp "ses var / görüntü yok" üretebilir.
+    // Siyah boşluk parent ExpoView tarafından sağlanır; video surface background'sızdır.
+    surfaceView.background = null
     surfaceView.setZOrderOnTop(false)
     surfaceView.holder.setFormat(PixelFormat.OPAQUE)
 
@@ -181,12 +185,12 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
 
   override fun surfaceCreated(holder: SurfaceHolder) {
     surfaceReady = true
-    emitDiagnostic("SURFACE_CREATE")
+    emitDiagnostic("SURFACE_CREATE", surfaceSnapshot(holder))
     if (!initialized) initializeMpv()
     try {
       if (initialized) {
         mpv?.attachSurface(holder.surface)
-        emitDiagnostic("SURFACE_ATTACH")
+        emitDiagnostic("SURFACE_ATTACH", surfaceSnapshot(holder))
         mpv?.setOptionString("force-window", "yes")
         mpv?.setPropertyString("vo", "gpu")
         pendingSource?.let {
@@ -201,12 +205,13 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   }
 
   override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+    emitDiagnostic("SURFACE_CHANGED", surfaceSnapshot(holder) + mapOf("holderFormat" to format, "surfaceWidth" to width, "surfaceHeight" to height))
     try { if (initialized) mpv?.setPropertyString("android-surface-size", "${width}x$height") } catch (e: Throwable) { emitThrowable("SURFACE_RESIZE", e, false) }
   }
 
   override fun surfaceDestroyed(holder: SurfaceHolder) {
     surfaceReady = false
-    emitDiagnostic("SURFACE_DESTROY")
+    emitDiagnostic("SURFACE_DESTROY", surfaceSnapshot(holder))
     try {
       if (initialized) {
         mpv?.setPropertyString("vo", "null")
@@ -215,6 +220,23 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
         emitDiagnostic("SURFACE_DETACH")
       }
     } catch (e: Throwable) { emitThrowable("SURFACE_DETACH", e, false) }
+  }
+
+  private fun surfaceSnapshot(holder: SurfaceHolder? = null): Map<String, Any?> {
+    val surface = holder?.surface ?: surfaceView.holder.surface
+    val frame = surfaceView.holder.surfaceFrame
+    return mapOf(
+      "surfaceValid" to (surface?.isValid == true),
+      "viewAttached" to surfaceView.isAttachedToWindow,
+      "viewShown" to surfaceView.isShown,
+      "viewVisibility" to surfaceView.visibility,
+      "viewWidth" to surfaceView.width,
+      "viewHeight" to surfaceView.height,
+      "viewAlpha" to surfaceView.alpha,
+      "hasBackground" to (surfaceView.background != null),
+      "holderWidth" to frame.width(),
+      "holderHeight" to frame.height(),
+    )
   }
 
   fun setSource(source: Map<String, Any?>?) {
@@ -424,7 +446,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   private fun emitVideoReadyIfPossible() {
     if (width > 0 && height > 0) {
       if (lastPosition > 0.0) playbackStarted = true
-      emitDiagnostic("VIDEO_READY", mapOf("width" to width, "height" to height, "codec" to (videoCodec ?: ""), "format" to (videoFormat ?: ""), "hwdec" to (hwdecCurrent ?: "")))
+      emitDiagnostic("VIDEO_READY", mapOf("width" to width, "height" to height, "codec" to (videoCodec ?: ""), "format" to (videoFormat ?: ""), "hwdec" to (hwdecCurrent ?: "")) + surfaceSnapshot())
       post {
         onVideoReady(
           mapOf<String, Any>(

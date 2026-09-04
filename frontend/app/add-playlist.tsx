@@ -53,6 +53,7 @@ import {
   bulkAccountLocatorLabel,
   parseBulkAccounts,
   type BulkAccountInput,
+  type BulkAccountParseResult,
 } from "@/src/utils/bulkAccounts";
 
 type Method = "m3u_url" | "m3u_file" | "xtream" | "stalker" | "code" | "bulk";
@@ -92,6 +93,13 @@ function formatScanDuration(ms: number): string {
   const min = Math.floor(sec / 60);
   const rem = sec % 60;
   return min > 0 ? `${min} dk ${rem} sn` : `${rem} sn`;
+}
+
+function countTextLines(text: string): number {
+  if (!text) return 0;
+  let lines = 1;
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) lines++;
+  return lines;
 }
 
 function scanEta(createdAt: number, tested: number, total: number): string {
@@ -257,7 +265,10 @@ export default function AddPlaylist() {
   // Ham dosya içeriği ayrı state'te tutulur; farklı CSV/TXT/JSON biçimleri
   // birbirine metin olarak yapıştırılıp parser'ı bozmaz.
   const [bulkText, setBulkText] = useState("");
-  const [bulkFileText, setBulkFileText] = useState("");
+  const [bulkFileLoaded, setBulkFileLoaded] = useState(false);
+  // v17.0.13: Büyük dosyayı ikinci kez parse etme ve ham metni state içinde
+  // gereksiz yere tutma. Seçim anındaki tek parse sonucu saklanır.
+  const [bulkFileParsed, setBulkFileParsed] = useState<BulkAccountParseResult | null>(null);
   const [bulkFileName, setBulkFileName] = useState("");
   const [bulkPreviewOpen, setBulkPreviewOpen] = useState(false);
   const [bulkManualRows, setBulkManualRows] = useState<Array<{ id: string; name: string; username: string; password: string; locator: string }>>([
@@ -267,7 +278,7 @@ export default function AddPlaylist() {
 
   const bulkParsed = React.useMemo(() => {
     const manual = bulkText.trim() ? parseBulkAccounts(bulkText) : { accounts: [] as BulkAccountInput[], warnings: [] as string[] };
-    const file = bulkFileText.trim() ? parseBulkAccounts(bulkFileText) : { accounts: [] as BulkAccountInput[], warnings: [] as string[] };
+    const file = bulkFileParsed ?? { accounts: [] as BulkAccountInput[], warnings: [] as string[] };
     const formAccounts = bulkManualRows
       .map((r, i) => bulkAccountFromManual(r, i + 1))
       .filter((a): a is BulkAccountInput => !!a);
@@ -290,7 +301,7 @@ export default function AddPlaylist() {
       accounts.push(a);
     }
     return { accounts, warnings };
-  }, [bulkManualRows, bulkText, bulkFileText, bulkFileName]);
+  }, [bulkManualRows, bulkText, bulkFileParsed, bulkFileName]);
 
 
   // v9.13.0: Kaydedilmiş "kod kaynağı" URL'ini yükle (yoksa varsayılan = senin adresin).
@@ -908,6 +919,9 @@ export default function AddPlaylist() {
   };
 
   const pickBulkFile = async () => {
+    const startedAt = Date.now();
+    let pickedAt = startedAt;
+    let readAt = startedAt;
     try {
       const res = await DocumentPicker.getDocumentAsync({
         type: ["text/*", "application/json", "text/csv", "application/csv", "*/*"],
@@ -915,15 +929,39 @@ export default function AddPlaylist() {
       });
       if (res.canceled || !res.assets?.[0]) return;
       const asset = res.assets[0];
+      pickedAt = Date.now();
       const response = await fetch(asset.uri);
       const text = await response.text();
+      readAt = Date.now();
+      const parseStartedAt = Date.now();
       const parsed = parseBulkAccounts(text);
+      const parseFinishedAt = Date.now();
       if (!parsed.accounts.length) throw new Error(parsed.warnings[0] || "Dosyada geçerli hesap bulunamadı.");
       setBulkFileName(asset.name || "hesaplar");
-      setBulkFileText(text);
+      setBulkFileLoaded(true);
+      setBulkFileParsed(parsed);
       setBulkPreviewOpen(true);
       setError(parsed.warnings.length ? parsed.warnings.join("\n") : null);
+      void recordDiagnostic("import", "BULK_FILE_PREVIEW_READY", {
+        fileName: asset.name || "hesaplar",
+        fileBytes: Number((asset as any)?.size || text.length || 0),
+        textChars: text.length,
+        lineCount: countTextLines(text),
+        accountCount: parsed.accounts.length,
+        warningCount: parsed.warnings.length,
+        pickMs: pickedAt - startedAt,
+        readMs: readAt - pickedAt,
+        parseMs: parseFinishedAt - parseStartedAt,
+        totalMs: parseFinishedAt - startedAt,
+        singleParse: true,
+      }, { stage: "bulk-file-preview", outcome: "success", durationMs: parseFinishedAt - startedAt });
     } catch (e: any) {
+      void recordDiagnostic("import", "BULK_FILE_PREVIEW_FAILED", {
+        message: String(e?.message || e).slice(0, 320),
+        pickMs: pickedAt - startedAt,
+        readMs: Math.max(0, readAt - pickedAt),
+        totalMs: Date.now() - startedAt,
+      }, { stage: "bulk-file-preview", outcome: "failed", durationMs: Date.now() - startedAt, errorClass: e?.name || "BulkFileImportError" });
       setError("Toplu hesap dosyası okunamadı: " + String(e?.message || e));
     }
   };
@@ -2303,8 +2341,8 @@ export default function AddPlaylist() {
                 <Ionicons name="document-attach" size={22} color={colors.brandPrimary} />
                 <Text style={[styles.fileText, { color: colors.onSurface }]} numberOfLines={1}>{bulkFileName || "CSV / TXT / JSON dosyası seç"}</Text>
               </FocusButton>
-              {!!bulkFileText && (
-                <FocusButton focusable onPress={() => { setBulkFileText(""); setBulkFileName(""); }} style={{ alignSelf: "flex-start", paddingVertical: 8, paddingHorizontal: 4 }}>
+              {bulkFileLoaded && (
+                <FocusButton focusable onPress={() => { setBulkFileLoaded(false); setBulkFileParsed(null); setBulkFileName(""); }} style={{ alignSelf: "flex-start", paddingVertical: 8, paddingHorizontal: 4 }}>
                   <Text style={{ color: colors.error, fontWeight: FONT.weight.semibold }}>Dosyayı kaldır</Text>
                 </FocusButton>
               )}
@@ -2577,7 +2615,7 @@ export default function AddPlaylist() {
                 initialNumToRender={18}
                 maxToRenderPerBatch={24}
                 windowSize={7}
-                removeClippedSubviews={Platform.OS === "android"}
+                removeClippedSubviews={false}
                 contentContainerStyle={{ gap: 6, paddingBottom: SPACING.sm }}
                 renderSectionHeader={({section}) => section.title === "candidates" ? (
                   <Text style={[styles.bulkSectionTitle,{color:colors.onSurface}]}>Bulunan Hesaplar ({bulkCandidates.length})</Text>

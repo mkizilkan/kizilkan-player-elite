@@ -217,7 +217,14 @@ export function parseBulkAccounts(text: string): BulkAccountParseResult {
     }
   }
 
-  const lines = raw.split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith("#"));
+  // v17.0.13: Büyük TXT/CSV'de map+filter ara dizilerini üretme. Ham satırlar
+  // bir kez ayrılır, normalize edilmiş geçerli satırlar tek döngüde oluşturulur.
+  const rawLines = raw.split(/\r?\n/);
+  const lines: string[] = [];
+  for (const rawLine of rawLines) {
+    const line = rawLine.trim();
+    if (line && !line.startsWith("#")) lines.push(line);
+  }
   if (!lines.length) return { accounts: [], warnings: ["Geçerli satır bulunamadı."] };
   const delimiter = guessDelimiter(lines[0]);
   const firstValues = parseDelimitedLine(lines[0], delimiter);
