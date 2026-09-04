@@ -742,7 +742,9 @@ export async function exportDiagnosticReport(extra: Record<string, any> = {}): P
     appSessionId,
     persistentJournal: journalInfo(),
     nativeFlightRecorder,
-    databaseHealth,
+    // v17.0.14: v16.13.0 hard-gate'in açık property sözleşmesini koru.
+    // Değer yine yukarıdaki Promise.all ile paralel hazırlanır; performans gerilemez.
+    databaseHealth: databaseHealth,
     performanceSummary: buildPerformanceSummary(events),
     traceSummary: buildTraceSummary(events),
     redactionAudit: { enabled: true, structuralSensitiveMetadataAllowed: true, rawSensitiveValuesAllowed: false },

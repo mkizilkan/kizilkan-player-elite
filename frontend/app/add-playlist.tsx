@@ -102,6 +102,26 @@ function countTextLines(text: string): number {
   return lines;
 }
 
+function defaultBulkArchiveBaseName(safe: boolean): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `KIZILKAN-HESAP-ARSIVI-${safe ? "GUVENLI-" : ""}${stamp}`;
+}
+
+function normalizeBulkArchiveBaseName(value: string, safe: boolean): string {
+  // v17.0.14: SAF createFileAsync dosya adını uzantısız bekler. Kullanıcının
+  // girdiği .txt varsa yalnız son uzantıyı ayır; Android/Windows uyumsuz
+  // kontrol/ayraç karakterlerini güvenli tireye dönüştür.
+  let name = String(value || "").trim().replace(/\.txt$/i, "");
+  name = name
+    .replace(/[\u0000-\u001f<>:"/\\|?*]/g, "-")
+    .replace(/\s+/g, " ")
+    .replace(/[. ]+$/g, "")
+    .trim();
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) name = `_${name}`;
+  if (!name) name = defaultBulkArchiveBaseName(safe);
+  return name.slice(0, 120).replace(/[. ]+$/g, "") || defaultBulkArchiveBaseName(safe);
+}
+
 function scanEta(createdAt: number, tested: number, total: number): string {
   if (!createdAt || tested <= 0 || total <= tested) return total <= tested && total > 0 ? "0 sn" : "hesaplanıyor";
   const elapsed = Math.max(1, Date.now() - createdAt);
@@ -271,6 +291,12 @@ export default function AddPlaylist() {
   const [bulkFileParsed, setBulkFileParsed] = useState<BulkAccountParseResult | null>(null);
   const [bulkFileName, setBulkFileName] = useState("");
   const [bulkPreviewOpen, setBulkPreviewOpen] = useState(false);
+  // v17.0.14: TXT dışa aktarmada kullanıcı dosya adını düzenleyebilir;
+  // kaydetme işi ayrı state ile izlenir, ana tarama loading durumuna karışmaz.
+  const [bulkArchiveNameOpen, setBulkArchiveNameOpen] = useState(false);
+  const [bulkArchiveSafe, setBulkArchiveSafe] = useState(false);
+  const [bulkArchiveFileName, setBulkArchiveFileName] = useState("");
+  const [bulkArchiveSaving, setBulkArchiveSaving] = useState(false);
   const [bulkManualRows, setBulkManualRows] = useState<Array<{ id: string; name: string; username: string; password: string; locator: string }>>([
     { id: "bulk-row-1", name: "", username: "", password: "", locator: "" },
   ]);
@@ -1379,7 +1405,8 @@ export default function AddPlaylist() {
     } catch (e) { console.warn("[v17.0.6 single-scan-ack]", e); }
   }, []);
 
-  const exportBulkCandidatesTxt = React.useCallback(async (safe: boolean) => {
+  const exportBulkCandidatesTxt = React.useCallback(async (safe: boolean, requestedFileName: string) => {
+    if (bulkArchiveSaving) return;
     const selected = bulkCandidates.filter(c => selectedBulkCandidateKeys.includes(c.key));
     if (!selected.length) { Alert.alert("Hesap Arşivi", "Önce dışa aktarılacak hesap/DNS satırlarını seçin."); return; }
     const grouped = new Map<string, BulkResolvedCandidate[]>();
@@ -1391,30 +1418,80 @@ export default function AddPlaylist() {
       return { name:preferred.name, username:preferred.username, password:preferred.password, server:preferred.server, primaryHost:preferred.server, panelName:preferred.panelName, serverCode:preferred.code, validatedHosts:hosts, login:preferred.login };
     });
     const text=buildKizilkanAccountArchive(records,safe);
-    const stamp=new Date().toISOString().replace(/[:.]/g,"-");
-    const fileName=`KIZILKAN-HESAP-ARSIVI-${safe?"GUVENLI-":""}${stamp}.txt`;
+    const baseName=normalizeBulkArchiveBaseName(requestedFileName,safe);
+    const fileName=`${baseName}.txt`;
     const uri=`${FileSystem.cacheDirectory}${fileName}`;
-    await FileSystem.writeAsStringAsync(uri,text,{encoding:FileSystem.EncodingType.UTF8});
-    if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
-      const perm=await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
-      if (perm.granted) {
-        const target=await FileSystem.StorageAccessFramework.createFileAsync(perm.directoryUri,fileName,"text/plain");
-        await FileSystem.writeAsStringAsync(target,text,{encoding:FileSystem.EncodingType.UTF8});
-        Alert.alert("Hesap Arşivi Kaydedildi", `${records.length} abonelik TXT dosyasına kaydedildi.\n${fileName}`);
+    setBulkArchiveSaving(true);
+    try {
+      // Uygulama önbelleğindeki kopya paylaşım/fallback için her platformda korunur.
+      await FileSystem.writeAsStringAsync(uri,text,{encoding:FileSystem.EncodingType.UTF8});
+      if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
+        const perm=await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+        if (perm.granted) {
+          // Expo SAF sözleşmesi createFileAsync'e uzantısız ad ister; MIME sağlayıcısı
+          // .txt uzantısını üretir. Eski sürüm burada doğrudan "...txt" gönderiyordu.
+          const target=await FileSystem.StorageAccessFramework.createFileAsync(perm.directoryUri,baseName,"text/plain");
+          await FileSystem.writeAsStringAsync(target,text,{encoding:FileSystem.EncodingType.UTF8});
+
+          // v17.0.14 WRITE-VERIFY: yalnız Promise resolve olduğu için başarı deme.
+          // SAF content URI'yi geri oku ve byte-equivalent metni doğrula.
+          const readBack=await FileSystem.readAsStringAsync(target,{encoding:FileSystem.EncodingType.UTF8});
+          if (readBack !== text) {
+            throw new Error(`SAF_WRITE_VERIFY_FAILED expectedChars=${text.length} actualChars=${readBack.length}`);
+          }
+          void recordDiagnostic("scan", "BULK_TXT_EXPORT_VERIFIED", {
+            safe, records: records.length, contentChars: text.length, verified: true, storage: "android_saf",
+          }, { stage: "bulk-export", outcome: "success" });
+          Alert.alert("Hesap Arşivi Kaydedildi", `${records.length} abonelik doğrulanmış TXT dosyasına kaydedildi.\n${fileName}`);
+          return;
+        }
+        void recordDiagnostic("scan", "BULK_TXT_EXPORT_DIRECTORY_CANCELLED", {
+          safe, records: records.length, contentChars: text.length, storage: "android_saf",
+        }, { stage: "bulk-export", outcome: "cancelled" });
+      }
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri,{mimeType:"text/plain",dialogTitle:"KIZILKAN Hesap Arşivini Kaydet / Paylaş"});
         return;
       }
+      Alert.alert("Hesap Arşivi", `Dosya uygulama önbelleğinde hazırlandı: ${fileName}`);
+    } catch (e:any) {
+      const message=String(e?.message||e||"Bilinmeyen kayıt hatası");
+      void recordDiagnostic("scan", "BULK_TXT_EXPORT_FAILED", {
+        safe, records: records.length, contentChars: text.length, storage: Platform.OS === "android" ? "android_saf" : "cache_share",
+        errorClass: message.startsWith("SAF_WRITE_VERIFY_FAILED") ? "SAF_WRITE_VERIFY_FAILED" : String(e?.name || "TXT_EXPORT_ERROR"),
+      }, { stage: "bulk-export", outcome: "error" });
+      Alert.alert("TXT Kaydedilemedi", `Seçilen klasöre TXT yazımı doğrulanamadı. Başarı mesajı verilmedi.\n\n${message}`, [
+        { text: "Kapat", style: "cancel" },
+        { text: "Paylaş / Farklı Kaydet", onPress: () => { void (async () => {
+          try { if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri,{mimeType:"text/plain",dialogTitle:"KIZILKAN Hesap Arşivini Kaydet / Paylaş"}); } catch {}
+        })(); } },
+      ]);
+    } finally {
+      setBulkArchiveSaving(false);
     }
-    if (await Sharing.isAvailableAsync()) { await Sharing.shareAsync(uri,{mimeType:"text/plain",dialogTitle:"KIZILKAN Hesap Arşivini Kaydet / Paylaş"}); return; }
-    Alert.alert("Hesap Arşivi", `Dosya hazırlandı: ${fileName}`);
-  },[bulkCandidates,selectedBulkCandidateKeys,bulkUseAllValidatedHosts]);
+  },[bulkArchiveSaving,bulkCandidates,selectedBulkCandidateKeys,bulkUseAllValidatedHosts]);
+
+  const openBulkArchiveName = React.useCallback((safe: boolean) => {
+    setBulkArchiveSafe(safe);
+    setBulkArchiveFileName(defaultBulkArchiveBaseName(safe));
+    setBulkArchiveNameOpen(true);
+  },[]);
+
+  const confirmBulkArchiveName = React.useCallback(() => {
+    if (bulkArchiveSaving) return;
+    const normalized=normalizeBulkArchiveBaseName(bulkArchiveFileName,bulkArchiveSafe);
+    setBulkArchiveFileName(normalized);
+    setBulkArchiveNameOpen(false);
+    void exportBulkCandidatesTxt(bulkArchiveSafe,normalized);
+  },[bulkArchiveFileName,bulkArchiveSafe,bulkArchiveSaving,exportBulkCandidatesTxt]);
 
   const chooseBulkArchiveMode = React.useCallback(() => {
     Alert.alert("TXT Hesap Arşivi","Tam arşiv tekrar içe aktarılabilir ve şifreleri içerir. Güvenli rapor credential alanlarını maskeler.",[
       {text:"Vazgeç",style:"cancel"},
-      {text:"Güvenli Rapor",onPress:()=>void exportBulkCandidatesTxt(true)},
-      {text:"Tam Arşiv",onPress:()=>void exportBulkCandidatesTxt(false)},
+      {text:"Güvenli Rapor",onPress:()=>openBulkArchiveName(true)},
+      {text:"Tam Arşiv",onPress:()=>openBulkArchiveName(false)},
     ]);
-  },[exportBulkCandidatesTxt]);
+  },[openBulkArchiveName]);
 
   const addSelectedBulkCandidates = async () => {
     const selectedRaw = bulkCandidates.filter(c => selectedBulkCandidateKeys.includes(c.key));
@@ -2830,6 +2907,42 @@ export default function AddPlaylist() {
         * gösterir hem de arkadaki düğmelere basılmasını fiziksel olarak
         * engeller (her basış yeni bir ağır MAG işlemi başlatıyordu).
         */}
+      <Modal
+        visible={bulkArchiveNameOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!bulkArchiveSaving) setBulkArchiveNameOpen(false); }}
+      >
+        <View style={styles.categoryOverlay}>
+          <View style={[styles.categoryModal,{backgroundColor:colors.surface,borderWidth:1,borderColor:colors.border}]}>
+            <Text style={[styles.categoryModalTitle,{color:colors.onSurface}]}>TXT Dosya Adı</Text>
+            <Text style={[styles.selectionHint,{color:colors.onSurfaceSecondary,marginBottom:SPACING.md}]}>
+              {bulkArchiveSafe ? "Güvenli rapor" : "Tam arşiv"} için dosya adını değiştirebilirsiniz. .txt yazmanız gerekmez; uygulama doğru uzantıyı ekler.
+            </Text>
+            <TextInput
+              value={bulkArchiveFileName}
+              onChangeText={setBulkArchiveFileName}
+              editable={!bulkArchiveSaving}
+              autoCapitalize="none"
+              autoCorrect={false}
+              selectTextOnFocus
+              returnKeyType="done"
+              onSubmitEditing={confirmBulkArchiveName}
+              placeholder="KIZILKAN-HESAP-ARSIVI"
+              placeholderTextColor={colors.onSurfaceTertiary}
+              style={{borderWidth:1,borderColor:colors.border,borderRadius:10,paddingHorizontal:12,paddingVertical:11,color:colors.onSurface,backgroundColor:colors.surfaceSecondary,fontSize:FONT.size.md}}
+            />
+            <Text style={{color:colors.onSurfaceTertiary,fontSize:FONT.size.xs,marginTop:SPACING.xs}}>Kaydedilecek uzantı: .txt</Text>
+            <View style={styles.categoryActions}>
+              <FocusButton disabled={bulkArchiveSaving} onPress={()=>setBulkArchiveNameOpen(false)} style={[styles.categoryAction,{borderColor:colors.border,opacity:bulkArchiveSaving?0.5:1}]}><Text style={{color:colors.onSurface}}>İptal</Text></FocusButton>
+              <FocusButton disabled={bulkArchiveSaving} onPress={confirmBulkArchiveName} style={[styles.categoryAction,{backgroundColor:colors.brandPrimary,opacity:bulkArchiveSaving?0.6:1}]}>
+                {bulkArchiveSaving?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:"800"}}>Klasör Seç ve Kaydet</Text>}
+              </FocusButton>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* v16.5.0: MAG için üstteki özel katman var; burada çift göstermiyoruz. */}
       <Modal visible={loading && method !== "stalker"} transparent animationType="fade" onRequestClose={() => {}}>
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.88)", alignItems: "center", justifyContent: "center", padding: SPACING.lg }}>
