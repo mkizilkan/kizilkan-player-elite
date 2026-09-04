@@ -570,10 +570,8 @@ class PanelScanService : Service() {
       .put("tested",tested).put("total",total).put("accountTested",accountTested).put("accountTotal",accountTotal).put("panelTotal",panelTotal)
       .put("found",matches.size).put("panelName",panelName).put("currentServer",currentServer).put("accountIndex",accountIndex).put("matches",resultArray)
     if (accountStatuses != null) snap.put("accountStatuses", accountStatuses)
-    if (extra != null) {
-      val keys = extra.keys()
-      while (keys.hasNext()) { val key = keys.next(); snap.put(key, extra.opt(key)) }
-    }
+    // v17.1.0 build corrective — `extra` yalnız unified snapshot kontratına aittir.
+    // Legacy bulk snapshot yolunda tanımlı olmayan metadata kapsamı kullanılmaz.
     writeSnapshot(snap)
   }
 
