@@ -16,6 +16,15 @@ class PanelScanModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("PanelScan")
 
+
+    // v17.1.1: Büyük TXT/CSV dosyaları JS `response.text()` yoluna alınmaz.
+    // ContentResolver InputStream satır satır okunur; ham dosya hiçbir zaman tek
+    // String olarak JS heap'ine kopyalanmaz. JSON/arşiv özel biçimleri JS fallback'te kalır.
+    AsyncFunction("parseBulkAccountsFile") { uriText: String ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      parseBulkAccountsStream(context, Uri.parse(uriText))
+    }
+
     AsyncFunction("startScan") { candidatesJson: String, username: String, password: String, concurrency: Int, timeoutMs: Int ->
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
       val runId = UUID.randomUUID().toString()
@@ -313,4 +322,70 @@ class PanelScanModule : Module() {
       editor.commit()
     }
   }
+  private fun parseBulkAccountsStream(context: android.content.Context, uri: Uri): Map<String, Any?> {
+    val accounts = ArrayList<Map<String, Any?>>()
+    val warnings = ArrayList<String>()
+    var lineCount = 0
+    var delimiter: Char? = null
+    var headers: List<String>? = null
+    val stream = context.contentResolver.openInputStream(uri) ?: throw IllegalArgumentException("Dosya akışı açılamadı")
+    stream.bufferedReader(Charsets.UTF_8, 64 * 1024).use { reader ->
+      while (true) {
+        val raw = reader.readLine() ?: break
+        lineCount++
+        val line = if (lineCount == 1) raw.removePrefix("\uFEFF").trim() else raw.trim()
+        if (line.isBlank() || line.startsWith("#")) continue
+        if (delimiter == null) {
+          if (line.startsWith("[") || line.startsWith("{") || line.contains("KIZILKAN PLAYER ELITE — HESAP ARŞİVİ", true))
+            return mapOf("supported" to false, "reason" to "structured-format", "lineCount" to lineCount)
+          delimiter = guessDelimiter(line)
+          val first = parseDelimited(line, delimiter!!)
+          if (headerLooksValid(first)) { headers = first; continue }
+        }
+        val account = parseStreamAccount(line, delimiter!!, headers, lineCount)
+        if (account != null) accounts.add(account)
+        else if (warnings.size < 100) warnings.add("Satır $lineCount: kullanıcı adı/şifre bulunamadı, atlandı.")
+      }
+    }
+    return mapOf("supported" to true, "accounts" to accounts, "warnings" to warnings, "lineCount" to lineCount, "accountCount" to accounts.size)
+  }
+
+  private fun normKey(v: String): String = v.trim().lowercase(java.util.Locale.forLanguageTag("tr"))
+    .replace('ı','i').replace('ş','s').replace('ğ','g').replace('ü','u').replace('ö','o').replace('ç','c').replace(Regex("[^a-z0-9]"), "")
+  private val userKeys = setOf("kullanici","kullaniciadi","user","username","login")
+  private val passKeys = setOf("sifre","parola","pass","password")
+  private val nameKeys = setOf("ad","adi","isim","liste","listeadi","playlist","playlistname","name","displayname")
+  private val serverKeys = setOf("sunucu","server","dns","url","host","portal")
+  private val codeKeys = setOf("kod","panelkodu","sunucukodu","servercode","code")
+  private val panelKeys = setOf("panel","paneladi","panelname")
+
+  private fun parseDelimited(line: String, delimiter: Char): List<String> {
+    val out=ArrayList<String>(); val cur=StringBuilder(); var quoted=false; var i=0
+    while(i<line.length){ val ch=line[i]; if(ch=='"'){ if(quoted && i+1<line.length && line[i+1]=='"'){cur.append('"');i++} else quoted=!quoted } else if(ch==delimiter && !quoted){out.add(cur.toString().trim());cur.setLength(0)} else cur.append(ch); i++ }
+    out.add(cur.toString().trim()); return out
+  }
+  private fun guessDelimiter(line:String):Char {
+    val choices=charArrayOf('\t','|',';',','); var best='|'; var count=-1
+    for(d in choices){ val n=parseDelimited(line,d).size; if(n>count){count=n;best=d} }; return best
+  }
+  private fun headerLooksValid(v:List<String>):Boolean { val k=v.map(::normKey); return k.any{it in userKeys} && k.any{it in passKeys} }
+  private fun normalizeServer(v:String):String { val x=v.trim().trimEnd('/'); return if(x.startsWith("http://",true)||x.startsWith("https://",true)) x else "http://$x" }
+  private fun looksServer(v:String)=Regex("^https?://",RegexOption.IGNORE_CASE).containsMatchIn(v)||Regex("^[a-z0-9.-]+:\\d+(?:/.*)?$",RegexOption.IGNORE_CASE).matches(v)||Regex("\\.[a-z]{2,}(?::\\d+)?(?:/|$)",RegexOption.IGNORE_CASE).containsMatchIn(v)
+  private fun parseStreamAccount(line:String, delimiter:Char, headers:List<String>?, row:Int):Map<String,Any?>? {
+    if(headers==null && !line.contains(Regex("[|;\\t,]")) && !line.contains("://")){
+      val i=line.indexOf(':'); if(i>0 && i<line.length-1){ val u=line.substring(0,i).trim(); val p=line.substring(i+1).trim(); if(u.isNotBlank()&&p.isNotBlank()&&!u.contains(' ')) return mapOf("row" to row,"name" to "","username" to u,"password" to p) }
+    }
+    val vals=parseDelimited(line,delimiter)
+    if(headers!=null){
+      val obj=HashMap<String,String>(); headers.forEachIndexed{i,h->obj[normKey(h)]=vals.getOrElse(i){""}.trim()}
+      fun first(keys:Set<String>)=keys.firstNotNullOfOrNull{k->obj[k]?.takeIf{it.isNotBlank()}} ?: ""
+      val u=first(userKeys); val p=first(passKeys); if(u.isBlank()||p.isBlank()) return null
+      val out=linkedMapOf<String,Any?>("row" to row,"name" to first(nameKeys),"username" to u,"password" to p); val server=first(serverKeys); val code=first(codeKeys); val panel=first(panelKeys)
+      if(server.isNotBlank()) out["server"]=normalizeServer(server); if(code.isNotBlank()) out["serverCode"]=code; if(panel.isNotBlank()) out["panelName"]=panel; return out
+    }
+    val v=vals.map{it.trim()}; if(v.size<2) return null; var name=""; var u=""; var p=""; var loc=""
+    if(v.size>=4){name=v[0];u=v[1];p=v[2];loc=v[3]} else if(v.size==3){u=v[0];p=v[1];loc=v[2]} else {u=v[0];p=v[1]}; if(u.isBlank()||p.isBlank()) return null
+    val out=linkedMapOf<String,Any?>("row" to row,"name" to name,"username" to u,"password" to p); if(loc.isNotBlank()){ if(looksServer(loc)) out["server"]=normalizeServer(loc) else if(Regex("^\\d{2,12}$").matches(loc)) out["serverCode"]=loc else out["panelName"]=loc }; return out
+  }
+
 }

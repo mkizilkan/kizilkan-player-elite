@@ -8,6 +8,7 @@ import {
   ScrollView,
   ActivityIndicator,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -61,9 +62,11 @@ export default function EditPlaylist() {
   if (!pl) return null;
 
   const save = async () => {
+    Keyboard.dismiss();
     setError(null);
     setLoading(true);
     setProgress("");
+    let metadataCommittedEarly = false;
     try {
       const patch: any = { name: name.trim() || pl.name };
       const playbackHeaders = {
@@ -146,7 +149,14 @@ export default function EditPlaylist() {
           };
           setServerCodeAutoResolve(false);
         }
+
+        // v17.1.1: Kimlik/DNS metadata commit'i katalog yenilemesinden bağımsızdır.
+        // Büyük Room refresh başarısız olsa bile kullanıcının yeni DNS seçimi eski
+        // değere geri dönmez. Refresh yalnız ikinci fazda sayaç/accountInfo günceller.
+        await updatePlaylist(pl.id, { ...patch });
+        metadataCommittedEarly = true;
         if (reloadContent) {
+          setProgress("Hesap adresi kaydedildi. İçerik yeni adres üzerinden yenileniyor...");
           const cred = { server: patch.xtreamServer!, username: patch.xtreamUsername!, password: patch.xtreamPassword! };
           if (Platform.OS === "android" && KizilkanNativeCore.available) {
             const existingJob = KizilkanNativeCore.getBulkImportSnapshot();
@@ -250,7 +260,10 @@ export default function EditPlaylist() {
       await updatePlaylist(pl.id, patch);
       router.back();
     } catch (e: any) {
-      setError(e.message || "Hata");
+      const detail = e.message || "Hata";
+      setError(metadataCommittedEarly
+        ? `Hesap/DNS değişikliği kaydedildi; içerik yenileme tamamlanamadı. ${detail}`
+        : detail);
     } finally {
       setLoading(false);
       setProgress("");
@@ -259,7 +272,7 @@ export default function EditPlaylist() {
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top", "bottom"]} testID="edit-playlist-screen">
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <View style={styles.header}>
           <TouchableOpacity testID="edit-close-btn" onPress={() => router.back()} hitSlop={12}>
             <Ionicons name="chevron-back" size={26} color={colors.onSurface} />

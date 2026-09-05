@@ -314,6 +314,7 @@ export default function AddPlaylist() {
   const [bulkFileParsed, setBulkFileParsed] = useState<BulkAccountParseResult | null>(null);
   const [bulkFileName, setBulkFileName] = useState("");
   const [bulkFilePicking, setBulkFilePicking] = useState(false);
+  const [bulkFilePhase, setBulkFilePhase] = useState<"idle"|"selecting"|"reading"|"parsing"|"ready"|"failed"|"cancelled">("idle");
   const bulkFilePickerInFlightRef = React.useRef(false);
   const [bulkPreviewOpen, setBulkPreviewOpen] = useState(false);
   // v17.0.14: TXT dışa aktarmada kullanıcı dosya adını düzenleyebilir;
@@ -976,34 +977,62 @@ export default function AddPlaylist() {
     }
     bulkFilePickerInFlightRef.current = true;
     setBulkFilePicking(true);
+    setBulkFilePhase("selecting");
     const startedAt = Date.now();
     let pickedAt = startedAt;
     let readAt = startedAt;
     try {
       const res = await DocumentPicker.getDocumentAsync({
         type: ["text/*", "application/json", "text/csv", "application/csv", "*/*"],
-        copyToCacheDirectory: true,
+        // v17.1.1 Android: büyük dosyayı önce cache'e kopyalama; ContentResolver
+        // URI'si native streaming parser tarafından doğrudan okunur.
+        copyToCacheDirectory: Platform.OS !== "android",
       });
-      if (res.canceled || !res.assets?.[0]) return;
+      if (res.canceled || !res.assets?.[0]) { setBulkFilePhase("cancelled"); return; }
       const asset = res.assets[0];
       pickedAt = Date.now();
-      const response = await fetch(asset.uri);
-      const text = await response.text();
-      readAt = Date.now();
+      setBulkFilePhase("reading");
       const parseStartedAt = Date.now();
-      const parsed = parseBulkAccounts(text);
+      let parsed: { accounts: BulkAccountInput[]; warnings: string[] };
+      let textChars = 0;
+      let lineCount = 0;
+      let nativeStream = false;
+      if (Platform.OS === "android" && PanelScan.available && !/\.json$/i.test(asset.name || "")) {
+        const nativeParsed = await PanelScan.parseBulkAccountsFile(asset.uri);
+        readAt = Date.now();
+        if (nativeParsed?.supported && Array.isArray(nativeParsed.accounts)) {
+          nativeStream = true;
+          setBulkFilePhase("parsing");
+          parsed = { accounts: nativeParsed.accounts as BulkAccountInput[], warnings: Array.isArray(nativeParsed.warnings) ? nativeParsed.warnings.map(String) : [] };
+          lineCount = Number(nativeParsed.lineCount || 0);
+        } else {
+          const response = await fetch(asset.uri);
+          const text = await response.text();
+          textChars = text.length; lineCount = countTextLines(text);
+          setBulkFilePhase("parsing");
+          parsed = parseBulkAccounts(text);
+        }
+      } else {
+        const response = await fetch(asset.uri);
+        const text = await response.text();
+        readAt = Date.now(); textChars = text.length; lineCount = countTextLines(text);
+        setBulkFilePhase("parsing");
+        parsed = parseBulkAccounts(text);
+      }
       const parseFinishedAt = Date.now();
       if (!parsed.accounts.length) throw new Error(parsed.warnings[0] || "Dosyada geçerli hesap bulunamadı.");
       setBulkFileName(asset.name || "hesaplar");
       setBulkFileLoaded(true);
       setBulkFileParsed(parsed);
+      setBulkFilePhase("ready");
       setBulkPreviewOpen(true);
       setError(parsed.warnings.length ? parsed.warnings.join("\n") : null);
       void recordDiagnostic("import", "BULK_FILE_PREVIEW_READY", {
         fileName: asset.name || "hesaplar",
-        fileBytes: Number((asset as any)?.size || text.length || 0),
-        textChars: text.length,
-        lineCount: countTextLines(text),
+        fileBytes: Number((asset as any)?.size || 0),
+        textChars,
+        lineCount,
+        nativeStream,
         accountCount: parsed.accounts.length,
         warningCount: parsed.warnings.length,
         pickMs: pickedAt - startedAt,
@@ -1019,6 +1048,7 @@ export default function AddPlaylist() {
         readMs: Math.max(0, readAt - pickedAt),
         totalMs: Date.now() - startedAt,
       }, { stage: "bulk-file-preview", outcome: "failed", durationMs: Date.now() - startedAt, errorClass: e?.name || "BulkFileImportError" });
+      setBulkFilePhase("failed");
       setError("Toplu hesap dosyası okunamadı: " + String(e?.message || e));
     } finally {
       bulkFilePickerInFlightRef.current = false;
@@ -1067,8 +1097,18 @@ export default function AddPlaylist() {
         // checkpoint kullanılarak tarama yeniden başlatılır. Sonuçlar DB'den korunur.
         if (scan.recoverable && String(scan.terminalReason || "") === "PROCESS_RESTARTED_RECOVERABLE" && !interruptedRecoveryAttemptedRef.current) {
           interruptedRecoveryAttemptedRef.current = true;
-          const resumed = await PanelScan.recoverInterruptedScan();
-          if (resumed) { setError(null); setProgress("Yarım kalan tarama güvenli checkpoint'ten devam ediyor…"); return; }
+          // v17.1.1: Journal başka bir kaynak dosyasına aitse kör resume yok.
+          // Şifreli pending hesapların fingerprint'i journal ile birebir eşleşmelidir.
+          const pendingRaw = await storage.secureGet<string>(PENDING_BULK_SCAN_KEY, "");
+          const pendingAccounts: BulkAccountInput[] = pendingRaw ? JSON.parse(pendingRaw) : [];
+          const expectedFingerprint = pendingAccounts.length ? stableScanSourceFingerprint(pendingAccounts, codeSource.trim() || DEFAULT_CODE_SOURCE) : "";
+          if (scan.sourceFingerprint && expectedFingerprint && String(scan.sourceFingerprint) !== expectedFingerprint) {
+            setError("Yarım kalan tarama farklı bir kaynak dosyasına ait; güvenlik için otomatik devam ettirilmedi.");
+            void recordDiagnostic("scan", "V171_RECOVERY_FINGERPRINT_REJECTED", { journal: String(scan.sourceFingerprint).slice(0,32), expected: expectedFingerprint.slice(0,32) }, { stage: "scan-recovery", outcome: "rejected" });
+          } else {
+            const resumed = await PanelScan.recoverInterruptedScan();
+            if (resumed) { setError(null); setProgress("Yarım kalan tarama güvenli checkpoint'ten devam ediyor…"); return; }
+          }
         }
 
         // v17.0.6: "Sunucuyu bilmiyorum" / tek hesap panel keşfi de bulk ile
@@ -2543,7 +2583,7 @@ export default function AddPlaylist() {
               </Text>
               <FocusButton testID="bulk-pick-file-btn" focusable={!bulkFilePicking} disabled={bulkFilePicking} onPress={pickBulkFile} style={[styles.fileBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, opacity: bulkFilePicking ? 0.65 : 1 }]}>
                 {bulkFilePicking ? <ActivityIndicator size="small" color={colors.brandPrimary} /> : <Ionicons name="document-attach" size={22} color={colors.brandPrimary} />}
-                <Text style={[styles.fileText, { color: colors.onSurface }]} numberOfLines={1}>{bulkFilePicking ? "Dosya seçimi açık…" : (bulkFileName || "CSV / TXT / JSON dosyası seç")}</Text>
+                <Text style={[styles.fileText, { color: colors.onSurface }]} numberOfLines={1}>{bulkFilePicking ? (bulkFilePhase === "reading" ? "Dosya okunuyor…" : bulkFilePhase === "parsing" ? "Hesaplar ayrıştırılıyor…" : "Dosya seçici açık…") : (bulkFileName || "CSV / TXT / JSON dosyası seç")}</Text>
               </FocusButton>
               {bulkFileLoaded && (
                 <FocusButton focusable onPress={() => { setBulkFileLoaded(false); setBulkFileParsed(null); setBulkFileName(""); }} style={{ alignSelf: "flex-start", paddingVertical: 8, paddingHorizontal: 4 }}>

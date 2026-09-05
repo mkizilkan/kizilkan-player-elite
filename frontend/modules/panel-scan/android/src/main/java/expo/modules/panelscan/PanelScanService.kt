@@ -15,6 +15,7 @@ import java.net.URL
 import java.util.concurrent.Executors
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -200,6 +201,9 @@ class PanelScanService : Service() {
   @Volatile private var lastDiagnosticState = ""
   @Volatile private var lastDiagnosticBucket = -1
   private val activeConnections = ConcurrentHashMap.newKeySet<HttpURLConnection>()
+  // v17.1.1: Aynı DNS'e yüzlerce hesabın aynı anda bindirmesini engelle.
+  private val hostPermits = ConcurrentHashMap<String, Semaphore>()
+  private val hostBackoffUntil = ConcurrentHashMap<String, Long>()
 
   private fun abortActiveNetworkWork() {
     try { activeExecutor?.shutdownNow() } catch (_: Throwable) {}
@@ -448,11 +452,16 @@ class PanelScanService : Service() {
 
   private fun probe(server: String, username: String, password: String, timeoutMs: Int): JSONObject? {
     val base = server.trim().trimEnd('/')
+    val hostKey = runCatching { URL(base).host.lowercase() }.getOrDefault(base.lowercase())
+    val permit = hostPermits.computeIfAbsent(hostKey) { Semaphore(4, true) }
+    if (!permit.tryAcquire(timeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)) return null
     val u = java.net.URLEncoder.encode(username, "UTF-8")
     val p = java.net.URLEncoder.encode(password, "UTF-8")
     var conn: HttpURLConnection? = null
     return try {
       if (cancelled.get() || Thread.currentThread().isInterrupted) return null
+      val waitMs = (hostBackoffUntil[hostKey] ?: 0L) - System.currentTimeMillis()
+      if (waitMs > 0) Thread.sleep(waitMs.coerceAtMost(5000L))
       val opened = URL("$base/player_api.php?username=$u&password=$p").openConnection() as HttpURLConnection
       conn = opened
       activeConnections.add(opened)
@@ -461,14 +470,24 @@ class PanelScanService : Service() {
       opened.readTimeout = timeoutMs
       opened.requestMethod = "GET"
       opened.setRequestProperty("Accept", "application/json")
-      if (opened.responseCode !in 200..299) return null
+      val code = opened.responseCode
+      if (code == 429 || code == 503) {
+        val retrySeconds = opened.getHeaderField("Retry-After")?.toLongOrNull()?.coerceIn(1L, 5L) ?: 2L
+        hostBackoffUntil[hostKey] = System.currentTimeMillis() + retrySeconds * 1000L
+        recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("state", "HOST_BACKOFF").put("host", hostKey).put("httpCode", code).put("backoffMs", retrySeconds * 1000L))
+        return null
+      }
+      if (code !in 200..299) return null
+      hostBackoffUntil.remove(hostKey)
       val text = opened.inputStream.bufferedReader().use { it.readText() }
       val data = JSONObject(text)
       val ui = data.optJSONObject("user_info") ?: return null
       val auth = ui.opt("auth")?.toString()
       if (auth == "0" || auth == "false") return null
       data
-    } catch (_: Throwable) { null } finally { conn?.let { activeConnections.remove(it) }; conn?.disconnect() }
+    } catch (_: Throwable) { null } finally {
+      conn?.let { activeConnections.remove(it) }; conn?.disconnect(); permit.release()
+    }
   }
 
   /** Snapshot diskte kalıcıdır; parola/token gibi hassas alanları yazma. */
@@ -570,8 +589,6 @@ class PanelScanService : Service() {
       .put("tested",tested).put("total",total).put("accountTested",accountTested).put("accountTotal",accountTotal).put("panelTotal",panelTotal)
       .put("found",matches.size).put("panelName",panelName).put("currentServer",currentServer).put("accountIndex",accountIndex).put("matches",resultArray)
     if (accountStatuses != null) snap.put("accountStatuses", accountStatuses)
-    // v17.1.0 build corrective — `extra` yalnız unified snapshot kontratına aittir.
-    // Legacy bulk snapshot yolunda tanımlı olmayan metadata kapsamı kullanılmaz.
     writeSnapshot(snap)
   }
 

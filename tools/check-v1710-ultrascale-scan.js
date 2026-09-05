@@ -11,7 +11,8 @@ const svc=read('frontend/modules/panel-scan/android/src/main/java/expo/modules/p
 const journal=read('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/ScanJournalStore.kt');
 const denetle=read('tools/denetle.js');
 function ok(c,m){if(!c){console.error('FAIL — '+m);process.exit(1)}console.log('✓ '+m)}
-ok(pkg.version==='17.1.0'&&app.expo.version==='17.1.0'&&app.expo.ios.buildNumber==='17.1.0'&&app.expo.android.versionCode===170100&&app.expo.extra?.kizilkanReleaseLabel==='GPT ELITE v17.1.0 RC1','v17.1.0 sürüm zinciri');
+const semverAtLeast=(v,a,b,c)=>{const p=String(v||'').split('.').map(Number);return (p[0]||0)>a||((p[0]||0)===a&&((p[1]||0)>b||((p[1]||0)===b&&(p[2]||0)>=c)))};
+ok(semverAtLeast(pkg.version,17,1,0)&&semverAtLeast(app.expo.version,17,1,0)&&app.expo.android.versionCode>=170100&&/^GPT ELITE v17\.1\.\d+ RC1$/.test(app.expo.extra?.kizilkanReleaseLabel||''),'v17.1.0+ sürüm zinciri');
 ok(add.includes('bulkFilePickerInFlightRef')&&add.includes('BULK_FILE_PICKER_SUPPRESSED')&&add.includes('disabled={bulkFilePicking}'),'DocumentPicker single-flight koruması');
 ok(add.includes('candidateSets')&&add.includes('compactJobs')&&add.includes('V171_COMPACT_PAYLOAD_READY')&&!add.includes('PanelScan.startUnifiedScan(jobs'),'JS candidate-set compact taşıma');
 ok(idx.includes('startUnifiedScanV171')&&idx.includes('UnifiedScanCompactPayload'),'v17.1 compact native bridge');

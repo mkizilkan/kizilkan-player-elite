@@ -33,6 +33,8 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     private const val TAG = "KizilkanMpv"
     private const val PROGRESS_INTERVAL_MS = 1000L
     private val NEXT_INSTANCE_ID = java.util.concurrent.atomic.AtomicLong(0)
+    private val OWNER_LOCK = Any()
+    private var activeAudioOwner: java.lang.ref.WeakReference<KizilkanMpvView>? = null
 
     init {
       try { System.loadLibrary("c++_shared") } catch (_: Throwable) { }
@@ -58,6 +60,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   private var currentHeaders: Map<String, String> = emptyMap()
   private var currentBufferMs: Int = 1500
   private var playbackStarted: Boolean = false
+  @Volatile private var ownsAudio: Boolean = false
   private var lastPosition = 0.0
   private var lastDuration = 0.0
   private var lastProgressDispatch = 0L
@@ -82,6 +85,9 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     // Siyah boşluk parent ExpoView tarafından sağlanır; video surface background'sızdır.
     surfaceView.background = null
     surfaceView.setZOrderOnTop(false)
+    // v17.1.1: Surface kesinlikle Activity window'unun üstüne taşınmaz. RN kontrol
+    // katmanı aynı window içinde SurfaceView'in üzerinde compositing yapabilsin.
+    surfaceView.setZOrderMediaOverlay(false)
     surfaceView.holder.setFormat(PixelFormat.OPAQUE)
 
     // Android 14+: Surface ömrünü visibility yerine attachment'a bağla.
@@ -239,6 +245,20 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     )
   }
 
+
+  private fun revokeAudioOwnership(nextOwnerId: Long) {
+    if (destroyed.get()) return
+    ownsAudio = false
+    try {
+      if (initialized) {
+        mpv?.setPropertyDouble("volume", 0.0)
+        mpv?.command(arrayOf("stop"))
+      }
+      playbackStarted = false
+      emitDiagnostic("AUDIO_OWNER_REVOKED", mapOf("nextOwnerInstanceId" to nextOwnerId))
+    } catch (e: Throwable) { emitThrowable("AUDIO_OWNER_REVOKE", e, false) }
+  }
+
   fun setSource(source: Map<String, Any?>?) {
     if (source == null) return
     if (!surfaceReady) {
@@ -252,6 +272,18 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     if (!initialized || destroyed.get()) return
     val url = source["url"]?.toString()?.trim().orEmpty()
     if (url.isBlank()) return
+
+    // v17.1.1: MPV audio ownership tekil olmalıdır. React/Fabric eski SurfaceView'i
+    // birkaç frame daha yaşatsa bile yeni kaynak yüklenmeden önce önceki MPV
+    // instance'ının sesi kesin kesilir. Instance destroy edilmez; kendi lifecycle'ı
+    // OnViewDestroys üzerinden devam eder.
+    synchronized(OWNER_LOCK) {
+      val previous = activeAudioOwner?.get()
+      if (previous != null && previous !== this) previous.revokeAudioOwnership(instanceId)
+      activeAudioOwner = java.lang.ref.WeakReference(this)
+      ownsAudio = true
+    }
+    emitDiagnostic("AUDIO_OWNER_CLAIM", mapOf("ownerInstanceId" to instanceId))
 
     @Suppress("UNCHECKED_CAST")
     val headersRaw = source["headers"] as? Map<Any?, Any?> ?: emptyMap<Any?, Any?>()
@@ -320,7 +352,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     } catch (_: Throwable) {}
   }
   fun seekBy(seconds: Double) { try { if (initialized) mpv?.command(arrayOf("seek", seconds.toString(), "relative+exact")) } catch (_: Throwable) {} }
-  fun setVolume(value: Double) { try { if (initialized) mpv?.setPropertyDouble("volume", value.coerceIn(0.0, 100.0)) } catch (_: Throwable) {} }
+  fun setVolume(value: Double) { try { if (initialized && ownsAudio) mpv?.setPropertyDouble("volume", value.coerceIn(0.0, 100.0)) } catch (_: Throwable) {} }
   fun setRate(value: Double) { try { if (initialized) mpv?.setPropertyDouble("speed", value.coerceIn(0.25, 4.0)) } catch (_: Throwable) {} }
   fun setAudioDelay(ms: Int) { try { if (initialized) mpv?.setPropertyDouble("audio-delay", ms / 1000.0) } catch (_: Throwable) {} }
   fun setAudioTrack(id: Int) { try { if (initialized) if (id < 0) mpv?.setPropertyString("aid", "no") else mpv?.setPropertyInt("aid", id) } catch (_: Throwable) {} }
@@ -506,6 +538,10 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     cleanupStage("REMOVE_EVENT_OBSERVER") { if (initialized) player?.removeObserver(this) }
     cleanupStage("REMOVE_LOG_OBSERVER") { if (initialized) player?.removeLogObserver(this) }
     cleanupStage("MPV_DESTROY") { player?.destroy() }
+    synchronized(OWNER_LOCK) {
+      if (activeAudioOwner?.get() === this) activeAudioOwner = null
+      ownsAudio = false
+    }
     mpv = null
     surfaceReady = false
     initialized = false

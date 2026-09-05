@@ -48,6 +48,7 @@ function normalizeStartResult(value: any): NativeScanStartResult | null {
 
 export const PanelScan = {
   available: !!native,
+  parseBulkAccountsFile: async (uri: string): Promise<any> => native ? await native.parseBulkAccountsFile(uri) : { supported: false, reason: "native-unavailable" },
   startScan: async (candidates: any[], username: string, password: string, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> =>
     native ? normalizeStartResult(await native.startScan(JSON.stringify(candidates), username, password, concurrency, timeoutMs)) : null,
   startBulkScan: async (candidates: any[], accounts: Array<{ row?: number; name?: string; username: string; password: string }>, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> =>

@@ -1,0 +1,4 @@
+const fs=require('fs'), path=require('path'); const ROOT=path.resolve(__dirname,'..'); const read=p=>fs.readFileSync(path.join(ROOT,p),'utf8'); const s=read('frontend/modules/mpv-player/android/src/main/java/expo/modules/kizilkanmpv/KizilkanMpvView.kt');
+function ok(c,m){if(!c){console.error('FAIL:',m);process.exit(1)} console.log('✓',m)}
+ok(s.includes('activeAudioOwner'),'tekil MPV audio owner var'); ok(s.includes('AUDIO_OWNER_REVOKED')&&s.includes('AUDIO_OWNER_CLAIM'),'ownership telemetry var'); ok(s.includes('mpv?.command(arrayOf("stop"))'),'önceki MPV stop ediliyor'); ok(s.includes('if (initialized && ownsAudio)'),'revoked instance volume ile yeniden açılamıyor'); ok(s.includes('setZOrderMediaOverlay(false)'),'Surface Activity window üstüne alınmıyor'); ok(s.includes('surfaceView.background = null'),'v17.0.13 görünür video düzeltmesi korunuyor');
+console.log('PASS: v17.1.1 MPV ownership/overlay contract TEMİZ');

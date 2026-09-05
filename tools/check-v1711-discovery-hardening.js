@@ -1,0 +1,4 @@
+const fs=require('fs'), path=require('path'); const ROOT=path.resolve(__dirname,'..'); const read=p=>fs.readFileSync(path.join(ROOT,p),'utf8'); const a=read('frontend/app/add-playlist.tsx'), s=read('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt');
+function ok(c,m){if(!c){console.error('FAIL:',m);process.exit(1)} console.log('✓',m)}
+ok(a.includes('V171_RECOVERY_FINGERPRINT_REJECTED'),'recovery fingerprint mismatch reddediliyor'); ok(a.includes('stableScanSourceFingerprint(pendingAccounts'),'pending kaynak fingerprint hesaplanıyor'); ok(s.includes('Semaphore(4, true)'),'host başına concurrency limiti'); ok(s.includes('HOST_BACKOFF')&&s.includes('Retry-After'),'429/503 adaptive host backoff');
+console.log('PASS: v17.1.1 panel discovery hardening TEMİZ');
