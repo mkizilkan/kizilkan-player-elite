@@ -96,6 +96,7 @@ const CHECKS = [
   ["check-v16139-ci-native-module-compat.js", "v16.13.9 CI fixture / TypeScript corrective", ""],
   ["check-v161310-catalog-mag-playlist-management.js", "v16.13.10 catalog / MAG runtime / playlist management corrective", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
+  ["check-v1712-panel-stream-reader-compile.js", "v17.1.2 PanelScan streaming reader compile corrective", ""],
 ];
 
 let failed = 0;

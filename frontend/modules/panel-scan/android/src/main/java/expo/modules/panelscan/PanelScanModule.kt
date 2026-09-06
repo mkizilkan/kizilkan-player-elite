@@ -7,6 +7,8 @@ import android.provider.Settings
 import android.net.Uri
 import java.util.UUID
 import java.io.File
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import org.json.JSONObject
 import androidx.core.content.ContextCompat
 import expo.modules.kotlin.modules.Module
@@ -329,7 +331,7 @@ class PanelScanModule : Module() {
     var delimiter: Char? = null
     var headers: List<String>? = null
     val stream = context.contentResolver.openInputStream(uri) ?: throw IllegalArgumentException("Dosya akışı açılamadı")
-    stream.bufferedReader(Charsets.UTF_8, 64 * 1024).use { reader ->
+    BufferedReader(InputStreamReader(stream, Charsets.UTF_8), 64 * 1024).use { reader ->
       while (true) {
         val raw = reader.readLine() ?: break
         lineCount++
