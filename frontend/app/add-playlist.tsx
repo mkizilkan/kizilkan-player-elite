@@ -74,6 +74,7 @@ type BulkResolvedCandidate = {
 };
 
 const PENDING_BULK_SCAN_KEY = "kizilkan.pendingBulkScan.v15.2.3";
+const PENDING_BULK_STREAM_KEY = "kizilkan.pendingBulkStream.v17.2.0";
 const PENDING_BULK_IMPORT_KEY = "kizilkan.pendingBulkImport.v15.2.3";
 
 function stableScanSourceFingerprint(accounts: BulkAccountInput[], directorySource: string): string {
@@ -93,6 +94,13 @@ function stableScanSourceFingerprint(accounts: BulkAccountInput[], directorySour
     feed(a.server || ""); feed(a.serverCode || ""); feed(a.panelName || "");
   }
   return `v171-${accounts.length}-${h.toString(16).padStart(8, "0")}`;
+}
+
+function stableStreamingFileFingerprint(uri: string, name: string, size: number, directorySource: string): string {
+  let h = 0x811c9dc5;
+  const feed = (value: string) => { for (let i = 0; i < value.length; i++) { h ^= value.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } };
+  feed(uri); feed(name); feed(String(size || 0)); feed(directorySource.trim());
+  return `v172-file-${h.toString(16).padStart(8, "0")}`;
 }
 
 function stablePlaylistId(prefix: string, identity: string): string {
@@ -312,6 +320,8 @@ export default function AddPlaylist() {
   // v17.0.13: Büyük dosyayı ikinci kez parse etme ve ham metni state içinde
   // gereksiz yere tutma. Seçim anındaki tek parse sonucu saklanır.
   const [bulkFileParsed, setBulkFileParsed] = useState<BulkAccountParseResult | null>(null);
+  // v17.2.0: büyük Android TXT/CSV kaynakları tam hesap dizisi olarak JS state'e alınmaz.
+  const [bulkFileStreamSource, setBulkFileStreamSource] = useState<{ uri:string; name:string; size:number; samples:BulkAccountInput[]; warnings:string[] } | null>(null);
   const [bulkFileName, setBulkFileName] = useState("");
   const [bulkFilePicking, setBulkFilePicking] = useState(false);
   const [bulkFilePhase, setBulkFilePhase] = useState<"idle"|"selecting"|"reading"|"parsing"|"ready"|"failed"|"cancelled">("idle");
@@ -997,22 +1007,31 @@ export default function AddPlaylist() {
       let textChars = 0;
       let lineCount = 0;
       let nativeStream = false;
+      let streamingPreviewCount = 0;
       if (Platform.OS === "android" && PanelScan.available && !/\.json$/i.test(asset.name || "")) {
-        const nativeParsed = await PanelScan.parseBulkAccountsFile(asset.uri);
+        const inspected = await PanelScan.inspectBulkAccountsFile(asset.uri, 12);
         readAt = Date.now();
-        if (nativeParsed?.supported && Array.isArray(nativeParsed.accounts)) {
+        if (inspected?.supported && Array.isArray(inspected.samples)) {
           nativeStream = true;
           setBulkFilePhase("parsing");
-          parsed = { accounts: nativeParsed.accounts as BulkAccountInput[], warnings: Array.isArray(nativeParsed.warnings) ? nativeParsed.warnings.map(String) : [] };
-          lineCount = Number(nativeParsed.lineCount || 0);
+          const samples = inspected.samples as BulkAccountInput[];
+          const warnings = Array.isArray(inspected.warnings) ? inspected.warnings.map(String) : [];
+          if (!samples.length) throw new Error(warnings[0] || "Dosyada geçerli hesap örneği bulunamadı.");
+          streamingPreviewCount = samples.length;
+          setBulkFileStreamSource({ uri: asset.uri, name: asset.name || "hesaplar", size: Number((asset as any)?.size || 0), samples, warnings });
+          parsed = { accounts: [], warnings };
+          lineCount = Number(inspected.lineCountPreviewed || 0);
         } else {
+          // Yapılandırılmış JSON/arşiv formatları eski tam parser yolunda kalır.
           const response = await fetch(asset.uri);
           const text = await response.text();
           textChars = text.length; lineCount = countTextLines(text);
           setBulkFilePhase("parsing");
           parsed = parseBulkAccounts(text);
+          setBulkFileStreamSource(null);
         }
       } else {
+        setBulkFileStreamSource(null);
         const response = await fetch(asset.uri);
         const text = await response.text();
         readAt = Date.now(); textChars = text.length; lineCount = countTextLines(text);
@@ -1020,7 +1039,7 @@ export default function AddPlaylist() {
         parsed = parseBulkAccounts(text);
       }
       const parseFinishedAt = Date.now();
-      if (!parsed.accounts.length) throw new Error(parsed.warnings[0] || "Dosyada geçerli hesap bulunamadı.");
+      if (!parsed.accounts.length && !nativeStream) throw new Error(parsed.warnings[0] || "Dosyada geçerli hesap bulunamadı.");
       setBulkFileName(asset.name || "hesaplar");
       setBulkFileLoaded(true);
       setBulkFileParsed(parsed);
@@ -1033,7 +1052,8 @@ export default function AddPlaylist() {
         textChars,
         lineCount,
         nativeStream,
-        accountCount: parsed.accounts.length,
+        accountCount: nativeStream ? undefined : parsed.accounts.length,
+        streamingPreviewCount: nativeStream ? streamingPreviewCount : undefined,
         warningCount: parsed.warnings.length,
         pickMs: pickedAt - startedAt,
         readMs: readAt - pickedAt,
@@ -1099,9 +1119,11 @@ export default function AddPlaylist() {
           interruptedRecoveryAttemptedRef.current = true;
           // v17.1.1: Journal başka bir kaynak dosyasına aitse kör resume yok.
           // Şifreli pending hesapların fingerprint'i journal ile birebir eşleşmelidir.
+          const pendingStreamRaw = await storage.secureGet<string>(PENDING_BULK_STREAM_KEY, "");
+          const pendingStream = pendingStreamRaw ? JSON.parse(pendingStreamRaw) : null;
           const pendingRaw = await storage.secureGet<string>(PENDING_BULK_SCAN_KEY, "");
           const pendingAccounts: BulkAccountInput[] = pendingRaw ? JSON.parse(pendingRaw) : [];
-          const expectedFingerprint = pendingAccounts.length ? stableScanSourceFingerprint(pendingAccounts, codeSource.trim() || DEFAULT_CODE_SOURCE) : "";
+          const expectedFingerprint = pendingStream?.fingerprint || (Array.isArray(pendingAccounts) && pendingAccounts.length ? stableScanSourceFingerprint(pendingAccounts, codeSource.trim() || DEFAULT_CODE_SOURCE) : "");
           if (scan.sourceFingerprint && expectedFingerprint && String(scan.sourceFingerprint) !== expectedFingerprint) {
             setError("Yarım kalan tarama farklı bir kaynak dosyasına ait; güvenlik için otomatik devam ettirilmedi.");
             void recordDiagnostic("scan", "V171_RECOVERY_FINGERPRINT_REJECTED", { journal: String(scan.sourceFingerprint).slice(0,32), expected: expectedFingerprint.slice(0,32) }, { stage: "scan-recovery", outcome: "rejected" });
@@ -1367,6 +1389,7 @@ export default function AddPlaylist() {
     await storage.secureSet(PENDING_BULK_SCAN_KEY, JSON.stringify(accounts));
     if (signal?.aborted || bulkScanCancelledRef.current) {
       await storage.secureRemove(PENDING_BULK_SCAN_KEY);
+      await storage.secureRemove(PENDING_BULK_STREAM_KEY);
       return { found: 0, completed: 0, cancelled: true };
     }
     bulkPreparationAbortRef.current = null;
@@ -1421,9 +1444,85 @@ export default function AddPlaylist() {
     }
   };
 
+  const runNativeStreamingBulkFile = async (
+    source: { uri:string; name:string; size:number; samples:BulkAccountInput[]; warnings:string[] },
+    cfg: { concurrency:number; timeoutMs:number; accountConcurrency:number; label:string; requestedConcurrency?:number; batchSize?:number },
+    signal?: AbortSignal,
+  ): Promise<{ found:number; completed:number; cancelled:boolean }> => {
+    const finishScanTask = markTask("scan:panel-stream-v172", { mode: "streaming-file-v172", file: source.name, bytes: source.size });
+    try {
+      if (!PanelScan.available || Platform.OS !== "android") throw new Error("__NATIVE_SCAN_UNAVAILABLE__");
+      const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
+      setProgress(`${cfg.label} · Dosya native streaming tarama için hazırlanıyor…`);
+      if (signal?.aborted || bulkScanCancelledRef.current) return { found:0, completed:0, cancelled:true };
+      const directory = panelDirectory.length && panelDirectorySource === src
+        ? panelDirectory
+        : await fetchPanelDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
+      if (signal?.aborted || bulkScanCancelledRef.current) return { found:0, completed:0, cancelled:true };
+      const requestedConcurrency = Math.max(1, Math.min(250, cfg.requestedConcurrency ?? (cfg.concurrency * Math.max(1, cfg.accountConcurrency))));
+      const batchSize = Math.max(5, Math.min(15, cfg.batchSize ?? 15));
+      const sourceFingerprint = stableStreamingFileFingerprint(source.uri, source.name, source.size, src);
+      await storage.secureSet(PENDING_BULK_STREAM_KEY, JSON.stringify({ uri:source.uri, name:source.name, size:source.size, fingerprint:sourceFingerprint, directorySource:src }));
+      void recordDiagnostic("scan", "V172_STREAMING_FILE_DISPATCH", {
+        fileName: source.name, fileBytes: source.size, requestedConcurrency, batchSize, sourceFingerprint,
+      }, { stage:"scan-prepare", outcome:"success" });
+      bulkPreparationAbortRef.current = null;
+      bulkNativeScanRef.current = true;
+      let runId = "";
+      try {
+        runId = await startAcceptedScan(() => PanelScan.startStreamingFileScanV172(source.uri, directory, requestedConcurrency, cfg.timeoutMs, batchSize, sourceFingerprint));
+        bulkScanRunIdRef.current = runId;
+      } catch (e) {
+        bulkNativeScanRef.current = false;
+        bulkScanRunIdRef.current = "";
+        throw e;
+      }
+      let lastFound = -1;
+      let completed = 0;
+      while (true) {
+        const snap = PanelScan.getSnapshot();
+        if (snap.runId !== runId) { await new Promise(resolve => setTimeout(resolve, 120)); continue; }
+        if (snap.error) throw new Error(snap.error);
+        const raw = Array.isArray(snap.matches) ? snap.matches : [];
+        if (raw.length !== lastFound) {
+          const resolved: BulkResolvedCandidate[] = [];
+          for (const m of raw) {
+            const username=String(m.username||"").trim(), password=String(m.password||"");
+            const panelName=String(m.panelName||"").trim(), code=String(m.code||"").trim(), server=String(m.server||"").trim();
+            const row=Number(m.sourceRow||0); if (!username || !server) continue;
+            resolved.push({
+              key:bulkCandidateKey(row,username,code,panelName,server), sourceRow:row,
+              name:String(m.name||"").trim()||panelName||hostName(server), username, password,
+              panelName:panelName||hostName(server), code, server, login:m.login,
+              validatedHosts:[server], direct:false,
+            });
+          }
+          mergeBulkCandidates(resolved); lastFound = raw.length;
+        }
+        completed = Number(snap.accountTested || 0);
+        const tested = Number(snap.tested || 0);
+        const accountTotal = Number(snap.accountTotal || 0);
+        const createdAt = Number(snap.createdAt || Date.now());
+        setBulkScanPaused(!!snap.paused);
+        const foundCount = Number(snap.found ?? raw.length);
+        const producerLabel = snap.producerDone ? "dosya okuma tamam" : `dosya okunuyor · kuyruk ${Number(snap.queueDepth||0)}/${Number(snap.queueCapacity||0)}`;
+        const concurrencyLabel = `\nParalellik: istenen ${snap.requestedConcurrency || requestedConcurrency} · etkin ${snap.effectiveConcurrency || requestedConcurrency} · parti ${snap.batchSize || batchSize}`;
+        setProgress(`${cfg.label} · NATIVE STREAM v17.2\nHesap tamamlanan ${completed}${accountTotal ? `/${accountTotal}` : ""} · Adres ${tested} · Bulunan ${foundCount}\n${producerLabel}${concurrencyLabel}\nGeçen: ${formatScanDuration(Date.now()-createdAt)}${snap.paused?"\nDURAKLATILDI":snap.state==="CANCELLING"?"\nDURDURULUYOR — aktif ağ istekleri kapatılıyor":""}`);
+        if (!snap.running) {
+          bulkNativeScanRef.current = false;
+          if (bulkScanRunIdRef.current === runId) bulkScanRunIdRef.current = "";
+          return { found:raw.length, completed, cancelled:!!snap.cancelled };
+        }
+        await new Promise(resolve => setTimeout(resolve, 350));
+      }
+    } finally {
+      finishScanTask();
+    }
+  };
+
   const submitBulkAccounts = async () => {
     const parsed = bulkParsed;
-    if (!parsed.accounts.length) throw new Error(parsed.warnings[0] || "Geçerli toplu hesap bulunamadı.");
+    if (!parsed.accounts.length && !bulkFileStreamSource) throw new Error(parsed.warnings[0] || "Geçerli toplu hesap bulunamadı.");
 
     setLoading(true);
     setError(null);
@@ -1464,10 +1563,19 @@ export default function AddPlaylist() {
 
     try {
       if (PanelScan.available && Platform.OS === "android") {
-        const nr = await runNativeBulkAccounts(parsed.accounts, cfg, preparationController.signal); found=nr.found; completed=nr.completed;
+        let cancelledNative = false;
+        if (parsed.accounts.length) {
+          const nr = await runNativeBulkAccounts(parsed.accounts, cfg, preparationController.signal);
+          found += nr.found; completed += nr.completed; cancelledNative = nr.cancelled;
+        }
+        if (!cancelledNative && bulkFileStreamSource && !bulkScanCancelledRef.current) {
+          const sr = await runNativeStreamingBulkFile(bulkFileStreamSource, cfg, preparationController.signal);
+          found += sr.found; completed += sr.completed; cancelledNative = sr.cancelled;
+        }
         setBulkScanFailures([]); setBulkScanFinished(true); setShowBulkCandidates(true);
-        setProgress(nr.cancelled ? `Tarama durduruldu · ${completed}/${parsed.accounts.length} hesap · ${found} sonuç korunuyor.` : `Native tarama tamamlandı · ${completed}/${parsed.accounts.length} hesap · ${found} kimlik doğrulaması başarılı panel/DNS adayı bulundu.`);
-        if (!found && !nr.cancelled) setError("Kimlik doğrulaması başarılı aday bulunamadı.");
+        const manualTotal = parsed.accounts.length;
+        setProgress(cancelledNative ? `Tarama durduruldu · ${completed}${manualTotal ? `/${manualTotal}+dosya` : ""} hesap · ${found} sonuç korunuyor.` : `Native tarama tamamlandı · ${completed} hesap işlendi · ${found} kimlik doğrulaması başarılı panel/DNS adayı bulundu.`);
+        if (!found && !cancelledNative) setError("Kimlik doğrulaması başarılı aday bulunamadı.");
         return;
       }
       const workerCount = Math.max(1, Math.min(cfg.accountConcurrency, parsed.accounts.length));
@@ -2586,9 +2694,26 @@ export default function AddPlaylist() {
                 <Text style={[styles.fileText, { color: colors.onSurface }]} numberOfLines={1}>{bulkFilePicking ? (bulkFilePhase === "reading" ? "Dosya okunuyor…" : bulkFilePhase === "parsing" ? "Hesaplar ayrıştırılıyor…" : "Dosya seçici açık…") : (bulkFileName || "CSV / TXT / JSON dosyası seç")}</Text>
               </FocusButton>
               {bulkFileLoaded && (
-                <FocusButton focusable onPress={() => { setBulkFileLoaded(false); setBulkFileParsed(null); setBulkFileName(""); }} style={{ alignSelf: "flex-start", paddingVertical: 8, paddingHorizontal: 4 }}>
+                <FocusButton focusable onPress={() => { setBulkFileLoaded(false); setBulkFileParsed(null); setBulkFileStreamSource(null); setBulkFileName(""); }} style={{ alignSelf: "flex-start", paddingVertical: 8, paddingHorizontal: 4 }}>
                   <Text style={{ color: colors.error, fontWeight: FONT.weight.semibold }}>Dosyayı kaldır</Text>
                 </FocusButton>
+              )}
+              {bulkFileStreamSource && (
+                <View style={[styles.bulkPreview, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+                  <FocusButton focusable onPress={() => setBulkPreviewOpen(v => !v)} style={styles.bulkPreviewHeader}>
+                    <Ionicons name="flash" size={20} color={colors.brandPrimary} />
+                    <Text style={{ color: colors.onSurface, flex: 1, fontWeight: FONT.weight.bold }}>Native streaming dosya · ilk {bulkFileStreamSource.samples.length} hesap örneği</Text>
+                    <Ionicons name={bulkPreviewOpen ? "chevron-up" : "chevron-down"} size={18} color={colors.onSurfaceSecondary} />
+                  </FocusButton>
+                  {bulkPreviewOpen && <View style={{ gap:7, marginTop:SPACING.sm }}>
+                    {bulkFileStreamSource.samples.map(a => <View key={`stream-${a.row}-${a.username}`} style={{ borderTopWidth:StyleSheet.hairlineWidth, borderTopColor:colors.border, paddingTop:7 }}>
+                      <Text style={{ color:colors.onSurface, fontWeight:FONT.weight.semibold }}>{a.name || `Hesap ${a.row}`} · {a.username}</Text>
+                      <Text style={{ color:colors.onSurfaceSecondary, fontSize:FONT.size.xs, marginTop:2 }}>{bulkAccountLocatorLabel(a)}</Text>
+                    </View>)}
+                    <Text style={{ color:colors.onSurfaceTertiary, fontSize:FONT.size.xs }}>Dosyanın tamamı JS belleğine alınmayacak; tarama sırasında native olarak satır satır okunacak.</Text>
+                    {bulkFileStreamSource.warnings.slice(0,4).map((w,i)=><Text key={i} style={{ color:colors.error, fontSize:FONT.size.xs }}>⚠ {w}</Text>)}
+                  </View>}
+                </View>
               )}
               {(bulkParsed.accounts.length || bulkParsed.warnings.length) ? (() => {
                 const parsed = bulkParsed;

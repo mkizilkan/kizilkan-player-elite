@@ -498,6 +498,22 @@ class KizilkanNativeCoreModule : Module() {
       databaseHealth(includeIntegrity)
     }
 
+    // v17.2.0: normal diagnostics exportu için ağır orphan/integrity taramalarını çalıştırmayan hızlı yol.
+    AsyncFunction("getDatabaseHealthFast") {
+      databaseHealthFast()
+    }
+
+    // v17.2.0: playlist hesabını silmeden hangi canonical içeriklerin temizleneceğini önizle.
+    AsyncFunction("previewPlaylistContentCleanup") { playlistId: String ->
+      previewPlaylistContentCleanup(playlistId)
+    }
+
+    // v17.2.0: seçilen katalog türlerini tek Room transaction içinde sil; playlist snapshot satırı korunur
+    // ve cache-hit engellemek için sourceStamp/sourceSize invalid edilir. Favori/recent/watch progress bu DB'de değildir.
+    AsyncFunction("executePlaylistContentCleanup") { playlistId: String, live: Boolean, vod: Boolean, series: Boolean, epg: Boolean ->
+      executePlaylistContentCleanup(playlistId, live, vod, series, epg)
+    }
+
     // v16.13.0: Bakim tek bir "VACUUM" dugmesi degildir. diagnose salt-okuma,
     // quick checkpoint/optimize, normal orphan+retention+checkpoint, deep ise bunlara
     // ek olarak kullanicinin acik istegiyle VACUUM uygular. Her kosu before/after
@@ -1318,6 +1334,115 @@ class KizilkanNativeCoreModule : Module() {
       }
       out
     }
+  }
+
+  private fun databaseHealthFast(): Map<String, Any> {
+    val db = database()
+    val dbFile = context().getDatabasePath(DB_NAME)
+    val wal = File(dbFile.absolutePath + "-wal")
+    val shm = File(dbFile.absolutePath + "-shm")
+    val pageCount = sqliteLong("PRAGMA page_count")
+    val freelistCount = sqliteLong("PRAGMA freelist_count")
+    val pageSize = sqliteLong("PRAGMA page_size", 4096L).coerceAtLeast(1L)
+    return mapOf(
+      "schemaVersion" to 4,
+      "databaseName" to DB_NAME,
+      "status" to "summary",
+      "integrityChecked" to false,
+      "databaseBytes" to if (dbFile.exists()) dbFile.length() else 0L,
+      "walBytes" to if (wal.exists()) wal.length() else 0L,
+      "shmBytes" to if (shm.exists()) shm.length() else 0L,
+      "pageCount" to pageCount,
+      "pageSize" to pageSize,
+      "freelistCount" to freelistCount,
+      "reclaimableBytes" to freelistCount * pageSize,
+      "snapshotCount" to sqliteLong("SELECT COUNT(*) FROM playlist_snapshots"),
+      "mediaCount" to try { db.mediaDao().totalCount() } catch (_: Throwable) { 0 },
+      "epgCount" to try { db.epgDao().totalCount() } catch (_: Throwable) { 0 },
+      "diagnosticEventCount" to try { db.diagnosticDao().count() } catch (_: Throwable) { 0 },
+      "measuredAtEpochMs" to System.currentTimeMillis(),
+    )
+  }
+
+  private fun previewPlaylistContentCleanup(playlistIdRaw: String): Map<String, Any> {
+    val playlistId = playlistIdRaw.trim()
+    require(playlistId.isNotBlank()) { "playlistId boş olamaz" }
+    val db = database()
+    val live = db.mediaDao().count(playlistId, "live")
+    val vod = db.mediaDao().count(playlistId, "vod")
+    val series = db.mediaDao().count(playlistId, "series")
+    val epg = db.epgDao().count(playlistId)
+    return mapOf(
+      "playlistId" to playlistId,
+      "live" to live,
+      "vod" to vod,
+      "series" to series,
+      "epg" to epg,
+      "catalogTotal" to (live + vod + series),
+      "totalSelectedCapable" to (live + vod + series + epg),
+      "playlistPreserved" to true,
+      "userDataPreserved" to true,
+    )
+  }
+
+  private fun executePlaylistContentCleanup(
+    playlistIdRaw: String,
+    removeLive: Boolean,
+    removeVod: Boolean,
+    removeSeries: Boolean,
+    removeEpg: Boolean,
+  ): Map<String, Any> {
+    val playlistId = playlistIdRaw.trim()
+    require(playlistId.isNotBlank()) { "playlistId boş olamaz" }
+    require(removeLive || removeVod || removeSeries || removeEpg) { "Temizlenecek en az bir içerik türü seçilmelidir" }
+    val db = database()
+    val before = previewPlaylistContentCleanup(playlistId)
+    var deletedLive = 0
+    var deletedVod = 0
+    var deletedSeries = 0
+    var deletedEpg = 0
+    var snapshotInvalidated = 0
+    db.runInTransaction {
+      if (removeLive) deletedLive = db.mediaDao().deleteKind(playlistId, "live")
+      if (removeVod) deletedVod = db.mediaDao().deleteKind(playlistId, "vod")
+      if (removeSeries) deletedSeries = db.mediaDao().deleteKind(playlistId, "series")
+      if (removeEpg) deletedEpg = db.epgDao().deletePlaylist(playlistId)
+      snapshotInvalidated = db.snapshotDao().invalidate(playlistId)
+    }
+    invalidated.add(playlistId)
+    val after = previewPlaylistContentCleanup(playlistId)
+    fun n(map: Map<String, Any>, key: String) = (map[key] as? Number)?.toInt() ?: 0
+    if (removeLive && n(after, "live") != 0) throw IllegalStateException("Live temizleme doğrulaması başarısız")
+    if (removeVod && n(after, "vod") != 0) throw IllegalStateException("VOD temizleme doğrulaması başarısız")
+    if (removeSeries && n(after, "series") != 0) throw IllegalStateException("Series temizleme doğrulaması başarısız")
+    if (removeEpg && n(after, "epg") != 0) throw IllegalStateException("EPG temizleme doğrulaması başarısız")
+    val result = mapOf<String, Any>(
+      "playlistId" to playlistId,
+      "deletedLive" to deletedLive,
+      "deletedVod" to deletedVod,
+      "deletedSeries" to deletedSeries,
+      "deletedEpg" to deletedEpg,
+      "deletedTotal" to (deletedLive + deletedVod + deletedSeries + deletedEpg),
+      "snapshotInvalidated" to snapshotInvalidated,
+      "playlistPreserved" to true,
+      "userDataPreserved" to true,
+      "before" to before,
+      "after" to after,
+    )
+    NativeBlackBox.appendJson(context(), JSONObject()
+      .put("id", "db-cleanup-${System.currentTimeMillis()}")
+      .put("at", System.currentTimeMillis())
+      .put("domain", "database")
+      .put("event", "DB_PLAYLIST_CONTENT_CLEANUP")
+      .put("stage", "maintenance")
+      .put("outcome", "success")
+      .put("data", JSONObject()
+        .put("playlistId", playlistId)
+        .put("deletedLive", deletedLive).put("deletedVod", deletedVod)
+        .put("deletedSeries", deletedSeries).put("deletedEpg", deletedEpg)
+        .put("playlistPreserved", true).put("userDataPreserved", true))
+      .toString())
+    return result
   }
 
   private fun databaseHealth(includeIntegrity: Boolean): Map<String, Any> {

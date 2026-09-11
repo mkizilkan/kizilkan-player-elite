@@ -95,9 +95,15 @@ forbidText(mpvJs, 'NativeModule.play(', 'yanlış module-level MPV View çağrı
 requireText(mpvKt, 'player.observeProperty("time-pos", MpvFormat.MPV_FORMAT_DOUBLE)', 'MPV 1.0 instance playback progress property');
 forbidText(mpvKt, '"time-pos/full"', 'MPV yanlış observed time-pos/full');
 requireText(mpvKt, 'fun destroyPlayer()', 'MPV explicit destroy lifecycle');
-requireText(mpvKt, 'PixelFormat.OPAQUE', 'MPV TV opaque SurfaceView');
-requireText(mpvKt, 'setZOrderOnTop(false)', 'MPV normal SurfaceView Z-order');
-requireText(mpvKt, 'SURFACE_LIFECYCLE_FOLLOWS_ATTACHMENT', 'Android 14 MPV attachment surface lifecycle');
+if (mpvKt.includes('TextureView.SurfaceTextureListener')) {
+  requireText(mpvKt, 'Surface(surfaceTexture)', 'MPV TextureView Surface bridge');
+  requireText(mpvKt, 'onSurfaceTextureDestroyed', 'Android 14 MPV TextureView lifecycle');
+  requireText(mpvKt, 'renderSurface?.release()', 'MPV TextureView surface release');
+} else {
+  requireText(mpvKt, 'PixelFormat.OPAQUE', 'MPV TV opaque SurfaceView');
+  requireText(mpvKt, 'setZOrderOnTop(false)', 'MPV normal SurfaceView Z-order');
+  requireText(mpvKt, 'SURFACE_LIFECYCLE_FOLLOWS_ATTACHMENT', 'Android 14 MPV attachment surface lifecycle');
+}
 forbidText(mpvKt, 'override fun onDetachedFromWindow()', 'geçici detach sırasında MPV destroy');
 requireText(mpvKt, 'playbackStarted', 'MPV stale END_FILE error koruması');
 requireText(mpvModKt, 'OnViewDestroys', 'Expo MPV gerçek view destroy lifecycle');

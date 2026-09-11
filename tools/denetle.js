@@ -97,6 +97,9 @@ const CHECKS = [
   ["check-v161310-catalog-mag-playlist-management.js", "v16.13.10 catalog / MAG runtime / playlist management corrective", ""],
   ["checktdzselftest.js", "TDZ denetleyici self-test (v14.2 crash)", ""],
   ["check-v1712-panel-stream-reader-compile.js", "v17.1.2 PanelScan streaming reader compile corrective", ""],
+  ["check-v1720-consolidated-core.js", "v17.2.0 consolidated DB/diagnostics/navigation core", ""],
+  ["check-v1720-streaming-scan-pipeline.js", "v17.2.0 native producer/consumer streaming scan pipeline", ""],
+  ["check-v1720-player-diagnostics-hardening.js", "v17.2.0 player/diagnostics hardening", ""],
 ];
 
 let failed = 0;

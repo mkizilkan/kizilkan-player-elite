@@ -2,11 +2,10 @@ package expo.modules.kizilkanmpv
 
 import android.content.Context
 import android.graphics.Color
-import android.graphics.PixelFormat
-import android.os.Build
+import android.graphics.SurfaceTexture
 import android.util.Log
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.Surface
+import android.view.TextureView
 import android.widget.FrameLayout
 import dev.jdtech.mpv.MPVLib
 import dev.jdtech.mpv.MPVLib.MpvEvent
@@ -28,7 +27,7 @@ import kotlin.math.max
  *
  * Kod bu projeye özgü yeniden yazılmıştır; başka projenin kaynak dosyası kopyası değildir.
  */
-class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(context, appContext), SurfaceHolder.Callback, MPVLib.EventObserver, MPVLib.LogObserver {
+class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(context, appContext), TextureView.SurfaceTextureListener, MPVLib.EventObserver, MPVLib.LogObserver {
   companion object {
     private const val TAG = "KizilkanMpv"
     private const val PROGRESS_INTERVAL_MS = 1000L
@@ -50,7 +49,8 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   val onError by EventDispatcher()
   val onDiagnostic by EventDispatcher()
 
-  private val surfaceView = SurfaceView(context)
+  private val textureView = TextureView(context)
+  private var renderSurface: Surface? = null
   private val instanceId = NEXT_INSTANCE_ID.incrementAndGet()
   private var mpv: MPVLib? = null
   private var initialized = false
@@ -60,6 +60,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   private var currentHeaders: Map<String, String> = emptyMap()
   private var currentBufferMs: Int = 1500
   private var playbackStarted: Boolean = false
+  private var textureFrameSeen: Boolean = false
   @Volatile private var ownsAudio: Boolean = false
   private var lastPosition = 0.0
   private var lastDuration = 0.0
@@ -73,33 +74,13 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   private val destroyed = AtomicBoolean(false)
 
   init {
-    // TV compositor policy:
-    // - Parent + child tamamen opaque siyah.
-    // - SurfaceView normal window arkasındaki video katmanında kalır.
-    // - RGBA/transparent surface kullanılmaz; tema/arka plan rengi hole-punch
-    //   üzerinden sızamaz.
+    // v17.2.0: SurfaceView ayrı compositor katmanı nedeniyle RN kontrollerini
+    // görünmez bırakabiliyordu. TextureView normal View hierarchy içinde compose edilir.
     setBackgroundColor(Color.BLACK)
-    // v17.0.13: SurfaceView pencerenin arkasındaki ayrı video surface'ini
-    // hole-punch ile gösterir. Child SurfaceView'e opak background vermek bu
-    // görünür alanı yeniden boyayıp "ses var / görüntü yok" üretebilir.
-    // Siyah boşluk parent ExpoView tarafından sağlanır; video surface background'sızdır.
-    surfaceView.background = null
-    surfaceView.setZOrderOnTop(false)
-    // v17.1.1: Surface kesinlikle Activity window'unun üstüne taşınmaz. RN kontrol
-    // katmanı aynı window içinde SurfaceView'in üzerinde compositing yapabilsin.
-    surfaceView.setZOrderMediaOverlay(false)
-    surfaceView.holder.setFormat(PixelFormat.OPAQUE)
-
-    // Android 14+: Surface ömrünü visibility yerine attachment'a bağla.
-    // PlayerHost gizlenirken view ekran dışına taşınır; surface destroy/recreate
-    // döngüsü ve ilk karede renk/şerit flash'ı oluşmaz.
-    if (Build.VERSION.SDK_INT >= 34) {
-      surfaceView.setSurfaceLifecycle(SurfaceView.SURFACE_LIFECYCLE_FOLLOWS_ATTACHMENT)
-    }
-
-    surfaceView.layoutParams = FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
-    surfaceView.holder.addCallback(this)
-    addView(surfaceView)
+    textureView.isOpaque = true
+    textureView.surfaceTextureListener = this
+    textureView.layoutParams = FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+    addView(textureView)
     initializeMpv()
   }
 
@@ -189,20 +170,21 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     }
   }
 
-  override fun surfaceCreated(holder: SurfaceHolder) {
+  override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
     surfaceReady = true
-    emitDiagnostic("SURFACE_CREATE", surfaceSnapshot(holder))
+    textureFrameSeen = false
+    renderSurface?.release()
+    renderSurface = Surface(surfaceTexture)
+    emitDiagnostic("SURFACE_CREATE", surfaceSnapshot() + mapOf("surfaceWidth" to width, "surfaceHeight" to height, "renderTarget" to "TextureView"))
     if (!initialized) initializeMpv()
     try {
       if (initialized) {
-        mpv?.attachSurface(holder.surface)
-        emitDiagnostic("SURFACE_ATTACH", surfaceSnapshot(holder))
+        mpv?.attachSurface(renderSurface)
+        emitDiagnostic("SURFACE_ATTACH", surfaceSnapshot())
         mpv?.setOptionString("force-window", "yes")
         mpv?.setPropertyString("vo", "gpu")
-        pendingSource?.let {
-          pendingSource = null
-          loadSource(it)
-        }
+        mpv?.setPropertyString("android-surface-size", "${width}x$height")
+        pendingSource?.let { pendingSource = null; loadSource(it) }
       }
     } catch (e: Throwable) {
       emitThrowable("SURFACE_ATTACH", e, true)
@@ -210,14 +192,15 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     }
   }
 
-  override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-    emitDiagnostic("SURFACE_CHANGED", surfaceSnapshot(holder) + mapOf("holderFormat" to format, "surfaceWidth" to width, "surfaceHeight" to height))
-    try { if (initialized) mpv?.setPropertyString("android-surface-size", "${width}x$height") } catch (e: Throwable) { emitThrowable("SURFACE_RESIZE", e, false) }
+  override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+    emitDiagnostic("SURFACE_CHANGED", surfaceSnapshot() + mapOf("surfaceWidth" to width, "surfaceHeight" to height))
+    try { if (initialized) mpv?.setPropertyString("android-surface-size", "${width}x$height") }
+    catch (e: Throwable) { emitThrowable("SURFACE_RESIZE", e, false) }
   }
 
-  override fun surfaceDestroyed(holder: SurfaceHolder) {
+  override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
     surfaceReady = false
-    emitDiagnostic("SURFACE_DESTROY", surfaceSnapshot(holder))
+    emitDiagnostic("SURFACE_DESTROY", surfaceSnapshot())
     try {
       if (initialized) {
         mpv?.setPropertyString("vo", "null")
@@ -226,25 +209,35 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
         emitDiagnostic("SURFACE_DETACH")
       }
     } catch (e: Throwable) { emitThrowable("SURFACE_DETACH", e, false) }
+    renderSurface?.release()
+    renderSurface = null
+    textureFrameSeen = false
+    return true
   }
 
-  private fun surfaceSnapshot(holder: SurfaceHolder? = null): Map<String, Any?> {
-    val surface = holder?.surface ?: surfaceView.holder.surface
-    val frame = surfaceView.holder.surfaceFrame
+  override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
+    // TextureView callback'i Android compositor tarafından güncellenmiş SurfaceTexture
+    // kanıtıdır. MPV'nin kendi VIDEO_RECONFIG event'inden bağımsız tutulur.
+    if (!textureFrameSeen) {
+      textureFrameSeen = true
+      emitDiagnostic("TEXTURE_FIRST_VISIBLE_FRAME", surfaceSnapshot())
+    }
+  }
+
+  private fun surfaceSnapshot(): Map<String, Any?> {
+    val surface = renderSurface
     return mapOf(
       "surfaceValid" to (surface?.isValid == true),
-      "viewAttached" to surfaceView.isAttachedToWindow,
-      "viewShown" to surfaceView.isShown,
-      "viewVisibility" to surfaceView.visibility,
-      "viewWidth" to surfaceView.width,
-      "viewHeight" to surfaceView.height,
-      "viewAlpha" to surfaceView.alpha,
-      "hasBackground" to (surfaceView.background != null),
-      "holderWidth" to frame.width(),
-      "holderHeight" to frame.height(),
+      "viewAttached" to textureView.isAttachedToWindow,
+      "viewShown" to textureView.isShown,
+      "viewVisibility" to textureView.visibility,
+      "viewWidth" to textureView.width,
+      "viewHeight" to textureView.height,
+      "viewAlpha" to textureView.alpha,
+      "hasBackground" to (textureView.background != null),
+      "renderTarget" to "TextureView",
     )
   }
-
 
   private fun revokeAudioOwnership(nextOwnerId: Long) {
     if (destroyed.get()) return
@@ -294,6 +287,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     currentHeaders = headers
     currentUrl = url
     playbackStarted = false
+    textureFrameSeen = false
     currentBufferMs = (source["bufferMs"] as? Number)?.toInt() ?: 1500
     lastPosition = 0.0
     lastDuration = 0.0
@@ -532,9 +526,9 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
       try { block(); emitDiagnostic("CLEANUP_STAGE_OK", mapOf("stage" to stage)) }
       catch (e: Throwable) { emitThrowable(stage, e, false) }
     }
-    cleanupStage("REMOVE_SURFACE_CALLBACK") { surfaceView.holder.removeCallback(this) }
+    cleanupStage("REMOVE_SURFACE_CALLBACK") { textureView.surfaceTextureListener = null }
     cleanupStage("STOP_ON_DESTROY") { if (initialized) player?.command(arrayOf("stop")) }
-    cleanupStage("SURFACE_DETACH_ON_DESTROY") { if (initialized && surfaceReady) player?.detachSurface() }
+    cleanupStage("SURFACE_DETACH_ON_DESTROY") { if (initialized && surfaceReady) player?.detachSurface(); renderSurface?.release(); renderSurface = null }
     cleanupStage("REMOVE_EVENT_OBSERVER") { if (initialized) player?.removeObserver(this) }
     cleanupStage("REMOVE_LOG_OBSERVER") { if (initialized) player?.removeLogObserver(this) }
     cleanupStage("MPV_DESTROY") { player?.destroy() }

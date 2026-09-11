@@ -27,6 +27,49 @@ class PanelScanModule : Module() {
       parseBulkAccountsStream(context, Uri.parse(uriText))
     }
 
+    // v17.2.0: Büyük TXT/CSV dosyasında önizleme için tüm hesapları JS'e taşıma.
+    // Yalnız sınırlı sayıda örnek hesap okunur; gerçek tarama dosya URI'sinden native stream edilir.
+    AsyncFunction("inspectBulkAccountsFile") { uriText: String, sampleLimit: Int ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      inspectBulkAccountsStream(context, Uri.parse(uriText), sampleLimit.coerceIn(1, 25))
+    }
+
+    // v17.2.0: TXT/CSV -> native producer -> bounded queue -> worker pool.
+    AsyncFunction("startStreamingFileScanV172") { uriText: String, directoryJson: String, requestedConcurrency: Int, timeoutMs: Int, batchSize: Int, sourceFingerprint: String ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      PanelScanService.installCrashRecorder(context)
+      val runId = UUID.randomUUID().toString()
+      val claim = PanelScanService.claimRun(context, "streaming-file-v172", runId)
+      if (!claim.first) return@AsyncFunction mapOf("accepted" to false, "state" to "BUSY", "runId" to runId, "activeRunId" to claim.second)
+      val safeRequested = requestedConcurrency.coerceIn(1, 250)
+      val safeBatch = batchSize.coerceIn(5, 15)
+      val effective = PanelScanService.computeEffectiveConcurrency(context, safeRequested, safeBatch)
+      val uri = Uri.parse(uriText)
+      runCatching {
+        context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
+      try {
+        val intent = Intent(context, PanelScanService::class.java).apply {
+          action = PanelScanService.ACTION_STREAM_FILE_V172
+          data = uri
+          addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+          putExtra("uriText", uriText)
+          putExtra("directoryJson", directoryJson)
+          putExtra("requestedConcurrency", safeRequested)
+          putExtra("concurrency", effective)
+          putExtra("batchSize", safeBatch)
+          putExtra("sourceFingerprint", sourceFingerprint.take(128))
+          putExtra("timeoutMs", timeoutMs.coerceIn(2000, 20000))
+          putExtra("runId", runId)
+        }
+        ContextCompat.startForegroundService(context, intent)
+        mapOf("accepted" to true, "state" to "STARTING", "runId" to runId, "activeRunId" to runId)
+      } catch (e: Throwable) {
+        PanelScanService.releaseRun(runId)
+        throw e
+      }
+    }
+
     AsyncFunction("startScan") { candidatesJson: String, username: String, password: String, concurrency: Int, timeoutMs: Int ->
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
       val runId = UUID.randomUUID().toString()
@@ -324,6 +367,45 @@ class PanelScanModule : Module() {
       editor.commit()
     }
   }
+  private fun inspectBulkAccountsStream(context: android.content.Context, uri: Uri, sampleLimit: Int): Map<String, Any?> {
+    val samples = ArrayList<Map<String, Any?>>()
+    val warnings = ArrayList<String>()
+    var lineCount = 0
+    var validCount = 0
+    var delimiter: Char? = null
+    var headers: List<String>? = null
+    val stream = context.contentResolver.openInputStream(uri) ?: throw IllegalArgumentException("Dosya akışı açılamadı")
+    BufferedReader(InputStreamReader(stream, Charsets.UTF_8), 64 * 1024).use { reader ->
+      while (true) {
+        val raw = reader.readLine() ?: break
+        lineCount++
+        val line = if (lineCount == 1) raw.removePrefix("\uFEFF").trim() else raw.trim()
+        if (line.isBlank() || line.startsWith("#")) continue
+        if (delimiter == null) {
+          if (line.startsWith("[") || line.startsWith("{") || line.contains("KIZILKAN PLAYER ELITE — HESAP ARŞİVİ", true))
+            return mapOf("supported" to false, "reason" to "structured-format", "lineCount" to lineCount)
+          delimiter = guessDelimiter(line)
+          val first = parseDelimited(line, delimiter!!)
+          if (headerLooksValid(first)) { headers = first; continue }
+        }
+        val account = parseStreamAccount(line, delimiter!!, headers, lineCount)
+        if (account != null) {
+          validCount++
+          if (samples.size < sampleLimit) samples.add(account)
+          if (samples.size >= sampleLimit) break
+        } else if (warnings.size < 8) warnings.add("Satır $lineCount: kullanıcı adı/şifre bulunamadı, atlandı.")
+      }
+    }
+    return mapOf(
+      "supported" to true,
+      "samples" to samples,
+      "warnings" to warnings,
+      "lineCountPreviewed" to lineCount,
+      "validPreviewCount" to validCount,
+      "truncated" to (samples.size >= sampleLimit),
+    )
+  }
+
   private fun parseBulkAccountsStream(context: android.content.Context, uri: Uri): Map<String, Any?> {
     val accounts = ArrayList<Map<String, Any?>>()
     val warnings = ArrayList<String>()

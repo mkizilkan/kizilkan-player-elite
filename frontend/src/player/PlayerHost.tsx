@@ -979,9 +979,11 @@ export default function PlayerHost() {
   const media3TimeUpdateIntervalRef = useRef<number | null>(null);
   useEffect(() => {
     if (!player) return;
-    const intervalMs = (showControls || sheet === "stats" || isSynthetic)
-      ? PLAYER_UI_TIME_UPDATE_MS
-      : PLAYER_BACKGROUND_TIME_UPDATE_MS;
+    const intervalMs = !visible
+      ? 60_000
+      : (showControls || sheet === "stats" || isSynthetic)
+        ? PLAYER_UI_TIME_UPDATE_MS
+        : PLAYER_BACKGROUND_TIME_UPDATE_MS;
     // v17.0.0: aynı değeri her render/sheet churn'ünde native IntervalUpdateClock'a
     // tekrar yazma. Son logdaki emitTimeUpdate/IntervalUpdateClock stall hattında
     // gereksiz scheduler yeniden kurulumunu azaltır; gerçek event cadence korunur.
@@ -990,10 +992,10 @@ export default function PlayerHost() {
       (player as any).timeUpdateEventInterval = intervalMs / 1000;
       media3TimeUpdateIntervalRef.current = intervalMs;
       void recordDiagnostic("player", "MEDIA3_TIMEUPDATE_INTERVAL", {
-        intervalMs, controls: showControls, sheet: sheet || "", synthetic: isSynthetic, deduped: true,
+        intervalMs, controls: showControls, sheet: sheet || "", synthetic: isSynthetic, visible, deduped: true,
       }, { sessionId: playerDiagnosticSessionRef.current });
     } catch {}
-  }, [player, showControls, sheet, isSynthetic]);
+  }, [player, showControls, sheet, isSynthetic, visible]);
   useEffect(() => { media3TimeUpdateIntervalRef.current = null; }, [player]);
 
   /**
@@ -1547,38 +1549,46 @@ export default function PlayerHost() {
     const wrap = sessionKind === "live";
 
     if (KizilkanNativeCore.available && source?.nav?.scopeKey && orderedNavigationScopeIds) {
-      const idx = orderedNavigationScopeIds.findIndex(id => String(id) === realId);
-      if (idx < 0 || orderedNavigationScopeIds.length < 2) {
-        setPlaybackNeighbors(null);
+      // v17.2.0: scope kimliği current item ile eşleşmezse prev/next'i kör biçimde kapatma.
+      // Canonical Room lookup'a düş; eski davranış kullanıcıda gri buton regresyonu üretiyordu.
+      const canonical = (value: unknown) => String(value ?? "").replace(/^vodplay-/, "");
+      const idx = orderedNavigationScopeIds.findIndex(id => canonical(id) === canonical(realId));
+      if (idx >= 0 && orderedNavigationScopeIds.length >= 2) {
+        const previousId = idx > 0 ? orderedNavigationScopeIds[idx - 1] : (wrap ? orderedNavigationScopeIds[orderedNavigationScopeIds.length - 1] : null);
+        const nextId = idx + 1 < orderedNavigationScopeIds.length ? orderedNavigationScopeIds[idx + 1] : (wrap ? orderedNavigationScopeIds[0] : null);
+        const ids = Array.from(new Set([previousId, nextId].filter(Boolean) as string[]));
+        const startedAt = Date.now();
+        void KizilkanNativeCore.getItemsByIds<any>(activePlaylist.id, sessionKind, ids)
+          .then(rows => {
+            if (cancelled) return;
+            const byId = new Map((rows || []).map((row:any) => [canonical(row?.id || row?.stream_id || ""), row]));
+            setPlaybackNeighbors({
+              previous: previousId ? (byId.get(canonical(previousId)) || null) : null,
+              next: nextId ? (byId.get(canonical(nextId)) || null) : null,
+              position: idx + 1, total: orderedNavigationScopeIds.length, source: "room",
+            });
+            const elapsedMs = Date.now() - startedAt;
+            void recordDiagnostic("database", "PLAYER_SCOPED_NEIGHBOR_LOOKUP", {
+              playlistId: activePlaylist.id, kind: sessionKind, itemId: realId, scopeKey: "<runtime>",
+              previous: !!previousId, next: !!nextId, position: idx + 1, total: orderedNavigationScopeIds.length, elapsedMs,
+            }, { stage: "playerNeighborLookup", durationMs: elapsedMs, outcome: "success" });
+          })
+          .catch(error => {
+            if (cancelled) return;
+            void recordDiagnostic("database", "PLAYER_SCOPED_NEIGHBOR_LOOKUP_FAILED", {
+              playlistId: activePlaylist.id, kind: sessionKind, itemId: realId, error: String((error as any)?.message || error), fallback: "canonical-room",
+            }, { stage: "playerNeighborLookup", outcome: "failed" });
+            // Promise hatasında da canonical fallback için effect yeniden kurulmayacağı için doğrudan Room lookup dene.
+            void KizilkanNativeCore.getPlaybackNeighbors<any>(activePlaylist.id, sessionKind, realId, { group, search, wrap })
+              .then(result => { if (!cancelled) setPlaybackNeighbors({ previous: result.previous || null, next: result.next || null, position: Number(result.position || 0), total: Number(result.total || 0), source: "room" }); })
+              .catch(() => { if (!cancelled) setPlaybackNeighbors(null); });
+          });
         return () => { cancelled = true; };
       }
-      const previousId = idx > 0 ? orderedNavigationScopeIds[idx - 1] : (wrap ? orderedNavigationScopeIds[orderedNavigationScopeIds.length - 1] : null);
-      const nextId = idx + 1 < orderedNavigationScopeIds.length ? orderedNavigationScopeIds[idx + 1] : (wrap ? orderedNavigationScopeIds[0] : null);
-      const ids = Array.from(new Set([previousId, nextId].filter(Boolean) as string[]));
-      const startedAt = Date.now();
-      void KizilkanNativeCore.getItemsByIds<any>(activePlaylist.id, sessionKind, ids)
-        .then(rows => {
-          if (cancelled) return;
-          const byId = new Map((rows || []).map((row:any) => [String(row?.id || row?.stream_id || ""), row]));
-          setPlaybackNeighbors({
-            previous: previousId ? (byId.get(String(previousId)) || null) : null,
-            next: nextId ? (byId.get(String(nextId)) || null) : null,
-            position: idx + 1, total: orderedNavigationScopeIds.length, source: "room",
-          });
-          const elapsedMs = Date.now() - startedAt;
-          void recordDiagnostic("database", "PLAYER_SCOPED_NEIGHBOR_LOOKUP", {
-            playlistId: activePlaylist.id, kind: sessionKind, itemId: realId, scopeKey: "<runtime>",
-            previous: !!previousId, next: !!nextId, position: idx + 1, total: orderedNavigationScopeIds.length, elapsedMs,
-          }, { stage: "playerNeighborLookup", durationMs: elapsedMs, outcome: "success" });
-        })
-        .catch(error => {
-          if (cancelled) return;
-          setPlaybackNeighbors(null);
-          void recordDiagnostic("database", "PLAYER_SCOPED_NEIGHBOR_LOOKUP_FAILED", {
-            playlistId: activePlaylist.id, kind: sessionKind, itemId: realId, error: String((error as any)?.message || error),
-          }, { stage: "playerNeighborLookup", outcome: "failed" });
-        });
-      return () => { cancelled = true; };
+      void recordDiagnostic("database", "PLAYER_SCOPED_NEIGHBOR_SCOPE_MISS", {
+        playlistId: activePlaylist.id, kind: sessionKind, itemId: realId, scopeSize: orderedNavigationScopeIds.length, fallback: "canonical-room",
+      }, { stage: "playerNeighborLookup", outcome: "fallback" });
+      // fall through to canonical Room lookup below
     }
 
     if (KizilkanNativeCore.available) {
@@ -2861,10 +2871,6 @@ export default function PlayerHost() {
   useEffect(() => {
     if (!visible || !channel || !v2ProfileReady || !playbackRequest?.expectsVideo) return;
     if (v2Profile.engine !== "vlc" || !useVLC || vlcVideoReady) return;
-    // v17.1.0 build corrective — EngineProfile discriminant daraltmasını async
-    // timeout sınırının dışına taşır. TypeScript closure içinde v2Profile'ın
-    // media3 olasılığını yeniden açabildiği için decoder primitive olarak yakalanır.
-    const vlcDecoder = v2Profile.decoder;
     const sid = activeSessionId;
     const profileKey = v2ProfileKey;
     const timeoutMs = sessionKind === "live" ? FIRST_FRAME_TIMEOUT_LIVE_MS + 3500 : FIRST_FRAME_TIMEOUT_VOD_MS + 4500;
@@ -2873,7 +2879,7 @@ export default function PlayerHost() {
       if (v2Profile.engine !== "vlc" || vlcVideoReady) return;
       const clock = vlcClockRef.current;
       void recordDiagnostic("player", "VLC_VIDEO_OUTPUT_TIMEOUT", {
-        decoder: vlcDecoder,
+        decoder: v2Profile.decoder,
         playing: vlcPlayingRef.current,
         buffering: isBufferingRef.current,
         videoMetaReady: vlcVideoMetaReady,
@@ -2882,7 +2888,7 @@ export default function PlayerHost() {
         timeoutMs,
       }, { sessionId: playerDiagnosticSessionRef.current });
       try { void vlcRef.current?.stop?.(); } catch {}
-      if (vlcDecoder === "hw") {
+      if (v2Profile.decoder === "hw") {
         setRecoveryMessage("VLC görüntü üretmedi; yazılım decoder deneniyor…");
         setError(null);
         setTechnicalError("VLC HW video-output timeout");

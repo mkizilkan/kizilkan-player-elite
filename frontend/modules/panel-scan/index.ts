@@ -9,12 +9,13 @@ export type NativeScanStartResult = {
 
 type NativeSnapshot = {
   runId?: string; state?: "STARTING" | "RUNNING" | "PAUSED" | "CANCELLING" | "COMPLETED" | "FAILED" | "CANCELLED"; createdAt?: number; updatedAt?: number;
-  mode?: "single" | "bulk" | "unified"; running?: boolean; cancelled?: boolean; paused?: boolean;
+  mode?: "single" | "bulk" | "unified" | "streaming-file-v172"; running?: boolean; cancelled?: boolean; paused?: boolean;
   tested?: number; total?: number; accountTested?: number; accountTotal?: number; accountIndex?: number;
   panelTested?: number; panelTotal?: number; found?: number; recoverable?: boolean; recovered?: boolean; panelName?: string; currentServer?: string; error?: string; terminalReason?: string; matches?: any[];
   accountStatuses?: Array<{ accountIndex:number; sourceRow?:number; name?:string; state:string; tested:number; total:number; remaining:number; found:number }>;
   batchIndex?: number; batchCount?: number; batchSize?: number; batchStart?: number; batchEnd?: number;
   requestedConcurrency?: number; effectiveConcurrency?: number; sourceFingerprint?: string;
+  streamingFile?: boolean; producerDone?: boolean; queueDepth?: number; queueCapacity?: number; producerBackpressure?: boolean;
 };
 
 
@@ -49,6 +50,9 @@ function normalizeStartResult(value: any): NativeScanStartResult | null {
 export const PanelScan = {
   available: !!native,
   parseBulkAccountsFile: async (uri: string): Promise<any> => native ? await native.parseBulkAccountsFile(uri) : { supported: false, reason: "native-unavailable" },
+  inspectBulkAccountsFile: async (uri: string, sampleLimit = 12): Promise<any> => native ? await native.inspectBulkAccountsFile(uri, sampleLimit) : { supported: false, reason: "native-unavailable" },
+  startStreamingFileScanV172: async (uri: string, directory: any[], requestedConcurrency: number, timeoutMs: number, batchSize: number, sourceFingerprint: string): Promise<NativeScanStartResult | null> =>
+    native ? normalizeStartResult(await native.startStreamingFileScanV172(uri, JSON.stringify(directory || []), requestedConcurrency, timeoutMs, batchSize, sourceFingerprint)) : null,
   startScan: async (candidates: any[], username: string, password: string, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> =>
     native ? normalizeStartResult(await native.startScan(JSON.stringify(candidates), username, password, concurrency, timeoutMs)) : null,
   startBulkScan: async (candidates: any[], accounts: Array<{ row?: number; name?: string; username: string; password: string }>, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> =>

@@ -38,6 +38,15 @@ export type DatabaseHealth = {
   quickCheck?: string; foreignKeyViolations?: number; measuredAtEpochMs?: number; playlists?: Array<Record<string, any>>;
 };
 
+
+export type PlaylistContentCleanupPreview = {
+  playlistId: string; live: number; vod: number; series: number; epg: number; catalogTotal: number; totalSelectedCapable: number; playlistPreserved: boolean; userDataPreserved: boolean;
+};
+
+export type PlaylistContentCleanupResult = {
+  playlistId: string; deletedLive: number; deletedVod: number; deletedSeries: number; deletedEpg: number; deletedTotal: number; snapshotInvalidated: number; playlistPreserved: boolean; userDataPreserved: boolean; before?: PlaylistContentCleanupPreview; after?: PlaylistContentCleanupPreview;
+};
+
 export type DatabaseMaintenanceResult = {
   mode: "diagnose" | "quick" | "normal" | "deep" | string;
   operationId?: string; changed?: boolean; durationMs?: number; reclaimedTotalBytes?: number; totalBytesDelta?: number; vacuumRan?: boolean; optimizeRan?: boolean;
@@ -79,6 +88,10 @@ export const KizilkanNativeCore = {
   deleteLegacyPlaylistFile: async (id: string): Promise<boolean> => native ? !!(await native.deleteLegacyPlaylistFile(id)) : false,
   getStorageFootprint: async (): Promise<Record<string, any>> => native ? (await native.getStorageFootprint()) : {},
   getDatabaseHealth: async (includeIntegrity = false): Promise<DatabaseHealth> => native ? ((await native.getDatabaseHealth(!!includeIntegrity)) || {}) : {},
+  getDatabaseHealthFast: async (): Promise<DatabaseHealth> => native ? ((await native.getDatabaseHealthFast?.()) || {}) : {},
+  previewPlaylistContentCleanup: async (playlistId: string): Promise<PlaylistContentCleanupPreview | null> => native ? ((await native.previewPlaylistContentCleanup?.(playlistId)) || null) : null,
+  executePlaylistContentCleanup: async (playlistId: string, opts: { live?:boolean; vod?:boolean; series?:boolean; epg?:boolean }): Promise<PlaylistContentCleanupResult | null> =>
+    native ? ((await native.executePlaylistContentCleanup?.(playlistId, !!opts.live, !!opts.vod, !!opts.series, !!opts.epg)) || null) : null,
   runDatabaseMaintenance: async (mode: "diagnose" | "quick" | "normal" | "deep"): Promise<DatabaseMaintenanceResult> => native ? ((await native.runDatabaseMaintenance(mode)) || { mode }) : { mode, changed: false },
   getRuntimeMemory: (): Record<string, any> => native ? (native.getRuntimeMemory() || {}) : {},
   getLastExitInfo: (): Record<string, any> => native ? (native.getLastExitInfo?.() || {}) : {},

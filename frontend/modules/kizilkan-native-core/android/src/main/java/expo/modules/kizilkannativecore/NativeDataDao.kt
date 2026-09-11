@@ -16,6 +16,10 @@ interface PlaylistSnapshotDao {
   @Query("DELETE FROM playlist_snapshots WHERE playlistId = :playlistId")
   fun delete(playlistId: String)
 
+  // v17.2.0: playlist satırını koruyarak canonical cache'i geçersiz kıl.
+  @Query("UPDATE playlist_snapshots SET sourceStamp = -1, sourceSize = -1 WHERE playlistId = :playlistId")
+  fun invalidate(playlistId: String): Int
+
   @Query("DELETE FROM playlist_snapshots")
   fun clear()
 }
@@ -26,10 +30,10 @@ interface MediaItemDao {
   fun insertAll(items: List<MediaItemEntity>)
 
   @Query("DELETE FROM media_items WHERE playlistId = :playlistId")
-  fun deletePlaylist(playlistId: String)
+  fun deletePlaylist(playlistId: String): Int
 
   @Query("DELETE FROM media_items WHERE playlistId = :playlistId AND kind = :kind")
-  fun deleteKind(playlistId: String, kind: String)
+  fun deleteKind(playlistId: String, kind: String): Int
 
   /** v15.2.14: backup restore swap için satırları JS'e taşımadan playlist kimliğini değiştir. */
   @Query("UPDATE media_items SET rowKey = :toId || substr(rowKey, length(:fromId) + 1), playlistId = :toId WHERE playlistId = :fromId")
@@ -168,7 +172,7 @@ interface EpgProgramDao {
   fun insertAll(items: List<EpgProgramEntity>)
 
   @Query("DELETE FROM epg_programs WHERE playlistId = :playlistId")
-  fun deletePlaylist(playlistId: String)
+  fun deletePlaylist(playlistId: String): Int
 
   /** v15.2.14: atomik restore rollback sırasında mevcut EPG de korunur. */
   @Query("UPDATE epg_programs SET rowKey = :toId || substr(rowKey, length(:fromId) + 1), playlistId = :toId WHERE playlistId = :fromId")

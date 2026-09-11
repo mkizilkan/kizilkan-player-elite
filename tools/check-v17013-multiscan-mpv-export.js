@@ -18,8 +18,8 @@ ok(!add.includes('bulkFileText.trim() ? parseBulkAccounts(bulkFileText)'),'dosya
 ok(add.includes('removeClippedSubviews={false}'),'Android/Fabric clipping crash yolu kapalı');
 ok(add.includes('BULK_FILE_PREVIEW_READY')&&add.includes('parseMs:')&&add.includes('singleParse: true'),'büyük dosya import telemetry mevcut');
 ok(bulk.includes('const rawLines = raw.split(/\\r?\\n/);')&&bulk.includes('for (const rawLine of rawLines)'),'parser map/filter ara kopyaları kaldırılmış');
-ok(mpv.includes('surfaceView.background = null')&&!mpv.includes('surfaceView.setBackgroundColor(Color.BLACK)'),'MPV SurfaceView opak child background kaldırılmış');
-ok(mpv.includes('surfaceSnapshot(holder)')&&mpv.includes('"surfaceValid"')&&mpv.includes('"hasBackground"'),'MPV surface görünürlük telemetry mevcut');
+ok((mpv.includes('surfaceView.background = null')&&!mpv.includes('surfaceView.setBackgroundColor(Color.BLACK)'))||(mpv.includes('TextureView.SurfaceTextureListener')&&mpv.includes('Surface(surfaceTexture)')),'MPV render child opak compositor regresyonu yok');
+ok(mpv.includes('surfaceSnapshot(')&&mpv.includes('"surfaceValid"')&&mpv.includes('"hasBackground"'),'MPV surface görünürlük telemetry mevcut');
 ok(diag.includes('Promise.all([eventsPromise, nativePromise, databasePromise])'),'Flight Recorder bağımsız snapshotları paralel okunuyor');
 ok(diag.includes("'FLIGHT_EXPORT_TIMING'")&&diag.includes('preShareMs:')&&diag.includes('stringifyMs'),'Flight Recorder export aşama telemetry mevcut');
 ok(plugin.includes('t.dependsOn(prepareKizilkanMpvLibcxx)')&&plugin.includes('dev.jdtech.mpv:libmpv:1.0.0@aar'),'v17.0.12 MPV Gradle/libc++ build düzeltmesi korunuyor');

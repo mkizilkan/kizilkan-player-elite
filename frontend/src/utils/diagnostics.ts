@@ -699,7 +699,9 @@ function finalRedactionPass(serialized: string): { text: string; replacements: n
   return { text, replacements };
 }
 
-export async function exportDiagnosticReport(extra: Record<string, any> = {}): Promise<string> {
+let diagnosticExportInFlight: Promise<string> | null = null;
+
+async function exportDiagnosticReportInternal(extra: Record<string, any> = {}): Promise<string> {
   const exportStartedAt = Date.now();
   ensureNativeBlackBox();
 
@@ -722,7 +724,7 @@ export async function exportDiagnosticReport(extra: Record<string, any> = {}): P
   })();
   const databasePromise = (async () => {
     const at = Date.now();
-    try { return await KizilkanNativeCore.getDatabaseHealth?.(true) || {}; }
+    try { return await KizilkanNativeCore.getDatabaseHealthFast?.() || {}; }
     catch { return {}; }
     finally { databaseHealthMs = Date.now() - at; }
   })();
@@ -745,6 +747,7 @@ export async function exportDiagnosticReport(extra: Record<string, any> = {}): P
     // v17.0.14: v16.13.0 hard-gate'in açık property sözleşmesini koru.
     // Değer yine yukarıdaki Promise.all ile paralel hazırlanır; performans gerilemez.
     databaseHealth: databaseHealth,
+    databaseHealthMode: 'fast',
     performanceSummary: buildPerformanceSummary(events),
     traceSummary: buildTraceSummary(events),
     redactionAudit: { enabled: true, structuralSensitiveMetadataAllowed: true, rawSensitiveValuesAllowed: false },
@@ -817,4 +820,18 @@ export async function exportDiagnosticReport(extra: Record<string, any> = {}): P
     parallelSnapshots: true,
   }, { stage: 'export', outcome: 'success', durationMs: preShareReadyAt - exportStartedAt });
   return file.uri;
+}
+
+export async function exportDiagnosticReport(extra: Record<string, any> = {}): Promise<string> {
+  if (diagnosticExportInFlight) {
+    void recordDiagnostic('diagnostics', 'EXPORT_SINGLE_FLIGHT_REUSED', {}, { stage: 'export', outcome: 'suppressed' });
+    return diagnosticExportInFlight;
+  }
+  const run = exportDiagnosticReportInternal(extra);
+  diagnosticExportInFlight = run;
+  try {
+    return await run;
+  } finally {
+    if (diagnosticExportInFlight === run) diagnosticExportInFlight = null;
+  }
 }
