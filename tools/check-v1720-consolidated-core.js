@@ -7,7 +7,7 @@ const core=read('frontend/modules/kizilkan-native-core/android/src/main/java/exp
 const dao=read('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/NativeDataDao.kt');
 const diag=read('frontend/src/utils/diagnostics.ts'); const screen=read('frontend/app/diagnostic.tsx'); const player=read('frontend/src/player/PlayerHost.tsx');
 const checks=[
- ['version 17.2.0',pkg.version==='17.2.0'&&app.expo.version==='17.2.0'&&app.expo.android.versionCode===170200],
+ ['version 17.2.0+',/^17\.(?:[2-9]|[1-9]\d+)\./.test(pkg.version)&&pkg.version===app.expo.version&&app.expo.android.versionCode>=170200],
  ['DB cleanup native preview/execute',/previewPlaylistContentCleanup/.test(core)&&/executePlaylistContentCleanup/.test(core)],
  ['DB cleanup transaction',/db\.runInTransaction/.test(core)],
  ['DB delete row counts',/fun deleteKind\([^)]*\): Int/.test(dao)&&/fun deletePlaylist\([^)]*\): Int/.test(dao)],
@@ -17,4 +17,4 @@ const checks=[
  ['cleanup center UI',/İÇERİK TEMİZLİK MERKEZİ/.test(screen)&&/requestContentCleanup/.test(screen)&&/db-cleanup-\$\{kind\}/.test(screen)],
  ['canonical Room nav fallback',/fallback: "canonical-room"/.test(player)&&/getPlaybackNeighbors/.test(player)],
 ];
-let bad=0; for(const [n,ok] of checks){console.log(`${ok?'PASS':'FAIL'}: ${n}`); if(!ok) bad++;} if(bad){console.error(`FAIL: ${bad} v17.2 core check(s)`);process.exit(1)} console.log('PASS: v17.2.0 consolidated DB/diagnostics/navigation core');
+let bad=0; for(const [n,ok] of checks){console.log(`${ok?'PASS':'FAIL'}: ${n}`); if(!ok) bad++;} if(bad){console.error(`FAIL: ${bad} v17.2 core check(s)`);process.exit(1)} console.log('PASS: v17.2.0+ consolidated DB/diagnostics/navigation core');

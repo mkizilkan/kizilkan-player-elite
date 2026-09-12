@@ -87,7 +87,7 @@ export type ScanRecoveryIntent = {
   path: "/add-playlist";
   profileId: string;
   runId?: string;
-  mode?: "single" | "bulk" | "unified";
+  mode?: "single" | "bulk" | "unified" | "streaming-file-v172";
   updatedAt: number;
 };
 

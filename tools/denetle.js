@@ -100,6 +100,7 @@ const CHECKS = [
   ["check-v1720-consolidated-core.js", "v17.2.0 consolidated DB/diagnostics/navigation core", ""],
   ["check-v1720-streaming-scan-pipeline.js", "v17.2.0 native producer/consumer streaming scan pipeline", ""],
   ["check-v1720-player-diagnostics-hardening.js", "v17.2.0 player/diagnostics hardening", ""],
+  ["check-v1721-typescript-contract.js", "v17.2.1 TypeScript semantic corrective contract", ""],
 ];
 
 let failed = 0;

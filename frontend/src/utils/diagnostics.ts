@@ -824,7 +824,7 @@ async function exportDiagnosticReportInternal(extra: Record<string, any> = {}): 
 
 export async function exportDiagnosticReport(extra: Record<string, any> = {}): Promise<string> {
   if (diagnosticExportInFlight) {
-    void recordDiagnostic('diagnostics', 'EXPORT_SINGLE_FLIGHT_REUSED', {}, { stage: 'export', outcome: 'suppressed' });
+    void recordDiagnostic('system', 'EXPORT_SINGLE_FLIGHT_REUSED', {}, { stage: 'export', outcome: 'suppressed' });
     return diagnosticExportInFlight;
   }
   const run = exportDiagnosticReportInternal(extra);
