@@ -101,6 +101,7 @@ const CHECKS = [
   ["check-v1720-streaming-scan-pipeline.js", "v17.2.0 native producer/consumer streaming scan pipeline", ""],
   ["check-v1720-player-diagnostics-hardening.js", "v17.2.0 player/diagnostics hardening", ""],
   ["check-v1721-typescript-contract.js", "v17.2.1 TypeScript semantic corrective contract", ""],
+  ["check-v1722-mpv-surface-kotlin.js", "v17.2.2 MPV TextureView non-null Surface Kotlin corrective contract", ""],
 ];
 
 let failed = 0;

@@ -174,12 +174,16 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     surfaceReady = true
     textureFrameSeen = false
     renderSurface?.release()
-    renderSurface = Surface(surfaceTexture)
+    // v17.2.2 RC1: MPVLib.attachSurface Surface (non-null) ister.
+    // Lifecycle alanı renderSurface nullable kalır; fakat yeni oluşturulan Surface
+    // yerel non-null referansla attach edilerek Kotlin nullable sözleşmesi aşılmaz.
+    val surface = Surface(surfaceTexture)
+    renderSurface = surface
     emitDiagnostic("SURFACE_CREATE", surfaceSnapshot() + mapOf("surfaceWidth" to width, "surfaceHeight" to height, "renderTarget" to "TextureView"))
     if (!initialized) initializeMpv()
     try {
       if (initialized) {
-        mpv?.attachSurface(renderSurface)
+        mpv?.attachSurface(surface)
         emitDiagnostic("SURFACE_ATTACH", surfaceSnapshot())
         mpv?.setOptionString("force-window", "yes")
         mpv?.setPropertyString("vo", "gpu")
