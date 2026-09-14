@@ -1,3 +1,6 @@
+import {CatalogProgressCards} from "@/src/components/CatalogProgressCards";
+import type {RefreshProgress} from "@/src/utils/refreshPlaylist";
+import {PanelScopePicker} from "@/src/components/PanelScopePicker";
 import React, { useState } from "react";
 import {
   View,
@@ -36,7 +39,7 @@ import { catalogCategories, applyContentSelection, allContentSelection } from "@
 import { playlistIdentityCanonical } from "@/src/utils/playlistManagement";
 import { FocusButton } from "@/src/components/FocusButton";
 import {
-  DEFAULT_CODE_SOURCE, CODE_SOURCE_KEY,
+  DEFAULT_CODE_SOURCE,CODE_SOURCE_KEY,filterDirectory,canonicalPanelHost,type DirectoryScope,type PanelTarget,
   fetchPanelDirectory, discoverPanelsByCredentials, discoverServerCodeHosts,
   resolvePanelDirectoryItem,
   type PanelDirectoryItem, type PanelCredentialMatch, type ScanExecutionControl,
@@ -60,6 +63,7 @@ type Method = "m3u_url" | "m3u_file" | "xtream" | "stalker" | "code" | "bulk";
 type CodeMode = "code" | "directory" | "auto";
 type ScanSpeed = "very_safe" | "safe" | "balanced" | "fast" | "turbo";
 type BulkResolvedCandidate = {
+  sources?:ServerCodeBinding["sources"];
   key: string;
   sourceRow: number;
   name: string;
@@ -242,6 +246,7 @@ export default function AddPlaylist() {
   const [name, setName] = useState("");
   const [m3uUrl, setM3uUrl] = useState("");
   const [xtServer, setXtServer] = useState("");
+  const [catalogProgress,setCatalogProgress]=useState<RefreshProgress|null>(null);
   const [xtUser, setXtUser] = useState("");
   const [xtPass, setXtPass] = useState("");
   const [stPortal, setStPortal] = useState("");
@@ -253,6 +258,9 @@ export default function AddPlaylist() {
   const [showCodeSource, setShowCodeSource] = useState(false);
   // GPT v10.5.0: Yaşlı/teknik olmayan kullanıcılar için üç kolay sunucu-kodu yolu.
   const [codeMode, setCodeMode] = useState<CodeMode>("code");
+  const [sourceScope,setSourceScope]=useState<DirectoryScope>("all");
+  const [panelTarget,setPanelTarget]=useState<PanelTarget>({});
+  const directoryRef=React.useRef<PanelDirectoryItem[]>([]);
   const [panelDirectory, setPanelDirectory] = useState<PanelDirectoryItem[]>([]);
   const [panelDirectorySource, setPanelDirectorySource] = useState("");
   const [panelSearch, setPanelSearch] = useState("");
@@ -429,6 +437,11 @@ export default function AddPlaylist() {
     return { status, exp, active, max };
   };
 
+  const getScanDirectory=async(src:string,options:Parameters<typeof fetchPanelDirectory>[1]={})=>{
+    const all=await fetchPanelDirectory(src,options);directoryRef.current=all;
+    return filterDirectory(all,sourceScope,panelTarget);
+  };
+
   const filteredPanels = React.useMemo(() => {
     const q = panelSearch.trim().toLocaleLowerCase("tr");
     if (!q) return panelDirectory.slice(0, 100);
@@ -444,7 +457,8 @@ export default function AddPlaylist() {
     try {
       const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
       await storage.setItem(CODE_SOURCE_KEY, src);
-      const list = await fetchPanelDirectory(src, { forceRefresh });
+      const list=await fetchPanelDirectory(src,{forceRefresh});
+      directoryRef.current=list;
       setPanelDirectory(list);
       setPanelDirectorySource(src);
       if (list.length === 0) throw new Error("Panel rehberi boş.");
@@ -471,11 +485,14 @@ export default function AddPlaylist() {
     code: string,
     panelName: string,
     server: string,
-    validatedHosts: string[] = [server],
+    validatedHosts:string[]=[server],
+    sources?:ServerCodeBinding["sources"],
   ): ServerCodeBinding => ({
     code: String(code).trim(),
     panelName: String(panelName).trim(),
-    codeSource: codeSource.trim() || DEFAULT_CODE_SOURCE,
+    codeSource:sources?.find(o=>o.hosts.includes(server))?.baseUrl||directoryRef.current.find(p=>p.panelName===panelName&&p.hosts.includes(server))?.sources?.find(o=>o.hosts.includes(server))?.baseUrl||codeSource.trim()||DEFAULT_CODE_SOURCE,
+    sources:sources||directoryRef.current.find(p=>p.panelName===panelName&&p.hosts.includes(server))?.sources,
+    realCode:code||null,directoryKey:panelName.trim().normalize('NFC').toLocaleLowerCase('tr'),
     autoResolve: true,
     preferredServer: server,
     validatedHosts: Array.from(new Set(validatedHosts)),
@@ -626,7 +643,7 @@ export default function AddPlaylist() {
   };
 
   const runNativeBackgroundScan = async (
-    candidates: Array<{panelName:string; code:string; server:string}>,
+    candidates: Array<{panelName:string;code:string;server:string;sources?:ServerCodeBinding["sources"]}>,
     title: string,
     subtitle: string,
     cfg: { concurrency:number; timeoutMs:number; accountConcurrency?:number; label:string },
@@ -708,7 +725,7 @@ export default function AddPlaylist() {
   };
 
   const submitKnownPanelDiscovery = async () => {
-    if (!codeVal.trim() || !xtUser.trim() || !xtPass.trim()) {
+    if ((!codeVal.trim()&&!selectedPanelItem) || !xtUser.trim() || !xtPass.trim()) {
       throw new Error("Panel kodu, kullanıcı adı ve şifre gereklidir");
     }
     const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
@@ -723,13 +740,15 @@ export default function AddPlaylist() {
 
     try {
       const selectedMatchesCode = selectedPanelItem && selectedPanelItem.code.trim().toLocaleLowerCase("tr") === codeVal.trim().toLocaleLowerCase("tr");
-      const panel = selectedMatchesCode ? selectedPanelItem! : await resolvePanelDirectoryItem(src, codeVal.trim(), { signal: prep.signal, timeoutMs: cfg.timeoutMs });
+      const available=await getScanDirectory(src,{signal:prep.signal,timeoutMs:cfg.timeoutMs});
+      const panel=selectedMatchesCode?filterDirectory([selectedPanelItem!],sourceScope,panelTarget)[0]:available.find(p=>(p.codes||[p.code]).includes(codeVal.trim()));
+      if(!panel)throw new Error("Seçilen kaynak/hedef kapsamında panel bulunamadı.");
       resolvedPanel = panel;
       if (prep.signal.aborted) { const e = new Error("Tarama hazırlığı kullanıcı tarafından durduruldu."); e.name = "AbortError"; throw e; }
       nativePreparationAbortRef.current = null;
       const panelName = panel.panelName;
       const hosts = panel.hosts;
-      const candidates = hosts.map(server => ({ panelName, code: panel.code, server }));
+      const candidates = hosts.map(server => ({panelName,code:panel.code,server,sources:panel.sources}));
       const matches = await runNativeBackgroundScan(
         candidates,
         `${panelName} · DNS Hesapları`,
@@ -777,15 +796,15 @@ export default function AddPlaylist() {
 
     try {
       const directory = panelDirectory.length && panelDirectorySource === src
-        ? panelDirectory
-        : await fetchPanelDirectory(src, { signal: prep.signal, timeoutMs: cfg.timeoutMs });
+        ? filterDirectory(panelDirectory,sourceScope,panelTarget)
+        : await getScanDirectory(src, { signal: prep.signal, timeoutMs: cfg.timeoutMs });
       if (prep.signal.aborted) { const e = new Error("Tarama hazırlığı kullanıcı tarafından durduruldu."); e.name = "AbortError"; throw e; }
       nativePreparationAbortRef.current = null;
       const seen = new Set<string>();
-    const candidates: Array<{panelName:string; code:string; server:string}> = [];
+    const candidates: Array<{panelName:string;code:string;server:string;sources?:ServerCodeBinding["sources"]}> = [];
     for (const item of directory) for (const server of item.hosts) {
       const key = `${item.code}\u0000${item.panelName}\u0000${String(server).replace(/\/+$/,"").toLowerCase()}`;
-      if (!seen.has(key)) { seen.add(key); candidates.push({panelName:item.panelName, code:item.code, server}); }
+      if (!seen.has(key)) { seen.add(key); candidates.push({panelName:item.panelName,code:item.code,server,sources:item.sources}); }
     }
 
       const matches = await runNativeBackgroundScan(
@@ -812,7 +831,7 @@ export default function AddPlaylist() {
           const pct = p.total > 0 ? Math.round((p.tested / p.total) * 100) : 0;
           setProgress(`${cfg.label} · %${pct}\nPanel: ${p.panelTested}/${p.panelTotal} · Adres: ${p.tested}/${p.total} · Bulunan: ${p.found}${p.panelName ? `\nŞu an: ${p.panelName}` : ""}`);
         },
-        cfg.concurrency, cfg.timeoutMs,
+        cfg.concurrency,cfg.timeoutMs,await getScanDirectory(src),
       );
       presentMatches(matches, "Panel / DNS Hesapları Bulundu",
         "Aynı bilgiler birden fazla panel veya DNS adresinde geçerli. Satın aldığınız hesapları seçin.");
@@ -844,12 +863,16 @@ export default function AddPlaylist() {
 
   const loadXtreamContentWithProgress = async (cred: { server: string; username: string; password: string }) => {
     const state = { live: "⏳", vod: "⏳", series: "⏳", liveCount: 0, vodCount: 0, seriesCount: 0 };
-    const publish = () => setProgress(
+    const publish=()=>{
+      const status=(v:string)=>v==='✅'?'done' as const:v==='❌'?'error' as const:'waiting' as const;
+      setCatalogProgress({phase:'content',message:'İçerikler yükleniyor…',live:status(state.live),vod:status(state.vod),series:status(state.series),liveCount:state.liveCount,vodCount:state.vodCount,seriesCount:state.seriesCount});
+      setProgress(
       `İçerikler paralel yükleniyor...\n` +
       `Canlı ${state.live}${state.liveCount ? ` ${state.liveCount}` : ""} · ` +
       `Film ${state.vod}${state.vodCount ? ` ${state.vodCount}` : ""} · ` +
       `Dizi ${state.series}${state.seriesCount ? ` ${state.seriesCount}` : ""}`
     );
+    };
     publish();
     const liveP = xtreamLiveStreams(cred).then(v => { state.live = "✅"; state.liveCount = v.length; publish(); return v; }).catch(e => { state.live = "❌"; publish(); throw e; });
     const vodP = xtVodLocal(cred).then(v => { state.vod = "✅"; state.vodCount = v.length; publish(); return v; }).catch(e => { state.vod = "❌"; publish(); throw e; });
@@ -882,6 +905,7 @@ export default function AddPlaylist() {
     directImportLocksRef.current.add(accountKey);
     if (manageLoading) setLoading(true);
     setProgress("Kimlik doğrulanıyor (Xtream)...");
+    setCatalogProgress({phase:"login",message:"Hesap doğrulanıyor…"});
     try {
       const id = stableXtreamPlaylistId(cred.server, cred.username);
 
@@ -908,7 +932,8 @@ export default function AddPlaylist() {
           if (snap.runId !== importRunId) { await new Promise(resolve => setTimeout(resolve, 120)); continue; }
           if (snap.error) throw new Error(String(snap.error));
           const row = (Array.isArray(snap.jobs) ? snap.jobs : []).find((r:any) => String(r.jobKey) === jobKey);
-          if (row) {
+          if(row){
+            setCatalogProgress({phase:row.state==='completed'?'done':row.state==='failed'?'error':'content',message:row.message||'Katalog yükleniyor…',liveCount:row.channels,vodCount:row.vod,seriesCount:row.series});
             setProgress(`${row.message || "Native playlist ekleniyor"}${row.channels ? `\n${row.channels} kanal · ${row.vod || 0} film · ${row.series || 0} dizi` : ""}`);
             if (row.state === "completed") { completedRow = row; break; }
             if (row.state === "failed") throw new Error(String(row.message || "Native Xtream ekleme başarısız"));
@@ -1166,7 +1191,7 @@ export default function AddPlaylist() {
               const ai=Number(m.accountIndex); const a=accounts[ai] || accounts.find(x=>x.row===Number(m.sourceRow)); if(!a) continue;
               const server=String(m.server||""); if(!server) continue;
               const panelName=String(m.panelName||"") || hostName(server), code=String(m.code||"");
-              resolved.push({ key:bulkCandidateKey(a.row,a.username,code,panelName,server), sourceRow:a.row, name:a.name||panelName, username:a.username, password:a.password, panelName, code, server, login:m.login, validatedHosts:[server], direct:!!a.server });
+              resolved.push({ key:bulkCandidateKey(a.row,a.username,code,panelName,server), sourceRow:a.row, name:a.name||panelName, username:a.username, password:a.password, panelName, code, server,login:m.login,sources:m.sources, validatedHosts:[server], direct:!!a.server });
             }
             // v17.0.3: terminal sonuç kullanıcı onayı olmadan kaybolmaz.
             // COMPLETED/CANCELLED/FAILED snapshot Activity/process restore sonrası tekrar görünür.
@@ -1200,7 +1225,7 @@ export default function AddPlaylist() {
             if (!(await commitPreparedPlaylist({
               id:String(row.playlistId), name:String(row.displayName||c.name), source:"xtream",
               xtreamServer:c.server, xtreamUsername:c.username, xtreamPassword:c.password,
-              serverCodeBinding:c.direct ? undefined : makeBinding(c.code,c.panelName,c.server,c.validatedHosts),
+              serverCodeBinding:c.direct ? undefined : makeBinding(c.code,c.panelName,c.server,c.validatedHosts,c.sources),
               accountInfo:(row.userInfo||c.login?.user_info||null) as AccountInfo, serverInfo:row.serverInfo||c.login?.server_info||null,
               channels:[], vod:[], series:[], channelsCount:Number(row.channels||0), vodCount:Number(row.vod||0), seriesCount:Number(row.series||0), createdAt:new Date().toISOString(),
             }))) return false;
@@ -1229,15 +1254,21 @@ export default function AddPlaylist() {
 
     try {
       setError(null);
-      if (account.server) {
+      if(account.server){
+        const server=canonicalPanelHost(account.server);
+        if(!server)throw new Error("Geçersiz DNS adresi.");
         setProgress(`${progressPrefix}\nDoğrudan Xtream sunucusu doğrulanıyor…`);
-        const login = await xtLoginLocal({ server: account.server, username: account.username, password: account.password });
-        const panelName = account.name.trim() || hostName(account.server);
+        const key=JSON.stringify([server,account.username,account.password]);
+        let pending=control.probeCache?.get(key);
+        if(!pending){pending=xtLoginLocal({server,username:account.username,password:account.password}).catch(()=>null);control.probeCache?.set(key,pending);}
+        const login=await pending;
+        if(!login)throw new Error("Sunucu hesabı doğrulanamadı.");
+        const panelName = account.name.trim() || hostName(server);
         const c: BulkResolvedCandidate = {
-          key: bulkCandidateKey(account.row, account.username, "", panelName, account.server),
+          key: bulkCandidateKey(account.row, account.username, "", panelName, server),
           sourceRow: account.row, name: account.name.trim() || panelName,
           username: account.username, password: account.password, panelName, code: "",
-          server: account.server, login, validatedHosts: [account.server], direct: true,
+          server, login, validatedHosts: [server], direct: true,
         };
         mergeBulkCandidates([c]);
         return { candidates: [c], label };
@@ -1249,11 +1280,12 @@ export default function AddPlaylist() {
         matches = await discoverServerCodeHosts(
           src, account.serverCode, account.username, account.password,
           (pr) => setProgress(`${progressPrefix}\nDNS ${pr.tested}/${pr.total} · Kalan ${Math.max(0, pr.total-pr.tested)} · Bulunan ${pr.found}${pr.server ? `\nŞu an: ${pr.server}` : ""}`),
-          cfg.concurrency, cfg.timeoutMs, control,
+          cfg.concurrency,cfg.timeoutMs,control,
+          await(async()=>{const d=await getScanDirectory(src,{signal:control.signal});const p=d.find(x=>(x.codes||[x.code]).includes(account.serverCode!));if(!p)throw new Error('Kod seçilen kapsamda bulunamadı.');return p;})(),
         );
       } else if (account.panelName) {
         if (!directoryCache.value) {
-          directoryCache.promise ??= fetchPanelDirectory(src, { signal: control.signal, timeoutMs: cfg.timeoutMs });
+          directoryCache.promise ??= getScanDirectory(src, { signal: control.signal, timeoutMs: cfg.timeoutMs });
           directoryCache.value = await directoryCache.promise;
         }
         const wanted = normalizePanelName(account.panelName);
@@ -1269,11 +1301,11 @@ export default function AddPlaylist() {
         matches = await discoverServerCodeHosts(
           src, panel.code, account.username, account.password,
           (pr) => setProgress(`${progressPrefix}\nDNS ${pr.tested}/${pr.total} · Kalan ${Math.max(0, pr.total-pr.tested)} · Bulunan ${pr.found}${pr.server ? `\nŞu an: ${pr.server}` : ""}`),
-          cfg.concurrency, cfg.timeoutMs, control,
+          cfg.concurrency,cfg.timeoutMs,control,panel,
         );
       } else {
         if (!directoryCache.value) {
-          directoryCache.promise ??= fetchPanelDirectory(src, { signal: control.signal, timeoutMs: cfg.timeoutMs });
+          directoryCache.promise ??= getScanDirectory(src, { signal: control.signal, timeoutMs: cfg.timeoutMs });
           directoryCache.value = await directoryCache.promise;
         }
         setProgress(`${progressPrefix}\nPanel bilinmiyor; tüm panel rehberi taranıyor…`);
@@ -1299,7 +1331,7 @@ export default function AddPlaylist() {
           key: bulkCandidateKey(account.row, account.username, m.code, m.panelName, m.server),
           sourceRow: account.row, name: account.name.trim() || m.panelName,
           username: account.username, password: account.password, panelName: m.panelName, code: m.code,
-          server: m.server, login: m.login, validatedHosts: hostsByPanel.get(pk) || [m.server], direct: false,
+          server:m.server,login:m.login,sources:m.sources, validatedHosts: hostsByPanel.get(pk) || [m.server], direct: false,
         };
       });
       mergeBulkCandidates(candidates);
@@ -1317,20 +1349,20 @@ export default function AddPlaylist() {
     setProgress(`${cfg.label} · Birleşik native panel rehberi hazırlanıyor…`);
     if (signal?.aborted || bulkScanCancelledRef.current) return { found: 0, completed: 0, cancelled: true };
     const directory = panelDirectory.length && panelDirectorySource === src
-      ? panelDirectory
-      : await fetchPanelDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
+      ? filterDirectory(panelDirectory,sourceScope,panelTarget)
+      : await getScanDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
     if (signal?.aborted || bulkScanCancelledRef.current) return { found: 0, completed: 0, cancelled: true };
     const normalizeName = (v:string) => v.trim().toLocaleLowerCase("tr");
     // v17.1.0: Aynı dev panel listesini 50K hesabın her birinde yeniden materialize etme.
     // Hesaplar yalnız candidateSet indeksini taşır; büyük auto-directory dizisi tek kopyadır.
-    const candidateSets: Array<Array<{panelName:string; code:string; server:string}>> = [];
+    const candidateSets: Array<Array<{panelName:string;code:string;server:string;sources?:ServerCodeBinding["sources"]}>> = [];
     const candidateSetByKey = new Map<string, number>();
     const compactJobs: Array<{ row:number; name:string; username:string; password:string; candidateSet:number }> = [];
     const missingAccounts: string[] = [];
-    const getCandidateSet = (key: string, factory: () => Array<{panelName:string; code:string; server:string}>) => {
+    const getCandidateSet = (key: string, factory: () => Array<{panelName:string;code:string;server:string;sources?:ServerCodeBinding["sources"]}>) => {
       const existing = candidateSetByKey.get(key);
       if (existing !== undefined) return existing;
-      const candidates = factory();
+      const candidates=factory().map(c=>({...c,server:canonicalPanelHost(c.server)||""})).filter(c=>!!c.server);
       if (!candidates.length) return -1;
       const index = candidateSets.length;
       candidateSets.push(candidates);
@@ -1339,7 +1371,7 @@ export default function AddPlaylist() {
     };
     for (const a of accounts) {
       let setKey = "";
-      let factory: () => Array<{panelName:string; code:string; server:string}>;
+      let factory: () => Array<{panelName:string;code:string;server:string;sources?:ServerCodeBinding["sources"]}>;
       if (a.server) {
         const restoredHosts = Array.from(new Set([a.server, ...(a.validatedHosts || [])]));
         setKey = `server:${a.server}|${restoredHosts.join("|")}`;
@@ -1347,23 +1379,23 @@ export default function AddPlaylist() {
       } else if (a.serverCode) {
         setKey = `code:${a.serverCode}`;
         factory = () => {
-          const item = directory.find(x => x.code === a.serverCode);
-          return item ? item.hosts.map(server => ({ panelName:item.panelName, code:item.code, server })) : [];
+          const item=directory.find(x=>(x.codes||[x.code]).includes(a.serverCode!));
+          return item ? item.hosts.map(server => ({panelName:item.panelName,code:item.code,server,sources:item.sources})) : [];
         };
       } else if (a.panelName) {
         const wanted = normalizeName(a.panelName);
         setKey = `panel:${wanted}`;
         factory = () => {
-          const exactCode = directory.find(x => x.code === a.panelName);
+          const exactCode=directory.find(x=>(x.codes||[x.code]).includes(a.panelName!));
           const byName = directory.filter(x => normalizeName(x.panelName) === wanted);
-          const item = exactCode || (byName.length === 1 ? byName[0] : undefined);
-          return item ? item.hosts.map(server => ({ panelName:item.panelName, code:item.code, server })) : [];
+          const item=exactCode||byName[0];
+          return item ? item.hosts.map(server => ({panelName:item.panelName,code:item.code,server,sources:item.sources})) : [];
         };
       } else {
         setKey = "auto:all-directory";
         factory = () => {
-          const candidates: Array<{panelName:string; code:string; server:string}> = [];
-          for (const item of directory) for (const server of item.hosts) candidates.push({ panelName:item.panelName, code:item.code, server });
+          const candidates: Array<{panelName:string;code:string;server:string;sources?:ServerCodeBinding["sources"]}> = [];
+          for (const item of directory) for (const server of item.hosts) candidates.push({panelName:item.panelName,code:item.code,server,sources:item.sources});
           return candidates;
         };
       }
@@ -1417,7 +1449,7 @@ export default function AddPlaylist() {
         for (const m of raw) {
           const ai=Number(m.accountIndex); const account=Number.isInteger(ai)?accounts[ai]:accounts.find(a=>a.row===Number(m.sourceRow)); if(!account) continue;
           const panelName=String(m.panelName||"").trim(), code=String(m.code||"").trim(), server=String(m.server||"").trim(); if(!server) continue;
-          resolved.push({ key:bulkCandidateKey(account.row,account.username,code,panelName,server), sourceRow:account.row, name:account.name.trim()||panelName||hostName(server), username:account.username, password:account.password, panelName:panelName||hostName(server), code, server, login:m.login, validatedHosts:[server], direct:!!account.server });
+          resolved.push({ key:bulkCandidateKey(account.row,account.username,code,panelName,server), sourceRow:account.row, name:account.name.trim()||panelName||hostName(server), username:account.username, password:account.password, panelName:panelName||hostName(server), code, server,login:m.login,sources:m.sources, validatedHosts:[server], direct:!!account.server });
         }
         mergeBulkCandidates(resolved); lastFound=raw.length;
       }
@@ -1456,8 +1488,8 @@ export default function AddPlaylist() {
       setProgress(`${cfg.label} · Dosya native streaming tarama için hazırlanıyor…`);
       if (signal?.aborted || bulkScanCancelledRef.current) return { found:0, completed:0, cancelled:true };
       const directory = panelDirectory.length && panelDirectorySource === src
-        ? panelDirectory
-        : await fetchPanelDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
+        ? filterDirectory(panelDirectory,sourceScope,panelTarget)
+        : await getScanDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
       if (signal?.aborted || bulkScanCancelledRef.current) return { found:0, completed:0, cancelled:true };
       const requestedConcurrency = Math.max(1, Math.min(250, cfg.requestedConcurrency ?? (cfg.concurrency * Math.max(1, cfg.accountConcurrency))));
       const batchSize = Math.max(5, Math.min(15, cfg.batchSize ?? 15));
@@ -1493,7 +1525,7 @@ export default function AddPlaylist() {
             resolved.push({
               key:bulkCandidateKey(row,username,code,panelName,server), sourceRow:row,
               name:String(m.name||"").trim()||panelName||hostName(server), username, password,
-              panelName:panelName||hostName(server), code, server, login:m.login,
+              panelName:panelName||hostName(server), code, server,login:m.login,sources:m.sources,
               validatedHosts:[server], direct:false,
             });
           }
@@ -1551,7 +1583,8 @@ export default function AddPlaylist() {
     let completed = 0;
     let cursor = 0;
 
-    const control: ScanExecutionControl = {
+    const control:ScanExecutionControl={
+      probeCache:new Map(),
       isCancelled: () => bulkScanCancelledRef.current,
       signal: preparationController.signal,
       waitIfPaused: async () => {
@@ -1797,7 +1830,7 @@ export default function AddPlaylist() {
                 name: String(row.displayName || c.name),
                 source: "xtream",
                 xtreamServer: c.server, xtreamUsername: c.username, xtreamPassword: c.password,
-                serverCodeBinding: c.direct ? undefined : makeBinding(c.code, c.panelName, c.server, c.validatedHosts),
+                serverCodeBinding: c.direct ? undefined : makeBinding(c.code, c.panelName, c.server, c.validatedHosts, c.sources),
                 accountInfo: (row.userInfo || c.login?.user_info || null) as AccountInfo,
                 serverInfo: row.serverInfo || c.login?.server_info || null,
                 channels: [], vod: [], series: [],
@@ -1841,7 +1874,7 @@ export default function AddPlaylist() {
         setProgress(`${i + 1}/${chosen.length} · ${displayName} yeniden doğrulanıyor ve ekleniyor…`);
         const added = await submitXtreamDirect(
           { server: c.server, username: c.username, password: c.password }, displayName,
-          c.direct ? undefined : makeBinding(c.code, c.panelName, c.server, c.validatedHosts), false, false,
+          c.direct ? undefined : makeBinding(c.code, c.panelName, c.server, c.validatedHosts, c.sources), false, false,
         );
         if (added) ok++; else failed.push(displayName);
       }
@@ -1906,11 +1939,11 @@ export default function AddPlaylist() {
       // GPT v10.5.0: "Paneli bilmiyorum" yolunda kullanıcı yalnız kullanıcı
       // adı + şifre verir. Firebase yalnız katalog olarak kullanılır; kimlik
       // bilgileri doğrudan aday Xtream sunucularına gider.
-      if (method === "code" && codeMode === "auto") {
+      if (method === "code" && (codeMode === "auto"||!!(panelTarget.codes?.length||panelTarget.names?.length||panelTarget.keys?.length))) {
         await submitAutoDiscovery();
         return;
       }
-      if (method === "code" && codeMode === "directory" && !codeVal.trim()) {
+      if (method === "code" && codeMode === "directory" && !codeVal.trim()&&!selectedPanelItem) {
         throw new Error("Panel rehberinden bir panel seçin veya 'Kodum var' seçeneğine dönün.");
       }
       if (method === "code" && codeMode !== "auto") {
@@ -2288,6 +2321,8 @@ export default function AddPlaylist() {
             </>
           )}
 
+          {loading&&<CatalogProgressCards progress={catalogProgress}/>}
+          {(method==="code"||method==="bulk")&&<PanelScopePicker scope={sourceScope} target={panelTarget} directory={filterDirectory(panelDirectory,sourceScope)} busy={loading||directoryLoading} onScope={setSourceScope} onTarget={setPanelTarget} onLoad={()=>void loadPanelDirectory()}/>}
           {method === "code" && (
             <>
               <View style={[styles.infoBanner, { backgroundColor: colors.brandPrimary + "22", borderColor: colors.brandPrimary }]}>
@@ -2390,7 +2425,7 @@ export default function AddPlaylist() {
                           <View style={{ flex: 1 }}>
                             <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold, fontSize: FONT.size.base }}>{item.panelName}</Text>
                             <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm }}>
-                              Sunucu kodu: {item.code} · {item.hosts.length} adres
+                              {item.code?`Sunucu kodu: ${item.code}`:"MasterIPTV · Kod yok"} · {item.hosts.length} adres
                             </Text>
                           </View>
                           <Ionicons name="chevron-forward" size={20} color={colors.brandPrimary} />
@@ -3112,7 +3147,7 @@ export default function AddPlaylist() {
                           {m.panelName}
                         </Text>
                         <Text style={{ color: colors.onSurfaceSecondary, marginTop: 2 }}>
-                          Sunucu kodu: {m.code}
+                          {m.code?`Sunucu kodu: ${m.code}`:"Panel adına bağlı hesap"}
                         </Text>
                         <Text style={{ color: colors.onSurfaceSecondary, marginTop: 2 }}>
                           Durum: {info.status} · Bitiş: {info.exp}
@@ -3162,7 +3197,7 @@ export default function AddPlaylist() {
                       const added=await submitXtreamDirect(
                         {server:preferred.server,username:xtUser.trim(),password:xtPass.trim()},
                         displayName,
-                        makeBinding(preferred.code,preferred.panelName,preferred.server,validatedHosts),
+                        makeBinding(preferred.code,preferred.panelName,preferred.server,validatedHosts,preferred.sources),
                         false
                       );
                       if(added) ok++; else failed.push(displayName);

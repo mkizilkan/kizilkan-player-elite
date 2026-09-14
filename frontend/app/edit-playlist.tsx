@@ -108,7 +108,7 @@ export default function EditPlaylist() {
         if (requestedCode && requestedCode !== currentCode) {
           setProgress(`Sunucu kodu ${requestedCode} doğrulanıyor...`);
           const resolved = await resolveServerCode(
-            pl.serverCodeBinding?.codeSource || DEFAULT_CODE_SOURCE,
+            pl.serverCodeBinding?.sources?.find(s=>s.source==="splayer")?.baseUrl||(pl.serverCodeBinding?.codeSource?.includes("masteriptv-61b16")?DEFAULT_CODE_SOURCE:pl.serverCodeBinding?.codeSource||DEFAULT_CODE_SOURCE),
             requestedCode,
             patch.xtreamUsername!,
             patch.xtreamPassword!,
@@ -119,7 +119,7 @@ export default function EditPlaylist() {
           patch.serverCodeBinding = {
             code: requestedCode,
             panelName: resolved.panelName,
-            codeSource: pl.serverCodeBinding?.codeSource || DEFAULT_CODE_SOURCE,
+            codeSource: pl.serverCodeBinding?.sources?.find(s=>s.source==="splayer")?.baseUrl||(pl.serverCodeBinding?.codeSource?.includes("masteriptv-61b16")?DEFAULT_CODE_SOURCE:pl.serverCodeBinding?.codeSource||DEFAULT_CODE_SOURCE),
             autoResolve: serverCodeAutoResolve,
             preferredServer: resolved.server,
             validatedHosts: Array.from(new Set([resolved.server, ...resolved.hosts])),
@@ -297,7 +297,7 @@ export default function EditPlaylist() {
             <View style={[styles.tag, { backgroundColor: "#F59E0B18", borderColor: "#F59E0B88", marginTop: SPACING.sm }]}>
               <Ionicons name="cloud-done-outline" size={16} color="#F59E0B" />
               <Text style={[styles.tagText, { color: colors.onSurface, flex: 1 }]}>
-                Panel: {pl.serverCodeBinding.panelName} • Sunucu kodu: {pl.serverCodeBinding.code} • DNS otomatik: {pl.serverCodeBinding.autoResolve ? "Açık" : "Kapalı"}
+                Panel: {pl.serverCodeBinding.panelName} • Sunucu kodu: {pl.serverCodeBinding.code||"Yok (panel adına bağlı)"} • DNS otomatik: {pl.serverCodeBinding.autoResolve ? "Açık" : "Kapalı"}
               </Text>
             </View>
           )}

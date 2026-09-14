@@ -1,3 +1,4 @@
+import {CatalogManagement} from "@/src/components/CatalogManagement";
 import React, { useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -57,7 +58,6 @@ export default function DiagnosticScreen() {
   const [dbLoading, setDbLoading] = useState(false);
   const [maintenanceMode, setMaintenanceMode] = useState<MaintenanceMode | null>(null);
   const [lastMaintenance, setLastMaintenance] = useState<DatabaseMaintenanceResult | null>(null);
-  const [cleanupBusy, setCleanupBusy] = useState<"live"|"vod"|"series"|"epg"|"catalog"|null>(null);
 
   /**
    * v4.8.3: Bu ekran ESKİDEN emergent backend'ini test ediyordu. Xtream/M3U/EPG
@@ -164,63 +164,6 @@ export default function DiagnosticScreen() {
     void executeMaintenance(mode);
   };
 
-  const requestContentCleanup = async (kind: "live"|"vod"|"series"|"epg"|"catalog") => {
-    if (!KizilkanNativeCore.available || !activePlaylist?.id || cleanupBusy) return;
-    const playlistId = activePlaylist.id;
-    setCleanupBusy(kind);
-    try {
-      const preview = await KizilkanNativeCore.previewPlaylistContentCleanup(playlistId);
-      if (!preview) throw new Error("Temizleme önizlemesi alınamadı.");
-      const selectedCount = kind === "live" ? Number(preview.live || 0)
-        : kind === "vod" ? Number(preview.vod || 0)
-        : kind === "series" ? Number(preview.series || 0)
-        : kind === "epg" ? Number(preview.epg || 0)
-        : Number(preview.live || 0) + Number(preview.vod || 0) + Number(preview.series || 0) + Number(preview.epg || 0);
-      if (selectedCount <= 0) {
-        Alert.alert("İçerik temizliği", "Seçilen kapsamda silinecek kayıt yok.");
-        return;
-      }
-      const title = kind === "live" ? "Canlı TV" : kind === "vod" ? "Film/VOD" : kind === "series" ? "Dizi" : kind === "epg" ? "EPG" : "Tüm katalog + EPG";
-      const run = async () => {
-        try {
-          const result = await KizilkanNativeCore.executePlaylistContentCleanup(playlistId, {
-            live: kind === "live" || kind === "catalog",
-            vod: kind === "vod" || kind === "catalog",
-            series: kind === "series" || kind === "catalog",
-            epg: kind === "epg" || kind === "catalog",
-          });
-          if (!result) throw new Error("Native temizleme sonucu alınamadı.");
-          const after = result.after as PlaylistContentCleanupPreview | undefined;
-          await recordDiagnostic("database", "DB_CONTENT_CLEANUP", {
-            playlistId, kind, deletedTotal: result.deletedTotal, deletedLive: result.deletedLive, deletedVod: result.deletedVod, deletedSeries: result.deletedSeries, deletedEpg: result.deletedEpg,
-            snapshotInvalidated: result.snapshotInvalidated, playlistPreserved: result.playlistPreserved, userDataPreserved: result.userDataPreserved, after,
-          }, { stage: "content-cleanup", outcome: "success" });
-          haptic.success();
-          Alert.alert("İçerik temizliği tamamlandı", [
-            `${title}: ${Number(result.deletedTotal || 0).toLocaleString("tr-TR")} kayıt silindi.`,
-            "Playlist hesabı, DNS/giriş bilgileri, favoriler, son izlenenler ve devam et verileri korunur.",
-          ].join("\n"));
-          await loadDatabaseHealth(false);
-        } catch (error: any) {
-          await recordDiagnostic("database", "DB_CONTENT_CLEANUP_FAILED", { playlistId, kind, message: String(error?.message || error || "") }, { stage: "content-cleanup", outcome: "failed", errorClass: String(error?.name || "Error") });
-          haptic.error();
-          Alert.alert("İçerik temizliği başarısız", String(error?.message || error || "Bilinmeyen hata"));
-        } finally {
-          setCleanupBusy(null);
-        }
-      };
-      setCleanupBusy(null);
-      Alert.alert(
-        `${title} temizliği`,
-        `${selectedCount.toLocaleString("tr-TR")} kayıt silinecek. Playlist hesabı/DNS/giriş bilgileri silinmez. Favoriler, son izlenenler ve devam et verileri korunur.`,
-        [{ text: "Vazgeç", style: "cancel" }, { text: "Temizle", style: "destructive", onPress: () => { setCleanupBusy(kind); void run(); } }],
-      );
-    } catch (error: any) {
-      setCleanupBusy(null);
-      Alert.alert("İçerik temizliği", String(error?.message || error || "Önizleme alınamadı"));
-    }
-  };
-
   useEffect(() => {
     void loadDatabaseHealth(false);
     runTest();
@@ -318,31 +261,7 @@ export default function DiagnosticScreen() {
               </FocusButton>
             </View>
 
-            {activePlaylist?.id && (
-              <>
-                <Text style={[styles.sectionTitle, { color: colors.onSurfaceTertiary }]}>İÇERİK TEMİZLİK MERKEZİ</Text>
-                <View style={[styles.helpCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginTop: 0 }]}>
-                  <Ionicons name="shield-checkmark-outline" size={18} color={colors.brandPrimary} />
-                  <Text style={[styles.helpText, { color: colors.onSurfaceSecondary, flex: 1 }]}>
-                    Yalnız seçilen katalog kayıtları temizlenir. Playlist hesabı, DNS/giriş bilgileri, favoriler, son izlenenler ve devam et verileri korunur. VACUUM otomatik çalıştırılmaz.
-                  </Text>
-                </View>
-                <View style={styles.cleanupGrid}>
-                  {([
-                    ["live", "Canlı TV", "tv-outline"],
-                    ["vod", "Film / VOD", "film-outline"],
-                    ["series", "Dizi", "albums-outline"],
-                    ["epg", "EPG", "calendar-outline"],
-                    ["catalog", "Tüm katalog + EPG", "trash-bin-outline"],
-                  ] as const).map(([kind, label, icon]) => (
-                    <FocusButton key={kind} testID={`db-cleanup-${kind}`} disabled={!!cleanupBusy} onPress={() => void requestContentCleanup(kind)} style={[styles.cleanupBtn,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
-                      {cleanupBusy === kind ? <ActivityIndicator color={colors.brandPrimary}/> : <Ionicons name={icon} size={18} color={kind === "catalog" ? "#E53935" : colors.brandPrimary}/>}
-                      <Text style={[styles.maintenanceText,{color:colors.onSurface}]}>{label}</Text>
-                    </FocusButton>
-                  ))}
-                </View>
-              </>
-            )}
+            <CatalogManagement onFinished={()=>void loadDatabaseHealth(false)} />
 
             {lastMaintenance && (
               <View style={[styles.helpCard,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>

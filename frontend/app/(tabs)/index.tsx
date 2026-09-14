@@ -89,7 +89,7 @@ function ClassicLiveTvScreen() {
   const { listRef, onItemFocus, onScrollToIndexFailed } = useFocusScroll<any>();
   const router = useRouter();
   const { colors } = useTheme();
-  const { activePlaylist, playlists, toggleFavorite, isFavorite, addToRecent, updatePlaylist, ensureHeavyLoaded, nativeSummary } = usePlaylists();
+  const { activePlaylist, playlists, toggleFavorite, isFavorite, addToRecent, updatePlaylist, ensureHeavyLoaded, nativeSummary,freshnessStatus } = usePlaylists();
   const { activeProfile } = useProfiles();
   const { settings: parental, isCategoryLocked, isUnlockedInSession, toggleCategoryLock } = useParental();
   const { isItemHidden, isGroupHidden, hiddenModeUnlocked, toggleHiddenItem, toggleHiddenGroup, toggleWatchlist, inWatchlist } = useLibrary();
@@ -116,7 +116,7 @@ function ClassicLiveTvScreen() {
     load();
     const unsub = subscribeOverrides(load);
     return () => { alive = false; unsub(); };
-  }, [activePlaylist?.id]);
+  }, [activePlaylist?.id,activePlaylist?.catalogRevision]);
 
   /** Aktif listeyi kaynağından yeniden çeker (cihaz-içi). */
   const doRefresh = async () => {
@@ -171,13 +171,13 @@ function ClassicLiveTvScreen() {
     && KizilkanNativeCore.available
     && tab === "live"
     && !hasAnyCustomGroups
-    && Number(nativeSummary?.channels || activePlaylist.channelsCount || 0) > 0;
+    && Number(nativeSummary?.channels ?? activePlaylist.channelsCount ?? 0) > 0;
 
   const nativeLibraryPaged = !!activePlaylist?.id
     && KizilkanNativeCore.available
     && (tab === "vod" || tab === "series")
     && !hasAnyCustomGroups
-    && Number(tab === "vod" ? (nativeSummary?.vod || activePlaylist.vodCount || 0) : (nativeSummary?.series || activePlaylist.seriesCount || 0)) > 0;
+    && Number(tab === "vod" ? (nativeSummary?.vod ?? activePlaylist.vodCount ?? 0) : (nativeSummary?.series ?? activePlaylist.seriesCount ?? 0)) > 0;
 
   const selectedIsCustomGroup = useMemo(() => {
     if (selectedCat === ALL) return false;
@@ -209,7 +209,7 @@ function ClassicLiveTvScreen() {
     } finally {
       if (generation === nativePageGeneration.current) nativePageLoadingRef.current = false;
     }
-  }, [activePlaylist?.id, nativeLivePaged, selectedIsCustomGroup, selectedCat, ensureHeavyLoaded]);
+  }, [activePlaylist?.id,activePlaylist?.catalogRevision,nativeLivePaged, selectedIsCustomGroup, selectedCat, ensureHeavyLoaded]);
 
   const loadNativeLibraryPage = useCallback(async (reset: boolean) => {
     if (!activePlaylist?.id || !nativeLibraryPaged || selectedIsCustomGroup || (tab !== "vod" && tab !== "series")) return;
@@ -235,7 +235,7 @@ function ClassicLiveTvScreen() {
     } finally {
       if (generation === nativePageGeneration.current) nativePageLoadingRef.current = false;
     }
-  }, [activePlaylist?.id, nativeLibraryPaged, selectedIsCustomGroup, selectedCat, tab, ensureHeavyLoaded]);
+  }, [activePlaylist?.id,activePlaylist?.catalogRevision,nativeLibraryPaged, selectedIsCustomGroup, selectedCat, tab, ensureHeavyLoaded]);
 
   useEffect(() => {
     nativePageGeneration.current += 1;
@@ -255,7 +255,7 @@ function ClassicLiveTvScreen() {
     setPreviewChannel(null);
     setEpgMap({});
     void recordDiagnostic("catalog", "PLAYLIST_UI_INVALIDATED", { playlistId: activePlaylist?.id || "" });
-  }, [activePlaylist?.id]);
+  }, [activePlaylist?.id,activePlaylist?.catalogRevision]);
 
   useEffect(() => {
     if (!activePlaylist?.id) {
@@ -281,7 +281,7 @@ function ClassicLiveTvScreen() {
     // Özel kullanıcı grupları item-level override eşleştirmesi gerektirir.
     // Yalnız bu özellik kullanıldığında legacy tam hydrate'e geri dön.
     if (selectedIsCustomGroup || hasAnyCustomGroups) void ensureHeavyLoaded(activePlaylist.id);
-  }, [activePlaylist?.id, nativeLivePaged, nativeLibraryPaged, selectedIsCustomGroup, hasAnyCustomGroups, tab, selectedCat, loadNativeLivePage, loadNativeLibraryPage, ensureHeavyLoaded]);
+  }, [activePlaylist?.id,activePlaylist?.catalogRevision,nativeLivePaged, nativeLibraryPaged, selectedIsCustomGroup, hasAnyCustomGroups, tab, selectedCat, loadNativeLivePage, loadNativeLibraryPage, ensureHeavyLoaded]);
   const [epgMap, setEpgMap] = useState<Record<string, NowNext>>({});
   const [epgLoading, setEpgLoading] = useState(false);
 
@@ -693,8 +693,8 @@ function ClassicLiveTvScreen() {
         .filter(x => hiddenModeUnlocked || !isGroupHidden(x.name))
         .filter(x => !activeProfile?.isKids || !isCategoryLocked(x.name));
       const total = nativeLivePaged
-        ? Number(nativeSummary?.channels || activePlaylist?.channelsCount || nativeLiveTotal || 0)
-        : Number(tab === "vod" ? (nativeSummary?.vod || activePlaylist?.vodCount || nativeLibraryTotal || 0) : (nativeSummary?.series || activePlaylist?.seriesCount || nativeLibraryTotal || 0));
+        ? Number(nativeSummary?.channels ?? activePlaylist?.channelsCount ?? nativeLiveTotal ?? 0)
+        : Number(tab === "vod" ? (nativeSummary?.vod ?? activePlaylist?.vodCount ?? nativeLibraryTotal ?? 0) : (nativeSummary?.series ?? activePlaylist?.seriesCount ?? nativeLibraryTotal ?? 0));
       return [
         { name: ALL, count: total },
         ...rows.map(x => ({ name: x.name, count: x.count })),
@@ -821,9 +821,9 @@ function ClassicLiveTvScreen() {
   // v15.2.24-RC2: Android Native Core varken sayaçların canonical kaynağı Room summary
   // olur. Ağır JS dizilerinin length değeri Room yolunu gölgeleyip tam katalog
   // hidratasyonunu teşvik etmez. Web/native-core olmayan platformlarda legacy korunur.
-  const liveCount = KizilkanNativeCore.available ? (nativeSummary?.channels || activePlaylist.channelsCount || 0) : (activePlaylist.channels?.length || activePlaylist.channelsCount || 0);
-  const vodCount = KizilkanNativeCore.available ? (nativeSummary?.vod || activePlaylist.vodCount || 0) : (activePlaylist.vod?.length || activePlaylist.vodCount || 0);
-  const seriesCount = KizilkanNativeCore.available ? (nativeSummary?.series || activePlaylist.seriesCount || 0) : (activePlaylist.series?.length || activePlaylist.seriesCount || 0);
+  const liveCount = KizilkanNativeCore.available ? (nativeSummary?.channels ?? activePlaylist.channelsCount ?? 0) : (activePlaylist.channels?.length || activePlaylist.channelsCount || 0);
+  const vodCount = KizilkanNativeCore.available ? (nativeSummary?.vod ?? activePlaylist.vodCount ?? 0) : (activePlaylist.vod?.length || activePlaylist.vodCount || 0);
+  const seriesCount = KizilkanNativeCore.available ? (nativeSummary?.series ?? activePlaylist.seriesCount ?? 0) : (activePlaylist.series?.length || activePlaylist.seriesCount || 0);
   const hasVod = vodCount > 0;
   const hasSeries = seriesCount > 0;
 
@@ -941,6 +941,7 @@ function ClassicLiveTvScreen() {
       <View style={[styles.header, isTvLayout && { paddingTop: 4, paddingBottom: 2 }]}>
         <View style={{ flex: 1 }}>
           <KizilkanLogo size="md" showSubtitle={false} showIcon align="left" />
+          {freshnessStatus?.playlistId===activePlaylist.id&&<Text style={{color:colors.onSurfaceSecondary,fontSize:11}}>{freshnessStatus.message}</Text>}
           <Text style={[styles.subtitle, { color: colors.onSurfaceSecondary }]} numberOfLines={1}>
             {activePlaylist.name} • {liveCount} kanal
             {hasVod ? ` • ${vodCount} film` : ""}

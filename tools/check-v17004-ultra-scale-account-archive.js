@@ -19,5 +19,5 @@ ok('TXT archive export',ui.includes('TXT\'ye Kaydet')&&ui.includes('buildKizilka
 ok('safe masked report',arch.includes('GÜVENLİ RAPOR (MASKELİ)')&&arch.includes('********'));
 ok('archive re-import',bulk.includes('KIZILKAN PLAYER ELITE — HESAP ARŞİVİ')&&bulk.includes('Güvenli rapor maskeli olduğu için')&&bulk.includes('validatedHosts = Array.from(block.matchAll'));
 ok('archive restores validatedHosts candidates',ui.includes('...(a.validatedHosts || [])'));
-ok('server code + validatedHosts preserved',ui.includes('makeBinding(c.code, c.panelName, c.server, c.validatedHosts)'));
+ok('server code + validatedHosts preserved',/makeBinding\(c\.code, c\.panelName, c\.server, c\.validatedHosts(?:, c\.sources)?\)/.test(ui));
 if(fail){console.error(`\n${fail} hard-gate başarısız.`);process.exit(1)} console.log('\nTEMIZ — v17.0.4 RC1 ultra-scale + TXT archive hard-gate');

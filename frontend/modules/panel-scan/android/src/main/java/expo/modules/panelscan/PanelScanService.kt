@@ -507,7 +507,39 @@ class PanelScanService : Service() {
     }
   }
 
-  private fun probe(server: String, username: String, password: String, timeoutMs: Int): JSONObject? {
+  private val probeStripes=Array(128){Any()}
+  private fun canonicalPanelHost(raw:String):String? {
+    var value=raw.trim()
+    if(value.isBlank()||Regex("[\\s\\\\<>\"']").containsMatchIn(value)||Regex("removed|deleted|sentinel|undefined|null",RegexOption.IGNORE_CASE).containsMatchIn(value))return null
+    value=value.replace(Regex("^(https?)//",RegexOption.IGNORE_CASE),"$1://")
+    if(!value.contains("://"))value="http://$value"
+    return runCatching {
+      val uri=java.net.URI(value).normalize()
+      val scheme=uri.scheme?.lowercase()?:return null
+      val host=uri.host?.lowercase()?:return null
+      if(scheme !in setOf("http","https")||uri.rawUserInfo!=null||uri.rawQuery!=null||uri.rawFragment!=null||(!host.contains('.')&&!host.contains(':')))return null
+      val port=uri.port
+      if(port < -1 || port > 65535)return null
+      val authority=if(port == -1 || scheme=="http"&&port==80 || scheme=="https"&&port==443)host else "$host:$port"
+      "$scheme://$authority${(uri.rawPath?:"").trimEnd('/')}"
+    }.getOrNull()
+  }
+  private fun probe(server:String,username:String,password:String,timeoutMs:Int):JSONObject? {
+    val base=canonicalPanelHost(server)?:return null
+    val rawKey=JSONArray().put(base).put(username).put(password).toString()
+    val key=java.security.MessageDigest.getInstance("SHA-256").digest(rawKey.toByteArray(Charsets.UTF_8)).joinToString(""){"%02x".format(it)}
+    synchronized(probeStripes[(key.hashCode() and Int.MAX_VALUE)%probeStripes.size]){
+      if(cancelled.get()||Thread.currentThread().isInterrupted)return null
+      val journal=ScanJournalStore.get(applicationContext)
+      val cached=journal.readProbe(currentRunId,key)
+      if(cached!=null)return if(cached=="null")null else JSONObject(cached)
+      val result=probePhysical(base,username,password,timeoutMs)
+      if(!cancelled.get()&&!Thread.currentThread().isInterrupted)journal.writeProbe(currentRunId,key,result?.let{sanitizeLogin(it).toString()}?:"null")
+      return result
+    }
+  }
+
+  private fun probePhysical(server: String, username: String, password: String, timeoutMs: Int): JSONObject? {
     val base = server.trim().trimEnd('/')
     val hostKey = runCatching { URL(base).host.lowercase() }.getOrDefault(base.lowercase())
     val permit = hostPermits.computeIfAbsent(hostKey) { Semaphore(4, true) }
@@ -603,7 +635,7 @@ class PanelScanService : Service() {
             if (login != null) { val hit=JSONObject()
               .put("accountIndex", ai).put("sourceRow", account.optInt("row", ai + 1)).put("username", account.optString("username"))
               .put("name", account.optString("name")).put("panelName", candidate.optString("panelName")).put("code", candidate.optString("code"))
-              .put("server", candidate.optString("server")).put("login", sanitizeLogin(login)); if (ScanJournalStore.get(applicationContext).addResult(currentRunId, "$ai|${candidate.optString("server")}", hit.toString())) matches.add(hit) }
+              .put("server", candidate.optString("server")).put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login)); if (ScanJournalStore.get(applicationContext).addResult(currentRunId, "$ai|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit.toString())) matches.add(hit) }
             if (completedByAccount[ai].incrementAndGet() == candidateCount) accountDone.incrementAndGet()
             val done = tested.incrementAndGet()
             checkpointTracker.finish(workerId)
@@ -759,7 +791,10 @@ class PanelScanService : Service() {
   }
 
   private fun resolveCandidatesV172(account: StreamAccountV172, directory: JSONArray): List<JSONObject> {
-    if (account.server.isNotBlank()) return listOf(JSONObject().put("panelName", account.panelName).put("code", account.serverCode).put("server", account.server))
+    if (account.server.isNotBlank()) {
+      val server = canonicalPanelHost(account.server) ?: return emptyList()
+      return listOf(JSONObject().put("panelName", account.panelName).put("code", account.serverCode).put("server", server))
+    }
     val out = ArrayList<JSONObject>()
     val wantedPanel = account.panelName.trim().lowercase(java.util.Locale.forLanguageTag("tr"))
     for (i in 0 until directory.length()) {
@@ -767,15 +802,15 @@ class PanelScanService : Service() {
       val code = item.optString("code")
       val panelName = item.optString("panelName")
       val eligible = when {
-        account.serverCode.isNotBlank() -> code == account.serverCode
+        account.serverCode.isNotBlank() -> code == account.serverCode || (item.optJSONArray("codes")?:JSONArray()).let{codes->(0 until codes.length()).any{codes.optString(it)==account.serverCode}}
         account.panelName.isNotBlank() -> code == account.panelName || panelName.trim().lowercase(java.util.Locale.forLanguageTag("tr")) == wantedPanel
         else -> true
       }
       if (!eligible) continue
       val hosts = item.optJSONArray("hosts") ?: JSONArray()
       for (h in 0 until hosts.length()) {
-        val server = hosts.optString(h).trim()
-        if (server.isNotBlank()) out.add(JSONObject().put("panelName", panelName).put("code", code).put("server", server))
+        val server=canonicalPanelHost(hosts.optString(h))?:continue
+        if (server.isNotBlank()) out.add(JSONObject().put("panelName",panelName).put("code",code).put("server",server).put("sources",item.optJSONArray("sources")?:JSONArray()))
       }
     }
     return out
@@ -908,8 +943,8 @@ class PanelScanService : Service() {
                     .put("panelName", candidate.optString("panelName"))
                     .put("code", candidate.optString("code"))
                     .put("server", server)
-                    .put("login", sanitizeLogin(login))
-                  if (journal.addResult(currentRunId, "${account.ordinal}|$server", hit.toString())) {
+                    .put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login))
+                  if (journal.addResult(currentRunId, "${account.ordinal}|${candidate.optString("panelName")}|${candidate.optString("code")}|$server", hit.toString())) {
                     synchronized(matches) { matches.add(hit) }
                     foundForAccount++
                   }
@@ -1192,8 +1227,8 @@ class PanelScanService : Service() {
                     .put("panelName", candidate.optString("panelName"))
                     .put("code", candidate.optString("code"))
                     .put("server", candidate.optString("server"))
-                    .put("login", sanitizeLogin(login))
-                  if (journal.addResult(currentRunId, "$accountIndex|${candidate.optString("server")}", hit.toString())) {
+                    .put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login))
+                  if (journal.addResult(currentRunId, "$accountIndex|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit.toString())) {
                     matches.add(hit)
                     synchronized(foundCounts) { foundCounts[local]++ }
                   }
@@ -1443,7 +1478,7 @@ class PanelScanService : Service() {
                 .put("panelName", candidate.optString("panelName"))
                 .put("code", candidate.optString("code"))
                 .put("server", candidate.optString("server"))
-                .put("login", sanitizeLogin(login)); if (ScanJournalStore.get(applicationContext).addResult(currentRunId, "$accountIndex|${candidate.optString("server")}", hit.toString())) matches.add(hit) }
+                .put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login)); if (ScanJournalStore.get(applicationContext).addResult(currentRunId, "$accountIndex|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit.toString())) matches.add(hit) }
               if (completedByAccount[accountIndex].incrementAndGet() == expectedByAccount[accountIndex]) accountDone.incrementAndGet()
               val done = tested.incrementAndGet()
               checkpointTracker.finish(workerId)
@@ -1536,7 +1571,7 @@ class PanelScanService : Service() {
             val server = c.optString("server")
             val data = probe(server, user, pass, timeoutMs)
             if (data != null) {
-              val hit=JSONObject().put("panelName", panelName).put("code", c.optString("code")).put("server", server).put("login", sanitizeLogin(data)); if (ScanJournalStore.get(applicationContext).addResult(currentRunId, server, hit.toString())) matches.add(hit)
+              val hit=JSONObject().put("panelName", panelName).put("code", c.optString("code")).put("server", server).put("sources",c.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(data)); if (ScanJournalStore.get(applicationContext).addResult(currentRunId,"$panelName|${c.optString("code")}|$server",hit.toString())) matches.add(hit)
             }
             val done = tested.incrementAndGet()
             checkpointTracker.finish(workerId)

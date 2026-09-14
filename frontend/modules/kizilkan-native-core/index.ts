@@ -44,6 +44,7 @@ export type PlaylistContentCleanupPreview = {
 };
 
 export type PlaylistContentCleanupResult = {
+  cleanedKinds?:Array<"live"|"vod"|"series"|"epg">;
   playlistId: string; deletedLive: number; deletedVod: number; deletedSeries: number; deletedEpg: number; deletedTotal: number; snapshotInvalidated: number; playlistPreserved: boolean; userDataPreserved: boolean; before?: PlaylistContentCleanupPreview; after?: PlaylistContentCleanupPreview;
 };
 
@@ -92,6 +93,8 @@ export const KizilkanNativeCore = {
   previewPlaylistContentCleanup: async (playlistId: string): Promise<PlaylistContentCleanupPreview | null> => native ? ((await native.previewPlaylistContentCleanup?.(playlistId)) || null) : null,
   executePlaylistContentCleanup: async (playlistId: string, opts: { live?:boolean; vod?:boolean; series?:boolean; epg?:boolean }): Promise<PlaylistContentCleanupResult | null> =>
     native ? ((await native.executePlaylistContentCleanup?.(playlistId, !!opts.live, !!opts.vod, !!opts.series, !!opts.epg)) || null) : null,
+  previewPlaylistContentCleanupBatch:async(ids:string[]):Promise<Array<{ok:boolean;playlistId:string;preview?:PlaylistContentCleanupPreview;error?:string}>>=>native?native.previewPlaylistContentCleanupBatch(ids):[],
+  executePlaylistContentCleanupBatch:async(ids:string[],opts:{live?:boolean;vod?:boolean;series?:boolean;epg?:boolean}):Promise<Array<{ok:boolean;playlistId:string;result?:PlaylistContentCleanupResult;error?:string}>>=>native?native.executePlaylistContentCleanupBatch(ids,!!opts.live,!!opts.vod,!!opts.series,!!opts.epg):[],
   runDatabaseMaintenance: async (mode: "diagnose" | "quick" | "normal" | "deep"): Promise<DatabaseMaintenanceResult> => native ? ((await native.runDatabaseMaintenance(mode)) || { mode }) : { mode, changed: false },
   getRuntimeMemory: (): Record<string, any> => native ? (native.getRuntimeMemory() || {}) : {},
   getLastExitInfo: (): Record<string, any> => native ? (native.getLastExitInfo?.() || {}) : {},

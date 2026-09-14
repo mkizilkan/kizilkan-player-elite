@@ -18,12 +18,17 @@
  * ===========================================================================
  */
 import { xtreamLogin } from "@/src/utils/iptv";
+import { canonicalPanelHost, validPanelHosts, mergeDirectory, type DirectoryPanel } from "./panelDirectoryModel";
+export { canonicalPanelHost, filterDirectory, panelNameKey } from "./panelDirectoryModel";
+export type { DirectoryScope, PanelTarget } from "./panelDirectoryModel";
 import { storage } from "@/src/utils/storage";
 
 /** Uygulama sahibinin verdiği VARSAYILAN kaynak. Ayarlardan değiştirilebilir.
  *  Storage'da değer yoksa bu kullanılır. */
 export const DEFAULT_CODE_SOURCE =
   "https://splayer-747601f.asia-southeast1.firebasedatabase.app";
+
+export const MASTERIPTV_SOURCE = "https://masteriptv-61b16-default-rtdb.europe-west1.firebasedatabase.app";
 
 /** Kaynak URL'i storage'da saklamak için anahtar. */
 export const CODE_SOURCE_KEY = "kizilkan.codeSource.baseUrl";
@@ -99,9 +104,7 @@ export async function resolveHosts(baseUrl: string, panelName: string, signal?: 
   if (!hostsObj || typeof hostsObj !== "object") {
     throw new Error("Bu panel için sunucu adresi bulunamadı.");
   }
-  const hosts = Object.values(hostsObj)
-    .map((v) => trimBase(String(v)))
-    .filter(Boolean);
+  const hosts = validPanelHosts(Object.values(hostsObj));
   if (hosts.length === 0) throw new Error("Sunucu adresi listesi boş.");
   // Tekilleştir (aynı DNS birden çok ada bağlı olabilir).
   return Array.from(new Set(hosts));
@@ -114,7 +117,7 @@ export async function pickWorkingHost(
   password: string
 ): Promise<{ server: string; login: { user_info: any; server_info: any } }> {
   let lastErr: Error | null = null;
-  for (const server of hosts) {
+  for (const server of validPanelHosts(hosts)) {
     try {
       const login = await xtreamLogin({ server, username, password });
       return { server, login };
@@ -128,11 +131,7 @@ export async function pickWorkingHost(
 
 
 
-export type PanelDirectoryItem = {
-  code: string;
-  panelName: string;
-  hosts: string[];
-};
+export type PanelDirectoryItem = DirectoryPanel;
 
 /**
  * Firebase kataloğunu tek seferde okur ve kullanıcıya gösterilecek panel rehberini
@@ -154,7 +153,7 @@ type PanelDirectoryCacheRecord = {
 
 async function readDirectoryCache(baseUrl: string): Promise<PanelDirectoryCacheRecord | null> {
   try {
-    const raw = await storage.getItem<string>(PANEL_DIRECTORY_CACHE_KEY, "");
+    const raw = await storage.getItem<string>(`${PANEL_DIRECTORY_CACHE_KEY}.v1730.${encodeURIComponent(trimBase(baseUrl))}`, "");
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PanelDirectoryCacheRecord;
     if (trimBase(parsed?.source) !== trimBase(baseUrl) || !Array.isArray(parsed?.items) || !parsed.items.length) return null;
@@ -166,30 +165,29 @@ async function readDirectoryCache(baseUrl: string): Promise<PanelDirectoryCacheR
 
 async function writeDirectoryCache(baseUrl: string, items: PanelDirectoryItem[]): Promise<void> {
   const record: PanelDirectoryCacheRecord = { source: trimBase(baseUrl), fetchedAt: Date.now(), items };
-  await storage.setItem(PANEL_DIRECTORY_CACHE_KEY, JSON.stringify(record));
+  await storage.setItem(`${PANEL_DIRECTORY_CACHE_KEY}.v1730.${encodeURIComponent(trimBase(baseUrl))}`, JSON.stringify(record));
 }
 
 async function fetchPanelDirectoryRemote(baseUrl: string, timeoutMs: number, signal?: AbortSignal): Promise<PanelDirectoryItem[]> {
   const base = trimBase(baseUrl);
+  const isMaster = base === MASTERIPTV_SOURCE;
   const [codesRaw, serversRaw] = await Promise.all([
-    getJson(`${base}/Master/zeroWebServers.json`, timeoutMs, 1, signal),
+    isMaster ? Promise.resolve({}) : getJson(`${base}/Master/zeroWebServers.json`, timeoutMs, 1, signal),
     getJson(`${base}/Master/Servers.json`, timeoutMs, 1, signal),
   ]);
-
-  const codes = codesRaw && typeof codesRaw === "object" ? codesRaw as Record<string, any> : {};
-  const servers = serversRaw && typeof serversRaw === "object" ? serversRaw as Record<string, any> : {};
+  const codes = codesRaw && typeof codesRaw === 'object' ? codesRaw as Record<string, unknown> : {};
+  const servers = serversRaw && typeof serversRaw === 'object' ? serversRaw as Record<string, any> : {};
   const out: PanelDirectoryItem[] = [];
-
-  for (const [code, rawName] of Object.entries(codes)) {
-    const panelName = typeof rawName === "string" ? rawName.trim() : "";
-    if (!panelName) continue;
-    const rec = servers[panelName];
-    const hostsObj = rec && typeof rec === "object" ? (rec as any).Hosts : null;
-    const hosts = hostsObj && typeof hostsObj === "object"
-      ? Array.from(new Set(Object.values(hostsObj).map(v => trimBase(String(v))).filter(Boolean)))
-      : [];
-    if (hosts.length === 0) continue;
-    out.push({ code: String(code), panelName, hosts });
+  for (const [panelName, rec] of Object.entries(servers)) {
+    if (!rec?.Hosts || typeof rec.Hosts !== 'object') continue;
+    const raw = Object.values(rec.Hosts), hosts = validPanelHosts(raw);
+    if (!hosts.length) continue;
+    const realCodes = isMaster ? [] : Object.entries(codes).filter(([,name]) => name === panelName).map(([code]) => code);
+    out.push({ panelName, code: realCodes[0] || '', realCode: realCodes[0] || null, codes: realCodes, hosts,
+      directoryKey: panelName.trim().normalize('NFC').toLocaleLowerCase('tr'),
+      sources: (realCodes.length ? realCodes : [null]).map(realCode => ({ source: isMaster ? 'masteriptv' : 'splayer', baseUrl: base, panelName, realCode, hosts, rawHosts:raw.map(String) })),
+      invalidHosts: raw.filter(v => !canonicalPanelHost(v)).map(v => ({ raw: String(v), reason: 'invalid-panel-base' })),
+    });
   }
   out.sort((a, b) => a.panelName.localeCompare(b.panelName, "tr", { sensitivity: "base" }) || a.code.localeCompare(b.code));
   if (out.length === 0) throw new Error("Panel rehberinde kullanılabilir kayıt bulunamadı.");
@@ -201,7 +199,7 @@ async function fetchPanelDirectoryRemote(baseUrl: string, timeoutMs: number, sig
  * Taze cache UI'yi anında açar. Cache eskiyse remote yenileme denenir; remote
  * başarısız olursa son sağlam cache çalışmaya devam eder.
  */
-export async function fetchPanelDirectory(baseUrl: string, options: PanelDirectoryFetchOptions = {}): Promise<PanelDirectoryItem[]> {
+async function fetchSourceDirectory(baseUrl: string, options: PanelDirectoryFetchOptions = {}): Promise<PanelDirectoryItem[]> {
   const base = trimBase(baseUrl);
   if (!base) throw new Error("Kod kaynağı adresi boş.");
   const timeoutMs = Math.max(3000, Math.min(15000, Number(options.timeoutMs || DIRECTORY_REQUEST_TIMEOUT_MS)));
@@ -230,17 +228,27 @@ export async function fetchPanelDirectory(baseUrl: string, options: PanelDirecto
   }
 }
 
+/** Independent source caches and failure boundaries. */
+export async function fetchPanelDirectory(baseUrl:string, options:PanelDirectoryFetchOptions={}):Promise<PanelDirectoryItem[]> {
+  const sources=Array.from(new Set([trimBase(baseUrl),MASTERIPTV_SOURCE]));
+  const results=await Promise.allSettled(sources.map(source=>fetchSourceDirectory(source,options)));
+  if(options.signal?.aborted){const e=new Error('Tarama durduruldu.');e.name='AbortError';throw e;}
+  const items=results.flatMap(r=>r.status==='fulfilled'?r.value:[]);
+  if(!items.length)throw new Error('Panel kaynaklarına erişilemedi; kullanılabilir önbellek yok.');
+  return mergeDirectory(items);
+}
+
 /** Kod/panel seçim yolları için cache/rehberden tek paneli çözer. */
 export async function resolvePanelDirectoryItem(baseUrl: string, code: string, options: PanelDirectoryFetchOptions = {}): Promise<PanelDirectoryItem> {
   const wanted = String(code || "").trim().toLocaleLowerCase("tr");
   if (!wanted) throw new Error("Panel kodu boş.");
   let directory = await fetchPanelDirectory(baseUrl, options);
-  let match = directory.find(item => item.code.trim().toLocaleLowerCase("tr") === wanted);
+  let match = directory.find(item => (item.codes || [item.code]).some(c=>c.trim().toLocaleLowerCase("tr")===wanted));
   if (!match) {
     // Taze görünen cache'e yeni eklenmiş bir kod düşmemiş olabilir. Kodu yok
     // saymadan önce remote katalog bir kez zorla yenilenir.
     directory = await fetchPanelDirectory(baseUrl, { ...options, forceRefresh: true });
-    match = directory.find(item => item.code.trim().toLocaleLowerCase("tr") === wanted);
+    match = directory.find(item => (item.codes || [item.code]).some(c=>c.trim().toLocaleLowerCase("tr")===wanted));
   }
   if (!match) throw new Error("Panel kodu rehberde bulunamadı. Kodu kontrol edin.");
   return match;
@@ -269,7 +277,8 @@ async function probeXtreamHost(
   timeoutMs = 12000,
   externalSignal?: AbortSignal,
 ): Promise<{ user_info: any; server_info: any } | null> {
-  const base = trimBase(server);
+  const base = canonicalPanelHost(server);
+  if (!base) return null;
   const { signal, cancel } = makeTimeoutSignal(timeoutMs, externalSignal);
   try {
     const url = `${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
@@ -297,6 +306,7 @@ export type AutoDiscoveryProgress = {
 };
 
 export type PanelCredentialMatch = {
+  sources?: import("./panelDirectoryModel").PanelOrigin[];
   panelName: string;
   code: string;
   server: string;
@@ -306,6 +316,7 @@ export type PanelCredentialMatch = {
 export type HostDiscoveryProgress = { tested: number; total: number; found: number; server?: string };
 
 export type ScanExecutionControl = {
+  probeCache?: Map<string,Promise<{user_info:any;server_info:any}|null>>;
   isCancelled?: () => boolean;
   waitIfPaused?: () => Promise<void>;
   /** v15.2.11: JS fallback katalog ve HTTP probe'larını da gerçek AbortController ile keser. */
@@ -328,7 +339,7 @@ export async function discoverServerCodeHosts(
   directoryOverride?: PanelDirectoryItem,
 ): Promise<PanelCredentialMatch[]> {
   const panelName = directoryOverride?.panelName || await resolvePanelName(baseUrl, code, control?.signal);
-  const hosts = directoryOverride?.hosts?.length ? directoryOverride.hosts : await resolveHosts(baseUrl, panelName, control?.signal);
+  const hosts = validPanelHosts(directoryOverride ? directoryOverride.hosts : await resolveHosts(baseUrl,panelName,control?.signal));
   const user = String(username || "").trim();
   const pass = String(password || "").trim();
   if (!user || !pass) throw new Error("Kullanıcı adı ve şifre gereklidir.");
@@ -346,9 +357,12 @@ export async function discoverServerCodeHosts(
       if (i >= hosts.length) return;
       const server = hosts[i];
       onProgress?.({ tested, total: hosts.length, found: matches.length, server });
-      const login = await probeXtreamHost(server, user, pass, timeoutMs, control?.signal);
+      const key=JSON.stringify([server,user,pass]);
+      let pending=control?.probeCache?.get(key);
+      if(!pending){pending=probeXtreamHost(server,user,pass,timeoutMs,control?.signal);control?.probeCache?.set(key,pending);}
+      const login=await pending;
       tested += 1;
-      if (login) matches.push({ panelName, code: String(code).trim(), server, login });
+      if (login) matches.push({panelName,code:String(code).trim(),server,login,sources:directoryOverride?.sources});
       onProgress?.({ tested, total: hosts.length, found: matches.length, server });
     }
   };
@@ -388,13 +402,13 @@ export async function discoverPanelsByCredentials(
   const pass = String(password || "").trim();
   if (!user || !pass) throw new Error("Kullanıcı adı ve şifre gereklidir.");
 
-  const directory = directoryOverride?.length ? directoryOverride : await fetchPanelDirectory(baseUrl, { signal: control?.signal });
-  const candidates: Array<{ panelName: string; code: string; server: string }> = [];
+  const directory = directoryOverride !== undefined ? directoryOverride : await fetchPanelDirectory(baseUrl, { signal: control?.signal });
+  const candidates: Array<{panelName:string;code:string;server:string;sources?:PanelDirectoryItem["sources"]}> = [];
   const seenCandidates = new Set<string>();
 
   for (const item of directory) {
-    for (const server of item.hosts) {
-      const candidate = { panelName: item.panelName, code: item.code, server };
+    for (const server of validPanelHosts(item.hosts)) {
+      const candidate = {panelName:item.panelName,code:item.code,server,sources:item.sources};
       const key = matchKey(candidate);
       if (seenCandidates.has(key)) continue;
       seenCandidates.add(key);
@@ -407,6 +421,7 @@ export async function discoverPanelsByCredentials(
   let tested = 0;
   const matches: PanelCredentialMatch[] = [];
   const matchSeen = new Set<string>();
+  const probes=control?.probeCache||new Map<string,Promise<{user_info:any;server_info:any}|null>>();
   const panelTotal = new Set(candidates.map(c => `${c.code}\u0000${c.panelName}`)).size;
   const remainingByPanel = new Map<string, number>();
   for (const c of candidates) {
@@ -426,7 +441,10 @@ export async function discoverPanelsByCredentials(
       const c = candidates[i];
 
       onProgress?.({ tested, total: candidates.length, panelTested, panelTotal, found: matches.length, panelName: c.panelName });
-      const login = await probeXtreamHost(c.server, user, pass, timeoutMs, control?.signal);
+      const probeKey=JSON.stringify([c.server,user,pass]);
+      let shared=probes.get(probeKey);
+      if(!shared){shared=probeXtreamHost(c.server,user,pass,timeoutMs,control?.signal);probes.set(probeKey,shared);}
+      const login=await shared;
       tested += 1;
       const panelKey = `${c.code}\u0000${c.panelName}`;
       const left = Math.max(0, (remainingByPanel.get(panelKey) || 1) - 1);
@@ -504,20 +522,24 @@ export type BoundPanelResolution = {
  */
 export async function resolveBoundPanel(
   baseUrl: string,
-  binding: { code: string; panelName: string; preferredServer?: string; validatedHosts?: string[] },
+  binding: { sources?:import("./panelDirectoryModel").PanelOrigin[]; code:string; panelName: string; preferredServer?: string; validatedHosts?: string[] },
   username: string,
   password: string,
 ): Promise<BoundPanelResolution> {
   const expectedPanel = String(binding.panelName || "").trim();
   const code = String(binding.code || "").trim();
-  if (!expectedPanel || !code) throw new Error("Kayıtlı panel kimliği eksik.");
+  if (!expectedPanel) throw new Error("Kayıtlı panel kimliği eksik.");
 
   let hosts: string[] = [];
   try {
-    hosts = await resolveHosts(baseUrl, expectedPanel);
+    const origins=binding.sources?.length?binding.sources:[{baseUrl,panelName:expectedPanel}];
+    const results=await Promise.allSettled(origins.map(o=>resolveHosts(o.baseUrl,o.panelName)));
+    hosts=validPanelHosts(results.flatMap(r=>r.status==='fulfilled'?r.value:[]));
+    if(!hosts.length)throw new Error('Bağlı panel kaynaklarına erişilemedi.');
   } catch (directErr) {
     // Panel adı kaydı taşınmış/yenilenmiş olabilir. Kodu kontrol et ama
     // güvenlik nedeniyle farklı bir panel adına otomatik bağlanma.
+    if(!code)throw directErr;
     const currentName = await resolvePanelName(baseUrl, code);
     const normalize = (x: string) => x.trim().toLocaleLowerCase("tr");
     if (normalize(currentName) !== normalize(expectedPanel)) {

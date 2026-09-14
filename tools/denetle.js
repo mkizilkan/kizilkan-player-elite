@@ -19,6 +19,7 @@ if (process.cwd() !== FRONTEND_ROOT) process.chdir(FRONTEND_ROOT);
 // TypeScript artık tools/_ts.js ile taşınabilir şekilde çözülür (sabit yol yok).
 
 const CHECKS = [
+  ["test-v1730-functional.js", "v17.3.0 scoped refresh / source isolation / DNS dedup functional tests", ""],
   ["check-v16143-regression-contract.js", "v16.14.3+ regression preservation contract", ""],
   ["check-v16143-corrective-hardgate.js", "v16.14.3+ corrective hard-gate", ""],
   ["check-v16144-ci-hardening.js", "v16.14.4 CI/gate/MPV release-chain contract", ""],

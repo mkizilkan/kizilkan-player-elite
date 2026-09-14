@@ -121,6 +121,9 @@ export interface ServerInfo {
 export type PlaylistSource = 'm3u_url' | 'm3u_file' | 'xtream' | 'stalker';
 
 export interface ServerCodeBinding {
+  realCode?:string|null;
+  directoryKey?:string;
+  sources?:import("../utils/panelDirectoryModel").PanelOrigin[];
   /** Firebase/uzak rehberdeki kısa panel kodu. */
   code: string;
   /** Kullanıcının doğrulayıp seçtiği panel kimliği. */
@@ -153,6 +156,10 @@ export interface PlaylistContentSelection {
 }
 
 export interface Playlist {
+  catalogRevision?:number;
+  cleanedKinds?:Array<"live"|"vod"|"series"|"epg">;
+  freshnessMinutes?:number;
+  lastFreshnessCheckAt?:number;
   id: string;
   name: string;
   source: PlaylistSource;

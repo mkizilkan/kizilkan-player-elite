@@ -123,6 +123,7 @@ export type StalkerCatalogProgress = {
   total?: number;
 };
 type StalkerCatalogOptions = {
+  kinds?:Array<"live"|"vod"|"series">;
   forceFresh?: boolean;
   liveOnly?: boolean;
   signal?: AbortSignal;
@@ -1811,7 +1812,8 @@ async function retryCatalogPart<T>(label:string, fn:()=>Promise<T>, onAuthFailur
 }
 
 async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: StalkerCatalogOptions = {}): Promise<StalkerCatalogResult> {
-  const catalogStarted = Date.now();
+  const catalogStarted=Date.now();
+  const wanted=new Set(opts.kinds||["live","vod","series"]);
   /**
    * v16.3.0: Yetkilendirme imzasında oturumu tazeler.
    * Handshake yeniden yapılır ve yeni token mevcut oturum nesnesine yazılır;
@@ -1834,7 +1836,7 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
   let channels:Channel[]=[];
   let liveError="";
   const finishLiveTask = startDiagnosticTask("mag:catalog-live");
-  try { channels=await retryCatalogPart("MAG Live",()=>stalkerChannels(cred,ses,opts.signal),refreshSession); }
+  try {if(wanted.has("live"))channels=await retryCatalogPart("MAG Live",()=>stalkerChannels(cred,ses,opts.signal),refreshSession);}
   catch (e:any) { liveError=String(e?.message || e); void recordDiagnostic("mag","STALKER_LIVE_PARTIAL_FAILURE",{message:liveError,status:e?.status,kind:e?.kind}); }
   finally { finishLiveTask(); }
   void recordDiagnostic("catalog","STALKER_CATALOG_STAGE_DONE",{stage:"live",elapsedMs:Date.now()-liveStageStarted,count:channels.length,error:liveError});
@@ -1855,10 +1857,10 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
 
   emitCatalogProgress(opts,{stage:"vod",message:"Film kataloğu yükleniyor..."});
   const vodStageStarted=Date.now();
-  let vodPart:VodPartition;
+  let vodPart:VodPartition={vod:[],fallbackSeries:[],supported:true,rawCount:0,seriesFlagged:0};
   let vodError="";
   const finishVodTask = startDiagnosticTask("mag:catalog-vod");
-  try { vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses,opts),refreshSession); }
+  try {if(wanted.has("vod")||wanted.has("series"))vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses,opts),refreshSession);}
   catch (e:any) { vodError=String(e?.message || e); vodPart={vod:[],fallbackSeries:[],supported:!(e instanceof StalkerCatalogUnsupportedError),rawCount:0,seriesFlagged:0}; void recordDiagnostic("mag","STALKER_VOD_PARTIAL_FAILURE",{message:vodError,status:e?.status,kind:e?.kind}); }
   finally { finishVodTask(); }
   void recordDiagnostic("catalog","STALKER_CATALOG_STAGE_DONE",{stage:"vod",elapsedMs:Date.now()-vodStageStarted,count:vodPart.vod.length,seriesFlagged:vodPart.fallbackSeries.length,error:vodError});
@@ -1866,10 +1868,10 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
 
   emitCatalogProgress(opts,{stage:"series",message:"Dizi kataloğu yükleniyor..."});
   const seriesStageStarted=Date.now();
-  let nativeSeries:{items:SeriesItem[];supported:boolean};
+  let nativeSeries:{items:SeriesItem[];supported:boolean}={items:[],supported:true};
   let seriesError="";
   const finishSeriesTask = startDiagnosticTask("mag:catalog-series");
-  try { nativeSeries=await retryCatalogPart("MAG Series",()=>nativeStalkerSeries(cred,ses,opts),refreshSession); }
+  try {if(wanted.has("series"))nativeSeries=await retryCatalogPart("MAG Series",()=>nativeStalkerSeries(cred,ses,opts),refreshSession);}
   catch (e:any) { seriesError=String(e?.message || e); nativeSeries={items:[],supported:!(e instanceof StalkerCatalogUnsupportedError)}; void recordDiagnostic("mag","STALKER_SERIES_PARTIAL_FAILURE",{message:seriesError,status:e?.status,kind:e?.kind}); }
   finally { finishSeriesTask(); }
 
@@ -1955,7 +1957,7 @@ export async function stalkerEnrichment(cred:StalkerCreds, ses:StalkerSession, o
 export async function stalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: StalkerCatalogOptions = {}): Promise<StalkerCatalogResult> {
   const finishCatalogTask = startDiagnosticTask("mag:catalog", { endpoint: ses.endpoint });
   try {
-  const key=catalogKey(cred,ses,opts.liveOnly?"live":"full");
+  const key=catalogKey(cred,ses,opts.liveOnly?"live":"full")+(opts.kinds?`:${[...opts.kinds].sort().join(",")}`:"");
   const now=Date.now();
   const cached=stalkerCatalogCache.get(key);
   if (!opts.forceFresh && cached && now-cached.at <= CATALOG_CACHE_TTL_MS) {

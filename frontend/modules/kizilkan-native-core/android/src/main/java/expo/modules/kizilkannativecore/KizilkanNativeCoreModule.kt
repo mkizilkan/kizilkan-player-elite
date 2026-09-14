@@ -202,6 +202,7 @@ class KizilkanNativeCoreModule : Module() {
     // içinde commit edilir. Fingerprint/changedKinds ancak transaction + count verify
     // başarıyla bittikten sonra JS'e döner; metadata commit kararı JS tarafındadır.
     AsyncFunction("syncPlaylistKindsJson") { id: String, payloadJson: String, previousFingerprintsJson: String ->
+      synchronized(indexLocks.getOrPut(id) { Any() }) {
       val root = JSONTokener(payloadJson).nextValue() as? JSONObject
         ?: throw IllegalStateException("Incremental sync payload nesne değil: $id")
       val previous = try { JSONObject(previousFingerprintsJson) } catch (_: Throwable) { JSONObject() }
@@ -249,9 +250,20 @@ class KizilkanNativeCoreModule : Module() {
           throw IllegalStateException("Room snapshot bulunamadı ve partial payload ile güvenli onarım mümkün değil: $id")
         }
       }
-      val verifiedBefore = before!!
-      if (dao.count(id, "live") != verifiedBefore.channelsCount || dao.count(id, "vod") != verifiedBefore.vodCount || dao.count(id, "series") != verifiedBefore.seriesCount) {
-        throw IllegalStateException("Room snapshot recovery verify başarısız: $id")
+      var verifiedBefore=before!!
+      val actualLive=dao.count(id,"live")
+      val actualVod=dao.count(id,"vod")
+      val actualSeries=dao.count(id,"series")
+      if(actualLive!=verifiedBefore.channelsCount||actualVod!=verifiedBefore.vodCount||actualSeries!=verifiedBefore.seriesCount){
+        if((actualLive!=verifiedBefore.channelsCount&&!arrays.containsKey("live"))||
+          (actualVod!=verifiedBefore.vodCount&&!arrays.containsKey("vod"))||
+          (actualSeries!=verifiedBefore.seriesCount&&!arrays.containsKey("series"))){
+          throw IllegalStateException("Room snapshot recovery verify başarısız: $id")
+        }
+        verifiedBefore=verifiedBefore.copy(channelsCount=actualLive,vodCount=actualVod,seriesCount=actualSeries)
+        db.snapshotDao().put(verifiedBefore)
+        snapshotRecovered=true
+        snapshotRecoveryState="SNAPSHOT_REPAIRED_SELECTED_KINDS"
       }
       val changed = mutableListOf<String>()
       val skipped = mutableListOf<String>()
@@ -349,6 +361,7 @@ class KizilkanNativeCoreModule : Module() {
         "snapshotRecoveryState" to snapshotRecoveryState,
         "elapsedMs" to (SystemClock.elapsedRealtime() - started),
       )
+      }
     }
 
     // v15.2.25 RC1: MAG live-first commit sonrasında VOD/Series enrichment,
@@ -356,6 +369,7 @@ class KizilkanNativeCoreModule : Module() {
     // transaction içinde atomik değiştirir. Böylece 20k+ live katalog tekrar
     // stringify edilmez ve updatePlaylist ağır merge yolu tetiklenmez.
     AsyncFunction("replacePlaylistKindJson") { id: String, kindRaw: String, jsonArray: String ->
+      synchronized(indexLocks.getOrPut(id) { Any() }) {
       val kind = normalizeKind(kindRaw)
       val started = SystemClock.elapsedRealtime()
       val arr = JSONTokener(jsonArray).nextValue() as? JSONArray
@@ -405,6 +419,7 @@ class KizilkanNativeCoreModule : Module() {
         "series" to snapshot.seriesCount,
       ))
       summary(snapshot, cacheHit = false)
+      }
     }
 
     // v15.2.5: Legacy/MAG/compatibility yollarında 50-100 bin kaydı tek bir
@@ -505,13 +520,27 @@ class KizilkanNativeCoreModule : Module() {
 
     // v17.2.0: playlist hesabını silmeden hangi canonical içeriklerin temizleneceğini önizle.
     AsyncFunction("previewPlaylistContentCleanup") { playlistId: String ->
-      previewPlaylistContentCleanup(playlistId)
+      prepareCleanupPreview(playlistId)
     }
 
     // v17.2.0: seçilen katalog türlerini tek Room transaction içinde sil; playlist snapshot satırı korunur
     // ve cache-hit engellemek için sourceStamp/sourceSize invalid edilir. Favori/recent/watch progress bu DB'de değildir.
     AsyncFunction("executePlaylistContentCleanup") { playlistId: String, live: Boolean, vod: Boolean, series: Boolean, epg: Boolean ->
       executePlaylistContentCleanup(playlistId, live, vod, series, epg)
+    }
+
+    AsyncFunction("previewPlaylistContentCleanupBatch") { ids:List<String> ->
+      ids.distinct().map { id ->
+        try { mapOf("ok" to true,"playlistId" to id,"preview" to prepareCleanupPreview(id)) }
+        catch(e:Exception){mapOf("ok" to false,"playlistId" to id,"error" to (e.message?:"Önizleme başarısız"))}
+      }
+    }
+    // Per-playlist transactions; failure does not undo previously completed playlists.
+    AsyncFunction("executePlaylistContentCleanupBatch") { ids:List<String>,live:Boolean,vod:Boolean,series:Boolean,epg:Boolean ->
+      ids.distinct().map { id ->
+        try { mapOf("ok" to true,"playlistId" to id,"result" to executePlaylistContentCleanup(id,live,vod,series,epg)) }
+        catch(e:Exception){mapOf("ok" to false,"playlistId" to id,"error" to (e.message?:"Temizlik başarısız"))}
+      }
     }
 
     // v16.13.0: Bakim tek bir "VACUUM" dugmesi degildir. diagnose salt-okuma,
@@ -1364,6 +1393,15 @@ class KizilkanNativeCoreModule : Module() {
     )
   }
 
+  private fun prepareCleanupPreview(raw: String): Map<String, Any> {
+    val id = raw.trim()
+    require(id.isNotBlank()) { "playlistId boş olamaz" }
+    return synchronized(indexLocks.getOrPut(id) { Any() }) {
+      if (database().snapshotDao().get(id) == null && playlistFile(id).exists()) ensureIndexedLocked(id)
+      previewPlaylistContentCleanup(id)
+    }
+  }
+
   private fun previewPlaylistContentCleanup(playlistIdRaw: String): Map<String, Any> {
     val playlistId = playlistIdRaw.trim()
     require(playlistId.isNotBlank()) { "playlistId boş olamaz" }
@@ -1396,28 +1434,37 @@ class KizilkanNativeCoreModule : Module() {
     require(playlistId.isNotBlank()) { "playlistId boş olamaz" }
     require(removeLive || removeVod || removeSeries || removeEpg) { "Temizlenecek en az bir içerik türü seçilmelidir" }
     val db = database()
-    val before = previewPlaylistContentCleanup(playlistId)
+    lateinit var before:Map<String,Any>
+    lateinit var after:Map<String,Any>
     var deletedLive = 0
     var deletedVod = 0
     var deletedSeries = 0
     var deletedEpg = 0
     var snapshotInvalidated = 0
+    synchronized(indexLocks.getOrPut(playlistId){Any()}) {
+    if (db.snapshotDao().get(playlistId) == null && playlistFile(playlistId).exists()) ensureIndexedLocked(playlistId)
     db.runInTransaction {
+      before=previewPlaylistContentCleanup(playlistId)
       if (removeLive) deletedLive = db.mediaDao().deleteKind(playlistId, "live")
       if (removeVod) deletedVod = db.mediaDao().deleteKind(playlistId, "vod")
       if (removeSeries) deletedSeries = db.mediaDao().deleteKind(playlistId, "series")
       if (removeEpg) deletedEpg = db.epgDao().deletePlaylist(playlistId)
-      snapshotInvalidated = db.snapshotDao().invalidate(playlistId)
+      // Validate before commit so a residual selected row rolls back deletion.
+      after=previewPlaylistContentCleanup(playlistId)
+      fun count(key:String)=(after[key] as? Number)?.toInt()?:0
+      if(removeLive && count("live")!=0)throw IllegalStateException("Live temizleme doğrulaması başarısız")
+      if(removeVod && count("vod")!=0)throw IllegalStateException("VOD temizleme doğrulaması başarısız")
+      if(removeSeries && count("series")!=0)throw IllegalStateException("Series temizleme doğrulaması başarısız")
+      if(removeEpg && count("epg")!=0)throw IllegalStateException("EPG temizleme doğrulaması başarısız")
+      // Keep Room canonical; invalidating the snapshot can reload a stale legacy file.
+      db.snapshotDao().put(PlaylistSnapshotEntity(playlistId, 0L, 0L,
+        count("live"),count("vod"),count("series"),System.currentTimeMillis(),0L))
     }
-    invalidated.add(playlistId)
-    val after = previewPlaylistContentCleanup(playlistId)
-    fun n(map: Map<String, Any>, key: String) = (map[key] as? Number)?.toInt() ?: 0
-    if (removeLive && n(after, "live") != 0) throw IllegalStateException("Live temizleme doğrulaması başarısız")
-    if (removeVod && n(after, "vod") != 0) throw IllegalStateException("VOD temizleme doğrulaması başarısız")
-    if (removeSeries && n(after, "series") != 0) throw IllegalStateException("Series temizleme doğrulaması başarısız")
-    if (removeEpg && n(after, "epg") != 0) throw IllegalStateException("EPG temizleme doğrulaması başarısız")
+    invalidated.remove(playlistId)
+    }
     val result = mapOf<String, Any>(
       "playlistId" to playlistId,
+      "cleanedKinds" to listOfNotNull(if(removeLive) "live" else null,if(removeVod) "vod" else null,if(removeSeries) "series" else null,if(removeEpg) "epg" else null),
       "deletedLive" to deletedLive,
       "deletedVod" to deletedVod,
       "deletedSeries" to deletedSeries,
@@ -1429,7 +1476,7 @@ class KizilkanNativeCoreModule : Module() {
       "before" to before,
       "after" to after,
     )
-    NativeBlackBox.appendJson(context(), JSONObject()
+    runCatching { NativeBlackBox.appendJson(context(), JSONObject()
       .put("id", "db-cleanup-${System.currentTimeMillis()}")
       .put("at", System.currentTimeMillis())
       .put("domain", "database")
@@ -1441,7 +1488,7 @@ class KizilkanNativeCoreModule : Module() {
         .put("deletedLive", deletedLive).put("deletedVod", deletedVod)
         .put("deletedSeries", deletedSeries).put("deletedEpg", deletedEpg)
         .put("playlistPreserved", true).put("userDataPreserved", true))
-      .toString())
+      .toString()) }
     return result
   }
 

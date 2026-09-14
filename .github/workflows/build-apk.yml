@@ -19,7 +19,7 @@ on:
         type: boolean
         default: true
   push:
-    branches: [main, master]
+    branches: [main, master, v17.3.0-rc1-smart-db-multisource]
     paths:
       - "frontend/**"
       - "tools/**"
@@ -177,7 +177,7 @@ jobs:
           retention-days: 30
           if-no-files-found: error
       - name: GitHub Release olustur
-        if: ${{ github.event.inputs.make_release != 'false' }}
+        if: ${{ github.event.inputs.make_release != 'false' && github.ref != 'refs/heads/v17.3.0-rc1-smart-db-multisource' }}
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}

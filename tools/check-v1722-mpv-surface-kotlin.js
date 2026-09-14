@@ -6,7 +6,7 @@ const pkg=JSON.parse(read('frontend/package.json'));
 const app=JSON.parse(read('frontend/app.json'));
 const mpv=read('frontend/modules/mpv-player/android/src/main/java/expo/modules/kizilkanmpv/KizilkanMpvView.kt');
 const checks=[
- ['version 17.2.2', pkg.version==='17.2.2' && app.expo.version==='17.2.2' && app.expo.android.versionCode===170202 && app.expo.ios.buildNumber==='17.2.2' && app.expo.extra?.kizilkanReleaseLabel==='GPT ELITE v17.2.2 RC1'],
+ ['version 17.2.2+ synchronized',pkg.version.localeCompare('17.2.2',undefined,{numeric:true})>=0&&app.expo.version===pkg.version&&app.expo.android.versionCode>=170202&&app.expo.ios.buildNumber===pkg.version&&app.expo.extra?.kizilkanReleaseLabel===`GPT ELITE v${pkg.version} RC1`],
  ['TextureView architecture preserved', /TextureView\.SurfaceTextureListener/.test(mpv) && /private val textureView = TextureView\(context\)/.test(mpv)],
  ['lifecycle Surface remains nullable', /private var renderSurface: Surface\? = null/.test(mpv)],
  ['non-null local Surface created', /val surface = Surface\(surfaceTexture\)/.test(mpv)],

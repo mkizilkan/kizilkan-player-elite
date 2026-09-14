@@ -25,14 +25,16 @@ import javax.crypto.spec.GCMParameterSpec
  * - requested/effective concurrency ve source fingerprint journal'a yazılır;
  * - eski v1 DB şeması migration ile korunur.
  */
-class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(context.applicationContext, "kizilkan-panel-scan-journal.db", null, 2) {
+class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(context.applicationContext, "kizilkan-panel-scan-journal.db", null, 3) {
   override fun onCreate(db: SQLiteDatabase) {
     db.execSQL("CREATE TABLE scan_session(run_id TEXT PRIMARY KEY, mode TEXT NOT NULL, payload_enc TEXT NOT NULL, concurrency INTEGER NOT NULL, timeout_ms INTEGER NOT NULL, committed_cursor INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, committed_account INTEGER NOT NULL DEFAULT 0, committed_tested INTEGER NOT NULL DEFAULT 0, batch_size INTEGER NOT NULL DEFAULT 0, requested_concurrency INTEGER NOT NULL DEFAULT 0, effective_concurrency INTEGER NOT NULL DEFAULT 0, source_fingerprint TEXT NOT NULL DEFAULT '')")
     db.execSQL("CREATE TABLE scan_result(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, result_key TEXT NOT NULL, payload_enc TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(run_id,result_key) ON CONFLICT IGNORE)")
     db.execSQL("CREATE INDEX idx_scan_result_run ON scan_result(run_id,id)")
+    createProbeCache(db)
   }
 
   override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+    if(oldVersion<3)createProbeCache(db)
     if (oldVersion < 2) {
       db.execSQL("ALTER TABLE scan_session ADD COLUMN committed_account INTEGER NOT NULL DEFAULT 0")
       db.execSQL("ALTER TABLE scan_session ADD COLUMN committed_tested INTEGER NOT NULL DEFAULT 0")
@@ -41,6 +43,16 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
       db.execSQL("ALTER TABLE scan_session ADD COLUMN effective_concurrency INTEGER NOT NULL DEFAULT 0")
       db.execSQL("ALTER TABLE scan_session ADD COLUMN source_fingerprint TEXT NOT NULL DEFAULT ''")
     }
+  }
+
+  private fun createProbeCache(db:SQLiteDatabase){
+    db.execSQL("CREATE TABLE IF NOT EXISTS scan_probe_cache(run_id TEXT NOT NULL, probe_key TEXT NOT NULL, payload_enc TEXT NOT NULL, PRIMARY KEY(run_id,probe_key))")
+  }
+  @Synchronized fun readProbe(runId:String,probeKey:String):String? =
+    readableDatabase.rawQuery("SELECT payload_enc FROM scan_probe_cache WHERE run_id=? AND probe_key=?",arrayOf(runId,probeKey)).use{c->if(c.moveToFirst())dec(c.getString(0))else null}
+  @Synchronized fun writeProbe(runId:String,probeKey:String,payload:String){
+    val values=ContentValues().apply{put("run_id",runId);put("probe_key",probeKey);put("payload_enc",enc(payload))}
+    writableDatabase.insertWithOnConflict("scan_probe_cache",null,values,SQLiteDatabase.CONFLICT_REPLACE)
   }
 
   private fun key(): SecretKey {
@@ -189,6 +201,7 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
   @Synchronized fun delete(runId:String) {
     writableDatabase.beginTransaction()
     try {
+      writableDatabase.delete("scan_probe_cache","run_id=?",arrayOf(runId))
       writableDatabase.delete("scan_result","run_id=?",arrayOf(runId))
       writableDatabase.delete("scan_session","run_id=?",arrayOf(runId))
       writableDatabase.setTransactionSuccessful()

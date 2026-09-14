@@ -196,6 +196,7 @@ async function ensureFresh(url: string, playlistId: string): Promise<void> {
   try {
     const metaRaw = await storage.getItem<string>(EPG_META_PREFIX + playlistId, "");
     const meta = metaRaw ? JSON.parse(metaRaw) : null;
+    if(meta?.cleaned&&meta.url===url)return;
     const fresh = meta && meta.url === url && Date.now() - meta.fetchedAt < CACHE_TTL_MS;
     if (!fresh) {
       await fetchAndCacheEpg(url, playlistId);

@@ -22,13 +22,15 @@ import { markTask } from "@/src/utils/diagnostics";
 import { applyContentSelection } from "@/src/utils/contentSelection";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
+export type CatalogKind="live"|"vod"|"series";
+export type RefreshOptions={ignoreContentSelection?:boolean;kinds?:CatalogKind[]};
 export type RefreshPhase = "dns" | "login" | "content" | "save" | "done" | "error";
 export type RefreshProgress = {
   phase: RefreshPhase;
   message: string;
-  live?: "waiting" | "done" | "error";
-  vod?: "waiting" | "done" | "error";
-  series?: "waiting" | "done" | "error";
+  live?: "waiting" | "done" | "error" | "skipped";
+  vod?: "waiting" | "done" | "error" | "skipped";
+  series?: "waiting" | "done" | "error" | "skipped";
   liveCount?: number; vodCount?: number; seriesCount?: number;
 };
 
@@ -40,7 +42,16 @@ export interface RefreshResult {
   message: string;
 }
 
-export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: RefreshProgress) => void, options?: { ignoreContentSelection?: boolean }): Promise<RefreshResult> {
+export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: RefreshProgress) => void, options?: RefreshOptions): Promise<RefreshResult> {
+  const requested=new Set<CatalogKind>(options?.kinds??['live','vod','series']);
+  if(!requested.size)return{ok:false,message:'Güncellenecek katalog türü seçilmedi.'};
+  const scoped=(patch:Partial<Playlist>):Partial<Playlist>=>{
+    const next={...patch};
+    if(!requested.has('live'))delete next.channels;
+    if(!requested.has('vod'))delete next.vod;
+    if(!requested.has('series'))delete next.series;
+    return next;
+  };
   const finishTask = markTask(`refresh:${pl.source}:${pl.name || pl.id}`, { playlistId: pl.id, source: pl.source });
   try {
     if (pl.source === "xtream") {
@@ -66,6 +77,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
           const bound = await resolveBoundPanel(
             pl.serverCodeBinding.codeSource,
             {
+              sources:pl.serverCodeBinding.sources,
               code: pl.serverCodeBinding.code,
               panelName: pl.serverCodeBinding.panelName,
               preferredServer: pl.serverCodeBinding.preferredServer || pl.xtreamServer,
@@ -101,18 +113,18 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       // Üç içerik isteği PARALEL. Her biri bittiğinde ilerleme ayrı raporlanır.
       const state: RefreshProgress = {
         phase: "content", message: "İçerikler paralel yükleniyor...",
-        live: "waiting", vod: "waiting", series: "waiting",
+        live:requested.has("live")?"waiting":"skipped",vod:requested.has("vod")?"waiting":"skipped",series:requested.has("series")?"waiting":"skipped",
       };
       const emit = () => onProgress?.({ ...state });
       emit();
-      const livePromise = xtreamLiveStreams(cred).then((value) => {
-        state.live = "done"; state.liveCount = value.length; emit(); return value;
+      const livePromise = (requested.has("live")?xtreamLiveStreams(cred):Promise.resolve([])).then((value) => {
+        state.live=requested.has("live")?"done":"skipped"; state.liveCount = value.length; emit(); return value;
       }).catch((e) => { state.live = "error"; emit(); throw e; });
-      const vodPromise = xtreamVod(cred).then((value) => {
-        state.vod = "done"; state.vodCount = value.length; emit(); return value;
+      const vodPromise = (requested.has("vod")?xtreamVod(cred):Promise.resolve([])).then((value) => {
+        state.vod=requested.has("vod")?"done":"skipped"; state.vodCount = value.length; emit(); return value;
       }).catch((e) => { state.vod = "error"; emit(); throw e; });
-      const seriesPromise = xtreamSeries(cred).then((value) => {
-        state.series = "done"; state.seriesCount = value.length; emit(); return value;
+      const seriesPromise = (requested.has("series")?xtreamSeries(cred):Promise.resolve([])).then((value) => {
+        state.series=requested.has("series")?"done":"skipped"; state.seriesCount = value.length; emit(); return value;
       }).catch((e) => { state.series = "error"; emit(); throw e; });
       const [chRes, vodRes, serRes] = await Promise.allSettled([livePromise, vodPromise, seriesPromise]);
       // v16.13.10 — CAPABILITY-AWARE PARTIAL COMMIT: login başarılıyken VOD/Series 404
@@ -134,14 +146,15 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       return {
         ok: true,
         patch: {
-          channels,
-          vod,
-          series,
+          ...scoped({channels,vod,series}),
           accountInfo: login.user_info as any,
           serverInfo: (login.server_info || null) as any,
           ...(resolvedServer !== pl.xtreamServer ? { xtreamServer: resolvedServer } : {}),
           ...(bindingPatch ? { serverCodeBinding: bindingPatch } : {}),
-          catalogCapabilities: { live: "supported", vod: isUnsupported404(vodRes) ? "unsupported_404" : "supported", series: isUnsupported404(serRes) ? "unsupported_404" : "supported", updatedAt: new Date().toISOString() },
+          catalogCapabilities:{live:pl.catalogCapabilities?.live||'empty',vod:pl.catalogCapabilities?.vod||'empty',series:pl.catalogCapabilities?.series||'empty',
+            ...(requested.has('live')?{live:'supported' as const}:{}),
+            ...(requested.has('vod')?{vod:isUnsupported404(vodRes)?'unsupported_404' as const:'supported' as const}:{}),
+            ...(requested.has('series')?{series:isUnsupported404(serRes)?'unsupported_404' as const:'supported' as const}:{}),updatedAt:new Date().toISOString()},
         },
         message: `${channels.length} kanal • ${vod.length} film • ${series.length} dizi güncellendi${isUnsupported404(vodRes) ? " • VOD desteklenmiyor (404)" : ""}${isUnsupported404(serRes) ? " • Dizi desteklenmiyor (404)" : ""}${resolvedServer !== pl.xtreamServer ? " • DNS otomatik güncellendi" : ""}`,
       };
@@ -155,7 +168,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       if (total === 0) return { ok: false, message: "Listede içerik bulunamadı." };
       return {
         ok: true,
-        patch: applyContentSelection({ channels: res.channels, vod: res.vod || [], series: res.series || [] }, options?.ignoreContentSelection ? null : pl.contentSelection),
+        patch:scoped(applyContentSelection({channels:res.channels,vod:res.vod||[],series:res.series||[]},options?.ignoreContentSelection?null:pl.contentSelection)),
         message: `${res.channels.length} kanal • ${res.vod?.length || 0} film • ${res.series?.length || 0} dizi güncellendi`,
       };
     }
@@ -182,22 +195,25 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       try {
         catalog = await stalkerCatalog(cred, session, {
           forceFresh: true,
+          kinds:[...requested],
           onProgress: (progress) => onProgress?.({ phase: progress.stage === "final" ? "save" : "content", message: progress.message }),
         });
       }
       catch (e: any) { return { ok: false, message: `MAG katalog yenileme başarısız: ${String(e?.message || e)}${session.profileError ? ` · Profil: ${session.profileError}` : ""}` }; }
-      const d = catalog.diagnostics;
+      const d=catalog.diagnostics;
+      if((requested.has('live')&&d.live==='ERROR')||(requested.has('vod')&&d.vod==='ERROR')||(requested.has('series')&&(d.seriesNative==='ERROR'||d.vod==='ERROR')))
+        return{ok:false,message:'Seçili MAG kataloglarından biri alınamadı; mevcut katalog korunuyor.'};
       const liveCap: 'supported' | 'empty' | 'error' = d.live === 'ERROR' ? 'error' : (catalog.channels.length ? 'supported' : 'empty');
       const vodCap = d.vod === 'UNSUPPORTED' ? 'unsupported_404' : (d.vod === 'ERROR' ? 'error' : (catalog.vod.length ? 'supported' : 'empty'));
       const seriesCap = d.seriesNative === 'UNSUPPORTED' && d.seriesFromVod > 0 ? 'vod_fallback' : d.seriesNative === 'UNSUPPORTED' ? 'unsupported_404' : d.seriesNative === 'ERROR' ? 'error' : (catalog.series.length ? 'supported' : 'empty');
       const endpointShape = (() => { try { return new URL(session.endpoint).pathname || '/'; } catch { return ''; } })();
       const capabilityPatch: Partial<Playlist> = {
         ...(session.portalTimezone ? { stalkerPortalTimezone: session.portalTimezone } : {}),
-        catalogCapabilities: { live: liveCap, vod: vodCap, series: seriesCap, updatedAt: new Date().toISOString() },
+        catalogCapabilities: { live:requested.has("live")?liveCap:(pl.catalogCapabilities?.live||"empty"),vod:requested.has("vod")?vodCap:(pl.catalogCapabilities?.vod||"empty"),series:requested.has("series")?seriesCap:(pl.catalogCapabilities?.series||"empty"), updatedAt: new Date().toISOString() },
         magCapabilities: {
-          live: liveCap === 'supported' ? 'supported' : liveCap === 'empty' ? 'empty' : 'error',
-          vod: d.vod === 'UNSUPPORTED' ? 'unsupported' : d.vod === 'ERROR' ? 'error' : catalog.vod.length ? 'supported' : 'empty',
-          series: d.seriesNative === 'UNSUPPORTED' && d.seriesFromVod > 0 ? 'vod_fallback' : d.seriesNative === 'UNSUPPORTED' ? 'unsupported' : d.seriesNative === 'ERROR' ? 'error' : catalog.series.length ? 'supported' : 'empty',
+          live: !requested.has('live') ? (pl.magCapabilities?.live || 'empty') : liveCap === 'supported' ? 'supported' : liveCap === 'empty' ? 'empty' : 'error',
+          vod: !requested.has('vod') ? (pl.magCapabilities?.vod || 'empty') : d.vod === 'UNSUPPORTED' ? 'unsupported' : d.vod === 'ERROR' ? 'error' : catalog.vod.length ? 'supported' : 'empty',
+          series: !requested.has('series') ? (pl.magCapabilities?.series || 'empty') : d.seriesNative === 'UNSUPPORTED' && d.seriesFromVod > 0 ? 'vod_fallback' : d.seriesNative === 'UNSUPPORTED' ? 'unsupported' : d.seriesNative === 'ERROR' ? 'error' : catalog.series.length ? 'supported' : 'empty',
           profile: session.profileError ? 'error' : session.profile ? 'supported' : 'empty',
           model: String((session.profile as any)?.stb_type || session.compatProfile || ''),
           transport: KizilkanNativeCore.available ? 'native_okhttp' : 'fetch',
@@ -216,7 +232,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       return {
         ok: true,
         patch: {
-          ...selected,
+          ...scoped(selected),
           ...capabilityPatch,
         },
         message: `${catalog.channels.length} kanal • ${catalog.vod.length} film • ${catalog.series.length} dizi güncellendi`,
