@@ -80,6 +80,7 @@ interface Props {
   onBuffering?: (progress: number) => void;
   onPlaying?: () => void;
   onPaused?: () => void;
+  onStopped?: () => void;
   onError?: (message: string) => void;
   /** Kayıt durumu/dosya yolu değişince (v7.8.0). */
   onRecordChanged?: (e: { path: string | null; isRecording: boolean }) => void;
@@ -172,7 +173,7 @@ export const DEFAULT_VLC_OPTIONS: string[] = buildVlcOptions();
 export const VlcPlayerView = forwardRef<VlcPlayerHandle, Props>(function VlcPlayerView(
   {
     uri, extraOptions, bufferMs = 1500, hardwareAccel = true, audioDelayMs = 0, userAgent, paused, rate = 1, volume = 100, contentFit = "contain",
-    tracks, onBuffering, onPlaying, onPaused, onError, onRecordChanged, onTimeChanged, onTracks, onSnapshotTaken, onFirstPlay,
+    tracks, onBuffering, onPlaying, onPaused, onStopped, onError, onRecordChanged, onTimeChanged, onTracks, onSnapshotTaken, onFirstPlay,
   },
   ref
 ) {
@@ -232,6 +233,7 @@ export const VlcPlayerView = forwardRef<VlcPlayerHandle, Props>(function VlcPlay
         onBuffering={(e) => onBuffering?.(e.progress)}
         onPlaying={() => onPlaying?.()}
         onPaused={() => onPaused?.()}
+        onStopped={() => onStopped?.()}
         onRecordChanged={(e: any) => {
           // Paket olayı { path, isRecording } döndürür.
           onRecordChanged?.({

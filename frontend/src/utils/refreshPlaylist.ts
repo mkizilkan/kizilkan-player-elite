@@ -10,7 +10,7 @@
  */
 
 import {
-  fetchAndParseM3U,
+  fetchAndParseM3UConditional,
   xtreamLogin,
   xtreamLiveStreams,
   xtreamVod,
@@ -23,7 +23,7 @@ import { applyContentSelection } from "@/src/utils/contentSelection";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 export type CatalogKind="live"|"vod"|"series";
-export type RefreshOptions={ignoreContentSelection?:boolean;kinds?:CatalogKind[]};
+export type RefreshOptions={ignoreContentSelection?:boolean;kinds?:CatalogKind[];forceUnconditional?:boolean};
 export type RefreshPhase = "dns" | "login" | "content" | "save" | "done" | "error";
 export type RefreshProgress = {
   phase: RefreshPhase;
@@ -163,12 +163,15 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
     if (pl.source === "m3u_url") {
       if (!pl.m3uUrl) return { ok: false, message: "M3U adresi yok." };
       onProgress?.({ phase: "content", message: "M3U içeriği indiriliyor..." });
-      const res = await fetchAndParseM3U(pl.m3uUrl);
+      const validators=!options?.forceUnconditional&&pl.m3uValidators?.url===pl.m3uUrl&&!pl.cleanedKinds?.length?pl.m3uValidators:undefined;
+      const response=await fetchAndParseM3UConditional(pl.m3uUrl,validators);
+      if(response.notModified)return{ok:true,patch:{m3uValidators:{url:pl.m3uUrl,etag:response.etag,lastModified:response.lastModified}},message:'M3U değişmedi; mevcut katalog korundu.'};
+      const res=response.parsed!;
       const total = res.channels.length + (res.vod?.length || 0) + (res.series?.length || 0);
       if (total === 0) return { ok: false, message: "Listede içerik bulunamadı." };
       return {
         ok: true,
-        patch:scoped(applyContentSelection({channels:res.channels,vod:res.vod||[],series:res.series||[]},options?.ignoreContentSelection?null:pl.contentSelection)),
+        patch:{...scoped(applyContentSelection({channels:res.channels,vod:res.vod||[],series:res.series||[]},options?.ignoreContentSelection?null:pl.contentSelection)),m3uValidators:{url:pl.m3uUrl,etag:response.etag,lastModified:response.lastModified}},
         message: `${res.channels.length} kanal • ${res.vod?.length || 0} film • ${res.series?.length || 0} dizi güncellendi`,
       };
     }

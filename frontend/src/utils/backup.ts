@@ -37,6 +37,7 @@ const BASE_KEYS = [
 ];
 
 const PROFILE_PREFIXED = [
+  'kizilkan.player.autoNext.',
   'kizilkan.favorites.',
   'kizilkan.recent.',
   'kizilkan.searchHistory.',

@@ -46,6 +46,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   val onProgress by EventDispatcher()
   val onVideoReady by EventDispatcher()
   val onTracks by EventDispatcher()
+  val onEnd by EventDispatcher()
   val onError by EventDispatcher()
   val onDiagnostic by EventDispatcher()
 
@@ -451,6 +452,11 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
       MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> { emitDiagnostic("PLAYBACK_RESTART"); emitVideoReadyIfPossible() }
       MpvEvent.MPV_EVENT_END_FILE -> {
         emitDiagnostic("END_FILE")
+        // MPV also emits END_FILE on stop/errors; only a played, finite
+        // file close to its end qualifies for the next-episode action.
+        if (playbackStarted && lastDuration > 0.0 && lastPosition >= lastDuration - 2.0) {
+          post { onEnd(mapOf("position" to lastPosition, "duration" to lastDuration)) }
+        }
         post { onPlayingChange(mapOf("isPlaying" to false)) }
         val err = lastError
 

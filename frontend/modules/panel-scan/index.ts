@@ -15,7 +15,7 @@ type NativeSnapshot = {
   accountStatuses?: Array<{ accountIndex:number; sourceRow?:number; name?:string; state:string; tested:number; total:number; remaining:number; found:number }>;
   batchIndex?: number; batchCount?: number; batchSize?: number; batchStart?: number; batchEnd?: number;
   requestedConcurrency?: number; effectiveConcurrency?: number; sourceFingerprint?: string;
-  streamingFile?: boolean; producerDone?: boolean; queueDepth?: number; queueCapacity?: number; producerBackpressure?: boolean;
+  streamingFile?: boolean; producerDone?: boolean; queueDepth?: number; queueCapacity?: number; producerBackpressure?: boolean; skippedNoCandidate?: number; directoryPanels?: number;
 };
 
 

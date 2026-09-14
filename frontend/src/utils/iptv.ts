@@ -282,6 +282,21 @@ export async function fetchAndParseM3U(url: string, timeoutMs = 120000): Promise
   }
 }
 
+/** Conditional requests are used only when a local catalog already exists. */
+export async function fetchAndParseM3UConditional(url:string,validators?:{etag?:string;lastModified?:string}):Promise<{parsed?:ParsedM3U;notModified:boolean;etag?:string;lastModified?:string}>{
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120000);
+  try{
+    const headers:Record<string,string>={'User-Agent':UA,'Accept':'*/*'};
+    if(validators?.etag)headers['If-None-Match']=validators.etag;
+    else if(validators?.lastModified)headers['If-Modified-Since']=validators.lastModified;
+    const res=await fetch(url,{signal:controller.signal,headers});
+    if(res.status===304){if(!validators?.etag&&!validators?.lastModified)throw new Error('Beklenmeyen HTTP 304');return{notModified:true,etag:res.headers.get('ETag')||validators.etag,lastModified:res.headers.get('Last-Modified')||validators.lastModified};}
+    if(!res.ok)throw new Error(`Sunucu hatası: HTTP ${res.status}`);
+    const body=await res.text();if(!body||body.length<8)throw new Error('Boş yanıt döndü');
+    return{notModified:false,parsed:parseM3U(body),etag:res.headers.get('ETag')||undefined,lastModified:res.headers.get('Last-Modified')||undefined};
+  }finally{clearTimeout(timer);}
+}
+
 // ============================================================================
 // XTREAM CODES CLIENT
 // ============================================================================

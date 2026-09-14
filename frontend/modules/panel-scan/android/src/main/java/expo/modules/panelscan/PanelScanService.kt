@@ -123,6 +123,9 @@ class PanelScanService : Service() {
           .put("total", obj.optInt("total", 0))
           .put("found", obj.optInt("found", 0))
           .put("accountIndex", obj.optInt("accountIndex", -1))
+          .put("accountTested", obj.optLong("accountTested", 0L))
+          .put("accountTotal", obj.optLong("accountTotal", 0L))
+          .put("skippedNoCandidate", obj.optLong("skippedNoCandidate", 0L))
           .put("accountTotal", obj.optInt("accountTotal", 0))
           .put("payloadBytes", obj.optLong("payloadBytes", 0L))
           .put("batchIndex", obj.optInt("batchIndex", -1))
@@ -204,8 +207,10 @@ class PanelScanService : Service() {
   @Volatile private var running = false
   @Volatile private var currentRunId = ""
   @Volatile private var activeExecutor: ExecutorService? = null
+  @Volatile private var activeFileStream: java.io.InputStream? = null
   @Volatile private var lastDiagnosticState = ""
   @Volatile private var lastDiagnosticBucket = -1
+  @Volatile private var lastDiagnosticAccountBucket = -1
   private val activeConnections = ConcurrentHashMap.newKeySet<HttpURLConnection>()
   // v17.1.1: Aynı DNS'e yüzlerce hesabın aynı anda bindirmesini engelle.
   private val hostPermits = ConcurrentHashMap<String, Semaphore>()
@@ -213,6 +218,7 @@ class PanelScanService : Service() {
 
   private fun abortActiveNetworkWork() {
     try { activeExecutor?.shutdownNow() } catch (_: Throwable) {}
+    try { activeFileStream?.close() } catch (_: Throwable) {}
     val snapshot = activeConnections.toList()
     for (conn in snapshot) {
       try { conn.disconnect() } catch (_: Throwable) {}
@@ -337,7 +343,7 @@ class PanelScanService : Service() {
           timeoutMs, 0L, batchSize, sourceFingerprint
         )
         writeSnapshot(JSONObject()
-          .put("mode", "streaming-file-v172").put("runId", requestedRunId).put("state", "RUNNING")
+          .put("mode", "streaming-file-v172").put("runId", requestedRunId).put("createdAt", System.currentTimeMillis()).put("state", "RUNNING")
           .put("running", true).put("paused", false).put("tested", 0).put("total", 0)
           .put("accountTested", 0).put("accountTotal", 0).put("producerDone", false)
           .put("queueDepth", 0).put("queueCapacity", maxOf(32, effectiveConcurrency * batchSize * 2))
@@ -440,6 +446,12 @@ class PanelScanService : Service() {
       .put("total", obj.optInt("total", 0))
       .put("found", obj.optInt("found", 0))
       .put("accountIndex", obj.optInt("accountIndex", -1))
+      .put("accountTested", obj.optLong("accountTested", 0L))
+      .put("accountTotal", obj.optLong("accountTotal", 0L))
+      .put("skippedNoCandidate", obj.optLong("skippedNoCandidate", 0L))
+      .put("producerDone", obj.optBoolean("producerDone", false))
+      .put("queueDepth", obj.optInt("queueDepth", 0))
+      .put("queueCapacity", obj.optInt("queueCapacity", 0))
       .put("batchIndex", obj.optInt("batchIndex", -1))
       .put("batchSize", obj.optInt("batchSize", 0))
       .put("requestedConcurrency", obj.optInt("requestedConcurrency", 0))
@@ -472,10 +484,12 @@ class PanelScanService : Service() {
     getSharedPreferences(PREFS, 0).edit().putString(KEY_SNAPSHOT, obj.toString()).apply()
     val stateNow = obj.optString("state", "")
     val bucket = obj.optInt("tested", 0) / 100
-    if (stateNow != lastDiagnosticState || bucket != lastDiagnosticBucket || obj.has("error")) {
+    val accountBucket = obj.optInt("accountTested", 0) / 100
+    if (stateNow != lastDiagnosticState || bucket != lastDiagnosticBucket || accountBucket != lastDiagnosticAccountBucket || obj.has("error")) {
       appendDiagnosticEvent(obj)
       lastDiagnosticState = stateNow
       lastDiagnosticBucket = bucket
+      lastDiagnosticAccountBucket = accountBucket
     }
   }
 
@@ -841,6 +855,7 @@ class PanelScanService : Service() {
     val producerDone = AtomicBoolean(false)
     val producerFailure = AtomicReference<Throwable?>(null)
     val produced = AtomicLong(0L)
+    val skippedNoCandidate = AtomicLong(0L)
     val completed = AtomicLong(startAccountCursor)
     val tested = AtomicLong(0L)
     val matches = mutableListOf<JSONObject>()
@@ -852,13 +867,14 @@ class PanelScanService : Service() {
     try {
       val oldResults = journal.results(currentRunId, 200)
       for (i in 0 until oldResults.length()) oldResults.optJSONObject(i)?.let { matches.add(it) }
-      patchSnapshot { it.put("mode", "streaming-file-v172").put("producerDone", false).put("queueCapacity", queueCapacity)
+      patchSnapshot { it.put("mode", "streaming-file-v172").put("producerDone", false).put("queueCapacity", queueCapacity).put("directoryPanels", directory.length())
         .put("requestedConcurrency", requestedConcurrency).put("effectiveConcurrency", adaptiveLimit.get()).put("sourceFingerprint", sourceFingerprint.take(128)) }
 
       val producer = Thread({
         try {
           val uri = Uri.parse(uriText)
           val stream = contentResolver.openInputStream(uri) ?: throw IllegalArgumentException("Dosya akışı açılamadı")
+          activeFileStream = stream
           var delimiter: Char? = null; var headers: List<String>? = null; var lineNo = 0; var validOrdinal = 0L
           BufferedReader(InputStreamReader(stream, Charsets.UTF_8), 64 * 1024).use { reader ->
             while (!cancelled.get()) {
@@ -891,6 +907,7 @@ class PanelScanService : Service() {
           }
         } catch (e: Throwable) { producerFailure.compareAndSet(null, e) }
         finally {
+          activeFileStream = null
           producerDone.set(true)
           repeat(workerCount) {
             while (!queue.offer(poison, 250, TimeUnit.MILLISECONDS) && !cancelled.get()) { }
@@ -906,12 +923,15 @@ class PanelScanService : Service() {
         pool.submit {
           try {
             while (!cancelled.get()) {
-              while ((paused.get() || workerId >= adaptiveLimit.get()) && !cancelled.get()) Thread.sleep(100)
+              // Inactive workers must still drain their termination sentinels when
+              // the producer finishes; otherwise the executor never terminates.
+              while ((paused.get() || (workerId >= adaptiveLimit.get() && !producerDone.get())) && !cancelled.get()) Thread.sleep(100)
               val account = queue.poll(500, TimeUnit.MILLISECONDS) ?: if (producerDone.get()) break else continue
               if (account.ordinal == Long.MIN_VALUE) break
               tracker.begin(workerId, account.ordinal)
               nextAssigned.updateAndGet { maxOf(it, account.ordinal + 1L) }
               val candidates = resolveCandidatesV172(account, directory)
+              if (candidates.isEmpty()) skippedNoCandidate.incrementAndGet()
               var foundForAccount = 0
               for (candidate in candidates) {
                 if (cancelled.get()) break
@@ -959,6 +979,13 @@ class PanelScanService : Service() {
                 }
               }
               completed.incrementAndGet()
+              val now = System.currentTimeMillis(); val prev = lastSnapshotAt.get()
+              if (now - prev >= 300L && lastSnapshotAt.compareAndSet(prev, now)) {
+                writeUnifiedSnapshot(tested.get(), 0L, completed.get().toInt(), (startAccountCursor + produced.get()).toInt(), directory.length(), matches,
+                  "", account.ordinal.toInt(), true, "", null,
+                  JSONObject().put("streamingFile", true).put("producerDone", producerDone.get()).put("queueDepth", queue.size).put("queueCapacity", queueCapacity)
+                    .put("skippedNoCandidate", skippedNoCandidate.get()).put("requestedConcurrency", requestedConcurrency).put("effectiveConcurrency", adaptiveLimit.get()).put("batchSize", batchSize))
+              }
               tracker.finish(workerId)
               val safe = tracker.safeCursor(nextAssigned.get())
               journal.checkpointUnified(currentRunId, safe.toInt(), tested.get())
@@ -975,11 +1002,17 @@ class PanelScanService : Service() {
       }
       producer.join(2000)
       producerFailure.get()?.let { if (!cancelled.get()) throw it }
+      if (!cancelled.get() && produced.get() == 0L && startAccountCursor == 0L) {
+        throw IllegalArgumentException("Dosyada geçerli kullanıcı adı/şifre kaydı bulunamadı; sütunları ve ayırıcıyı kontrol edin")
+      }
+      if (!cancelled.get() && tested.get() == 0L && skippedNoCandidate.get() > 0L) {
+        throw IllegalArgumentException("${skippedNoCandidate.get()} hesap için eşleşen panel/DNS bulunamadı; panel seçimini veya dosyadaki kodları kontrol edin")
+      }
       writeUnifiedSnapshot(tested.get(), tested.get(), completed.get().toInt(), (startAccountCursor + produced.get()).toInt(), directory.length(), matches,
         "", -1, false, "", null,
         JSONObject().put("streamingFile", true).put("producerDone", true).put("queueDepth", 0).put("queueCapacity", queueCapacity)
           .put("requestedConcurrency", requestedConcurrency).put("effectiveConcurrency", adaptiveLimit.get()).put("batchSize", batchSize)
-          .put("sourceFingerprint", sourceFingerprint.take(128)))
+          .put("sourceFingerprint", sourceFingerprint.take(128)).put("skippedNoCandidate", skippedNoCandidate.get()))
     } catch (e: Throwable) {
       writeSnapshot(JSONObject().put("mode", "streaming-file-v172").put("runId", currentRunId).put("running", false)
         .put("error", "${e.javaClass.simpleName}: ${e.message ?: "streaming file scan hatası"}"))

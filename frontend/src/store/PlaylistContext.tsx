@@ -673,7 +673,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     });
   },[persistMeta]);
 
-  const refreshPlaylistKinds=useCallback(async(id:string,kinds:Array<CatalogKind|'epg'>,progress?:(p:RefreshProgress)=>void,valid:()=>boolean=()=>true)=>{
+  const refreshPlaylistKinds=useCallback(async(id:string,kinds:Array<CatalogKind|'epg'>,progress?:(p:RefreshProgress)=>void,valid:()=>boolean=()=>true,forceUnconditional=false)=>{
     const pid=currentPid();
     return withCatalogLock(id,async()=>{
       const owns=()=>currentPid()===pid&&valid()&&playlistsRef.current.some(p=>p.id===id);
@@ -681,7 +681,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       const pl=playlistsRef.current.find(p=>p.id===id)!;
       const catalogKinds=kinds.filter((k):k is CatalogKind=>k!=='epg');
       if(catalogKinds.length){
-        const result=await refreshPlaylistContent(pl,progress,{kinds:catalogKinds});
+        const result=await refreshPlaylistContent(pl,progress,{kinds:catalogKinds,forceUnconditional});
         if(!owns())return;
         if(!result.ok||!result.patch)throw new Error(result.message);
         await commitPlaylistUpdate(id,{...result.patch,lastRefreshedAt:new Date().toISOString(),lastRefreshOk:true,lastFreshnessCheckAt:Date.now()});
@@ -702,27 +702,30 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     if(!activeId||loadedProfileId!==profileId)return;
     const id=activeId,pid=profileId,generation=activeSwitchGeneration.current;let cancelled=false;
     const valid=()=>!cancelled&&currentPid()===pid&&activeSwitchGeneration.current===generation;
-    const timer=setTimeout(()=>{void(async()=>{
+    const check=()=>{void(async()=>{
       const pl=playlistsRef.current.find(p=>p.id===id);
       if(!pl||pl.source==='m3u_file'||!valid())return;
       const attemptKey=pid+':'+id;
       if(!freshnessDue(freshnessAttempts.current.get(attemptKey)||pl.lastFreshnessCheckAt||0,pl.freshnessMinutes))return;
       freshnessAttempts.current.set(attemptKey,Date.now());
-      let kinds=(['live','vod','series'] as CatalogKind[]).filter(k=>!pl.cleanedKinds?.includes(k)&&(pl.contentSelection?.[k]??true));
+      let kinds=(['live','vod','series'] as CatalogKind[]).filter(k=>pl.cleanedKinds?.includes(k)||(pl.contentSelection?.[k]??true));
       if(!kinds.length)return;
       setFreshnessStatus({playlistId:id,message:'Güncellik kontrol ediliyor…'});
       try{
+        let missingKinds:CatalogKind[]=[];
         if(KizilkanNativeCore.available){
           const rows=await KizilkanNativeCore.previewPlaylistContentCleanup(id);
           const expected={live:pl.channelsCount||0,vod:pl.vodCount||0,series:pl.seriesCount||0};
-          const missing=rows?kinds.filter(k=>rows[k]!==expected[k]):[];
-          if(missing.length)kinds=missing;
+          missingKinds=rows?kinds.filter(k=>rows[k]!==expected[k]):[];
+          if(missingKinds.length)kinds=missingKinds;
         }
-        await refreshPlaylistKinds(id,kinds,undefined,valid);
+        await refreshPlaylistKinds(id,kinds,undefined,valid,missingKinds.length>0);
         if(valid())setFreshnessStatus({playlistId:id,message:'Yerel katalog güncel.'});
       }catch{if(valid())setFreshnessStatus({playlistId:id,message:'Sunucuya ulaşılamadı; yerel katalog kullanılabilir.'});}
-    })();},0);
-    return()=>{cancelled=true;clearTimeout(timer);};
+    })();};
+    check();
+    const timer=setInterval(check,60_000);
+    return()=>{cancelled=true;clearInterval(timer);};
   },[activeId,loadedProfileId,profileId]);
 
   /**

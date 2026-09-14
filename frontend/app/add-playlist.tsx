@@ -282,7 +282,9 @@ export default function AddPlaylist() {
   const [selectedBulkCandidateKeys, setSelectedBulkCandidateKeys] = useState<string[]>([]);
   const [bulkUseAllValidatedHosts, setBulkUseAllValidatedHosts] = useState(true);
   const [showBulkCandidates, setShowBulkCandidates] = useState(false);
+  const bulkResultsDismissedRef = React.useRef(false);
   const [bulkScanFinished, setBulkScanFinished] = useState(false);
+  const [bulkStreamProgress,setBulkStreamProgress]=useState<{read:number;completed:number;tested:number;found:number;producerDone:boolean}|null>(null);
   const [bulkScanFailures, setBulkScanFailures] = useState<string[]>([]);
   const [fileName, setFileName] = useState<string>("");
   const [fileContent, setFileContent] = useState<string>("");
@@ -1182,24 +1184,25 @@ export default function AddPlaylist() {
           }
         }
 
-        if ((scan.mode === "bulk" || scan.mode === "unified") && (scan.running || scanTerminal || (scan.matches?.length || 0) > 0)) {
+        if ((scan.mode === "bulk" || scan.mode === "unified" || scan.mode === "streaming-file-v172") && (scan.running || scanTerminal || (scan.matches?.length || 0) > 0)) {
           const saved = await storage.secureGet<string>(PENDING_BULK_SCAN_KEY, "");
           const accounts: BulkAccountInput[] = saved ? JSON.parse(saved) : [];
-          if (!cancelled && accounts.length) {
+          if (!cancelled && (accounts.length || scan.mode === "streaming-file-v172")) {
             const resolved: BulkResolvedCandidate[] = [];
             for (const m of (scan.matches || [])) {
-              const ai=Number(m.accountIndex); const a=accounts[ai] || accounts.find(x=>x.row===Number(m.sourceRow)); if(!a) continue;
+              const ai=Number(m.accountIndex); const a=accounts[ai] || accounts.find(x=>x.row===Number(m.sourceRow)) || (scan.mode === "streaming-file-v172" ? {row:Number(m.sourceRow),name:String(m.name||""),username:String(m.username||""),password:String(m.password||""),server:""} : null); if(!a) continue;
               const server=String(m.server||""); if(!server) continue;
               const panelName=String(m.panelName||"") || hostName(server), code=String(m.code||"");
-              resolved.push({ key:bulkCandidateKey(a.row,a.username,code,panelName,server), sourceRow:a.row, name:a.name||panelName, username:a.username, password:a.password, panelName, code, server,login:m.login,sources:m.sources, validatedHosts:[server], direct:!!a.server });
+              resolved.push({ key:bulkCandidateKey(a.row,a.username,code,panelName,server), sourceRow:a.row, name:a.name||panelName, username:a.username, password:a.password, panelName, code, server,login:m.login,sources:m.sources, validatedHosts:[server], direct:!!a.server || panelName === "Doğrudan DNS" });
             }
             // v17.0.3: terminal sonuç kullanıcı onayı olmadan kaybolmaz.
             // COMPLETED/CANCELLED/FAILED snapshot Activity/process restore sonrası tekrar görünür.
             const terminalState = ["COMPLETED", "CANCELLED", "FAILED"].includes(String(scan.state || ""));
-            const shouldReveal = !!scan.running || terminalState || bulkNativeScanRef.current || resolved.length > 0;
+            const shouldReveal = !bulkResultsDismissedRef.current && (!!scan.running || terminalState || bulkNativeScanRef.current || resolved.length > 0);
             mergeBulkCandidates(resolved, shouldReveal);
             if (Array.isArray(scan.accountStatuses)) setBulkAccountProgress(scan.accountStatuses);
             setBulkScanPaused(!!scan.paused); setBulkScanFinished(!scan.running); bulkNativeScanRef.current=!!scan.running;
+            if(scan.mode === "streaming-file-v172")setBulkStreamProgress({read:Number(scan.accountTotal||0),completed:Number(scan.accountTested||0),tested:Number(scan.tested||0),found:Number(scan.found||0),producerDone:!!scan.producerDone});
             if (scan.running && scan.runId) bulkScanRunIdRef.current = String(scan.runId);
             else if (!scan.running && bulkScanRunIdRef.current === scan.runId) bulkScanRunIdRef.current = "";
             if (!bulkAdding) setLoading(!!scan.running);
@@ -1438,9 +1441,10 @@ export default function AddPlaylist() {
       throw e;
     }
     let lastFound=-1, completed=0;
+    const snapshotDeadline=Date.now()+30000;
     while (true) {
       const snap=PanelScan.getSnapshot();
-      if (snap.runId !== runId) { await new Promise(resolve=>setTimeout(resolve,120)); continue; }
+      if (snap.runId !== runId) { if(Date.now()>snapshotDeadline)throw new Error("Native tarama 30 saniyede durum bildirmedi; yeniden deneyin.");await new Promise(resolve=>setTimeout(resolve,120)); continue; }
       if (snap.error) throw new Error(snap.error);
       if (Array.isArray(snap.accountStatuses)) setBulkAccountProgress(snap.accountStatuses);
       const raw=Array.isArray(snap.matches)?snap.matches:[];
@@ -1449,7 +1453,7 @@ export default function AddPlaylist() {
         for (const m of raw) {
           const ai=Number(m.accountIndex); const account=Number.isInteger(ai)?accounts[ai]:accounts.find(a=>a.row===Number(m.sourceRow)); if(!account) continue;
           const panelName=String(m.panelName||"").trim(), code=String(m.code||"").trim(), server=String(m.server||"").trim(); if(!server) continue;
-          resolved.push({ key:bulkCandidateKey(account.row,account.username,code,panelName,server), sourceRow:account.row, name:account.name.trim()||panelName||hostName(server), username:account.username, password:account.password, panelName:panelName||hostName(server), code, server,login:m.login,sources:m.sources, validatedHosts:[server], direct:!!account.server });
+          resolved.push({ key:bulkCandidateKey(account.row,account.username,code,panelName,server), sourceRow:account.row, name:account.name.trim()||panelName||hostName(server), username:account.username, password:account.password, panelName:panelName||hostName(server), code, server,login:m.login,sources:m.sources, validatedHosts:[server], direct:!!account.server || panelName === "Doğrudan DNS" });
         }
         mergeBulkCandidates(resolved); lastFound=raw.length;
       }
@@ -1480,7 +1484,7 @@ export default function AddPlaylist() {
     source: { uri:string; name:string; size:number; samples:BulkAccountInput[]; warnings:string[] },
     cfg: { concurrency:number; timeoutMs:number; accountConcurrency:number; label:string; requestedConcurrency?:number; batchSize?:number },
     signal?: AbortSignal,
-  ): Promise<{ found:number; completed:number; cancelled:boolean }> => {
+  ): Promise<{ found:number; completed:number; cancelled:boolean; unmatched?:number }> => {
     const finishScanTask = markTask("scan:panel-stream-v172", { mode: "streaming-file-v172", file: source.name, bytes: source.size });
     try {
       if (!PanelScan.available || Platform.OS !== "android") throw new Error("__NATIVE_SCAN_UNAVAILABLE__");
@@ -1491,6 +1495,9 @@ export default function AddPlaylist() {
         ? filterDirectory(panelDirectory,sourceScope,panelTarget)
         : await getScanDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
       if (signal?.aborted || bulkScanCancelledRef.current) return { found:0, completed:0, cancelled:true };
+      // A direct server in a file may still be valid without a directory;
+      // the native scanner reports a precise no-candidate error if none match.
+      void recordDiagnostic("scan", "V173_STREAM_DIRECTORY_READY", { panels:directory.length, hosts:directory.reduce((n,p)=>n+p.hosts.length,0), fileBytes:source.size }, { stage:"scan-prepare" });
       const requestedConcurrency = Math.max(1, Math.min(250, cfg.requestedConcurrency ?? (cfg.concurrency * Math.max(1, cfg.accountConcurrency))));
       const batchSize = Math.max(5, Math.min(15, cfg.batchSize ?? 15));
       const sourceFingerprint = stableStreamingFileFingerprint(source.uri, source.name, source.size, src);
@@ -1511,9 +1518,10 @@ export default function AddPlaylist() {
       }
       let lastFound = -1;
       let completed = 0;
+      const snapshotDeadline=Date.now()+30000;
       while (true) {
         const snap = PanelScan.getSnapshot();
-        if (snap.runId !== runId) { await new Promise(resolve => setTimeout(resolve, 120)); continue; }
+        if (snap.runId !== runId) { if(Date.now()>snapshotDeadline)throw new Error("Dosya taraması 30 saniyede durum bildirmedi; yeniden deneyin.");await new Promise(resolve => setTimeout(resolve, 120)); continue; }
         if (snap.error) throw new Error(snap.error);
         const raw = Array.isArray(snap.matches) ? snap.matches : [];
         if (raw.length !== lastFound) {
@@ -1526,24 +1534,25 @@ export default function AddPlaylist() {
               key:bulkCandidateKey(row,username,code,panelName,server), sourceRow:row,
               name:String(m.name||"").trim()||panelName||hostName(server), username, password,
               panelName:panelName||hostName(server), code, server,login:m.login,sources:m.sources,
-              validatedHosts:[server], direct:false,
+              validatedHosts:[server], direct:panelName === "Doğrudan DNS",
             });
           }
-          mergeBulkCandidates(resolved); lastFound = raw.length;
+          mergeBulkCandidates(resolved,!bulkResultsDismissedRef.current); lastFound = raw.length;
         }
         completed = Number(snap.accountTested || 0);
         const tested = Number(snap.tested || 0);
         const accountTotal = Number(snap.accountTotal || 0);
+        setBulkStreamProgress({read:accountTotal,completed,tested,found:Number(snap.found||0),producerDone:!!snap.producerDone});
         const createdAt = Number(snap.createdAt || Date.now());
         setBulkScanPaused(!!snap.paused);
         const foundCount = Number(snap.found ?? raw.length);
-        const producerLabel = snap.producerDone ? "dosya okuma tamam" : `dosya okunuyor · kuyruk ${Number(snap.queueDepth||0)}/${Number(snap.queueCapacity||0)}`;
+        const producerLabel = snap.producerDone ? "dosya okuma tamam" : Number(snap.queueCapacity||0) ? `dosya okunuyor · kuyruk ${Number(snap.queueDepth||0)}/${Number(snap.queueCapacity||0)}` : "dosya hazırlanıyor · henüz hesap okunmadı";
         const concurrencyLabel = `\nParalellik: istenen ${snap.requestedConcurrency || requestedConcurrency} · etkin ${snap.effectiveConcurrency || requestedConcurrency} · parti ${snap.batchSize || batchSize}`;
-        setProgress(`${cfg.label} · NATIVE STREAM v17.2\nHesap tamamlanan ${completed}${accountTotal ? `/${accountTotal}` : ""} · Adres ${tested} · Bulunan ${foundCount}\n${producerLabel}${concurrencyLabel}\nGeçen: ${formatScanDuration(Date.now()-createdAt)}${snap.paused?"\nDURAKLATILDI":snap.state==="CANCELLING"?"\nDURDURULUYOR — aktif ağ istekleri kapatılıyor":""}`);
+        setProgress(`${cfg.label} · NATIVE STREAM v17.3\nHesap tamamlanan ${completed}${snap.producerDone ? `/${accountTotal}` : ` · okunan ${accountTotal}`} · Adres ${tested} · Bulunan ${foundCount}${Number(snap.skippedNoCandidate||0) ? ` · Hedefsiz ${Number(snap.skippedNoCandidate)}` : ""}\n${producerLabel}${concurrencyLabel}\nGeçen: ${formatScanDuration(Date.now()-createdAt)}${snap.paused?"\nDURAKLATILDI":snap.state==="CANCELLING"?"\nDURDURULUYOR — aktif ağ istekleri kapatılıyor":""}`);
         if (!snap.running) {
           bulkNativeScanRef.current = false;
           if (bulkScanRunIdRef.current === runId) bulkScanRunIdRef.current = "";
-          return { found:raw.length, completed, cancelled:!!snap.cancelled };
+          return { found:raw.length, completed, cancelled:!!snap.cancelled, unmatched:Number(snap.skippedNoCandidate||0) };
         }
         await new Promise(resolve => setTimeout(resolve, 350));
       }
@@ -1562,7 +1571,9 @@ export default function AddPlaylist() {
     setSelectedBulkCandidateKeys([]);
     setBulkScanFailures([]);
     setBulkAccountProgress([]);
+    setBulkStreamProgress(null);
     setBulkScanFinished(false);
+    bulkResultsDismissedRef.current = false;
     setShowBulkCandidates(true);
     setBulkScanPaused(false);
     bulkScanPausedRef.current = false;
@@ -1604,10 +1615,11 @@ export default function AddPlaylist() {
         if (!cancelledNative && bulkFileStreamSource && !bulkScanCancelledRef.current) {
           const sr = await runNativeStreamingBulkFile(bulkFileStreamSource, cfg, preparationController.signal);
           found += sr.found; completed += sr.completed; cancelledNative = sr.cancelled;
+          if(sr.unmatched)failures.push(`${sr.unmatched} hesap için dosyadaki panel/kod seçilen DNS hedefleriyle eşleşmedi.`);
         }
-        setBulkScanFailures([]); setBulkScanFinished(true); setShowBulkCandidates(true);
+        setBulkScanFailures(failures); setBulkScanFinished(true); if(!bulkResultsDismissedRef.current)setShowBulkCandidates(true);
         const manualTotal = parsed.accounts.length;
-        setProgress(cancelledNative ? `Tarama durduruldu · ${completed}${manualTotal ? `/${manualTotal}+dosya` : ""} hesap · ${found} sonuç korunuyor.` : `Native tarama tamamlandı · ${completed} hesap işlendi · ${found} kimlik doğrulaması başarılı panel/DNS adayı bulundu.`);
+        setProgress(cancelledNative ? `Tarama durduruldu · ${completed}${manualTotal ? `/${manualTotal}+dosya` : ""} hesap · ${found} sonuç korunuyor.` : `Native tarama tamamlandı · ${completed} hesap işlendi · ${found} kimlik doğrulaması başarılı panel/DNS adayı bulundu${failures.length?` · ${failures.join(' ')}`:''}.`);
         if (!found && !cancelledNative) setError("Kimlik doğrulaması başarılı aday bulunamadı.");
         return;
       }
@@ -1628,7 +1640,7 @@ export default function AddPlaylist() {
       await Promise.all(Array.from({ length: workerCount }, () => runAccountWorker()));
       setBulkScanFailures(failures);
       setBulkScanFinished(true);
-      setShowBulkCandidates(true);
+      if(!bulkResultsDismissedRef.current)setShowBulkCandidates(true);
       if (bulkScanCancelledRef.current) {
         setProgress(`Tarama durduruldu · ${completed}/${parsed.accounts.length} hesap işlendi · ${found} sonuç korunuyor.`);
       } else {
@@ -1637,7 +1649,7 @@ export default function AddPlaylist() {
       if (!found && !bulkScanCancelledRef.current) setError(failures.join("\n") || "Kimlik doğrulaması başarılı aday bulunamadı.");
     } catch (e: any) {
       setBulkScanFinished(true);
-      setShowBulkCandidates(true);
+      if(!bulkResultsDismissedRef.current)setShowBulkCandidates(true);
       if (isScanAbort(e) || bulkScanCancelledRef.current) {
         setProgress(`Tarama durduruldu · ${completed}/${parsed.accounts.length} hesap işlendi · ${found} sonuç korunuyor.`);
         setError(null);
@@ -1662,6 +1674,7 @@ export default function AddPlaylist() {
       if (scan.runId && !scan.running) PanelScan.acknowledgeSnapshot(String(scan.runId));
       await clearScanRecoveryIntent();
       await storage.secureRemove(PENDING_BULK_SCAN_KEY);
+      await storage.secureRemove(PENDING_BULK_STREAM_KEY);
     } catch (e) { console.warn("[v17.0.3 bulk-scan-ack]", e); }
   }, []);
 
@@ -2854,6 +2867,12 @@ export default function AddPlaylist() {
             </View>
           )}
 
+          {method === "bulk" && (loading || bulkScanFinished || bulkCandidates.length > 0) && !showBulkCandidates && (
+            <FocusButton focusable onPress={() => { bulkResultsDismissedRef.current = false; setShowBulkCandidates(true); }} style={[styles.selectionCard,{backgroundColor:colors.surfaceSecondary,borderColor:colors.brandPrimary}]}>
+              <Text style={{color:colors.onSurface,fontWeight:"700"}}>Tarama durumunu ve sonuçlarını aç · {bulkCandidates.length} bulunan</Text>
+            </FocusButton>
+          )}
+
           {loading && progress && (
             <View style={[styles.progressBox, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
               <ActivityIndicator color={colors.brandPrimary} />
@@ -2913,7 +2932,7 @@ export default function AddPlaylist() {
           visible={showBulkCandidates}
           transparent
           animationType="fade"
-          onRequestClose={() => { if (!bulkAdding && bulkScanFinished) { void acknowledgeBulkScanResult(); setShowBulkCandidates(false); } }}
+          onRequestClose={() => { if (!bulkAdding) { bulkResultsDismissedRef.current = true; if (bulkScanFinished) void acknowledgeBulkScanResult(); setShowBulkCandidates(false); } }}
         >
           <View style={styles.matchModalBackdrop}>
             <View style={[styles.matchModalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -2929,7 +2948,7 @@ export default function AddPlaylist() {
                     Bulunan {bulkCandidates.length}
                   </Text>
                 </View>
-                <FocusButton focusable disabled={bulkAdding || !bulkScanFinished} onPress={() => { if (bulkScanFinished) { void acknowledgeBulkScanResult(); setShowBulkCandidates(false); } }} style={[styles.matchCloseBtn, { opacity: bulkScanFinished ? 1 : 0.35 }]}>
+                <FocusButton focusable disabled={bulkAdding} onPress={() => { bulkResultsDismissedRef.current = true; if (bulkScanFinished) void acknowledgeBulkScanResult(); setShowBulkCandidates(false); }} style={styles.matchCloseBtn}>
                   <Ionicons name="close" size={24} color={colors.onSurface} />
                 </FocusButton>
               </View>
@@ -2940,6 +2959,11 @@ export default function AddPlaylist() {
                   <Text style={{ color: colors.onSurfaceSecondary, flex: 1, fontSize: FONT.size.sm, lineHeight: 19 }}>{progress}</Text>
                 </View>
               )}
+              {bulkStreamProgress && <View accessibilityLiveRegion="polite" style={{marginBottom:SPACING.md,gap:6}}>
+                <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{bulkStreamProgress.producerDone ? `${bulkStreamProgress.completed}/${bulkStreamProgress.read} hesap tamamlandı` : `${bulkStreamProgress.read} hesap okundu · ${bulkStreamProgress.completed} tamamlandı`}</Text>
+                {bulkStreamProgress.producerDone&&bulkStreamProgress.read>0&&<View style={{height:8,borderRadius:5,backgroundColor:colors.surfaceSecondary,overflow:"hidden"}}><View style={{width:`${Math.min(100,Math.round(100*bulkStreamProgress.completed/bulkStreamProgress.read))}%`,height:8,backgroundColor:colors.brandPrimary}}/></View>}
+                <Text style={{color:colors.onSurfaceSecondary}}>Denenen adres: {bulkStreamProgress.tested} · Bulunan: {bulkStreamProgress.found}{bulkStreamProgress.producerDone?"":" · Dosya okunurken kesin yüzde gösterilmez"}</Text>
+              </View>}
 
               {/* v17.0.11: critical bulk controls stay outside/above the virtualized data body so account volume cannot clip them. */}
               {bulkAdding && Platform.OS === "android" && KizilkanNativeCore.available && (

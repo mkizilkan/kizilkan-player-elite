@@ -30,6 +30,7 @@ export type KizilkanMpvProps = ViewProps & {
   onPlayingChange?: (event: any) => void;
   onBufferingChange?: (event: any) => void;
   onProgress?: (event: any) => void;
+  onEnd?: (event: any) => void;
   onVideoReady?: (event: any) => void;
   onTracks?: (event: any) => void;
   onError?: (event: any) => void;

@@ -65,6 +65,7 @@ import Animated, { useSharedValue } from "react-native-reanimated";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
+import { useProfiles } from "@/src/store/ProfileContext";
 import { useLibrary } from "@/src/store/LibraryContext";
 import { createFlightRecorderChildTrace, getCurrentFlightRecorderTrace, markTask, recordDiagnostic, recordBlackBox, recordFlightRecorderStage } from "@/src/utils/diagnostics";
 import { storage } from "@/src/utils/storage";
@@ -113,6 +114,7 @@ const BUFFER_KEY = PLAYER_BUFFER_KEY;
 const BUFFER_V2_MIGRATION_KEY = PLAYER_BUFFER_V2_MIGRATION_KEY;
 const BUFFER_V15_MIGRATION_KEY = PLAYER_BUFFER_V15_MIGRATION_KEY;
 const ENGINE_KEY = "kizilkan.player.engine";   // "auto" | "vlc" | "exo" | "mpv"
+const AUTO_NEXT_KEY = "kizilkan.player.autoNext.";
 
 /**
  * MOTOR HAFIZASI (v7.3.0)
@@ -232,6 +234,16 @@ export default function PlayerHost() {
     }
   }, [visible, requestRestore, requestRouteRestore, source?.nav?.focusKey, source?.nav?.origin]);
   const { activePlaylist, toggleFavorite, isFavorite, ensureHeavyLoaded, addToRecent } = usePlaylists();
+  const { activeProfile } = useProfiles();
+  const [autoPlayNext, setAutoPlayNext] = useState(false);
+  const autoNextRef = useRef(false);
+  const endHandledSessionRef = useRef<number | null>(null);
+  const naturalEndRef = useRef<(session:number,engine:string,position?:number,duration?:number)=>void>(()=>{});
+  useEffect(() => {
+    let mounted=true;setAutoPlayNext(false);autoNextRef.current=false;
+    void storage.getItem<boolean>(AUTO_NEXT_KEY+activeProfile.id,false).then(value=>{if(mounted){setAutoPlayNext(!!value);autoNextRef.current=!!value;}});
+    return()=>{mounted=false;};
+  },[activeProfile.id]);
   const [nativeLiveChannel, setNativeLiveChannel] = useState<any | null>(null);
 
   /**
@@ -867,6 +879,7 @@ export default function PlayerHost() {
     // üretir; böylece durmuş VLC/MPV ve pause edilmiş Media3 kesin yeniden başlar.
     if (!visible || !channel?.id || !playbackRequest?.url) return;
     const sid = sessionGateRef.current.begin();
+    endHandledSessionRef.current=null;
     const ownerToken = `${String(activePlaylist?.id || '')}|${String(channel.id)}|${sid}|${playbackUrlIndex}|${v2ProfileKey}`;
     playbackOwnerRef.current = ownerToken;
     setActiveSessionId(sid);
@@ -1214,6 +1227,9 @@ export default function PlayerHost() {
         } catch {}
       }
     });
+    const endSub = player.addListener("playToEnd", () => {
+      if (stillMine()) naturalEndRef.current(sid,"media3",Number((player as any).currentTime||0),Number((player as any).duration||0));
+    });
 
     const loadSub = player.addListener("sourceLoad", (e: any) => {
       if (!stillMine()) return;
@@ -1276,7 +1292,7 @@ export default function PlayerHost() {
       }
     });
 
-    return () => { statusSub.remove(); loadSub.remove(); playingSub.remove(); timeSub.remove(); };
+    return () => { statusSub.remove(); endSub.remove(); loadSub.remove(); playingSub.remove(); timeSub.remove(); };
   }, [
     player, activeSessionId, useVLC, v2Profile, v2ProfileKey, channel?.id, playbackRequest,
     playbackUrlIndex, playbackCandidates,
@@ -1464,6 +1480,7 @@ export default function PlayerHost() {
    * ses devam ediyor.
    */
   const haltPlaybackForExit = () => {
+    endHandledSessionRef.current = activeSessionId;
     try {
       // Cast bağlıyken Player'daki "geri/çıkış" local stop ile aynı semantiğe
       // sahip olmalı: remote media durur fakat Cast session zorla kapatılmaz.
@@ -1646,6 +1663,7 @@ export default function PlayerHost() {
   }, [sheet, sessionKind, activePlaylist?.id, activePlaylist?.epgUrl, channel?.id, playbackNeighbors?.previous?.id, playbackNeighbors?.next?.id]);
 
   const resetTracksForNavigation = () => {
+    endHandledSessionRef.current = activeSessionId;
     if (v2Profile.engine === "vlc") { try { vlcRef.current?.stop?.(); } catch {} }
     else if (v2Profile.engine === "mpv") { try { void mpvRef.current?.stop?.(); } catch {} }
     setAudioTracks([]); setSubtitleTracks([]); setVlcVideoTrackId(undefined);
@@ -1699,6 +1717,20 @@ export default function PlayerHost() {
       switchContent({ id: syntheticId, ext: "true", kind: "series", nav: source?.nav });
       return;
     }
+  };
+
+  naturalEndRef.current = (sid, playbackEngine, position=0, duration=0) => {
+    if (!autoNextRef.current || !visible || (sessionKind !== "vod" && sessionKind !== "series")) return;
+    if (sid <= 0 || !sessionGateRef.current.isActive(sid) || sid !== activeSessionId || endHandledSessionRef.current === sid) return;
+    if (!playbackNeighbors?.next || String(playbackNeighbors.next.id||"") === String(channel?.id||"")) return;
+    if (successfulSessionRef.current !== sid || !Number.isFinite(duration) || duration <= 0) return;
+    if (playbackEngine !== "media3" && (!Number.isFinite(position) || position < Math.max(1,duration-3))) return;
+    endHandledSessionRef.current=sid;
+    void recordDiagnostic("player","V173_AUTO_NEXT",{kind:sessionKind,engine:playbackEngine,position,duration,profileId:activeProfile.id},{sessionId:playerDiagnosticSessionRef.current});
+    void navigateRelative(1).catch((reason:unknown)=>{
+      flashMessage("Sonraki içerik açılamadı");
+      void recordDiagnostic("player","V173_AUTO_NEXT_FAILED",{error:String(reason)},{sessionId:playerDiagnosticSessionRef.current});
+    });
   };
 
   const zap = (delta: 1 | -1) => { void navigateRelative(delta); };
@@ -3189,6 +3221,7 @@ export default function PlayerHost() {
                 isPlayingRef.current = false;
                 setIsPlaying(prev => prev ? false : prev);
               }}
+              onStopped={() => naturalEndRef.current(activeSessionId,"vlc",Number(vlcClockRef.current.positionSeconds||0),Number(playbackDurationRef.current||0))}
               onBuffering={(progress: number) => {
                 if (
                   !ownsCurrentRender() ||
@@ -3493,6 +3526,10 @@ export default function PlayerHost() {
                     recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
                   }
                 }
+              }}
+              onEnd={(e:any) => {
+                const ev=e?.nativeEvent||e||{};
+                naturalEndRef.current(activeSessionId,"mpv",Number(ev.position||0),Number(ev.duration||0));
               }}
               onVideoReady={(e: any) => {
                 if (
@@ -4006,6 +4043,7 @@ export default function PlayerHost() {
                 <GridBtn testID="player-subtitle-btn" icon="text" label={subtitleTracks.length > 0 ? `Altyazı (${subtitleTracks.length})` : "Altyazı"} onPress={() => setSheet("subtitle")} />
                 <GridBtn testID="player-fit-btn" icon="resize" label={fit === "contain" ? "Sığdır" : fit === "cover" ? "Doldur" : "Uzat"} onPress={cycleFit} />
                 <GridBtn testID="player-speed-btn" icon="speedometer" label={`${speed.toFixed(2)}x`} onPress={() => setSheet("speed")} highlighted={speed !== 1.0} />
+                {(sessionKind === "vod" || sessionKind === "series") && <GridBtn testID="player-auto-next-btn" icon="play-skip-forward" label={`Sonrakini otomatik: ${autoPlayNext?'Açık':'Kapalı'}`} highlighted={autoPlayNext} onPress={() => {const next=!autoPlayNext;setAutoPlayNext(next);autoNextRef.current=next;void storage.setItem(AUTO_NEXT_KEY+activeProfile.id,next);}} />}
 
                 <GridBtn testID="player-audiodelay-btn" icon="git-compare" label="Senkron" onPress={() => setSheet("audiodelay")} />
                 {(isSynthetic || isSeekable) && (

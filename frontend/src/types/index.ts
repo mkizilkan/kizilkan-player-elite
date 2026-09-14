@@ -160,6 +160,8 @@ export interface Playlist {
   cleanedKinds?:Array<"live"|"vod"|"series"|"epg">;
   freshnessMinutes?:number;
   lastFreshnessCheckAt?:number;
+  /** Conditional GET validators belong to this exact M3U URL. */
+  m3uValidators?:{url:string;etag?:string;lastModified?:string};
   id: string;
   name: string;
   source: PlaylistSource;

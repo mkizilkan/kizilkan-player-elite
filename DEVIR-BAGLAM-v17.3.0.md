@@ -1,18 +1,9 @@
-# v17.3.0 uygulama devri
+# 17.3.1 RC1 uygulama devri
 
-Taban commit: 0cd7ba2d493198cc070255a4d634a36cc7fa33b0
-Taban tree: 57d3308c157a4f7016dd81d2deac2b1d7d90eb5e
-Planlanan dal: v17.3.0-rc1-smart-db-multisource
-Uzak commit/dal/Actions run: oluşturulmadı. create-tree 403 Resource not accessible by integration.
+17.3.0 RC1 uzak dalı: `v17.3.0-rc1-smart-db-multisource`; mevcut beklenen HEAD: `0aea0c4081a034dd072a1c4cfbbb8cfc5916ad41`. Actions #83 başarılı, APK indirilebilir; bu sonuç yalnız RC1 kaynaklarına aittir. 17.3.1 RC1 kodu aynı geliştirme dalında ileriye dönük bir commit olarak gönderilecek. Eski commit değişmişse script hiçbir şey uygulamadan durur.
 
-Kod, API sınırları ve doğrulama kapsamı V17.3.0-DOGRULAMA.md içinde belgelenmiştir. Sonraki iş APK/Kotlin derlemesi ve gerçek Android/TV smoke testidir. Telefonda build yapılmayacak. main üzerine doğrudan yazılmayacak.
+14 Eylül 2026 tanı dosyasında aynı çalıştırmanın 0 adres denemesi ve 0 bulunmuş hesabı raporlandı; taranan geçerli hesap sayısı kaydedilmemişti. Cihaz ekranı taramanın durdurulurken sonuç penceresini kilitlediğini gösterdi. Kaynakta uyarlanan pasif worker'ların bitişte uyanamaması, hedefsiz satırların sessizce atlanması, streaming kipinin UI recovery'de ele alınmaması ve modaldan geri çıkışın kapatılması giderildi. Dosyanın gerçekten kaç geçerli combo içerdiği eldeki tanıdan bilinmiyor. Yeni tanı hesabı/uyuşmayan hedef sayısını ayrı saklar; kullanıcı adı ve şifrelerini günlüğe yazmaz.
 
-Yerel denetle çıktısı verification/denetle.log içinde: 84 kontrol geçti. TypeScript --noEmit exit 0. Son native cleanup preview kilidi ayrıca check-v1720-consolidated-core.js ile tekrar kontrol edildi. Son web sayaç fallback düzeltmesi sonrası TypeScript yeniden geçti. Android runtime/Room rollback enjeksiyonu henüz test edilmedi; statik gate runtime testi değildir.
+Film ve dizi için profil bazlı otomatik sonraki içerik ayarı eklendi. Katalog ekranında çoklu panel seçimi, gerçek kod/kaynak görünümü ve doğrudan DNS vardır. M3U kaynağı ETag/Last-Modified sunarsa koşullu GET yapılır; Xtream sağlayıcılarında sunucu delta API'si olduğu varsayılmaz. Güncellik denetimi seçili liste açık kaldıkça aralıklarla yapılır. Backup meta bilgileri ve otomatik sonraki ayarı korunur.
 
-Kalan doğrulamalar:
-- Uzak CI ile Kotlin derleme, imzalı APK ve mevcut MPV APK paketleme kapısı.
-- Gerçek Android/TV üzerinde seçili/tüm liste temizleme, UI sayaçları ve EPG yenilemesi.
-- Profil/liste değişimi sırasında devam eden yenileme, çevrimdışı katalog koruma, scan stop/pause/resume ve process recovery.
-- Native + JS normalizasyonunun sıra dışı IPv6/IDN biçimlerinde eşdeğerliği; temel alan adları ve varsayılan portlar test edildi.
-
-Koruma: PIN, profile-select, MPV/player kaynakları değişmedi. Tarihî sürüm belgeleri güncellenmedi.
+Kaynak Android build ve fiziksel test geçmeden sürüm tamamlanmış kabul edilmez. GitHub yazma erişimi bu çalışma ortamında bulunmadığı için kullanıcı TERMUX-GONDER-1731.sh ile gönderir. Kullanıcı GitHub tokenını sohbete yapıştırmamalıdır. PIN/profil seçimi modülleri değiştirilmedi; MPV ve gerçek PlayerHost dosyaları otomatik sonraki içerik için kontrollü olarak değişti.
