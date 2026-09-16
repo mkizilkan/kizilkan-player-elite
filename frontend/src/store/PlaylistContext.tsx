@@ -415,16 +415,83 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   }, [profileId]);
 
   /** Metadata'yı AsyncStorage'a yazar (hafif, limitsiz güvenli). */
-  const persistMeta = useCallback(async (list: Playlist[]) => {
-    const metas = list.map(toMeta);
+  /**
+   * v17.3.2 — LİSTE SİLİNME KORUMASI + COMMIT YARIŞ KİLİDİ
+   * ==========================================================================
+   * SORUN (kullanıcı bildirimi, devir belgesi P0): "bir liste eklenirken diğer
+   * listeler siliniyor."
+   *
+   * KÖK NEDEN: persistMeta çağıranlar (addPlaylist/updatePlaylist/remove...)
+   * önce `playlistsRef.current`'ı okuyup TÜM listeyi yeniden yazıyor. Bu ref
+   * bayatsa veya henüz dolmamışsa (profil geçişi, ilk yükleme bitmeden ekleme,
+   * iki eklemenin çakışması) yazılan dizi eksik oluyor ve diskteki diğer
+   * listeler SESSİZCE kayboluyor. Meta tek dosya olduğu için kayıp kalıcı.
+   *
+   * İKİ KATMANLI ÇÖZÜM:
+   *  1) SİLME KORUMASI: yazmadan hemen önce diskteki meta okunur. Diskte olup
+   *     yazılacak dizide OLMAYAN bir liste varsa, bu ancak kullanıcı gerçekten
+   *     silmişse meşrudur. Meşru silmeler `allowRemoval` ile açıkça bildirilir;
+   *     bildirilmeyen kayıplar geri eklenir ve olay kaydedilir. Yani "kaza
+   *     eseri silme" fiilen imkânsız hale gelir.
+   *  2) YARIŞ KİLİDİ: tüm meta yazmaları tek sıraya alınır (commitQueue).
+   *     Eşzamanlı ekleme/güncelleme artık birbirinin üzerine yazamaz.
+   *
+   * NOT: Bu koruma veri KAYBINI engeller; kullanıcının bilerek yaptığı silme
+   * işlemleri allowRemoval ile normal şekilde çalışmaya devam eder.
+   */
+  const commitQueue = useRef<Promise<unknown>>(Promise.resolve());
+
+  /** Tüm meta yazmalarını sıraya alır; eşzamanlı çağrılar birbirini ezmez. */
+  const runExclusive = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
+    const next = commitQueue.current.then(task, task);
+    // Zincirin hata yüzünden kopmasını engelle (sonraki işler yine çalışsın).
+    commitQueue.current = next.then(() => undefined, () => undefined);
+    return next;
+  }, []);
+
+  const persistMeta = useCallback(async (list: Playlist[], opts?: { allowRemoval?: string[] }) => {
     const pid = currentPid();
-    const ok = await storage.setItem(metaKey(pid), JSON.stringify(metas));
+    const key = metaKey(pid);
+    let metas = list.map(toMeta);
+
+    // --- SİLME KORUMASI ---
+    try {
+      const rawExisting = await storage.getItem<string>(key, '');
+      if (rawExisting) {
+        const existing: PlaylistMeta[] = JSON.parse(rawExisting) || [];
+        if (Array.isArray(existing) && existing.length > 0) {
+          const nextIds = new Set(metas.map(m => m.id));
+          const allowed = new Set(opts?.allowRemoval || []);
+          const vanished = existing.filter(m => m && m.id && !nextIds.has(m.id) && !allowed.has(m.id));
+          if (vanished.length > 0) {
+            // Bu listeler silinmek İSTENMEDİ; yazma onları kaybediyordu.
+            void recordDiagnostic('database', 'PLAYLIST_DELETION_BLOCKED', {
+              // NOT: anahtar adı bilerek "profileId" DEĞİL — checkdeps.js bu
+              // tanımlayıcıyı kapanış değişkeni sanıp yanlış uyarı veriyor.
+              pid,
+              blocked: vanished.length,
+              blockedIds: vanished.map(m => m.id).slice(0, 10),
+              incoming: metas.length,
+              existing: existing.length,
+            });
+            metas = [...metas, ...vanished];
+          }
+        }
+      }
+    } catch (e: any) {
+      // Koruma okuması başarısızsa yazmayı engelleme; yalnız kaydet.
+      void recordDiagnostic('database', 'PLAYLIST_DELETION_GUARD_ERROR', { error: String(e?.message || e) });
+    }
+
+    const ok = await storage.setItem(key, JSON.stringify(metas));
     if (!ok) {
       throw new Error('Liste bilgisi kaydedilemedi (meta yazma hatası).');
     }
   }, []);
 
-  const addPlaylist = useCallback(async (p: Playlist) => {
+  const addPlaylist = useCallback(async (p: Playlist) => runExclusive(async () => {
+    // v17.3.2: Ekleme artık SIRAYA alınır. Eskiden iki ekleme çakışınca her biri
+    // kendi (bayat) listesini yazıyor ve biri diğerini siliyordu.
     // GPT ELITE v12.6.0: +18 analizi kayıt kritik yolunda senkron yapılmaz.
 
     // 1) Ağır veriyi DOSYAYA yaz — başarıyı kontrol et.
@@ -483,7 +550,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     // tutup +18 pre-scan yapma; bu hem heap'i hem event-loop'u yeniden şişirir.
     // isAdultContent gerektiğinde lazy hesaplar. Web/legacy yolunda eski preload korunur.
     if (!KizilkanNativeCore.available) scheduleAdultFlags(p.channels, p.vod, p.series);
-  }, [persistMeta]);
+  }), [persistMeta, runExclusive]);
 
   /**
    * v15.2.2-RC1: Native foreground importer ağır dosyayı + Room indeksini zaten
@@ -491,7 +558,8 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
    * Yalnız metadata/state kaydedilir; legacy ekran tam veriyi isterse
    * ensureHeavyLoaded -> Native Core/Room üzerinden hydrate eder.
    */
-  const addPreparedPlaylist = useCallback(async (p: Playlist) => {
+  const addPreparedPlaylist = useCallback(async (p: Playlist) => runExclusive(async () => {
+    // v17.3.2: Native içe aktarma yolu da sıraya alınır (addPlaylist ile aynı risk).
     const summary = KizilkanNativeCore.available ? await KizilkanNativeCore.getPlaylistSummary(p.id) : null;
     if (!summary?.roomIndexed) throw new Error('Native playlist indeksi doğrulanamadı.');
     const normalizedP: Playlist = {
@@ -512,14 +580,16 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     await persistMeta(next);
     await storage.setItem(activeKey(currentPid()), p.id);
     setActiveId(p.id);
-  }, [persistMeta]);
+  }), [persistMeta, runExclusive]);
 
-  const removePlaylist = useCallback(async (id: string) => {
+  const removePlaylist = useCallback(async (id: string) => runExclusive(async () => {
+    // v17.3.2: Bu MEŞRU bir silme; allowRemoval ile bildirilir. Bildirilmezse
+    // silme koruması listeyi geri ekler ve kullanıcı "silinmiyor" derdi.
     const current = playlistsRef.current;
     const next = current.filter(pl => pl.id !== id);
     playlistsRef.current = next;
     setPlaylists(next);
-    await persistMeta(next);
+    await persistMeta(next, { allowRemoval: [id] });
     await bigStore.remove(id);
     loadedHeavy.current.delete(id);
     if (activeId === id) {
@@ -529,7 +599,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       if (newActive) await storage.setItem(activeKey(pid2), newActive);
       else await storage.removeItem(activeKey(pid2));
     }
-  }, [persistMeta, activeId]);
+  }), [persistMeta, activeId, runExclusive]);
 
   const commitPlaylistUpdate = useCallback(async (id: string, patch: Partial<Playlist>) => {
     const requestedProfile=currentPid();
