@@ -444,13 +444,80 @@ export default function AddPlaylist() {
     return filterDirectory(all,sourceScope,panelTarget);
   };
 
-  const filteredPanels = React.useMemo(() => {
+  /**
+   * v17.4.0 — 100 PANEL SINIRI KALDIRILDI (P1)
+   * ==========================================================================
+   * HATA: 792 panelin yalnız ilk 100'ü gösteriliyordu. Kullanıcı adını
+   * bilmediği paneli arayamaz, arayamadığı için seçemezdi.
+   *
+   * ÇÖZÜM: Sınır yok; arama panel adı, kod VE DNS adresleri üzerinde çalışır.
+   * Çizim maliyeti "daha fazla göster" ile kademelendirilir (bir anda 792
+   * satır çizmek arayüzü dondurur).
+   */
+  const matchedPanels = React.useMemo(() => {
     const q = panelSearch.trim().toLocaleLowerCase("tr");
-    if (!q) return panelDirectory.slice(0, 100);
-    return panelDirectory
-      .filter(p => p.panelName.toLocaleLowerCase("tr").includes(q) || p.code.toLocaleLowerCase("tr").includes(q))
-      .slice(0, 100);
+    if (!q) return panelDirectory;
+    const terms = q.split(/\s+/).filter(Boolean);
+    return panelDirectory.filter(p => {
+      const hay = [
+        p.panelName,
+        p.code,
+        ...(p.codes || []),
+        ...(p.hosts || []),
+      ].join(" ").toLocaleLowerCase("tr");
+      return terms.every(t => hay.includes(t));
+    });
   }, [panelDirectory, panelSearch]);
+
+  /** v17.4.0: kademeli çizim — "daha fazla göster" ile artar. */
+  const [panelVisibleCount, setPanelVisibleCount] = React.useState(100);
+  React.useEffect(() => { setPanelVisibleCount(100); }, [panelSearch, sourceScope]);
+
+  const filteredPanels = React.useMemo(
+    () => matchedPanels.slice(0, panelVisibleCount),
+    [matchedPanels, panelVisibleCount],
+  );
+
+  /**
+   * v17.4.0 — KAPSAM FİLTRESİ ARTIK HER YOLDA UYGULANIR (P0)
+   * ==========================================================================
+   * HATA (kullanıcı bildirimi): "bir panel seçtiğimde sadece istediğim
+   * sunucular için arama yapmıyor, tüm sunucuları deniyor."
+   *
+   * KÖK NEDEN: Tarama yollarında rehber şöyle alınıyordu:
+   *     panelDirectory.length && panelDirectorySource === src
+   *       ? filterDirectory(panelDirectory, sourceScope, panelTarget)   <-- filtreli
+   *       : await getScanDirectory(src, ...)                            <-- FİLTRESİZ
+   * Yani rehber önbellekte yoksa veya kaynak değişmişse kullanıcının panel
+   * seçimi SESSİZCE yok sayılıp 792 panelin tamamı taranıyordu.
+   *
+   * İKİNCİ SONUÇ: Aday listesi devasa oluyor ve native köprüde
+   *     TransactionTooLargeException: data parcel size 11.525.580 bytes
+   * hatasıyla tarama HİÇ başlamıyordu (Android Binder sınırı ~1 MB).
+   * Tek kullanıcı/şifre ile bile bu boyuta çıkması, yükün hesaplardan değil
+   * REHBERDEN geldiğini kanıtlıyor.
+   *
+   * ÇÖZÜM: Rehber nereden gelirse gelsin filtre tek noktadan uygulanır.
+   * Tarama yollarında artık doğrudan getScanDirectory ÇAĞRILMAZ.
+   */
+  const resolveScanDirectory = React.useCallback(async (
+    src: string,
+    opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ) => {
+    const base = (panelDirectory.length && panelDirectorySource === src)
+      ? panelDirectory
+      : await getScanDirectory(src, opts);
+    const filtered = filterDirectory(base, sourceScope, panelTarget);
+    void recordDiagnostic('scan', 'SCAN_DIRECTORY_SCOPE_APPLIED', {
+      source: src,
+      fromCache: panelDirectory.length > 0 && panelDirectorySource === src,
+      total: base.length,
+      afterScope: filtered.length,
+      scope: sourceScope,
+      hasTarget: !!(panelTarget.codes?.length || panelTarget.names?.length || panelTarget.keys?.length || panelTarget.hosts?.length),
+    });
+    return filtered;
+  }, [panelDirectory, panelDirectorySource, sourceScope, panelTarget]);
 
   const loadPanelDirectory = async (forceRefresh = false) => {
     if (directoryLoading) return;
@@ -750,7 +817,19 @@ export default function AddPlaylist() {
       nativePreparationAbortRef.current = null;
       const panelName = panel.panelName;
       const hosts = panel.hosts;
-      const candidates = hosts.map(server => ({panelName,code:panel.code,server,sources:panel.sources}));
+      /**
+       * v17.4.1 — PARCEL ŞİŞKİNLİĞİ GİDERİLDİ (P0)
+       * ------------------------------------------------------------------
+       * `sources` panelin TÜM kaynak bağlarını içerir ve burada HER DNS için
+       * ayrı ayrı kopyalanıyordu: 10 DNS'li panelde aynı veri 10 kez. 794
+       * panel × ortalama 6 DNS ile yük 5,5 MB'a çıkıyor ve Android'in Binder
+       * sınırı (~1 MB) aşıldığı için tarama HİÇ başlamıyordu.
+       *
+       * Gönderilmesine gerek yok: sonuç işlenirken (bkz. codeSource/sources
+       * çözümü) değer zaten directoryRef üzerinden panelName+server ile geri
+       * bulunuyor. Bu yüzden köprüden yalnız kimlik alanları geçer.
+       */
+      const candidates = hosts.map(server => ({panelName,code:panel.code,server}));
       const matches = await runNativeBackgroundScan(
         candidates,
         `${panelName} · DNS Hesapları`,
@@ -797,16 +876,16 @@ export default function AddPlaylist() {
     );
 
     try {
-      const directory = panelDirectory.length && panelDirectorySource === src
-        ? filterDirectory(panelDirectory,sourceScope,panelTarget)
-        : await getScanDirectory(src, { signal: prep.signal, timeoutMs: cfg.timeoutMs });
+      // v17.4.0: kapsam filtresi her yolda uygulanır (bkz. resolveScanDirectory)
+      const directory = await resolveScanDirectory(src, { signal: prep.signal, timeoutMs: cfg.timeoutMs });
       if (prep.signal.aborted) { const e = new Error("Tarama hazırlığı kullanıcı tarafından durduruldu."); e.name = "AbortError"; throw e; }
       nativePreparationAbortRef.current = null;
       const seen = new Set<string>();
     const candidates: Array<{panelName:string;code:string;server:string;sources?:ServerCodeBinding["sources"]}> = [];
     for (const item of directory) for (const server of item.hosts) {
       const key = `${item.code}\u0000${item.panelName}\u0000${String(server).replace(/\/+$/,"").toLowerCase()}`;
-      if (!seen.has(key)) { seen.add(key); candidates.push({panelName:item.panelName,code:item.code,server,sources:item.sources}); }
+      // v17.4.1: sources köprüden geçmez (bkz. yukarı); sonuçta directoryRef'ten çözülür.
+      if (!seen.has(key)) { seen.add(key); candidates.push({panelName:item.panelName,code:item.code,server}); }
     }
 
       const matches = await runNativeBackgroundScan(
@@ -833,7 +912,7 @@ export default function AddPlaylist() {
           const pct = p.total > 0 ? Math.round((p.tested / p.total) * 100) : 0;
           setProgress(`${cfg.label} · %${pct}\nPanel: ${p.panelTested}/${p.panelTotal} · Adres: ${p.tested}/${p.total} · Bulunan: ${p.found}${p.panelName ? `\nŞu an: ${p.panelName}` : ""}`);
         },
-        cfg.concurrency,cfg.timeoutMs,await getScanDirectory(src),
+        cfg.concurrency,cfg.timeoutMs,await resolveScanDirectory(src),   // v17.4.0: filtreli
       );
       presentMatches(matches, "Panel / DNS Hesapları Bulundu",
         "Aynı bilgiler birden fazla panel veya DNS adresinde geçerli. Satın aldığınız hesapları seçin.");
@@ -1351,9 +1430,8 @@ export default function AddPlaylist() {
     const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
     setProgress(`${cfg.label} · Birleşik native panel rehberi hazırlanıyor…`);
     if (signal?.aborted || bulkScanCancelledRef.current) return { found: 0, completed: 0, cancelled: true };
-    const directory = panelDirectory.length && panelDirectorySource === src
-      ? filterDirectory(panelDirectory,sourceScope,panelTarget)
-      : await getScanDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
+    // v17.4.0: kapsam filtresi her yolda uygulanır
+    const directory = await resolveScanDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
     if (signal?.aborted || bulkScanCancelledRef.current) return { found: 0, completed: 0, cancelled: true };
     const normalizeName = (v:string) => v.trim().toLocaleLowerCase("tr");
     // v17.1.0: Aynı dev panel listesini 50K hesabın her birinde yeniden materialize etme.
@@ -1491,9 +1569,8 @@ export default function AddPlaylist() {
       const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
       setProgress(`${cfg.label} · Dosya native streaming tarama için hazırlanıyor…`);
       if (signal?.aborted || bulkScanCancelledRef.current) return { found:0, completed:0, cancelled:true };
-      const directory = panelDirectory.length && panelDirectorySource === src
-        ? filterDirectory(panelDirectory,sourceScope,panelTarget)
-        : await getScanDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
+      // v17.4.0: kapsam filtresi her yolda uygulanır
+      const directory = await resolveScanDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
       if (signal?.aborted || bulkScanCancelledRef.current) return { found:0, completed:0, cancelled:true };
       // A direct server in a file may still be valid without a directory;
       // the native scanner reports a precise no-candidate error if none match.
@@ -2425,8 +2502,16 @@ export default function AddPlaylist() {
 
                   {panelDirectory.length > 0 && (
                     <View style={[styles.directoryBox, { borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}>
+                      {/* v17.4.0: toplam / gösterilen / seçilen sayıları ayrı ayrı görünür. */}
+                      <View style={{ paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+                        <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs }}>
+                          {`Toplam ${panelDirectory.length} panel · eşleşen ${matchedPanels.length} · gösterilen ${filteredPanels.length}`}
+                        </Text>
+                      </View>
                       {filteredPanels.length === 0 ? (
-                        <Text style={{ color: colors.onSurfaceSecondary, padding: SPACING.md }}>Eşleşen panel bulunamadı.</Text>
+                        <Text style={{ color: colors.onSurfaceSecondary, padding: SPACING.md }}>
+                          {panelSearch.trim() ? "Aramanıza uyan panel yok. Farklı bir ad, kod veya DNS deneyin." : "Eşleşen panel bulunamadı."}
+                        </Text>
                       ) : filteredPanels.map(item => (
                         <FocusButton
                           key={`${item.code}-${item.panelName}`}
@@ -2446,9 +2531,26 @@ export default function AddPlaylist() {
                       ))}
                     </View>
                   )}
-                  {panelDirectory.length > 100 && !panelSearch.trim() && (
+                  {/**
+                    * v17.4.0: Eski metin "İlk 100 panel gösteriliyor" diyordu ve geri
+                    * kalanına ulaşmanın tek yolu adını BİLMEKti. Artık kalanlar
+                    * kademeli olarak açılır; kumandayla da erişilebilir.
+                    */}
+                  {matchedPanels.length > filteredPanels.length && (
+                    <FocusButton
+                      testID="panel-directory-show-more"
+                      focusable
+                      onPress={() => setPanelVisibleCount(c => c + 200)}
+                      style={{ paddingVertical: SPACING.md, alignItems: "center", borderRadius: RADIUS.md, borderWidth: 1, borderColor: colors.border, marginTop: SPACING.sm }}
+                    >
+                      <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>
+                        {`Daha fazla göster (${matchedPanels.length - filteredPanels.length} panel daha)`}
+                      </Text>
+                    </FocusButton>
+                  )}
+                  {matchedPanels.length > 0 && matchedPanels.length === filteredPanels.length && panelDirectory.length > 100 && (
                     <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: SPACING.xs }}>
-                      İlk 100 panel gösteriliyor. Panel adını yazarak tüm rehberde arayabilirsiniz.
+                      Tüm paneller gösteriliyor. Ad, kod veya DNS yazarak daraltabilirsiniz.
                     </Text>
                   )}
                 </>
