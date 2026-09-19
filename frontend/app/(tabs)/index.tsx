@@ -89,7 +89,7 @@ function ClassicLiveTvScreen() {
   const { listRef, onItemFocus, onScrollToIndexFailed } = useFocusScroll<any>();
   const router = useRouter();
   const { colors } = useTheme();
-  const { activePlaylist, playlists, toggleFavorite, isFavorite, addToRecent, updatePlaylist, ensureHeavyLoaded, nativeSummary,freshnessStatus } = usePlaylists();
+  const { activePlaylist, playlists, toggleFavorite, isFavorite, addToRecent, updatePlaylist, ensureHeavyLoaded, nativeSummary,freshnessStatus, lastRefreshSummary, clearRefreshSummary} = usePlaylists();
   const { activeProfile } = useProfiles();
   const { settings: parental, isCategoryLocked, isUnlockedInSession, toggleCategoryLock } = useParental();
   const { isItemHidden, isGroupHidden, hiddenModeUnlocked, toggleHiddenItem, toggleHiddenGroup, toggleWatchlist, inWatchlist } = useLibrary();
@@ -1051,6 +1051,35 @@ function ClassicLiveTvScreen() {
       )}
 
       {/* KANAL ÖNİZLEME PANELİ (v7.6.0) — TV'ye özel */}
+      {/**
+        * v17.4.1 — YENİLEME ÖZETİ (kullanıcı isteği)
+        * "Güncellenince hangi kategoriden ne kadar içerik eklenip silindi
+        * kullanıcıya hem TV box'ta hem telefonda güzelce görünsün."
+        * Aynı bileşen iki platformda da kullanılır; TV'de odaklanabilir kapatma
+        * düğmesiyle kumandadan da kapatılabilir.
+        */}
+      {!!lastRefreshSummary && (
+        <View style={{
+          marginHorizontal: SPACING.md, marginBottom: SPACING.sm, padding: SPACING.md,
+          borderRadius: RADIUS.md, borderWidth: 1,
+          borderColor: lastRefreshSummary.suspicious ? colors.error : colors.brandPrimary,
+          backgroundColor: (lastRefreshSummary.suspicious ? colors.error : colors.brandPrimary) + "14",
+        }}>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: SPACING.xs }}>
+            <Text style={{ color: lastRefreshSummary.suspicious ? colors.error : colors.brandPrimary, fontWeight: FONT.weight.bold, flex: 1 }} numberOfLines={1}>
+              {lastRefreshSummary.suspicious ? "Güncellendi — dikkat" : "Liste güncellendi"}
+              {lastRefreshSummary.playlistName ? ` · ${lastRefreshSummary.playlistName}` : ""}
+            </Text>
+            <FocusButton testID="refresh-summary-close" onPress={clearRefreshSummary} style={{ padding: 6 }}>
+              <Ionicons name="close" size={20} color={colors.onSurfaceSecondary} />
+            </FocusButton>
+          </View>
+          <Text style={{ color: colors.onSurface, fontSize: FONT.size.sm, lineHeight: 20 }}>
+            {lastRefreshSummary.text}
+          </Text>
+        </View>
+      )}
+
       <Modal
         visible={!!previewChannel}
         transparent

@@ -2507,6 +2507,42 @@ export default function PlayerHost() {
     }
   };
 
+  /**
+   * v17.5.0 — SON KANALA DÖN (zap-back)
+   * ==========================================================================
+   * Klasik TV davranışı: kanal değiştirdikten sonra tek tuşla ÖNCEKİ kanala
+   * dönmek. Uzun kanal listelerinde iki kanal arasında gidip gelmenin en hızlı
+   * yolu; TiViMate gibi olgun TV oynatıcılarında standart.
+   *
+   * Uygulama: her kanal değişiminde bir öncekinin kimliği saklanır. Tuşa
+   * basıldığında o kimliğe geçilir ve "şimdiki" ile "önceki" yer değiştirir —
+   * böylece arka arkaya basınca iki kanal arasında gidip gelinir.
+   */
+  const previousChannelIdRef = React.useRef<string | null>(null);
+  const currentChannelIdRef = React.useRef<string | null>(null);
+
+  React.useEffect(() => {
+    const id = String(channel?.id || "");
+    if (!id) return;
+    if (currentChannelIdRef.current && currentChannelIdRef.current !== id) {
+      previousChannelIdRef.current = currentChannelIdRef.current;
+    }
+    currentChannelIdRef.current = id;
+  }, [channel?.id]);
+
+  const zapToLastChannel = React.useCallback(() => {
+    if (sessionKind !== "live") { flashMessage("Son kanal yalnız canlı yayında"); return; }
+    const prev = previousChannelIdRef.current;
+    if (!prev) { flashMessage("Önceki kanal yok"); return; }
+    resetTracksForNavigation();
+    flashMessage("Son kanala dönülüyor…");
+    void addToRecent(prev).catch(() => {});
+    switchChannel(prev, source?.nav);
+    void recordDiagnostic("player", "TV_ZAP_BACK", {
+      toChannelId: prev, fromChannelId: currentChannelIdRef.current || "",
+    }, { sessionId: playerDiagnosticSessionRef.current, stage: "zapBack", outcome: "success" });
+  }, [sessionKind, switchChannel, addToRecent, source?.nav, resetTracksForNavigation, flashMessage]);
+
   const commitNumericZap = React.useCallback(async (digits: string) => {
     if (!isTv || sessionKind !== "live" || !activePlaylist?.id || !digits) return;
     const displayPosition = Number(digits);
@@ -2564,6 +2600,8 @@ export default function PlayerHost() {
     // Fiziksel CH+/- yalnız canlı kanal zapping semantiğidir.
     channelUp: () => { if (sessionKind === "live") zap(1); },
     channelDown: () => { if (sessionKind === "live") zap(-1); },
+    // v17.5.0: Kumandadaki "son kanal" tuşu.
+    lastChannel: () => zapToLastChannel(),
     // MEDIA_NEXT/PREVIOUS içerik bağlamını izler: live kanal, VOD film, series bölüm.
     contentNext: () => zap(1),
     contentPrevious: () => zap(-1),
@@ -4043,6 +4081,8 @@ export default function PlayerHost() {
                 <GridBtn testID="player-subtitle-btn" icon="text" label={subtitleTracks.length > 0 ? `Altyazı (${subtitleTracks.length})` : "Altyazı"} onPress={() => setSheet("subtitle")} />
                 <GridBtn testID="player-fit-btn" icon="resize" label={fit === "contain" ? "Sığdır" : fit === "cover" ? "Doldur" : "Uzat"} onPress={cycleFit} />
                 <GridBtn testID="player-speed-btn" icon="speedometer" label={`${speed.toFixed(2)}x`} onPress={() => setSheet("speed")} highlighted={speed !== 1.0} />
+                {/* v17.5.0: Kumandasında "son kanal" tuşu olmayan cihazlar için panelden erişim. */}
+                {sessionKind === "live" && <GridBtn testID="player-last-channel-btn" icon="swap-horizontal" label="Son kanala dön" onPress={() => { setShowControls(false); zapToLastChannel(); }} />}
                 {(sessionKind === "vod" || sessionKind === "series") && <GridBtn testID="player-auto-next-btn" icon="play-skip-forward" label={`Sonrakini otomatik: ${autoPlayNext?'Açık':'Kapalı'}`} highlighted={autoPlayNext} onPress={() => {const next=!autoPlayNext;setAutoPlayNext(next);autoNextRef.current=next;void storage.setItem(AUTO_NEXT_KEY+activeProfile.id,next);}} />}
 
                 <GridBtn testID="player-audiodelay-btn" icon="git-compare" label="Senkron" onPress={() => setSheet("audiodelay")} />

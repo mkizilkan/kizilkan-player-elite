@@ -54,6 +54,28 @@ object NativeBlackBox {
   private var previousHandler: Thread.UncaughtExceptionHandler? = null
   @Volatile private var appSessionId: String = ""
 
+  /**
+   * v17.6.0 — ANR ANINDA "NE YAPILIYORDU" BİLGİSİ
+   * ---------------------------------------------------------------------------
+   * SORUN: ANR kayıtları NATIVE tarafta üretiliyor; JS tarafındaki iş etiketi
+   * (markTask ile ayarlanan `_task`) buraya hiç ulaşmıyordu. Cihaz kayıtlarında
+   * 47 ANR'ın tamamında bu alan boştu ve "kilitlenme anında ne yapılıyordu?"
+   * sorusu YANITSIZ kalıyordu — bu da ANR'ı çözmenin önündeki tek engeldi.
+   *
+   * Çözüm: JS, uzun süren işlerin başında/sonunda bu alanı günceller (tek bir
+   * string, kilit gerektirmez). Gözcü kilitlenmeyi yakaladığında o anki değeri
+   * kayda ekler. Değer yalnız iş ETİKETİDİR (ör. "refresh:playlist"),
+   * kullanıcı verisi taşımaz.
+   */
+  @Volatile private var currentTask: String = "idle"
+  @Volatile private var currentTaskStartedAt: Long = 0L
+
+  @JvmStatic
+  fun setCurrentTask(label: String) {
+    currentTask = if (label.isBlank()) "idle" else label.take(80)
+    currentTaskStartedAt = if (currentTask == "idle") 0L else System.currentTimeMillis()
+  }
+
   fun initialize(context: Context): Map<String, Any> {
     val app = context.applicationContext
     if (initialized.compareAndSet(false, true)) {
@@ -325,6 +347,9 @@ object NativeBlackBox {
             .put("stack", JSONArray(stack))
             .put("memory", JSONObject(runtimeMemory(context)))
             .put("appSessionId", appSessionId)
+            // v17.6.0: kilitlenme anındaki JS iş etiketi ve o işin yaşı.
+            .put("task", currentTask)
+            .put("taskAgeMs", if (currentTaskStartedAt > 0L) System.currentTimeMillis() - currentTaskStartedAt else 0L)
           writeCriticalSync(context, payload)
           try {
             insertEvent(
