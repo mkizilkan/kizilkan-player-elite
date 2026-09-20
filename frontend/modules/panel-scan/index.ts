@@ -53,8 +53,38 @@ export const PanelScan = {
   inspectBulkAccountsFile: async (uri: string, sampleLimit = 12): Promise<any> => native ? await native.inspectBulkAccountsFile(uri, sampleLimit) : { supported: false, reason: "native-unavailable" },
   startStreamingFileScanV172: async (uri: string, directory: any[], requestedConcurrency: number, timeoutMs: number, batchSize: number, sourceFingerprint: string): Promise<NativeScanStartResult | null> =>
     native ? normalizeStartResult(await native.startStreamingFileScanV172(uri, JSON.stringify(directory || []), requestedConcurrency, timeoutMs, batchSize, sourceFingerprint)) : null,
-  startScan: async (candidates: any[], username: string, password: string, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> =>
-    native ? normalizeStartResult(await native.startScan(JSON.stringify(candidates), username, password, concurrency, timeoutMs)) : null,
+  startScan: async (candidates: any[], username: string, password: string, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> => {
+    if (!native) return null;
+    /**
+     * v17.4.0 — BINDER PARCEL KORUMASI (P0)
+     * ------------------------------------------------------------------------
+     * Cihaz kaydı: "PanelScan.startScan has been rejected →
+     * TransactionTooLargeException: data parcel size 11.525.580 bytes".
+     * Android'in Binder işlem sınırı ~1 MB'tır; aşılırsa çağrı REDDEDİLİR ve
+     * tarama hiç başlamaz. Kullanıcı bunu "başlar gibi yapıp yarıda kalıyor"
+     * olarak görüyordu.
+     *
+     * Asıl sebep kapsam filtresinin atlanmasıydı (bkz. resolveScanDirectory);
+     * o düzeltildi. Bu ise SON SAVUNMA: yük yine de sınırı aşarsa veriyi
+     * sessizce kırpmak yerine (eksik tarama = yanlış sonuç) anlaşılır bir hata
+     * veririz. Boyut her durumda telemetriye yazılır.
+     */
+    const payload = JSON.stringify(candidates);
+    const bytes = payload.length;
+    const LIMIT = 768 * 1024;   // Binder sınırının güvenli altı
+    if (bytes > LIMIT) {
+      const err: any = new Error(
+        `Tarama listesi çok büyük (${(bytes / 1048576).toFixed(1)} MB · ${candidates.length} adres). ` +
+        `Android'in aktarım sınırı aşıldığı için tarama başlatılamadı.\n\n` +
+        `Panel seçiminizi daraltın (belirli bir panel veya kaynak seçin) ya da rehberi yenileyip tekrar deneyin.`
+      );
+      err.code = 'SCAN_PAYLOAD_TOO_LARGE';
+      err.bytes = bytes;
+      err.candidateCount = candidates.length;
+      throw err;
+    }
+    return normalizeStartResult(await native.startScan(payload, username, password, concurrency, timeoutMs));
+  },
   startBulkScan: async (candidates: any[], accounts: Array<{ row?: number; name?: string; username: string; password: string }>, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> =>
     native ? normalizeStartResult(await native.startBulkScan(JSON.stringify(candidates), JSON.stringify(accounts), concurrency, timeoutMs)) : null,
   startUnifiedScan: async (jobs: Array<{ row?: number; name?: string; username: string; password: string; candidates: any[] }>, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> => {

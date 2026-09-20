@@ -444,13 +444,80 @@ export default function AddPlaylist() {
     return filterDirectory(all,sourceScope,panelTarget);
   };
 
-  const filteredPanels = React.useMemo(() => {
+  /**
+   * v17.4.0 — 100 PANEL SINIRI KALDIRILDI (P1)
+   * ==========================================================================
+   * HATA: 792 panelin yalnız ilk 100'ü gösteriliyordu. Kullanıcı adını
+   * bilmediği paneli arayamaz, arayamadığı için seçemezdi.
+   *
+   * ÇÖZÜM: Sınır yok; arama panel adı, kod VE DNS adresleri üzerinde çalışır.
+   * Çizim maliyeti "daha fazla göster" ile kademelendirilir (bir anda 792
+   * satır çizmek arayüzü dondurur).
+   */
+  const matchedPanels = React.useMemo(() => {
     const q = panelSearch.trim().toLocaleLowerCase("tr");
-    if (!q) return panelDirectory.slice(0, 100);
-    return panelDirectory
-      .filter(p => p.panelName.toLocaleLowerCase("tr").includes(q) || p.code.toLocaleLowerCase("tr").includes(q))
-      .slice(0, 100);
+    if (!q) return panelDirectory;
+    const terms = q.split(/\s+/).filter(Boolean);
+    return panelDirectory.filter(p => {
+      const hay = [
+        p.panelName,
+        p.code,
+        ...(p.codes || []),
+        ...(p.hosts || []),
+      ].join(" ").toLocaleLowerCase("tr");
+      return terms.every(t => hay.includes(t));
+    });
   }, [panelDirectory, panelSearch]);
+
+  /** v17.4.0: kademeli çizim — "daha fazla göster" ile artar. */
+  const [panelVisibleCount, setPanelVisibleCount] = React.useState(100);
+  React.useEffect(() => { setPanelVisibleCount(100); }, [panelSearch, sourceScope]);
+
+  const filteredPanels = React.useMemo(
+    () => matchedPanels.slice(0, panelVisibleCount),
+    [matchedPanels, panelVisibleCount],
+  );
+
+  /**
+   * v17.4.0 — KAPSAM FİLTRESİ ARTIK HER YOLDA UYGULANIR (P0)
+   * ==========================================================================
+   * HATA (kullanıcı bildirimi): "bir panel seçtiğimde sadece istediğim
+   * sunucular için arama yapmıyor, tüm sunucuları deniyor."
+   *
+   * KÖK NEDEN: Tarama yollarında rehber şöyle alınıyordu:
+   *     panelDirectory.length && panelDirectorySource === src
+   *       ? filterDirectory(panelDirectory, sourceScope, panelTarget)   <-- filtreli
+   *       : await getScanDirectory(src, ...)                            <-- FİLTRESİZ
+   * Yani rehber önbellekte yoksa veya kaynak değişmişse kullanıcının panel
+   * seçimi SESSİZCE yok sayılıp 792 panelin tamamı taranıyordu.
+   *
+   * İKİNCİ SONUÇ: Aday listesi devasa oluyor ve native köprüde
+   *     TransactionTooLargeException: data parcel size 11.525.580 bytes
+   * hatasıyla tarama HİÇ başlamıyordu (Android Binder sınırı ~1 MB).
+   * Tek kullanıcı/şifre ile bile bu boyuta çıkması, yükün hesaplardan değil
+   * REHBERDEN geldiğini kanıtlıyor.
+   *
+   * ÇÖZÜM: Rehber nereden gelirse gelsin filtre tek noktadan uygulanır.
+   * Tarama yollarında artık doğrudan getScanDirectory ÇAĞRILMAZ.
+   */
+  const resolveScanDirectory = React.useCallback(async (
+    src: string,
+    opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ) => {
+    const base = (panelDirectory.length && panelDirectorySource === src)
+      ? panelDirectory
+      : await getScanDirectory(src, opts);
+    const filtered = filterDirectory(base, sourceScope, panelTarget);
+    void recordDiagnostic('scan', 'SCAN_DIRECTORY_SCOPE_APPLIED', {
+      source: src,
+      fromCache: panelDirectory.length > 0 && panelDirectorySource === src,
+      total: base.length,
+      afterScope: filtered.length,
+      scope: sourceScope,
+      hasTarget: !!(panelTarget.codes?.length || panelTarget.names?.length || panelTarget.keys?.length || panelTarget.hosts?.length),
+    });
+    return filtered;
+  }, [panelDirectory, panelDirectorySource, sourceScope, panelTarget]);
 
   const loadPanelDirectory = async (forceRefresh = false) => {
     if (directoryLoading) return;
@@ -750,7 +817,19 @@ export default function AddPlaylist() {
       nativePreparationAbortRef.current = null;
       const panelName = panel.panelName;
       const hosts = panel.hosts;
-      const candidates = hosts.map(server => ({panelName,code:panel.code,server,sources:panel.sources}));
+      /**
+       * v17.4.1 — PARCEL ŞİŞKİNLİĞİ GİDERİLDİ (P0)
+       * ------------------------------------------------------------------
+       * `sources` panelin TÜM kaynak bağlarını içerir ve burada HER DNS için
+       * ayrı ayrı kopyalanıyordu: 10 DNS'li panelde aynı veri 10 kez. 794
+       * panel × ortalama 6 DNS ile yük 5,5 MB'a çıkıyor ve Android'in Binder
+       * sınırı (~1 MB) aşıldığı için tarama HİÇ başlamıyordu.
+       *
+       * Gönderilmesine gerek yok: sonuç işlenirken (bkz. codeSource/sources
+       * çözümü) değer zaten directoryRef üzerinden panelName+server ile geri
+       * bulunuyor. Bu yüzden köprüden yalnız kimlik alanları geçer.
+       */
+      const candidates = hosts.map(server => ({panelName,code:panel.code,server}));
       const matches = await runNativeBackgroundScan(
         candidates,
         `${panelName} · DNS Hesapları`,
@@ -797,16 +876,16 @@ export default function AddPlaylist() {
     );
 
     try {
-      const directory = panelDirectory.length && panelDirectorySource === src
-        ? filterDirectory(panelDirectory,sourceScope,panelTarget)
-        : await getScanDirectory(src, { signal: prep.signal, timeoutMs: cfg.timeoutMs });
+      // v17.4.0: kapsam filtresi her yolda uygulanır (bkz. resolveScanDirectory)
+      const directory = await resolveScanDirectory(src, { signal: prep.signal, timeoutMs: cfg.timeoutMs });
       if (prep.signal.aborted) { const e = new Error("Tarama hazırlığı kullanıcı tarafından durduruldu."); e.name = "AbortError"; throw e; }
       nativePreparationAbortRef.current = null;
       const seen = new Set<string>();
     const candidates: Array<{panelName:string;code:string;server:string;sources?:ServerCodeBinding["sources"]}> = [];
     for (const item of directory) for (const server of item.hosts) {
       const key = `${item.code}\u0000${item.panelName}\u0000${String(server).replace(/\/+$/,"").toLowerCase()}`;
-      if (!seen.has(key)) { seen.add(key); candidates.push({panelName:item.panelName,code:item.code,server,sources:item.sources}); }
+      // v17.4.1: sources köprüden geçmez (bkz. yukarı); sonuçta directoryRef'ten çözülür.
+      if (!seen.has(key)) { seen.add(key); candidates.push({panelName:item.panelName,code:item.code,server}); }
     }
 
       const matches = await runNativeBackgroundScan(
@@ -833,7 +912,7 @@ export default function AddPlaylist() {
           const pct = p.total > 0 ? Math.round((p.tested / p.total) * 100) : 0;
           setProgress(`${cfg.label} · %${pct}\nPanel: ${p.panelTested}/${p.panelTotal} · Adres: ${p.tested}/${p.total} · Bulunan: ${p.found}${p.panelName ? `\nŞu an: ${p.panelName}` : ""}`);
         },
-        cfg.concurrency,cfg.timeoutMs,await getScanDirectory(src),
+        cfg.concurrency,cfg.timeoutMs,await resolveScanDirectory(src),   // v17.4.0: filtreli
       );
       presentMatches(matches, "Panel / DNS Hesapları Bulundu",
         "Aynı bilgiler birden fazla panel veya DNS adresinde geçerli. Satın aldığınız hesapları seçin.");
@@ -1004,6 +1083,107 @@ export default function AddPlaylist() {
         setLoading(false);
         setProgress("");
       }
+    }
+  };
+
+  /**
+   * v17.5.0 — KIZILKAN ARŞİVİNDEN GERİ YÜKLEME (P0)
+   * ==========================================================================
+   * SORUN: Kullanıcı bulunan hesapları TXT'ye kaydedebiliyor ama geri
+   * yükleyemiyordu. Sebep: arşiv insan-okunur rapor biçiminde ("Kullanıcı Adı :
+   * xxx"), mevcut dosya okuyucu ise satır bazlı biçim bekliyor. Yani kendi
+   * arşivimizi kendimiz okuyamıyorduk.
+   *
+   * AKIŞ: dosya seç -> arşiv biçimi mi diye sına -> ayrıştır -> hesapları
+   * doğrulama listesine koy. Buradan sonrası MEVCUT akıştır: kullanıcı
+   * istediklerini seçer, "Doğrula ve Ekle" ile eklenir. Yeniden doğrulama
+   * bilinçli bir tercih: arşivdeki bilgi eski olabilir, süresi geçmiş hesaplar
+   * böylece ayırt edilir.
+   */
+  const [archiveRestoring, setArchiveRestoring] = useState(false);
+
+  const restoreFromArchive = async () => {
+    if (archiveRestoring || bulkFilePicking) return;
+    setArchiveRestoring(true);
+    setError(null);
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ["text/*", "*/*"],
+        copyToCacheDirectory: true,
+      });
+      if (res.canceled || !res.assets?.[0]) return;
+      const asset = res.assets[0];
+      const text = await FileSystem.readAsStringAsync(asset.uri);
+      const { parseKizilkanAccountArchive, looksLikeKizilkanArchive } = await import("@/src/utils/accountArchive");
+
+      if (!looksLikeKizilkanArchive(text)) {
+        Alert.alert(
+          "Arşiv tanınmadı",
+          "Bu dosya KIZILKAN hesap arşivi biçiminde değil.\n\n" +
+          "Kullanıcı adı/şifre listesi içeren normal bir dosya yüklemek istiyorsanız " +
+          "\"CSV / TXT / JSON dosyası seç\" düğmesini kullanın.",
+        );
+        return;
+      }
+
+      const parsed = parseKizilkanAccountArchive(text);
+      void recordDiagnostic("scan", "ARCHIVE_RESTORE_PARSED", {
+        fileName: asset.name || "", records: parsed.accounts.length,
+        declared: parsed.declaredCount, safeMode: parsed.safeMode,
+        warnings: parsed.warnings.length, masked: parsed.accounts.filter(a => a.masked).length,
+      });
+
+      const usable = parsed.accounts.filter(a => !a.masked);
+      if (usable.length === 0) {
+        Alert.alert(
+          "Bu arşivden geri yükleme yapılamaz",
+          (parsed.warnings[0] || "Arşivde kullanılabilir hesap bulunamadı.") +
+          "\n\nTam arşiv (maskesiz) kaydettiyseniz onu seçin.",
+        );
+        return;
+      }
+
+      // Arşivdeki kayıtları mevcut aday listesine dönüştür: buradan sonrası
+      // kullanıcının seçtiği hesapları doğrulayıp ekleyen MEVCUT akış.
+      const restored: BulkResolvedCandidate[] = usable.map((a, i) => ({
+        key: `archive-${i}-${a.username}-${canonicalPanelHost(a.server) || a.server}`,
+        name: a.name,
+        username: a.username,
+        password: a.password,
+        server: canonicalPanelHost(a.server) || a.server,
+        panelName: a.panelName || a.name,
+        code: a.serverCode || "",
+        validatedHosts: a.validatedHosts.map(h => canonicalPanelHost(h) || h).filter(Boolean),
+        // v17.5.0: exp_date HAM epoch olarak aktarılır; kart "kalan gün"ü
+        // bu alandan hesaplıyor. Daha önce yalnız biçimli metin vardı ve kart
+        // "Bitiş: bilinmiyor" yazıyordu.
+        login: { user_info: {
+          status: a.status,
+          max_connections: a.maxConnections,
+          exp_date: a.expiryEpoch ?? undefined,
+        } },
+      } as BulkResolvedCandidate));
+
+      setBulkCandidates(restored);
+      setSelectedBulkCandidateKeys([]);           // kullanıcı bilinçli seçsin
+      setShowBulkCandidates(true);
+      setBulkScanFinished(true);
+
+      const expiredNote = parsed.accounts.some(a => /geçmiş|expired/i.test(a.status))
+        ? "\n\nBazı hesapların durumu arşivde \"süresi geçmiş\" görünüyor; doğrulama sırasında kesinleşecek." : "";
+      Alert.alert(
+        "Arşiv yüklendi",
+        `${usable.length} hesap okundu${parsed.accounts.length !== usable.length ? ` (${parsed.accounts.length - usable.length} maskeli kayıt atlandı)` : ""}.\n\n` +
+        `Arşiv tarihi: ${parsed.createdAt || "bilinmiyor"}\n\n` +
+        `Eklemek istediklerinizi seçin. Seçtikleriniz eklenirken yeniden doğrulanır; ` +
+        `böylece süresi dolmuş hesaplar ayırt edilir.${expiredNote}`,
+      );
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      void recordDiagnostic("scan", "ARCHIVE_RESTORE_FAILED", { errorMessage: msg.slice(0, 400) });
+      setError(`Arşiv yüklenemedi: ${msg}`);
+    } finally {
+      setArchiveRestoring(false);
     }
   };
 
@@ -1351,9 +1531,8 @@ export default function AddPlaylist() {
     const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
     setProgress(`${cfg.label} · Birleşik native panel rehberi hazırlanıyor…`);
     if (signal?.aborted || bulkScanCancelledRef.current) return { found: 0, completed: 0, cancelled: true };
-    const directory = panelDirectory.length && panelDirectorySource === src
-      ? filterDirectory(panelDirectory,sourceScope,panelTarget)
-      : await getScanDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
+    // v17.4.0: kapsam filtresi her yolda uygulanır
+    const directory = await resolveScanDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
     if (signal?.aborted || bulkScanCancelledRef.current) return { found: 0, completed: 0, cancelled: true };
     const normalizeName = (v:string) => v.trim().toLocaleLowerCase("tr");
     // v17.1.0: Aynı dev panel listesini 50K hesabın her birinde yeniden materialize etme.
@@ -1491,9 +1670,8 @@ export default function AddPlaylist() {
       const src = codeSource.trim() || DEFAULT_CODE_SOURCE;
       setProgress(`${cfg.label} · Dosya native streaming tarama için hazırlanıyor…`);
       if (signal?.aborted || bulkScanCancelledRef.current) return { found:0, completed:0, cancelled:true };
-      const directory = panelDirectory.length && panelDirectorySource === src
-        ? filterDirectory(panelDirectory,sourceScope,panelTarget)
-        : await getScanDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
+      // v17.4.0: kapsam filtresi her yolda uygulanır
+      const directory = await resolveScanDirectory(src, { signal, timeoutMs: cfg.timeoutMs });
       if (signal?.aborted || bulkScanCancelledRef.current) return { found:0, completed:0, cancelled:true };
       // A direct server in a file may still be valid without a directory;
       // the native scanner reports a precise no-candidate error if none match.
@@ -1708,6 +1886,54 @@ export default function AddPlaylist() {
       await FileSystem.writeAsStringAsync(uri,text,{encoding:FileSystem.EncodingType.UTF8});
       if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
         const perm=await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+        /**
+         * v17.4.2 — "İNDİRİLENLER KÖKÜ YAZILAMAZ" ÖNCEDEN YAKALANIYOR
+         * --------------------------------------------------------------------
+         * CİHAZ KANITI: kullanıcı klasör seçiminde İndirilenler'i seçtiğinde
+         *   createSAFFileAsync rejected
+         *   → java.io.IOException: Location
+         *     'content://com.android.providers.downloads.documents/tree/downloads'
+         *     isn't writable.
+         * Bu Android'in kendi kısıtlamasıdır: Downloads sağlayıcısının KÖKÜNE
+         * SAF ağaç izniyle dosya OLUŞTURULAMAZ (alt klasörler yazılabilir).
+         * Eskiden bunu yazmayı deneyip ham Java hatasıyla öğreniyorduk; artık
+         * denemeden önce tespit edip kullanıcıya ne yapacağını söylüyoruz.
+         */
+        /**
+         * v17.5.0 — TESPİT GENİŞLETİLDİ.
+         * v17.4.2'de yalnız ".../tree/downloads" ile bitenler yakalanıyordu;
+         * ama Downloads sağlayıcısı farklı ağaç kimlikleri de üretiyor:
+         *   content://com.android.providers.downloads.documents/tree/msd%3A1000458734
+         * Bu yüzden filtre kaçırdı ve kullanıcı yine ham Java hatası gördü.
+         * Artık YOL değil SAĞLAYICININ KENDİSİ yakalanıyor: Downloads
+         * sağlayıcısından gelen HER ağaç izni yazılamaz kabul edilir.
+         */
+        if (perm.granted && /com\.android\.providers\.downloads\.documents/i.test(String(perm.directoryUri||""))) {
+          void recordDiagnostic("scan","BULK_TXT_EXPORT_DOWNLOADS_ROOT_BLOCKED",{
+            records: records.length, contentChars: text.length, directoryUri: String(perm.directoryUri).slice(0,120),
+          },{ stage:"bulk-export", outcome:"blocked" });
+          setBulkArchiveSaving(false);
+          Alert.alert(
+            "Bu klasöre yazılamıyor",
+            "Android'in \"İndirilenler\" sağlayıcısı, uygulamaların bu klasöre doğrudan dosya " +
+            "oluşturmasına izin vermiyor. Bu bir sistem kısıtlaması.\n\n" +
+            "ÇÖZÜM — klasör seçici açıldığında:\n" +
+            "1) Sol üstteki menüden telefonunuzun adını seçin (ör. \"Dahili depolama\")\n" +
+            "2) Download klasörüne girin\n" +
+            "3) Sağ üstten YENİ KLASÖR oluşturun (ör. KIZILKAN)\n" +
+            "4) O klasörü seçin\n\n" +
+            "Alternatif: Belgeler (Documents) klasörünü seçin ya da " +
+            "\"Paylaş / Farklı Kaydet\" ile kaydedin.",
+            [
+              { text: "Başka Klasör Seç", onPress: () => { void exportBulkCandidatesTxt(safe, requestedFileName); } },
+              { text: "Paylaş / Farklı Kaydet", onPress: () => { void (async () => {
+                  try { if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri,{mimeType:"text/plain",dialogTitle:"KIZILKAN Hesap Arşivi"}); } catch {}
+                })(); } },
+              { text: "Kapat", style: "cancel" },
+            ],
+          );
+          return;
+        }
         if (perm.granted) {
           // Expo SAF sözleşmesi createFileAsync'e uzantısız ad ister; MIME sağlayıcısı
           // .txt uzantısını üretir. Eski sürüm burada doğrudan "...txt" gönderiyordu.
@@ -1740,6 +1966,10 @@ export default function AddPlaylist() {
       void recordDiagnostic("scan", "BULK_TXT_EXPORT_FAILED", {
         safe, records: records.length, contentChars: text.length, storage: Platform.OS === "android" ? "android_saf" : "cache_share",
         errorClass: message.startsWith("SAF_WRITE_VERIFY_FAILED") ? "SAF_WRITE_VERIFY_FAILED" : String(e?.name || "TXT_EXPORT_ERROR"),
+        // v17.4.2: Mesajın KENDİSİ eksikti; logda yalnız "errorClass: Error"
+        // görünüyordu ve sebebi (Downloads kökü yazılamaz) ancak ekran
+        // görüntüsünden anlaşılabiliyordu. Artık teşhis logdan yapılabilir.
+        errorMessage: message.slice(0, 400),
       }, { stage: "bulk-export", outcome: "error" });
       Alert.alert("TXT Kaydedilemedi", `Seçilen klasöre TXT yazımı doğrulanamadı. Başarı mesajı verilmedi.\n\n${message}`, [
         { text: "Kapat", style: "cancel" },
@@ -2425,8 +2655,16 @@ export default function AddPlaylist() {
 
                   {panelDirectory.length > 0 && (
                     <View style={[styles.directoryBox, { borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}>
+                      {/* v17.4.0: toplam / gösterilen / seçilen sayıları ayrı ayrı görünür. */}
+                      <View style={{ paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+                        <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs }}>
+                          {`Toplam ${panelDirectory.length} panel · eşleşen ${matchedPanels.length} · gösterilen ${filteredPanels.length}`}
+                        </Text>
+                      </View>
                       {filteredPanels.length === 0 ? (
-                        <Text style={{ color: colors.onSurfaceSecondary, padding: SPACING.md }}>Eşleşen panel bulunamadı.</Text>
+                        <Text style={{ color: colors.onSurfaceSecondary, padding: SPACING.md }}>
+                          {panelSearch.trim() ? "Aramanıza uyan panel yok. Farklı bir ad, kod veya DNS deneyin." : "Eşleşen panel bulunamadı."}
+                        </Text>
                       ) : filteredPanels.map(item => (
                         <FocusButton
                           key={`${item.code}-${item.panelName}`}
@@ -2446,9 +2684,26 @@ export default function AddPlaylist() {
                       ))}
                     </View>
                   )}
-                  {panelDirectory.length > 100 && !panelSearch.trim() && (
+                  {/**
+                    * v17.4.0: Eski metin "İlk 100 panel gösteriliyor" diyordu ve geri
+                    * kalanına ulaşmanın tek yolu adını BİLMEKti. Artık kalanlar
+                    * kademeli olarak açılır; kumandayla da erişilebilir.
+                    */}
+                  {matchedPanels.length > filteredPanels.length && (
+                    <FocusButton
+                      testID="panel-directory-show-more"
+                      focusable
+                      onPress={() => setPanelVisibleCount(c => c + 200)}
+                      style={{ paddingVertical: SPACING.md, alignItems: "center", borderRadius: RADIUS.md, borderWidth: 1, borderColor: colors.border, marginTop: SPACING.sm }}
+                    >
+                      <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>
+                        {`Daha fazla göster (${matchedPanels.length - filteredPanels.length} panel daha)`}
+                      </Text>
+                    </FocusButton>
+                  )}
+                  {matchedPanels.length > 0 && matchedPanels.length === filteredPanels.length && panelDirectory.length > 100 && (
                     <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: SPACING.xs }}>
-                      İlk 100 panel gösteriliyor. Panel adını yazarak tüm rehberde arayabilirsiniz.
+                      Tüm paneller gösteriliyor. Ad, kod veya DNS yazarak daraltabilirsiniz.
                     </Text>
                   )}
                 </>
@@ -2740,6 +2995,24 @@ export default function AddPlaylist() {
               <FocusButton testID="bulk-pick-file-btn" focusable={!bulkFilePicking} disabled={bulkFilePicking} onPress={pickBulkFile} style={[styles.fileBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, opacity: bulkFilePicking ? 0.65 : 1 }]}>
                 {bulkFilePicking ? <ActivityIndicator size="small" color={colors.brandPrimary} /> : <Ionicons name="document-attach" size={22} color={colors.brandPrimary} />}
                 <Text style={[styles.fileText, { color: colors.onSurface }]} numberOfLines={1}>{bulkFilePicking ? (bulkFilePhase === "reading" ? "Dosya okunuyor…" : bulkFilePhase === "parsing" ? "Hesaplar ayrıştırılıyor…" : "Dosya seçici açık…") : (bulkFileName || "CSV / TXT / JSON dosyası seç")}</Text>
+              </FocusButton>
+
+              {/**
+                * v17.5.0 — ARŞİVDEN GERİ YÜKLE.
+                * Kaydedilen TXT arşivi buradan okunur; hesaplar seçmeli listeye
+                * düşer ve kullanıcı istediği kadarını seçip ekler.
+                */}
+              <FocusButton
+                testID="bulk-restore-archive-btn"
+                focusable={!archiveRestoring}
+                disabled={archiveRestoring || bulkFilePicking}
+                onPress={restoreFromArchive}
+                style={[styles.fileBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.brandPrimary, opacity: archiveRestoring ? 0.65 : 1, marginTop: SPACING.sm }]}
+              >
+                <Ionicons name="archive-outline" size={18} color={colors.brandPrimary} />
+                <Text style={[styles.fileText, { color: colors.brandPrimary }]} numberOfLines={1}>
+                  {archiveRestoring ? "Arşiv okunuyor…" : "KIZILKAN arşivinden geri yükle (TXT)"}
+                </Text>
               </FocusButton>
               {bulkFileLoaded && (
                 <FocusButton focusable onPress={() => { setBulkFileLoaded(false); setBulkFileParsed(null); setBulkFileStreamSource(null); setBulkFileName(""); }} style={{ alignSelf: "flex-start", paddingVertical: 8, paddingHorizontal: 4 }}>
@@ -3078,6 +3351,35 @@ export default function AddPlaylist() {
                       <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{c.name || c.panelName}</Text>
                       <Text style={{color:colors.onSurfaceSecondary,marginTop:2}}>Kullanıcı: {c.username} · Durum: {status}</Text>
                       <Text style={{color:colors.onSurfaceSecondary,marginTop:2}}>Panel: {c.panelName}{c.code ? ` · Kod: ${c.code}` : ""}</Text>
+                      {/**
+                        * v17.4.2 — ABONELİK BİLGİLERİ KARTTA GÖRÜNÜYOR (kullanıcı isteği)
+                        * accountSummary() bu değerleri zaten hesaplıyordu (durum, bitiş
+                        * tarihi, aktif/maksimum bağlantı) ama YALNIZ tek hesap eşleşme
+                        * ekranında kullanılıyordu; çoklu hesap kartlarında yoktu.
+                        * Kullanıcı hangi aboneliği seçeceğine karar verebilmek için
+                        * bitiş tarihini ve kaç kullanıcılı olduğunu görmek istiyor.
+                        * Süresi geçmiş abonelikler kırmızı gösterilir.
+                        */}
+                      {(() => {
+                        const ui = (c as any).login?.user_info || {};
+                        const expRaw = ui.exp_date;
+                        const expNum = Number(expRaw);
+                        const expired = Number.isFinite(expNum) && expNum > 0 && expNum * 1000 < Date.now();
+                        const expText = formatExpiry(expRaw);
+                        const daysLeft = Number.isFinite(expNum) && expNum > 0
+                          ? Math.ceil((expNum * 1000 - Date.now()) / 86400000) : null;
+                        const maxCon = ui.max_connections ?? "?";
+                        const activeCon = ui.active_cons ?? ui.active_connections ?? "?";
+                        const trial = ui.is_trial === "1" || ui.is_trial === 1;
+                        return (
+                          <Text style={{ color: expired ? colors.error : colors.onSurfaceSecondary, marginTop: 2, fontSize: FONT.size.xs }}>
+                            {`Bitiş: ${expText}`}
+                            {daysLeft !== null ? (expired ? " · SÜRESİ GEÇMİŞ" : ` · ${daysLeft} gün`) : ""}
+                            {` · Bağlantı: ${activeCon}/${maxCon}`}
+                            {trial ? " · DENEME" : ""}
+                          </Text>
+                        );
+                      })()}
                       <Text style={{color:colors.onSurfaceTertiary,marginTop:2,fontSize:FONT.size.xs}}>{c.server}</Text>
                       {!!importState && <Text style={{color: importState.state === "failed" ? colors.error : importState.state === "completed" ? colors.success : colors.brandPrimary, marginTop:6, fontSize:FONT.size.xs, fontWeight:FONT.weight.bold}}>{importState.state === "completed" ? "✓ " : importState.state === "failed" ? "✕ " : "• "}{importState.message}{importState.state === "completed" ? ` · ${importState.channels || 0} kanal · ${importState.vod || 0} film · ${importState.series || 0} dizi` : ""}</Text>}
                     </View>
@@ -3304,6 +3606,38 @@ export default function AddPlaylist() {
           <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm, marginTop: SPACING.sm, textAlign: "center", lineHeight: 20 }}>
             {progress || "Hazırlanıyor…"}
           </Text>
+          {/**
+            * v17.7.0 — TOPLU EKLEMEDE İLERLEME GÖRÜNÜYOR
+            * -------------------------------------------------------------------
+            * Kullanıcı bildirimi: "büyük miktarda yedek dosyasından liste
+            * eklerken takılı kaldı." Ekranda yalnız "Hazırlanıyor…" yazıyordu;
+            * 49 listeden kaçının bittiği görünmediği için işlem sürerken bile
+            * takılmış sanılıyordu.
+            * Veri zaten vardı (bulkImportStatuses), sadece gösterilmiyordu.
+            */}
+          {(() => {
+            const rows = Object.values(bulkImportStatuses || {}) as any[];
+            if (!rows.length) return null;
+            const done = rows.filter(r => r?.state === "completed").length;
+            const failed = rows.filter(r => r?.state === "failed").length;
+            const running = rows.find(r => r?.state === "running" || r?.state === "importing");
+            const pct = rows.length ? Math.round((done / rows.length) * 100) : 0;
+            return (
+              <View style={{ marginTop: SPACING.md, width: "100%", maxWidth: 420 }}>
+                <Text style={{ color: colors.brandPrimary, fontSize: FONT.size.base, fontWeight: FONT.weight.bold, textAlign: "center" }}>
+                  {`${done}/${rows.length} liste tamamlandı`}{failed ? ` · ${failed} başarısız` : ""}
+                </Text>
+                <View style={{ height: 6, borderRadius: 3, backgroundColor: colors.border, marginTop: SPACING.sm, overflow: "hidden" }}>
+                  <View style={{ height: "100%", width: `${pct}%`, backgroundColor: colors.brandPrimary }} />
+                </View>
+                {!!running && (
+                  <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, marginTop: SPACING.xs, textAlign: "center" }} numberOfLines={2}>
+                    {String(running.message || "İçerik indiriliyor…").slice(0, 90)}
+                  </Text>
+                )}
+              </View>
+            );
+          })()}
           <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: SPACING.lg, textAlign: "center" }}>
             Lütfen bekleyin — işlem sürerken tekrar dokunmayın.
           </Text>
