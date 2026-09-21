@@ -855,6 +855,22 @@ function LivePreview({
   playlist: any;
   active: boolean;
 }) {
+  /**
+   * v17.5.0 — ÖNİZLEME KARARLILIĞI (kullanıcı: "bazen çalışıyor bazen çalışmıyor")
+   * ---------------------------------------------------------------------------
+   * TESPİT (koddan): çözümleme başarısız olduğunda yalnız setUrl(null) yapılıyor,
+   * yeniden deneme YOK ve kullanıcıya hiçbir şey gösterilmiyordu. Sonuç: ekran
+   * sessizce boş kalıyor ve sebebi anlaşılmıyordu. Ayrıca yalnız HATA
+   * kaydediliyordu; başarı ölçülmediği için "ne sıklıkla çalışıyor"
+   * sorusunu yanıtlayamıyorduk.
+   *
+   * DÜZELTMELER:
+   *  1) Geçici hatalarda BİR KEZ yeniden dener (portal anlık meşgul olabilir).
+   *  2) Durum görünür: yükleniyor / hata. Boş siyah kutu yerine bilgi.
+   *  3) Başarı da kaydedilir; artık oran hesaplanabilir.
+   *  4) Stalker adresleri kısa ömürlüdür; hata alınca taze adres istenir.
+   */
+  const [phase, setPhase] = useState<"idle" | "loading" | "ready" | "failed">("idle");
   const [url, setUrl] = useState<string | null>(null);
   const debRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aliveRef = useRef(true);
@@ -874,23 +890,58 @@ function LivePreview({
     const generation = ++resolveGenerationRef.current;
     // Ekran odakta değilse (player üstte) önizleme OYNAMAZ — çift ses/yüzey
     // çakışmasını önler.
-    if (!active) { setUrl(null); return; }
-    if (!channel?.url) { setUrl(null); return; }
+    if (!active) { setUrl(null); setPhase("idle"); return; }
+    if (!channel?.url) { setUrl(null); setPhase("idle"); return; }
     // Yeni odakta önce mevcut oynatmayı bırak (kaynağı boşalt), sonra debounce.
     setUrl(null);
+    setPhase("loading");
     debRef.current = setTimeout(async () => {
-      try {
+      const startedAt = Date.now();
+      const stillMine = () => aliveRef.current && resolveGenerationRef.current === generation;
+
+      /** Tek denemelik çözümleme. forceFresh: bayat adres yerine taze iste. */
+      const attempt = async (forceFresh: boolean): Promise<string> => {
         if (playlist?.source === "stalker") {
           const { stalkerResolveStream, stalkerCredsFromPlaylist } = await import("@/src/utils/stalker");
           const cred = stalkerCredsFromPlaylist(playlist);
-          const { url: resolved } = await stalkerResolveStream(cred, null, String(channel.url));
-          if (aliveRef.current && resolveGenerationRef.current === generation) setUrl(resolved);
-        } else {
-          if (aliveRef.current && resolveGenerationRef.current === generation) setUrl(String(channel.url));
+          const { url: resolved } = await stalkerResolveStream(cred, null, String(channel.url), forceFresh ? { forceFresh: true } : undefined);
+          return resolved;
         }
-      } catch (error) {
-        if (aliveRef.current && resolveGenerationRef.current === generation) setUrl(null);
-        void recordDiagnostic("player", "TV_PREVIEW_RESOLVE_FAILED", { channelId: String(channel?.id || ""), playlistId: String(playlist?.id || ""), error: String((error as any)?.message || error) }, { stage: "tvPreviewResolve", outcome: "failed" });
+        return String(channel.url);
+      };
+
+      try {
+        const resolved = await attempt(false);
+        if (!stillMine()) return;
+        setUrl(resolved); setPhase("ready");
+        void recordDiagnostic("player", "TV_PREVIEW_RESOLVE_OK", {
+          channelId: String(channel?.id || ""), playlistId: String(playlist?.id || ""),
+          elapsedMs: Date.now() - startedAt, retried: false,
+        });
+      } catch (firstError) {
+        if (!stillMine()) return;
+        // v17.5.0: TEK yeniden deneme. Stalker adresleri kısa ömürlü olduğu
+        // için taze adres istenir; geçici portal hataları da böylece atlatılır.
+        try {
+          await new Promise(r => setTimeout(r, 400));
+          if (!stillMine()) return;
+          const resolved = await attempt(true);
+          if (!stillMine()) return;
+          setUrl(resolved); setPhase("ready");
+          void recordDiagnostic("player", "TV_PREVIEW_RESOLVE_OK", {
+            channelId: String(channel?.id || ""), playlistId: String(playlist?.id || ""),
+            elapsedMs: Date.now() - startedAt, retried: true,
+          });
+        } catch (error) {
+          if (!stillMine()) return;
+          setUrl(null); setPhase("failed");
+          void recordDiagnostic("player", "TV_PREVIEW_RESOLVE_FAILED", {
+            channelId: String(channel?.id || ""), playlistId: String(playlist?.id || ""),
+            elapsedMs: Date.now() - startedAt,
+            firstError: String((firstError as any)?.message || firstError).slice(0, 200),
+            error: String((error as any)?.message || error).slice(0, 200),
+          }, { stage: "tvPreviewResolve", outcome: "failed" });
+        }
       }
     }, 600);
     return () => { resolveGenerationRef.current += 1; if (debRef.current) clearTimeout(debRef.current); };
@@ -907,7 +958,30 @@ function LivePreview({
     if (!active && player) { try { player.pause(); } catch {} }
   }, [active, player]);
 
-  if (!active || !url) return null;   // durdurulunca/çözülene kadar logo fallback görünür
+  /**
+   * v17.5.0 — DURUM GÖRÜNÜR.
+   * Eskiden url yoksa null dönüyordu: kullanıcı boş kutu görüyor, önizlemenin
+   * yükleniyor mu yoksa başarısız mı olduğunu anlayamıyordu. Artık yükleme ve
+   * hata durumları küçük bir bilgi satırıyla gösterilir (logo arka planda kalır).
+   */
+  if (!active) return null;
+  if (!url) {
+    if (phase === "loading") {
+      return (
+        <View style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: 6, backgroundColor: "rgba(0,0,0,0.55)" }}>
+          <Text style={{ color: "#bbb", fontSize: 11 }}>Önizleme yükleniyor…</Text>
+        </View>
+      );
+    }
+    if (phase === "failed") {
+      return (
+        <View style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: 6, backgroundColor: "rgba(0,0,0,0.55)" }}>
+          <Text style={{ color: "#e88", fontSize: 11 }}>Önizleme alınamadı · kanalı açmayı deneyin</Text>
+        </View>
+      );
+    }
+    return null;
+  }
   return (
     <VideoView
       player={player}

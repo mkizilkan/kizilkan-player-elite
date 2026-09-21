@@ -660,6 +660,34 @@ export function detectXtreamFromM3U(rawUrl: string): { server: string; username:
  * NOT: Tarih cihazın yerel saatiyle biçimlenir (mevcut çalışan catchup.tsx ile
  * aynı davranış); sağlayıcı farklı timezone bekliyorsa ayrıca ele alınır.
  */
+/**
+ * v17.9.0 — CATCHUP BİÇİM VARYANTLARI
+ * ---------------------------------------------------------------------------
+ * Tek biçim üretiliyordu: /timeshift/.../id.ts. Paneller farklı biçim
+ * bekleyebiliyor; biri tutmazsa catchup "çalışmıyor" görünüyordu.
+ * Birincil biçimden sonra iki yaygın alternatif üretilir; oynatıcının
+ * "sıradaki adrese geç" mekanizması bunları sırayla dener. Yedek DNS
+ * mekanizması da (hostFailover) bu yolları koruyarak ayrıca uygulanır.
+ */
+export function buildXtreamTimeshiftVariants(opts: {
+  server: string; username: string; password: string;
+  startMs: number; stopMs: number; streamId: string | number;
+}): string[] {
+  const primary = buildXtreamTimeshiftUrl(opts);
+  if (!primary) return [];
+  const base = opts.server.replace(/\/+$/, "");
+  const d = new Date(opts.startMs);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}:${pad(d.getHours())}-${pad(d.getMinutes())}`;
+  const durMin = Math.max(1, Math.ceil((opts.stopMs - opts.startMs) / 60000));
+  const u = encodeURIComponent(opts.username), pw = encodeURIComponent(opts.password);
+  return [
+    primary,
+    primary.replace(/\.ts$/, ".m3u8"),
+    `${base}/timeshift.php?username=${u}&password=${pw}&stream=${opts.streamId}&start=${stamp}&duration=${durMin}`,
+  ].filter((x, i, a) => !!x && a.indexOf(x) === i);
+}
+
 export function buildXtreamTimeshiftUrl(opts: {
   server: string;
   username: string;

@@ -8,6 +8,8 @@ import { useTv } from "@/src/store/TvContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
 import { refreshPlaylistContent, type RefreshProgress } from "@/src/utils/refreshPlaylist";
+import { buildRefreshDiff, formatRefreshDiff, diffTelemetry } from '@/src/utils/refreshDiff';
+import { recordDiagnostic } from '@/src/utils/diagnostics';
 import { useProfiles } from "@/src/store/ProfileContext";
 import { KizilkanLogo } from "@/src/components/KizilkanLogo";
 import { haptic } from "@/src/utils/haptic";
@@ -101,11 +103,31 @@ export default function PlaylistSelect() {
     cancelAuto();
     setRefreshingId(pl.id);
     try {
+      /**
+       * v17.4.0 — YENİLEME FARK RAPORU (P1)
+       * Kullanıcı neyin eklendiğini/silindiğini göremiyordu. Farklar KARARLI
+       * İÇERİK KİMLİKLERİYLE hesaplanır (yalnız toplam sayı farkıyla değil):
+       * 20 kanal silinip 20 yeni kanal eklenirse toplam aynı kalır ama bu
+       * "değişiklik yok" demek değildir.
+       * Olağandışı kayıpta kullanıcı açıkça uyarılır.
+       */
+      const beforeSnapshot = { channels: pl.channels, vod: pl.vod, series: pl.series };
       const res = await refreshPlaylistContent(pl, (p) => setRefreshOneProgress(`${pl.name} · ${formatRefreshProgress(p)}`));
       if (res.ok && res.patch) {
         setRefreshOneProgress(`${pl.name} · Cihaza kaydediliyor...`);
         await updatePlaylist(pl.id, { ...res.patch, lastRefreshedAt: new Date().toISOString(), lastRefreshOk: true });
-        Alert.alert("Liste güncellendi", res.message);
+        const diff = buildRefreshDiff(beforeSnapshot, {
+          channels: (res.patch as any).channels ?? pl.channels,
+          vod: (res.patch as any).vod ?? pl.vod,
+          series: (res.patch as any).series ?? pl.series,
+        });
+        void recordDiagnostic('catalog', 'PLAYLIST_REFRESH_DIFF', {
+          playlistId: pl.id, ...diffTelemetry(diff, 'manual'),
+        });
+        Alert.alert(
+          diff.suspiciousDrop ? "Liste güncellendi — dikkat" : "Liste güncellendi",
+          `${formatRefreshDiff(diff)}\n\n${res.message}`,
+        );
       } else {
         await updatePlaylist(pl.id,{...(res.patch || {}),lastRefreshedAt:new Date().toISOString(),lastRefreshOk:false});
         Alert.alert("Yenilenemedi", res.message);

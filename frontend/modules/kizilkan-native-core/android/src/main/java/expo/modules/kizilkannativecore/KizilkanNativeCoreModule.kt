@@ -168,6 +168,16 @@ class KizilkanNativeCoreModule : Module() {
       } finally { response?.close() }
     }
 
+    /**
+     * v17.6.0 — JS aktif iş etiketini native ANR gözcüsüne bildirir.
+     * Function (AsyncFunction değil): tek bir alan ataması, kuyruk beklemeden
+     * anında yazılmalı; aksi halde kilitlenme anında etiket bayat kalırdı.
+     */
+    Function("setDiagnosticTask") { label: String ->
+      NativeBlackBox.setCurrentTask(label)
+      true
+    }
+
     AsyncFunction("warmPlaylist") { id: String ->
       val result = ensureIndexed(id)
       summary(result.snapshot, cacheHit = result.cacheHit)

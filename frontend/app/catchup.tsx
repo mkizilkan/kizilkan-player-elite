@@ -46,8 +46,9 @@ export default function CatchupScreen() {
     const startTs = Number(p.start_timestamp);
     const stopTs = Number(p.stop_timestamp);
     if (!Number.isFinite(startTs) || !Number.isFinite(stopTs)) return;
-    const { buildXtreamTimeshiftUrl } = await import("@/src/utils/iptv");
-    const url = buildXtreamTimeshiftUrl({
+    const { buildXtreamTimeshiftVariants } = await import("@/src/utils/iptv");
+    // v17.9.0: tek biçim yerine sıralı varyantlar; ilki birincil adres.
+    const variants = buildXtreamTimeshiftVariants({
       server: String(activePlaylist.xtreamServer || ""),
       username: String(activePlaylist.xtreamUsername || ""),
       password: String(activePlaylist.xtreamPassword || ""),
@@ -55,6 +56,7 @@ export default function CatchupScreen() {
       stopMs: stopTs * 1000,
       streamId: channel.stream_id,
     });
+    const url = variants[0];
     if (!url) return;
 
     const syntheticId = `catchup-${channel.id}-${startTs}`;
@@ -63,6 +65,7 @@ export default function CatchupScreen() {
       name: `${channel.name} • ${p.title}`,
       group: "Catch-up",
       container_ext: "ts",
+      fallbackUrls: variants.slice(1),
     }));
     addToRecent(channel.id);
     router.replace({ pathname: "/player", params: { id: syntheticId, ext: "true" } });
