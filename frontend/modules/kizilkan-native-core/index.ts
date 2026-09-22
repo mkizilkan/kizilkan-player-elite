@@ -71,6 +71,16 @@ try {
 export const KizilkanNativeCore = {
   available: !!native,
   magExactRequest: async (url: string, headers: Record<string,string>, timeoutMs = 20000): Promise<Record<string, any> | null> => native ? native.magExactRequest(url, JSON.stringify(headers), timeoutMs) : null,
+  /**
+   * v17.6.0 — Aktif iş etiketini native ANR gözcüsüne bildirir.
+   * Kilitlenme yakalandığında kayda bu etiket yazılır; böylece "o an ne
+   * yapılıyordu" sorusu yanıtlanabilir. Yalnız ETİKET gönderilir.
+   * Senkron ve hataya dayanıklı: başarısız olursa akış etkilenmez.
+   */
+  setDiagnosticTask: (label: string): void => {
+    try { native?.setDiagnosticTask?.(String(label || "idle")); } catch { /* yok say */ }
+  },
+
   warmPlaylist: async (id: string): Promise<NativePlaylistSummary | null> => native ? native.warmPlaylist(id) : null,
   importPlaylistHeavyJson: async (id: string, json: string): Promise<NativePlaylistSummary | null> => native ? native.importPlaylistHeavyJson(id, json) : null,
   replacePlaylistKindJson: async (id: string, kind: "live" | "vod" | "series", jsonArray: string): Promise<NativePlaylistSummary | null> => native ? native.replacePlaylistKindJson(id, kind, jsonArray) : null,
