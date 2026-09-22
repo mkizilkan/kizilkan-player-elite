@@ -20,7 +20,35 @@ export default function CatchupScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const channel = activePlaylist?.channels.find(c => c.id === params.channel);
+  /**
+   * v17.9.1 — KANAL ARTIK ROOM'DAN BULUNUYOR (catchup Native Core'da çalışmıyordu)
+   * ---------------------------------------------------------------------------
+   * Eskiden kanal `activePlaylist.channels.find(...)` ile aranıyordu. Native
+   * Core modunda bu dizi bellekte BOŞTUR (içerik Room'da, bilerek JS'e
+   * taşınmaz). Sonuç: kanal bulunamıyor, ekran erken çıkıyor ve catchup hiç
+   * listelenmiyordu. Aynı kök neden yenileme fark raporundaki "önce=0"
+   * hatasını da üretmişti.
+   * Artık önce bellekteki dizi (web/legacy yol), bulunamazsa Room'dan tek öğe
+   * (getItem) okunur. 16 bin kanal JS'e taşınmaz, yalnız istenen kanal gelir.
+   */
+  // Parametre ayrı bir adla tutulur; aşağıdaki `channel` değişkeniyle karışmaz.
+  const requestedChannelId = String(params.channel || "");
+  const memoryChannel = activePlaylist?.channels?.find(c => c.id === requestedChannelId);
+  const [roomChannel, setRoomChannel] = useState<any>(null);
+  useEffect(() => {
+    let alive = true;
+    if (memoryChannel || !activePlaylist?.id || !requestedChannelId) return;
+    (async () => {
+      try {
+        const { KizilkanNativeCore } = await import("@/modules/kizilkan-native-core");
+        if (!KizilkanNativeCore.available) return;
+        const item = await KizilkanNativeCore.getItem(activePlaylist.id, "live", requestedChannelId);
+        if (alive) setRoomChannel(item || null);
+      } catch { /* bulunamazsa ekran mevcut "kullanılamıyor" durumunu gösterir */ }
+    })();
+    return () => { alive = false; };
+  }, [activePlaylist?.id, requestedChannelId, memoryChannel]);
+  const channel = memoryChannel || roomChannel;
 
   useEffect(() => {
     if (!activePlaylist || activePlaylist.source !== "xtream" || !channel?.stream_id) {
@@ -46,15 +74,19 @@ export default function CatchupScreen() {
     const startTs = Number(p.start_timestamp);
     const stopTs = Number(p.stop_timestamp);
     if (!Number.isFinite(startTs) || !Number.isFinite(stopTs)) return;
-    const { buildXtreamTimeshiftUrl } = await import("@/src/utils/iptv");
-    const url = buildXtreamTimeshiftUrl({
+    const { buildXtreamTimeshiftVariants } = await import("@/src/utils/iptv");
+    // v17.9.0: tek biçim yerine sıralı varyantlar; ilki birincil adres.
+    const variants = buildXtreamTimeshiftVariants({
       server: String(activePlaylist.xtreamServer || ""),
       username: String(activePlaylist.xtreamUsername || ""),
       password: String(activePlaylist.xtreamPassword || ""),
       startMs: startTs * 1000,
       stopMs: stopTs * 1000,
       streamId: channel.stream_id,
+      // v17.9.1: sağlayıcının saat dilimi (girişte kaydedilen server_info).
+      timeZone: String((activePlaylist as any)?.serverInfo?.timezone || "") || null,
     });
+    const url = variants[0];
     if (!url) return;
 
     const syntheticId = `catchup-${channel.id}-${startTs}`;
@@ -63,6 +95,7 @@ export default function CatchupScreen() {
       name: `${channel.name} • ${p.title}`,
       group: "Catch-up",
       container_ext: "ts",
+      fallbackUrls: variants.slice(1),
     }));
     addToRecent(channel.id);
     router.replace({ pathname: "/player", params: { id: syntheticId, ext: "true" } });

@@ -122,12 +122,29 @@ export function markTask(label: string, meta: Record<string, any> = {}): () => v
   const safeLabel = String(label || 'task').slice(0, 80);
   const id = `task-${Date.now().toString(36)}-${(++taskSeq).toString(36)}-${Math.random().toString(36).slice(2,6)}`;
   activeTasks.set(id, { id, label: safeLabel, startedAt: Date.now(), seq: taskSeq, meta: sanitizeValue(meta) });
+  /**
+   * v17.6.0 — ETİKETİ NATIVE ANR GÖZCÜSÜNE DE BİLDİR.
+   * ANR kayıtları native tarafta üretildiği için JS'teki etiket oraya hiç
+   * ulaşmıyordu; cihaz kayıtlarında 47 ANR'ın tamamında bu alan boştu ve
+   * "kilitlenme anında ne yapılıyordu" sorusu yanıtsız kalıyordu.
+   */
+  pushTaskToNative();
   let done = false;
   return () => {
     if (done) return;
     done = true;
     activeTasks.delete(id);
+    pushTaskToNative();
   };
+}
+
+/** Aktif iş etiketini native tarafa yazar. Hata olursa akışı etkilemez. */
+function pushTaskToNative(): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const core = require('@/modules/kizilkan-native-core');
+    core?.KizilkanNativeCore?.setDiagnosticTask?.(activeTaskSnapshot().label || 'idle');
+  } catch { /* native yoksa sessizce geç */ }
 }
 
 export function getActiveTask(): string { return activeTaskSnapshot().label; }
@@ -608,7 +625,23 @@ function deriveAnomalies(events: DiagnosticEvent[]) {
  *   • ortalama açılış süresi
  *   • ön plan/arka plan ayrımıyla ANR sayısı (yanlış pozitif elenir)
  */
+/**
+ * v17.6.0 — OTURUM BAZLI AYRIM.
+ * Önceki iki kayıtta "ilk kare 12 · ortalama 1474 ms" değerleri BİREBİR aynıydı;
+ * çünkü özet tüm geçmişi topluyor ve hangi değerin bu oturuma ait olduğu
+ * anlaşılmıyordu. Artık özet hem TOPLAM hem BU OTURUM için hesaplanır.
+ */
 function buildAutoSummary(events: any[]): Record<string, any> {
+  const sessionEvents = events.filter((e: any) => String(e?.sessionId || e?.data?._appSessionId || '') === appSessionId);
+  const base = buildAutoSummaryFor(events);
+  return {
+    ...base,
+    buOturum: sessionEvents.length ? buildAutoSummaryFor(sessionEvents) : { not: 'Bu oturumda kayıtlı olay yok.' },
+    oturumOlaySayisi: sessionEvents.length,
+  };
+}
+
+function buildAutoSummaryFor(events: any[]): Record<string, any> {
   const sig = new Map<string, number>();
   const engineFail = new Map<string, number>();
   let firstFrames = 0, sessions = 0, anrFg = 0, anrBg = 0;
@@ -735,8 +768,51 @@ async function exportDiagnosticReportInternal(extra: Record<string, any> = {}): 
   const sanitizeStartedAt = Date.now();
   const payload = sanitizeValue({
     format: 'KIZILKAN_FLIGHT_RECORDER_V7',
+    /**
+     * v17.9.1 — SÜRÜM BİLGİSİ. 21.09 kaydında hangi sürümün test edildiği
+     * logdan anlaşılamıyordu; "özellik çalışmadı mı, yoksa eski sürüm mü" ayrımı
+     * yapılamıyordu. Artık her dışa aktarımda sürüm ve derleme kodu yazılır.
+     */
+    appVersion: (() => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const C = require('expo-constants').default;
+        const cfg = C?.expoConfig || C?.manifest || {};
+        return {
+          version: String(cfg?.version || ''),
+          versionCode: Number(cfg?.android?.versionCode || 0),
+          releaseLabel: String(cfg?.extra?.kizilkanReleaseLabel || ''),
+        };
+      } catch { return { version: '', versionCode: 0, releaseLabel: '' }; }
+    })(),
     // v16.2.0: kök nedeni en başta göster
     autoSummary: buildAutoSummary(events),
+    /**
+     * v17.6.0 — DIŞA AKTARIM KAPSAMI ÖLÇÜLÜYOR
+     * -------------------------------------------------------------------------
+     * 18.09 kaydında dosyada yalnız 80 olay vardı ve hepsi kritikti; normal
+     * olaylar (ör. ARCHIVE_RESTORE_PARSED) yoktu. Bu yüzden bir özelliğin
+     * çalışıp çalışmadığını logdan DOĞRULAYAMIYORDUM — kullanıcının sözlü
+     * teyidine bağlı kalıyordum.
+     *
+     * Sebebi tahmin etmek yerine ölçüyoruz: kaç olay istendi, kaç döndü, kaçı
+     * kritik, en eski/en yeni olay ne zaman. Bir sonraki kayıt bu soruyu
+     * kendiliğinden yanıtlayacak (saklama mı, yazma mı, temizleme mi).
+     */
+    exportScope: (() => {
+      const nonCritical = events.filter((e: any) => !(e?.critical || CRITICAL_EVENT_RE.test(String(e?.event || '')))).length;
+      const times = events.map((e: any) => Number(e?.at || 0)).filter((n: number) => n > 0);
+      return {
+        requested: MAX_EXPORT_EVENTS,
+        returned: events.length,
+        criticalInReturned: events.length - nonCritical,
+        nonCriticalInReturned: nonCritical,
+        oldestAt: times.length ? Math.min(...times) : 0,
+        newestAt: times.length ? Math.max(...times) : 0,
+        spanMinutes: times.length ? Math.round((Math.max(...times) - Math.min(...times)) / 60000) : 0,
+        nativeAvailable: !!KizilkanNativeCore.available,
+      };
+    })(),
     schemaVersion: 7,
     structuredTraceSchema: 2,
     lifecycleCorrelation: { version: 7, stages: ['playlistSelect','roomVerify','catalogRecovery','channelSelect','urlResolve','enginePrepare','httpResponse','fallback','firstFrame'] },
