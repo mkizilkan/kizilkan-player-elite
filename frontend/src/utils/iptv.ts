@@ -660,6 +660,63 @@ export function detectXtreamFromM3U(rawUrl: string): { server: string; username:
  * NOT: Tarih cihazın yerel saatiyle biçimlenir (mevcut çalışan catchup.tsx ile
  * aynı davranış); sağlayıcı farklı timezone bekliyorsa ayrıca ele alınır.
  */
+/**
+ * v17.9.1 — SAĞLAYICI SAAT DİLİMİYLE ZAMAN DAMGASI
+ * ---------------------------------------------------------------------------
+ * Catchup adresi cihazın YEREL saatiyle üretiliyordu; kod yorumu da
+ * "sağlayıcı farklı timezone bekliyorsa ayrıca ele alınır" diyordu. Sağlayıcı
+ * farklı bir dilimdeyse (ör. sunucu Europe/London, cihaz Europe/Istanbul) istek
+ * 2-3 saat kayık programa gidiyor ya da hiç açılmıyordu.
+ * `server_info.timezone` girişte zaten alınıp listeye kaydediliyordu; artık
+ * burada kullanılıyor. Dilim bilinmiyorsa veya Intl desteklemiyorsa eski
+ * davranışa (yerel saat) dönülür.
+ */
+export function formatTimeshiftStamp(ms: number, timeZone?: string | null): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (timeZone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hour12: false,
+      }).formatToParts(new Date(ms));
+      const g = (t: string) => parts.find(p => p.type === t)?.value || "";
+      const hh = g("hour") === "24" ? "00" : g("hour");
+      if (g("year") && g("month") && g("day") && hh && g("minute")) {
+        return `${g("year")}-${g("month")}-${g("day")}:${hh}-${g("minute")}`;
+      }
+    } catch { /* geçersiz dilim: yerel saate dön */ }
+  }
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}:${pad(d.getHours())}-${pad(d.getMinutes())}`;
+}
+
+/**
+ * v17.9.0 — CATCHUP BİÇİM VARYANTLARI
+ * ---------------------------------------------------------------------------
+ * Tek biçim üretiliyordu: /timeshift/.../id.ts. Paneller farklı biçim
+ * bekleyebiliyor; biri tutmazsa catchup "çalışmıyor" görünüyordu.
+ * Birincil biçimden sonra iki yaygın alternatif üretilir; oynatıcının
+ * "sıradaki adrese geç" mekanizması bunları sırayla dener. Yedek DNS
+ * mekanizması da (hostFailover) bu yolları koruyarak ayrıca uygulanır.
+ */
+export function buildXtreamTimeshiftVariants(opts: {
+  server: string; username: string; password: string;
+  startMs: number; stopMs: number; streamId: string | number;
+  timeZone?: string | null;
+}): string[] {
+  const primary = buildXtreamTimeshiftUrl(opts);
+  if (!primary) return [];
+  const base = opts.server.replace(/\/+$/, "");
+  const stamp = formatTimeshiftStamp(opts.startMs, opts.timeZone);
+  const durMin = Math.max(1, Math.ceil((opts.stopMs - opts.startMs) / 60000));
+  const u = encodeURIComponent(opts.username), pw = encodeURIComponent(opts.password);
+  return [
+    primary,
+    primary.replace(/\.ts$/, ".m3u8"),
+    `${base}/timeshift.php?username=${u}&password=${pw}&stream=${opts.streamId}&start=${stamp}&duration=${durMin}`,
+  ].filter((x, i, a) => !!x && a.indexOf(x) === i);
+}
+
 export function buildXtreamTimeshiftUrl(opts: {
   server: string;
   username: string;
@@ -667,13 +724,13 @@ export function buildXtreamTimeshiftUrl(opts: {
   startMs: number;
   stopMs: number;
   streamId: string | number;
+  /** v17.9.1: sağlayıcının saat dilimi (server_info.timezone). */
+  timeZone?: string | null;
 }): string | null {
   const { server, username, password, startMs, stopMs, streamId } = opts;
   if (!server || !username || !password || streamId === undefined || streamId === null || streamId === "") return null;
   if (!Number.isFinite(startMs) || !Number.isFinite(stopMs)) return null;
-  const d = new Date(startMs);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}:${pad(d.getHours())}-${pad(d.getMinutes())}`;
+  const stamp = formatTimeshiftStamp(startMs, opts.timeZone);
   const durMin = Math.max(1, Math.ceil((stopMs - startMs) / 60000));
   const base = server.replace(/\/+$/, "");
   return `${base}/timeshift/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${durMin}/${stamp}/${streamId}.ts`;
