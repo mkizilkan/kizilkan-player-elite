@@ -54,6 +54,15 @@ interface MediaItemDao {
   @Query("SELECT COUNT(*) FROM media_items WHERE playlistId = :playlistId AND kind = :kind")
   fun count(playlistId: String, kind: String): Int
 
+  /**
+   * v17.9.1 — Yenileme fark raporu için bir türün öğe kimlikleri.
+   * [playlistId, kind, itemId] indeksi sayesinde yalnız indeks okunur; ham
+   * JSON (rawJson) yüklenmez. Fark native tarafta hesaplanır, JS'e 50 bin
+   * öğe taşınmaz.
+   */
+  @Query("SELECT itemId FROM media_items WHERE playlistId = :playlistId AND kind = :kind")
+  fun itemIds(playlistId: String, kind: String): List<String>
+
   @Query("""
     SELECT groupName AS name, COUNT(*) AS count
     FROM media_items
