@@ -8,6 +8,8 @@ import { useTv } from "@/src/store/TvContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
 import { refreshPlaylistContent, type RefreshProgress } from "@/src/utils/refreshPlaylist";
+import { buildRefreshDiff, formatRefreshDiff, diffTelemetry } from '@/src/utils/refreshDiff';
+import { recordDiagnostic } from '@/src/utils/diagnostics';
 import { useProfiles } from "@/src/store/ProfileContext";
 import { KizilkanLogo } from "@/src/components/KizilkanLogo";
 import { haptic } from "@/src/utils/haptic";
@@ -101,11 +103,31 @@ export default function PlaylistSelect() {
     cancelAuto();
     setRefreshingId(pl.id);
     try {
+      /**
+       * v17.4.0 — YENİLEME FARK RAPORU (P1)
+       * Kullanıcı neyin eklendiğini/silindiğini göremiyordu. Farklar KARARLI
+       * İÇERİK KİMLİKLERİYLE hesaplanır (yalnız toplam sayı farkıyla değil):
+       * 20 kanal silinip 20 yeni kanal eklenirse toplam aynı kalır ama bu
+       * "değişiklik yok" demek değildir.
+       * Olağandışı kayıpta kullanıcı açıkça uyarılır.
+       */
+      const beforeSnapshot = { channels: pl.channels, vod: pl.vod, series: pl.series };
       const res = await refreshPlaylistContent(pl, (p) => setRefreshOneProgress(`${pl.name} · ${formatRefreshProgress(p)}`));
       if (res.ok && res.patch) {
         setRefreshOneProgress(`${pl.name} · Cihaza kaydediliyor...`);
         await updatePlaylist(pl.id, { ...res.patch, lastRefreshedAt: new Date().toISOString(), lastRefreshOk: true });
-        Alert.alert("Liste güncellendi", res.message);
+        const diff = buildRefreshDiff(beforeSnapshot, {
+          channels: (res.patch as any).channels ?? pl.channels,
+          vod: (res.patch as any).vod ?? pl.vod,
+          series: (res.patch as any).series ?? pl.series,
+        });
+        void recordDiagnostic('catalog', 'PLAYLIST_REFRESH_DIFF', {
+          playlistId: pl.id, ...diffTelemetry(diff, 'manual'),
+        });
+        Alert.alert(
+          diff.suspiciousDrop ? "Liste güncellendi — dikkat" : "Liste güncellendi",
+          `${formatRefreshDiff(diff)}\n\n${res.message}`,
+        );
       } else {
         await updatePlaylist(pl.id,{...(res.patch || {}),lastRefreshedAt:new Date().toISOString(),lastRefreshOk:false});
         Alert.alert("Yenilenemedi", res.message);
@@ -237,8 +259,27 @@ export default function PlaylistSelect() {
     if (isLoading || loadedProfileId !== activeProfile.id || navigationStartedRef.current) return;
 
     if (sorted.length === 0) {
-      navigationStartedRef.current = true;
-      router.replace("/add-playlist");
+      /**
+       * v17.9.6 — YÖNLENDİRME TUZAĞI DÜZELTMESİ
+       * -------------------------------------------------------------------
+       * SORUN (kullanıcı): Çoklu tarama sonrası bu ekran 0 liste görüp
+       * add-playlist'e atıyor ve orada kilitleniyordu (geri dönüş yok). Ekran
+       * her yeniden mount'ta navigationStartedRef=false başladığı için tuzak
+       * tekrarlanıyordu; kullanıcı ancak uygulamayı ZORLA DURDURUNCA kurtuluyordu.
+       *
+       * Otomatik yönlendirme SADECE ilk kurulumda (bu profilde daha önce hiç
+       * liste eklenmemişse) yapılır. Kullanıcı en az bir kez liste eklemişse,
+       * boş liste durumu geçici bir durumdur (tarama arası, onarım bekleyen
+       * kabuk) — o zaman burada KALINIR, kullanıcı listelerini görür ve
+       * "Yeni liste ekle" düğmesini kendi seçer.
+       */
+      const firstRunKey = `kizilkan.firstListAdded.${activeProfile.id}`;
+      void (async () => {
+        const everAdded = await storage.getItem<boolean>(firstRunKey, false);
+        if (everAdded || navigationStartedRef.current) return;   // tuzağa düşme
+        navigationStartedRef.current = true;
+        router.replace("/add-playlist");
+      })();
       return;
     }
 
@@ -289,11 +330,85 @@ export default function PlaylistSelect() {
       router.replace(homeRoute as any);
     } catch (e:any) {
       navigationStartedRef.current = false;
-      Alert.alert("Playlist seçilemedi", String(e?.message || e || "Liste içeriği doğrulanamadı."));
+      /**
+       * v17.9.6 — BOŞ KABUK SEÇİMİNDE EYLEMLİ UYARI
+       * -------------------------------------------------------------------
+       * SORUN (kullanıcı): boş kabuk liste seçilince "Playlist seçilemedi"
+       * çıkıyor ve kullanıcı ne yapacağını bilmiyordu; ancak elle "düzenle →
+       * yenile" yapınca açılıyordu. Otomatik onarım çalışıyor ama 30 sn
+       * throttle'a veya arka arkaya denemeye takılabiliyor.
+       *
+       * İçerik-yok hatalarında artık kullanıcıya doğrudan "Şimdi yenile"
+       * sunulur; bu, listeyi kaynağından yeniden indirir (mevcut refreshOne).
+       * Kaynağı olmayan (dosya tabanlı) listelerde yalnız bilgi verilir.
+       */
+      const msg = String(e?.message || e || "Liste içeriği doğrulanamadı.");
+      /**
+       * v17.9.8 — OOM (bellek yetersizliği) AYRI ELE ALINIR
+       * SORUN (23.09 logu): Büyük katalog (13K+ kanal) onarımı 75 MB tek blok
+       * ayırmaya çalışıp OutOfMemoryError ile çöküyordu. Bu "boş kabuk" deseni
+       * değil; kullanıcıya farklı ve doğru bir mesaj gösterilir. Ayrıca hangi
+       * hata olursa olsun seçim kilidi (refreshOneProgress/heavyLoading)
+       * PlaylistContext finally'lerinde temizlendiği için burada takılı kalmaz;
+       * yine de güvence olsun diye navigationStartedRef sıfırlandı (yukarıda).
+       */
+      const isOOM = /OutOfMemory|allocate|footprint|bellek/i.test(msg);
+      if (isOOM) {
+        /**
+         * v17.9.9 — DOĞRU OOM MESAJI. v17.9.8'deki "diğer uygulamaları kapatın"
+         * YANLIŞTI: sorun cihaz RAM'i (16 GB) değil, uygulamanın Android Java
+         * heap limiti (~384 MB). Başka uygulama kapatmak etkilemez. v17.9.9
+         * parçalı gönderim + largeHeap ile bunu büyük ölçüde çözer; yine de
+         * aşırı büyük listede kategorileri sınırlamak kesin çözümdür.
+         */
+        Alert.alert(
+          "Liste çok büyük",
+          "Bu liste çok fazla içerik barındırıyor. Yeni sürüm belleği çok daha " +
+          "verimli kullanıyor; yine de sorun sürerse listeyi düzenleyip yalnızca " +
+          "ihtiyacınız olan kategorileri (kanal/film/dizi) seçerek boyutu " +
+          "küçültebilirsiniz.",
+        );
+        return;
+      }
+      const isEmptyShell = /içeri|indeks|bulunamadı|hazır değil|boş/i.test(msg);
+      const pl: any = playlists.find(p => p.id === id);
+      const hasSource = !!(pl?.m3uUrl || pl?.xtreamServer || pl?.stalkerPortal || pl?.serverCodeBinding);
+      if (isEmptyShell && hasSource) {
+        Alert.alert(
+          "Liste içeriği yeniden indirilecek",
+          "Bu listenin içeriği cihazda bulunamadı (muhtemelen veritabanı bakımında temizlendi). " +
+          "Kaynağından yeniden indirilsin mi?",
+          [
+            { text: "Vazgeç", style: "cancel" },
+            { text: "Şimdi yenile", onPress: async () => {
+                await refreshOne(pl);
+                // Yenileme başarılıysa listeyi tekrar seçmeyi dene.
+                try { await setActivePlaylist(id); router.replace(homeRoute as any); } catch { /* kullanıcı tekrar deneyebilir */ }
+            } },
+          ],
+        );
+      } else {
+        Alert.alert("Playlist seçilemedi", msg);
+      }
     }
   };
 
   const choose = async (id: string) => {
+    /**
+     * v17.9.7 — Onarım/yenileme sürerken yeni seçim ENGELLENIR.
+     * Aksi halde önceki onarım "Aborted" olur ve hiçbir liste açılamaz.
+     */
+    /**
+     * v17.9.8 — Kilit yalnız GÖRÜNÜR yenileme (refreshingId) sürerken geçerli.
+     * Eskiden heavyLoading'e de bakıyordu; ama setActivePlaylist içindeki onarım
+     * OOM ile çökerse heavyLoading kısa süre açık kalıp kilidi yanlışlıkla
+     * tetikleyebilirdi. refreshingId, ekranda dönen göstergesi olan gerçek
+     * kullanıcı-başlatılı yenilemeyi işaret eder ve finally'de kesin temizlenir.
+     */
+    if (refreshingId) {
+      Alert.alert("İşlem sürüyor", "Liste içeriği indiriliyor. Lütfen bu işlem bitene kadar bekleyin.");
+      return;
+    }
     haptic.medium();
     const pl: any = playlists.find(p => p.id === id);
     if (pl?.hasPin) {
@@ -588,6 +703,46 @@ export default function PlaylistSelect() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/**
+        * v17.9.7 — TAM EKRAN ONARIM KATMANI (kullanıcı isteği: ortada, büyük punto)
+        * -------------------------------------------------------------------
+        * SORUN: Boş kabuk listesi seçilince içerik yeniden indiriliyor ama bu
+        * UZUN sürüyor (50 bin öğe). Kullanıcı küçük Alert'i görüp beklemeden
+        * başka listeye geçince onarım "Aborted" ile iptal oluyordu (23.09 logu:
+        * SELF_REPAIR_ERROR "Aborted"). Sonuç: liste yine seçilemiyordu.
+        *
+        * Artık onarım/yenileme sırasında EKRANIN ORTASINDA, BÜYÜK puntoyla,
+        * dokunmayı engelleyen tam ekran bir katman görünür. Kullanıcı işlemin
+        * sürdüğünü net görür ve yanlışlıkla başka yere dokunup iptal edemez.
+        */}
+      {(!!refreshOneProgress || heavyLoading) && (
+        <View style={{
+          position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: "rgba(0,0,0,0.88)", alignItems: "center", justifyContent: "center",
+          paddingHorizontal: SPACING.xl, zIndex: 999,
+        }}>
+          <ActivityIndicator size="large" color={colors.brandPrimary} />
+          <Text style={{
+            color: colors.onSurface, fontSize: FONT.size.xl, fontWeight: "900",
+            textAlign: "center", marginTop: SPACING.lg,
+          }}>
+            Liste içeriği hazırlanıyor
+          </Text>
+          <Text style={{
+            color: colors.onSurfaceSecondary, fontSize: FONT.size.lg,
+            textAlign: "center", marginTop: SPACING.md, lineHeight: 26,
+          }}>
+            {refreshOneProgress || "İçerik cihaza indiriliyor…"}
+          </Text>
+          <Text style={{
+            color: colors.brandPrimary, fontSize: FONT.size.base, fontWeight: "700",
+            textAlign: "center", marginTop: SPACING.xl,
+          }}>
+            Lütfen bekleyin — işlem bitmeden başka listeye dokunmayın.
+          </Text>
+        </View>
+      )}
     </SafeAreaView>
   );
 }

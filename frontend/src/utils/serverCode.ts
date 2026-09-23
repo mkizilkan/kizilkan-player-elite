@@ -19,7 +19,7 @@
  */
 import { xtreamLogin } from "@/src/utils/iptv";
 import { canonicalPanelHost, validPanelHosts, mergeDirectory, type DirectoryPanel } from "./panelDirectoryModel";
-export { canonicalPanelHost, filterDirectory, panelNameKey } from "./panelDirectoryModel";
+export { canonicalPanelHost, filterDirectory, panelNameKey, validPanelHosts } from "./panelDirectoryModel";
 export type { DirectoryScope, PanelTarget } from "./panelDirectoryModel";
 import { storage } from "@/src/utils/storage";
 
