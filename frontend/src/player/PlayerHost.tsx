@@ -69,6 +69,7 @@ import { useProfiles } from "@/src/store/ProfileContext";
 import { useLibrary } from "@/src/store/LibraryContext";
 import { createFlightRecorderChildTrace, getCurrentFlightRecorderTrace, markTask, recordDiagnostic, recordBlackBox, recordFlightRecorderStage } from "@/src/utils/diagnostics";
 import { storage } from "@/src/utils/storage";
+import { alternateHostUrls, isSourceRetryKind, loadPreferredHost, rememberWorkingHost, originOf } from "@/src/player/hostFailover";
 import { haptic } from "@/src/utils/haptic";
 import { CastButton } from "@/src/components/CastButton";
 import { SeekBar, formatTime as fmtDur } from "@/src/components/SeekBar";
@@ -292,7 +293,7 @@ export default function PlayerHost() {
   }, [activePlaylist?.id, ensureHeavyLoaded, isSynthetic, params.id]);
   const { setProgress: setLibProgress } = useLibrary();
 
-  const [externalStream, setExternalStream] = useState<{ url: string; name: string; group: string; container_ext: string; poster?: string | null; seriesNavKey?: string } | null>(null);
+  const [externalStream, setExternalStream] = useState<{ url: string; name: string; group: string; container_ext: string; poster?: string | null; seriesNavKey?: string; fallbackUrls?: string[] } | null>(null);
   const [seriesNavigationItems, setSeriesNavigationItems] = useState<any[]>([]);
   const [orderedNavigationScopeIds, setOrderedNavigationScopeIds] = useState<string[] | null>(null);
   const [playbackNeighbors, setPlaybackNeighbors] = useState<{ previous:any|null; next:any|null; position:number; total:number; source:"room"|"legacy"|"synthetic" } | null>(null);
@@ -530,6 +531,35 @@ export default function PlayerHost() {
   const lastVlcUiUpdateRef = useRef(0);
   const appStateRef = useRef(AppState.currentState);
   const playerTelemetryContextRef = useRef({ visible: false, channelId: "", phase: "idle", engine: "media3" });
+  /**
+   * v17.9.7 — EKRANI UYANIK TUTMA (TV box için kritik)
+   * -------------------------------------------------------------------------
+   * SORUN: Film/dizi izlerken cihazın ekran koruyucusu veya uyku zamanlayıcısı
+   * devreye girip yayını kesebiliyordu; TV box'ta uzaktan kumandayla izlerken
+   * özellikle sık. Uygulamada hiç keep-awake yoktu (expo-keep-awake bile
+   * kurulu değildi).
+   *
+   * Oynatma AKTİFKEN ekran uyanık tutulur, durunca/çıkınca serbest bırakılır.
+   * try/catch ile korumalı: modül bir sebeple yoksa oynatma etkilenmez.
+   */
+  useEffect(() => {
+    let active = false;
+    const tag = "kizilkan-player";
+    (async () => {
+      try {
+        const mod = "expo-keep-awake";
+        const KA: any = await import(/* @vite-ignore */ mod);
+        if (isPlaying) { await KA.activateKeepAwakeAsync(tag); active = true; }
+        else { try { await KA.deactivateKeepAwake(tag); } catch {} }
+      } catch { /* modül yoksa oynatma etkilenmez */ }
+    })();
+    return () => {
+      if (!active) return;
+      const mod = "expo-keep-awake";
+      void import(/* @vite-ignore */ mod).then((KA: any) => { try { void KA.deactivateKeepAwake(tag); } catch {} }).catch(() => {});
+    };
+  }, [isPlaying]);
+
   const isPlayingRef = useRef(isPlaying);
   const isBufferingRef = useRef(isBuffering);
   const showControlsRef = useRef(showControls);
@@ -664,6 +694,8 @@ export default function PlayerHost() {
         group: externalStream.group,
         url: externalStream.url,
         container_ext: externalStream.container_ext,
+        // v17.9.0: catchup biçim varyantları (yoksa undefined — davranış aynen).
+        fallbackUrls: Array.isArray(externalStream.fallbackUrls) ? externalStream.fallbackUrls : undefined,
       } as any;
     }
     if (isSynthetic) return null;
@@ -731,11 +763,31 @@ export default function PlayerHost() {
     });
   }, [playUrl, channel, overrides, activePlaylist, sessionKind, resolvedHeaders, resolvedForCurrentStalker]);
 
+  /**
+   * v17.9.0 — Yedek DNS'ler adres listesine eklenir (bkz. hostFailover.ts).
+   * Sıra: birincil adres → .ts/.m3u8 varyantları → aynı yayının diğer DNS'leri.
+   * Böylece 404/403/bağlantı hatasında mevcut "sıradaki adrese geç" mekanizması
+   * önce başka DNS'i dener; motor değiştirme en son çare olur.
+   * Yalnız Xtream + doğrulanmış DNS'i olan listelerde; M3U/MAG'da liste aynen kalır.
+   */
+  const [preferredHost, setPreferredHost] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void loadPreferredHost(String(activePlaylist?.id || "")).then(h => { if (alive) setPreferredHost(h); });
+    return () => { alive = false; };
+  }, [activePlaylist?.id]);
+
   const playbackCandidates = useMemo(() => {
     if (!basePlaybackRequest) return [] as string[];
-    return [basePlaybackRequest.url, ...(basePlaybackRequest.fallbackUrls || [])]
-      .filter((u, i, arr) => !!u && arr.indexOf(u) === i);
-  }, [basePlaybackRequest]);
+    const base = [basePlaybackRequest.url, ...(basePlaybackRequest.fallbackUrls || []), ...(((channel as any)?.fallbackUrls as string[] | undefined) || [])];
+    const hosts = activePlaylist?.source === "xtream"
+      ? ((activePlaylist as any)?.serverCodeBinding?.validatedHosts as string[] | undefined)
+      : undefined;
+    const alternates = hosts?.length
+      ? base.flatMap(u => alternateHostUrls(u, hosts, preferredHost))
+      : [];
+    return [...base, ...alternates].filter((u, i, arr) => !!u && arr.indexOf(u) === i);
+  }, [basePlaybackRequest, channel, activePlaylist?.source, (activePlaylist as any)?.serverCodeBinding?.validatedHosts, preferredHost]);
 
   useEffect(() => { setPlaybackUrlIndex(0); }, [channel?.id, playUrl]);
 
@@ -1119,6 +1171,39 @@ export default function PlayerHost() {
           surface: v2Profile.engine === "media3" ? v2Profile.surface : undefined,
           fromSessionMs: Math.max(0, Date.now() - sessionStartedAtRef.current),
           fromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current),
+          /**
+           * v17.7.0 — HATADA HANGİ KANAL OLDUĞU KAYDEDİLİYOR
+           * 20.09 kaydında 13 adet HTTP 404 vardı ama hangi kanal, hangi liste
+           * olduğu yazmıyordu; "liste bayat mı, adres biçimi mi yanlış" sorusu
+           * yanıtlanamıyordu. Adresin tamamı DEĞİL, yalnız host ve yol deseni
+           * kaydedilir — kullanıcı adı/şifre içeren sorgu dizesi dışarıda kalır.
+           */
+          channelId: String(channel?.id || ""),
+          channelName: String(channel?.name || "").slice(0, 60),
+          channelGroup: String((channel as any)?.group || "").slice(0, 40),
+          playlistId: String(activePlaylist?.id || ""),
+          playlistSource: String(activePlaylist?.source || ""),
+          urlHost: (() => {
+            try { const u = new URL(String(playbackRequest?.url || "")); return `${u.protocol}//${u.host}`; } catch { return ""; }
+          })(),
+          urlPathShape: (() => {
+            try {
+              /**
+               * Yol desenini anonimleştir. YALNIZ ilk segment (live/movie/series
+               * gibi tür adı) ve son segmentin uzantısı korunur; aradaki her şey
+               * (kullanıcı adı, şifre, kimlik) maskelenir.
+               * Örnek: "/live/kullanici/sifre/45678.ts" yolundaki kullanıcı,
+               * şifre ve kimlik segmentleri yıldızla değiştirilir; yalnız tür
+               * adı ve dosya uzantısı kalır.
+               */
+              const segs = new URL(String(playbackRequest?.url || "")).pathname.split("/").filter(Boolean);
+              if (!segs.length) return "/";
+              const first = /^(live|movie|series|vod|ch|stream)$/i.test(segs[0]) ? segs[0] : "*";
+              const ext = (segs[segs.length - 1].match(/\.[a-z0-9]{2,5}$/i) || [""])[0];
+              const middle = segs.length > 2 ? "/*".repeat(segs.length - 2) : "";
+              return `/${first}${middle}/*${ext}`.slice(0, 60);
+            } catch { return ""; }
+          })(),
         }, { sessionId: playerDiagnosticSessionRef.current });
         // v15.2.3: first-frame/playing başarı callback'inden hemen sonra gelen
         // bayat source error çalışan görüntüyü alternatif URL'ye sürüklemesin.
@@ -1157,7 +1242,15 @@ export default function PlayerHost() {
         // endpoint'inde düzgün döndürür. Extractor/source/404 hatasında motoru
         // değiştirmeden önce bir sonraki doğrulanmış URL biçimini dene.
         const canTryNextUrl = playbackUrlIndex + 1 < playbackCandidates.length;
-        if (canTryNextUrl && ["extractor", "source", "http_not_found"].includes(classified.kind)) {
+        // v17.9.0: 403, ağ ve zaman aşımı da kaynak değiştirmeyi hak eder (yedek DNS).
+        // http_auth dışarıda: yanlış kimlik tüm DNS'lerde aynı hatayı verir.
+        if (canTryNextUrl && isSourceRetryKind(classified.kind)) {
+          void recordDiagnostic("player", "PLAYER_SOURCE_FAILOVER", {
+            errorKind: classified.kind, fromIndex: playbackUrlIndex, total: playbackCandidates.length,
+            fromHost: originOf(String(playbackCandidates[playbackUrlIndex] || "")),
+            toHost: originOf(String(playbackCandidates[playbackUrlIndex + 1] || "")),
+            channelId: String(channel?.id || ""),
+          }, { sessionId: playerDiagnosticSessionRef.current });
           recordEngineFailure(String(channel?.id || ""), v2Profile, classified.kind, classified.technical).catch(() => {});
           setRecoveryMessage(`Alternatif yayın yolu deneniyor (${playbackUrlIndex + 2}/${playbackCandidates.length})…`);
           setError(null);
@@ -2507,6 +2600,42 @@ export default function PlayerHost() {
     }
   };
 
+  /**
+   * v17.5.0 — SON KANALA DÖN (zap-back)
+   * ==========================================================================
+   * Klasik TV davranışı: kanal değiştirdikten sonra tek tuşla ÖNCEKİ kanala
+   * dönmek. Uzun kanal listelerinde iki kanal arasında gidip gelmenin en hızlı
+   * yolu; TiViMate gibi olgun TV oynatıcılarında standart.
+   *
+   * Uygulama: her kanal değişiminde bir öncekinin kimliği saklanır. Tuşa
+   * basıldığında o kimliğe geçilir ve "şimdiki" ile "önceki" yer değiştirir —
+   * böylece arka arkaya basınca iki kanal arasında gidip gelinir.
+   */
+  const previousChannelIdRef = React.useRef<string | null>(null);
+  const currentChannelIdRef = React.useRef<string | null>(null);
+
+  React.useEffect(() => {
+    const id = String(channel?.id || "");
+    if (!id) return;
+    if (currentChannelIdRef.current && currentChannelIdRef.current !== id) {
+      previousChannelIdRef.current = currentChannelIdRef.current;
+    }
+    currentChannelIdRef.current = id;
+  }, [channel?.id]);
+
+  const zapToLastChannel = React.useCallback(() => {
+    if (sessionKind !== "live") { flashMessage("Son kanal yalnız canlı yayında"); return; }
+    const prev = previousChannelIdRef.current;
+    if (!prev) { flashMessage("Önceki kanal yok"); return; }
+    resetTracksForNavigation();
+    flashMessage("Son kanala dönülüyor…");
+    void addToRecent(prev).catch(() => {});
+    switchChannel(prev, source?.nav);
+    void recordDiagnostic("player", "TV_ZAP_BACK", {
+      toChannelId: prev, fromChannelId: currentChannelIdRef.current || "",
+    }, { sessionId: playerDiagnosticSessionRef.current, stage: "zapBack", outcome: "success" });
+  }, [sessionKind, switchChannel, addToRecent, source?.nav, resetTracksForNavigation, flashMessage]);
+
   const commitNumericZap = React.useCallback(async (digits: string) => {
     if (!isTv || sessionKind !== "live" || !activePlaylist?.id || !digits) return;
     const displayPosition = Number(digits);
@@ -2564,6 +2693,8 @@ export default function PlayerHost() {
     // Fiziksel CH+/- yalnız canlı kanal zapping semantiğidir.
     channelUp: () => { if (sessionKind === "live") zap(1); },
     channelDown: () => { if (sessionKind === "live") zap(-1); },
+    // v17.5.0: Kumandadaki "son kanal" tuşu.
+    lastChannel: () => zapToLastChannel(),
     // MEDIA_NEXT/PREVIOUS içerik bağlamını izler: live kanal, VOD film, series bölüm.
     contentNext: () => zap(1),
     contentPrevious: () => zap(-1),
@@ -2598,8 +2729,22 @@ export default function PlayerHost() {
      * sol/sağ normal odak gezinmesi olarak kalır (düğmeler arasında gezinme
      * bozulmasın). Bu, TiviMate'in de uyguladığı davranıştır.
      */
-    dpadLeft: () => { if (!showControls && sessionKind === "live") zap(-1); else if (showControls) scheduleHide(); },
-    dpadRight: () => { if (!showControls && sessionKind === "live") zap(1); else if (showControls) scheduleHide(); },
+    /**
+     * v17.9.7 — VOD/DİZİDE D-PAD İLE İLERİ/GERİ SARMA
+     * Canlıda sol/sağ = kanal değiştirme (mevcut). VOD ve dizide ise artık
+     * 10 sn geri/ileri SARMA (seekBy zaten var). Kontroller gizliyken çalışır;
+     * açıkken normal odak gezinmesi korunur.
+     */
+    dpadLeft: () => {
+      if (showControls) { scheduleHide(); return; }
+      if (sessionKind === "live") zap(-1);
+      else seekBy(-10);
+    },
+    dpadRight: () => {
+      if (showControls) { scheduleHide(); return; }
+      if (sessionKind === "live") zap(1);
+      else seekBy(10);
+    },
 
     /**
      * YUKARI/AŞAĞI: kontroller gizliyken kanal bilgisini gösterir.
@@ -2691,6 +2836,25 @@ export default function PlayerHost() {
    * HW -> SW geçişi yalnız gerçek native onError olayında yapılır.
    */
   const recordFirstFrameDiagnostic = React.useCallback((profile: EngineProfile, firstFrameMs: number) => {
+    /**
+     * v17.9.0 — ÇALIŞAN DNS HATIRLANIR.
+     * İlk kare geldi = bu adres gerçekten çalışıyor. Yedek DNS'e geçilerek
+     * açıldıysa (playbackUrlIndex > 0) o DNS liste için tercih olarak saklanır;
+     * bir sonraki açılışta önce o denenir, çalışmayan DNS'le vakit kaybedilmez.
+     */
+    const workingUrl = String(playbackCandidates[playbackUrlIndex] || "");
+    if (activePlaylist?.source === "xtream" && workingUrl) {
+      const workingHost = originOf(workingUrl);
+      if (workingHost && workingHost !== preferredHost) {
+        void rememberWorkingHost(String(activePlaylist.id), workingUrl);
+        setPreferredHost(workingHost);
+        if (playbackUrlIndex > 0) {
+          void recordDiagnostic("player", "PLAYER_SOURCE_FAILOVER_OK", {
+            channelId: String(channel?.id || ""), host: workingHost, attempt: playbackUrlIndex + 1,
+          }, { sessionId: playerDiagnosticSessionRef.current });
+        }
+      }
+    }
     void recordFlightRecorderStage(lifecycleTraceRef.current || getCurrentFlightRecorderTrace(), 'firstFrame', { engine: profile.engine, firstFrameMs, channelId: String(channel?.id || '') }, 'success');
     void recordDiagnostic("player", "FIRST_FRAME", {
       channelId: String(channel?.id || ""),
@@ -2699,7 +2863,7 @@ export default function PlayerHost() {
       firstFrameMs,
       totalFromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current),
     }, { sessionId: playerDiagnosticSessionRef.current });
-  }, [channel?.id, activePlaylist?.source]);
+  }, [channel?.id, activePlaylist?.source, activePlaylist?.id, playbackCandidates, playbackUrlIndex, preferredHost]);
 
   const markVlcHealthy = React.useCallback((
     sid: number,
@@ -4043,6 +4207,8 @@ export default function PlayerHost() {
                 <GridBtn testID="player-subtitle-btn" icon="text" label={subtitleTracks.length > 0 ? `Altyazı (${subtitleTracks.length})` : "Altyazı"} onPress={() => setSheet("subtitle")} />
                 <GridBtn testID="player-fit-btn" icon="resize" label={fit === "contain" ? "Sığdır" : fit === "cover" ? "Doldur" : "Uzat"} onPress={cycleFit} />
                 <GridBtn testID="player-speed-btn" icon="speedometer" label={`${speed.toFixed(2)}x`} onPress={() => setSheet("speed")} highlighted={speed !== 1.0} />
+                {/* v17.5.0: Kumandasında "son kanal" tuşu olmayan cihazlar için panelden erişim. */}
+                {sessionKind === "live" && <GridBtn testID="player-last-channel-btn" icon="swap-horizontal" label="Son kanala dön" onPress={() => { setShowControls(false); zapToLastChannel(); }} />}
                 {(sessionKind === "vod" || sessionKind === "series") && <GridBtn testID="player-auto-next-btn" icon="play-skip-forward" label={`Sonrakini otomatik: ${autoPlayNext?'Açık':'Kapalı'}`} highlighted={autoPlayNext} onPress={() => {const next=!autoPlayNext;setAutoPlayNext(next);autoNextRef.current=next;void storage.setItem(AUTO_NEXT_KEY+activeProfile.id,next);}} />}
 
                 <GridBtn testID="player-audiodelay-btn" icon="git-compare" label="Senkron" onPress={() => setSheet("audiodelay")} />

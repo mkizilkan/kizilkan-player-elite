@@ -24,7 +24,7 @@ type Scope = "all" | "live" | "vod" | "series";
 export default function SearchTab() {
   const router = useRouter();
   const { colors } = useTheme();
-  const { activePlaylist, toggleFavorite, isFavorite, addToRecent, favorites, recent, ensureHeavyLoaded } = usePlaylists();
+  const { activePlaylist, playlists, setActivePlaylist, toggleFavorite, isFavorite, addToRecent, favorites, recent, ensureHeavyLoaded } = usePlaylists();
 
   // v15.2.4: Android'de arama Room/SQLite üzerinde yapılır; bütün katalogu
   // JS/Hermes belleğine hydrate etme. Web/legacy fallback eski yolu korur.
@@ -36,6 +36,8 @@ export default function SearchTab() {
   const { activeProfile } = useProfiles();
   const [q, setQ] = useState("");
   const [scope, setScope] = useState<Scope>("all");
+  /** v17.8.0: false = yalnız aktif liste, true = tüm listeler. */
+  const [searchAllPlaylists, setSearchAllPlaylists] = useState(false);
   const [nativeLiveResults, setNativeLiveResults] = useState<Channel[]>([]);
   const [nativeVodResults, setNativeVodResults] = useState<VodItem[]>([]);
   const [nativeSeriesResults, setNativeSeriesResults] = useState<SeriesItem[]>([]);
@@ -104,20 +106,46 @@ export default function SearchTab() {
       const wantLive = scope === "all" || scope === "live";
       const wantVod = scope === "all" || scope === "vod";
       const wantSeries = scope === "all" || scope === "series";
-      const [livePage, vodPage, seriesPage] = await Promise.all([
-        wantLive ? KizilkanNativeCore.queryItems<Channel>(activePlaylist.id, "live", { search: needle, limit: 180 }) : Promise.resolve({items:[]}),
-        wantVod ? KizilkanNativeCore.queryItems<VodItem>(activePlaylist.id, "vod", { search: needle, limit: 180 }) : Promise.resolve({items:[]}),
-        wantSeries ? KizilkanNativeCore.queryItems<SeriesItem>(activePlaylist.id, "series", { search: needle, limit: 180 }) : Promise.resolve({items:[]}),
-      ]);
+      /**
+       * v17.8.0 — GLOBAL ARAMA: TÜM LİSTELERDE
+       * -----------------------------------------------------------------------
+       * Arama zaten canlı+film+diziyi TEK seferde, paralel Room sorgularıyla
+       * arıyordu; eksik olan kapsamdı: yalnız AKTİF listeye bakılıyordu.
+       * Kullanıcı bir kanalın hangi listede olduğunu bilmiyorsa bulamıyordu.
+       *
+       * "Tüm listeler" açıkken her listede aynı sorgu çalışır ve sonuçlara
+       * listenin adı/kimliği eklenir (hangi listeden geldiği görünsün, doğru
+       * listede açılsın). Sorgular Room'da, sayfalı ve sınırlı: liste başına
+       * tür başı 60 sonuç; ana iş parçacığı bloklanmaz.
+       */
+      const targets = searchAllPlaylists
+        ? playlists.filter(pl => !!pl.id)
+        : [activePlaylist];
+      const perList = searchAllPlaylists ? 60 : 180;
+      const tag = <T,>(items: T[], pl: any): T[] =>
+        searchAllPlaylists ? items.map(it => ({ ...(it as any), __playlistId: pl.id, __playlistName: pl.name } as T)) : items;
+
+      const pages = await Promise.all(targets.map(async pl => {
+        const [livePage, vodPage, seriesPage] = await Promise.all([
+          wantLive ? KizilkanNativeCore.queryItems<Channel>(pl.id, "live", { search: needle, limit: perList }).catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
+          wantVod ? KizilkanNativeCore.queryItems<VodItem>(pl.id, "vod", { search: needle, limit: perList }).catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
+          wantSeries ? KizilkanNativeCore.queryItems<SeriesItem>(pl.id, "series", { search: needle, limit: perList }).catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
+        ]);
+        return {
+          live: tag(((livePage as any).items || []) as Channel[], pl),
+          vod: tag(((vodPage as any).items || []) as VodItem[], pl),
+          series: tag(((seriesPage as any).items || []) as SeriesItem[], pl),
+        };
+      }));
       if (cancelled) return;
-      setNativeLiveResults(applyBaseFilter((livePage as any).items || []) as Channel[]);
-      setNativeVodResults(applyBaseFilter((vodPage as any).items || []) as VodItem[]);
-      setNativeSeriesResults(applyBaseFilter((seriesPage as any).items || []) as SeriesItem[]);
+      setNativeLiveResults(applyBaseFilter(pages.flatMap(p => p.live)) as Channel[]);
+      setNativeVodResults(applyBaseFilter(pages.flatMap(p => p.vod)) as VodItem[]);
+      setNativeSeriesResults(applyBaseFilter(pages.flatMap(p => p.series)) as SeriesItem[]);
     })().catch(e => console.warn("[Search] Native Room query failed", e));
     return () => { cancelled = true; };
   // applyBaseFilter intentionally reads current parental/library state.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePlaylist?.id, debouncedQ, scope, activeProfile?.isKids, hiddenModeUnlocked, parental.adultHidden]);
+  }, [activePlaylist?.id, debouncedQ, scope, activeProfile?.isKids, hiddenModeUnlocked, parental.adultHidden, searchAllPlaylists, playlists.length]);
 
   useEffect(() => {
     if (!KizilkanNativeCore.available || !activePlaylist?.id) return;
@@ -182,8 +210,21 @@ export default function SearchTab() {
 
   const totalResults = liveResults.length + vodResults.length + seriesResults.length;
 
-  const openChannel = (ch: Channel) => {
+  /**
+   * v17.8.0 — Başka listeden gelen sonuca dokunulduğunda ÖNCE o listeye geçilir.
+   * Aksi halde oynatıcı öğeyi aktif listede arar, bulamaz veya yanlış bağlamda
+   * açardı (EPG, favori, son izlenen yanlış listeye yazılırdı).
+   */
+  const ensurePlaylistFor = async (item: any) => {
+    const target = String(item?.__playlistId || "");
+    if (target && target !== activePlaylist?.id) {
+      await setActivePlaylist(target);
+    }
+  };
+
+  const openChannel = async (ch: Channel) => {
     haptic.light();
+    await ensurePlaylistFor(ch);
     if (requiresPin(ch.group)) {
       router.push({ pathname: "/pin-entry", params: { category: ch.group } });
       return;
@@ -192,8 +233,9 @@ export default function SearchTab() {
     addToRecent(ch.id);
     router.push({ pathname: "/player", params: { id: ch.id, navOrigin: "search", navSearch: debouncedQ, focusKey: `search:live:${ch.id}` } });
   };
-  const openDetail = (item: { id: string; group?: string | null }, type: "vod" | "series") => {
+  const openDetail = async (item: { id: string; group?: string | null }, type: "vod" | "series") => {
     haptic.light();
+    await ensurePlaylistFor(item);
     if (requiresPin(item.group)) {
       router.push({ pathname: "/pin-entry", params: { category: item.group } });
       return;
@@ -277,6 +319,25 @@ export default function SearchTab() {
               </FocusButton>
             );
           })}
+          {/**
+            * v17.8.0 — LİSTE KAPSAMI. Birden fazla liste varsa görünür.
+            * Tek liste varken göstermenin anlamı yok.
+            */}
+          {playlists.length > 1 && (
+            <FocusButton
+              testID="search-all-playlists-toggle"
+              onPress={() => { haptic.soft(); setSearchAllPlaylists(v => !v); }}
+              style={[
+                styles.chip,
+                { backgroundColor: searchAllPlaylists ? colors.brandPrimary : colors.surfaceSecondary, borderColor: searchAllPlaylists ? colors.brandPrimary : colors.border },
+              ]}
+            >
+              <Ionicons name="layers-outline" size={13} color={searchAllPlaylists ? colors.onBrandPrimary : colors.onSurfaceSecondary} />
+              <Text style={[styles.chipText, { color: searchAllPlaylists ? colors.onBrandPrimary : colors.onSurfaceSecondary }]}>
+                {searchAllPlaylists ? `Tüm listeler (${playlists.length})` : "Bu liste"}
+              </Text>
+            </FocusButton>
+          )}
         </ScrollView>
       </View>
 
@@ -356,13 +417,25 @@ export default function SearchTab() {
                 <>
                   <SectionHeader icon="tv" label={`Kanallar (${liveResults.length})`} />
                   {liveResults.map(r => (
-                    <ChannelRow
-                      key={r.id}
-                      channel={r}
-                      isFavorite={isFavorite(r.id)}
-                      onToggleFavorite={() => { haptic.soft(); toggleFavorite(r.id); }}
-                      onPress={() => openChannel(r)}
-                    />
+                    /**
+                     * v17.8.0: Anahtar liste kimliğiyle birleşik. Tüm listelerde
+                     * aranırken aynı kanal kimliği iki listede olabilir; yalnız
+                     * r.id kullanmak React'te çift anahtar hatasına ve satırların
+                     * karışmasına yol açardı.
+                     */
+                    <View key={`${(r as any).__playlistId || "a"}:${r.id}`}>
+                      {!!(r as any).__playlistName && (
+                        <Text style={{ color: colors.onSurfaceTertiary, fontSize: 11, marginLeft: 16, marginTop: 4 }} numberOfLines={1}>
+                          {(r as any).__playlistName}
+                        </Text>
+                      )}
+                      <ChannelRow
+                        channel={r}
+                        isFavorite={isFavorite(r.id)}
+                        onToggleFavorite={() => { haptic.soft(); toggleFavorite(r.id); }}
+                        onPress={() => openChannel(r)}
+                      />
+                    </View>
                   ))}
                 </>
               )}
@@ -371,11 +444,11 @@ export default function SearchTab() {
                   <SectionHeader icon="film" label={`Filmler (${vodResults.length})`} />
                   {vodResults.map(r => (
                     <SearchPosterRow
-                      key={r.id}
+                      key={`${(r as any).__playlistId || "a"}:${r.id}`}
                       testID={`search-vod-${r.id}`}
                       poster={r.poster}
                       name={r.name}
-                      meta={[r.year && String(r.year), r.group].filter(Boolean).join(" • ")}
+                      meta={[(r as any).__playlistName, r.year && String(r.year), r.group].filter(Boolean).join(" • ")}
                       rating={r.rating_5based}
                       onPress={() => openDetail(r, "vod")}
                     />
@@ -387,11 +460,11 @@ export default function SearchTab() {
                   <SectionHeader icon="albums" label={`Diziler (${seriesResults.length})`} />
                   {seriesResults.map(r => (
                     <SearchPosterRow
-                      key={r.id}
+                      key={`${(r as any).__playlistId || "a"}:${r.id}`}
                       testID={`search-series-${r.id}`}
                       poster={r.poster}
                       name={r.name}
-                      meta={[r.genre, r.director].filter(Boolean).join(" • ")}
+                      meta={[(r as any).__playlistName, r.genre, r.director].filter(Boolean).join(" • ")}
                       rating={r.rating_5based}
                       onPress={() => openDetail(r, "series")}
                     />
