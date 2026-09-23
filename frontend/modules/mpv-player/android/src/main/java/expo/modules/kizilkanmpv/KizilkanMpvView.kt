@@ -133,6 +133,18 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
       player.setOptionString("config-dir", configDir.absolutePath)
       player.setOptionString("gpu-shader-cache-dir", cacheDir.absolutePath)
       player.setOptionString("icc-cache-dir", cacheDir.absolutePath)
+      /**
+       * v17.6.0 — ytdl_hook KAPATILDI.
+       * Cihaz kaydında (18.09) MPV hatalarının tamamı bu eklentiden geliyordu:
+       *   "ytdl_hook: Subprocess failed: init"
+       *   "ytdl_hook: youtube-dl failed: not found or not enough permissions"
+       * Eklenti YouTube benzeri siteler için youtube-dl aramaya çalışıyor;
+       * Android'de böyle bir çalıştırılabilir YOK ve IPTV akışlarımız için
+       * zaten GEREKSİZ. Açık kaldığı sürece her MPV denemesi boşa gidiyor ve
+       * motor kullanılamaz görünüyordu.
+       */
+      player.setOptionString("ytdl", "no")
+      player.setOptionString("load-scripts", "no")
       player.setOptionString("profile", "fast")
       player.setOptionString("vo", "gpu")
       player.setOptionString("gpu-context", "android")
