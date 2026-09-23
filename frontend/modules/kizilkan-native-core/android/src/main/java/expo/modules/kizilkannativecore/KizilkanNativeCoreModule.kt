@@ -168,6 +168,16 @@ class KizilkanNativeCoreModule : Module() {
       } finally { response?.close() }
     }
 
+    /**
+     * v17.6.0 — JS aktif iş etiketini native ANR gözcüsüne bildirir.
+     * Function (AsyncFunction değil): tek bir alan ataması, kuyruk beklemeden
+     * anında yazılmalı; aksi halde kilitlenme anında etiket bayat kalırdı.
+     */
+    Function("setDiagnosticTask") { label: String ->
+      NativeBlackBox.setCurrentTask(label)
+      true
+    }
+
     AsyncFunction("warmPlaylist") { id: String ->
       val result = ensureIndexed(id)
       summary(result.snapshot, cacheHit = result.cacheHit)
@@ -292,11 +302,51 @@ class KizilkanNativeCoreModule : Module() {
         }
       }
       val started = SystemClock.elapsedRealtime()
+      /**
+       * v17.9.1 — YENİLEME FARK RAPORU NATIVE TARAFTA HESAPLANIR
+       * -------------------------------------------------------------------
+       * JS tarafında Native Core modunda listeler bellekte BOŞ dizilerle
+       * tutulduğu için "önce" değeri her zaman 0 çıkıyordu (21.09 kaydı:
+       * live önce=0 sonra=16484). Doğru fark tam burada, eski satırlar
+       * silinmeden hemen önce hesaplanır. Kimlik kuralı insertCollection ile
+       * BİREBİR aynıdır (id → stream_id → series_id); sıraya bağlı "row-N"
+       * geri dönüş anahtarları kararlı olmadığı için farka katılmaz.
+       */
+      val diff = linkedMapOf<String, Map<String, Int>>()
+      fun incomingIds(arr: JSONArray): Set<String> {
+        val out = HashSet<String>(arr.length() * 2)
+        for (i in 0 until arr.length()) {
+          val obj = arr.optJSONObject(i) ?: continue
+          val itemId = obj.optString("id", "").trim().ifEmpty {
+            obj.optString("stream_id", "").trim().ifEmpty { obj.optString("series_id", "").trim() }
+          }
+          if (itemId.isNotEmpty()) out.add(itemId)
+        }
+        return out
+      }
+      skipped.forEach { kind ->
+        val n = snapshotCount(kind)
+        diff[kind] = mapOf("before" to n, "after" to n, "added" to 0, "removed" to 0, "unchanged" to n)
+      }
       if (changed.isNotEmpty()) {
         db.runInTransaction {
           val dao = db.mediaDao()
           changed.forEach { kind ->
             val arr = arrays[kind] ?: return@forEach
+            try {
+              val oldIds = dao.itemIds(id, kind).filterNot { it.startsWith("row-") }.toHashSet()
+              val newIds = incomingIds(arr)
+              val kept = oldIds.count { it in newIds }
+              diff[kind] = mapOf(
+                "before" to dao.count(id, kind),
+                "after" to arr.length(),
+                "added" to newIds.count { it !in oldIds },
+                "removed" to oldIds.count { it !in newIds },
+                "unchanged" to kept,
+              )
+            } catch (_: Throwable) {
+              // Fark hesaplanamazsa senkron ETKİLENMEZ; yalnız rapor eksik kalır.
+            }
             dao.deleteKind(id, kind)
             insertCollection(dao, id, kind, arr)
           }
@@ -360,6 +410,7 @@ class KizilkanNativeCoreModule : Module() {
         "snapshotRecovered" to snapshotRecovered,
         "snapshotRecoveryState" to snapshotRecoveryState,
         "elapsedMs" to (SystemClock.elapsedRealtime() - started),
+        "diff" to diff,
       )
       }
     }
@@ -826,6 +877,26 @@ class KizilkanNativeCoreModule : Module() {
     AsyncFunction("cancelBulkImport") {
       context().startService(Intent(context(), BulkPlaylistImportService::class.java).apply { action = BulkPlaylistImportService.ACTION_CANCEL })
       true
+    }
+
+    /**
+     * v17.9.5 — TEŞHİS: Room'daki tüm snapshot envanteri.
+     * JS bunu meta ile karşılaştırıp yetim (arayüzde görünmeyen ama Room'da
+     * duran) listeleri tespit eder. Salt okuma; hiçbir şey silmez/değiştirmez.
+     */
+    AsyncFunction("getSnapshotInventory") {
+      val dao = database().snapshotDao()
+      dao.getAllSnapshots().map { snap ->
+        mapOf(
+          "playlistId" to snap.playlistId,
+          "channels" to snap.channelsCount,
+          "vod" to snap.vodCount,
+          "series" to snap.seriesCount,
+          "total" to (snap.channelsCount + snap.vodCount + snap.seriesCount),
+          "importedAt" to snap.importedAtEpochMs,
+          "sourceSize" to snap.sourceSize,
+        )
+      }
     }
 
     Function("getBulkImportSnapshot") {
