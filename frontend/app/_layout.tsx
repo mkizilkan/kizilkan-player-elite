@@ -48,6 +48,7 @@ import { prepareExternalStream } from "@/src/utils/externalOpen";
 import { AppState, View } from "react-native";
 import { PlayerProvider } from "@/src/player/PlayerContext";
 import PlayerHost from "@/src/player/PlayerHost";
+import PlaylistRepairOverlay from "@/src/components/PlaylistRepairOverlay";
 import { TvProvider, useTv } from "@/src/store/TvContext";
 import { TvFocusMemoryProvider, TvFocusScope } from "@/src/store/TvFocusMemoryContext";
 import { markAppBackground, markAppForeground, persistAppPath } from "@/src/utils/appSession";
@@ -243,6 +244,10 @@ export default function RootLayout() {
                           <PlayerHost />
                         </TvFocusScope>
                       </View>
+                      {/* v17.9.10: Boş-kabuk onarımı nereden tetiklenirse tetiklensin
+                          (profil sonrası otomatik seçim / playlist yönetimi / Ayarlar SEÇ)
+                          aynı gerçek aşamalar tüm uygulamanın üstünde görünür. */}
+                      <PlaylistRepairOverlay />
                       </PlayerProvider>
                     </DownloadProvider>
                   </LibraryProvider>

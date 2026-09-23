@@ -198,6 +198,16 @@ export interface Playlist {
   lastUsedAt?: string;
   lastRefreshedAt?: string;
   lastRefreshOk?: boolean;
+  /** v17.9.10: boş-kabuk onarımı yarıda kalırsa kısmi Room snapshot hazır sayılmasın. */
+  catalogRecovery?: {
+    state: 'running' | 'ready' | 'partial' | 'failed';
+    startedAt?: number;
+    completedAt?: number;
+    expectedKinds?: Array<'live' | 'vod' | 'series'>;
+    completedKinds?: Array<'live' | 'vod' | 'series'>;
+    failedKinds?: Array<'live' | 'vod' | 'series'>;
+    error?: string;
+  };
   /** v16.13.10: endpoint gerçeği; 404 olan kataloglar desteklenmiyor kabul edilir, çalışan katalog korunur. */
   catalogCapabilities?: {
     live?: 'supported' | 'empty' | 'unsupported_404' | 'error';

@@ -10,6 +10,7 @@ import { usePlaylists } from "@/src/store/PlaylistContext";
 import { storage } from "@/src/utils/storage";
 import { xtreamShortEpg } from "@/src/utils/iptv";
 import { haptic } from "@/src/utils/haptic";
+import type { Channel } from "@/src/types";
 
 const HOUR_WIDTH = 180;
 const CHANNEL_HEIGHT = 68;
@@ -55,17 +56,62 @@ export default function EpgTimeline() {
     dpadDown: () => jumpDay(-1),
   });
 
-  const allChannels = activePlaylist?.channels || [];
+  /**
+   * v17.9.1 — EPG ZAMAN ÇİZELGESİ NATIVE CORE'DA BOŞ AÇILIYORDU
+   * ---------------------------------------------------------------------------
+   * Kanallar `activePlaylist.channels` üzerinden okunuyordu; Native Core
+   * modunda bu dizi bellekte BOŞTUR (içerik Room'da). Sonuç: grup listesi ve
+   * kanal ızgarası boş, ekran "kanal yok" durumunda kalıyordu.
+   * Ekran zaten yalnız ilk 60 kanalın EPG'sini kullandığı için Room'dan seçili
+   * grubun ilk 60 kanalı ve grup listesi çekilir; 16 bin kanal JS'e taşınmaz.
+   * Bellekte veri varsa (web/legacy yol) eski davranış aynen korunur.
+   */
+  const memoryChannels = activePlaylist?.channels || [];
+  const useRoom = memoryChannels.length === 0;
+  const [roomGroups, setRoomGroups] = useState<string[]>([]);
+  const [roomChannels, setRoomChannels] = useState<Channel[]>([]);
+  useEffect(() => {
+    let alive = true;
+    if (!useRoom || !activePlaylist?.id) return;
+    (async () => {
+      try {
+        const { KizilkanNativeCore } = await import("@/modules/kizilkan-native-core");
+        if (!KizilkanNativeCore.available) return;
+        const cats: any[] = await KizilkanNativeCore.getCategories(activePlaylist.id, "live");
+        if (alive) setRoomGroups((cats || []).map((c: any) => String(c?.name || c || "")).filter(Boolean).sort());
+      } catch { /* grup listesi alınamazsa "Tümü" ile devam edilir */ }
+    })();
+    return () => { alive = false; };
+  }, [useRoom, activePlaylist?.id]);
+  useEffect(() => {
+    let alive = true;
+    if (!useRoom || !activePlaylist?.id) return;
+    (async () => {
+      try {
+        const { KizilkanNativeCore } = await import("@/modules/kizilkan-native-core");
+        if (!KizilkanNativeCore.available) return;
+        const page = await KizilkanNativeCore.queryItems<Channel>(activePlaylist.id, "live", {
+          group: selectedGroup === ALL_GROUP ? undefined : selectedGroup, limit: 60,
+        });
+        if (alive) setRoomChannels(((page as any)?.items || []) as Channel[]);
+      } catch { if (alive) setRoomChannels([]); }
+    })();
+    return () => { alive = false; };
+  }, [useRoom, activePlaylist?.id, selectedGroup]);
+
+  const allChannels = useRoom ? roomChannels : memoryChannels;
   const groups = useMemo(() => {
+    if (useRoom) return roomGroups;
     const s = new Set<string>();
-    allChannels.forEach(c => { if (c.group) s.add(c.group); });
+    memoryChannels.forEach(c => { if (c.group) s.add(c.group); });
     return Array.from(s).sort();
-  }, [allChannels]);
+  }, [useRoom, roomGroups, memoryChannels]);
 
   const channels = useMemo(() => {
-    if (selectedGroup === ALL_GROUP) return allChannels;
-    return allChannels.filter(c => (c.group || "Diğer") === selectedGroup);
-  }, [allChannels, selectedGroup]);
+    if (useRoom) return roomChannels;              // sorgu zaten grup filtreli
+    if (selectedGroup === ALL_GROUP) return memoryChannels;
+    return memoryChannels.filter(c => (c.group || "Diğer") === selectedGroup);
+  }, [useRoom, roomChannels, memoryChannels, selectedGroup]);
 
   const channelIds = useMemo(
     () => channels.map(c => c.epg_channel_id || c.tvg_id || c.stream_id).filter(Boolean).slice(0, 60) as string[],
@@ -199,19 +245,24 @@ export default function EpgTimeline() {
        * encode'suz bir URL kuruluyordu (GPT tespiti).
        */
       try {
-        const { buildXtreamTimeshiftUrl } = await import("@/src/utils/iptv");
-        const url = buildXtreamTimeshiftUrl({
+        // v17.9.1: catchup ekranıyla AYNI biçim varyantları. Eskiden EPG'den
+        // açılan geçmiş program yalnız tek biçimi deniyordu.
+        const { buildXtreamTimeshiftVariants } = await import("@/src/utils/iptv");
+        const variants = buildXtreamTimeshiftVariants({
           server: String((activePlaylist as any).xtreamServer || ""),
           username: String((activePlaylist as any).xtreamUsername || ""),
           password: String((activePlaylist as any).xtreamPassword || ""),
           startMs: start,
           stopMs: stop,
           streamId: channel.stream_id || "",
+          timeZone: String((activePlaylist as any)?.serverInfo?.timezone || "") || null,
         });
+        const url = variants[0];
         if (url) {
           const synth = {
             id: `epplay-${nano()}`,
             url, name: `${channel.name} • ${prog.title}`, group: "Catch-up", container_ext: "ts",
+            fallbackUrls: variants.slice(1),
           };
           await storage.setItem(EPISODE_URL_KEY + synth.id, JSON.stringify(synth));
           router.push({ pathname: "/player", params: { id: synth.id, ext: "true" } });

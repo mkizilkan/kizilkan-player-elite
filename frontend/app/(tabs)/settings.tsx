@@ -147,6 +147,18 @@ export default function SettingsTab() {
     }
   };
 
+  /** v17.9.10 — Ayarlar'daki SEÇ artık Promise hatasını yutmaz.
+   * Otomatik boş-kabuk onarımı global overlay'de canlı ilerler; son hata varsa
+   * kullanıcıya burada açıkça gösterilir. Same-target singleflight Context'te
+   * korunur, bu yüzden art arda dokunma ikinci indirme başlatmaz. */
+  const selectPlaylistFromSettings = async (id:string) => {
+    try {
+      await setActivePlaylist(id);
+    } catch (e:any) {
+      Alert.alert('Playlist seçilemedi', String(e?.message || e || 'Liste içeriği doğrulanamadı.'));
+    }
+  };
+
   const themeKeys = Object.keys(THEMES) as ThemeName[];
 
   const fetchEpg = async () => {
@@ -959,7 +971,7 @@ export default function SettingsTab() {
             return (
               <View key={pl.id} style={[styles.plCard, { backgroundColor: typeColor + "10", borderColor: active ? colors.brandPrimary : typeColor + "88" }]}>
                 <View style={{ width: 4, alignSelf: "stretch", borderRadius: 4, backgroundColor: typeColor, marginRight: SPACING.sm }} />
-                <FocusButton testID={`select-playlist-${pl.id}`} style={{ flex: 1 }} onPress={() => setActivePlaylist(pl.id)}>
+                <FocusButton testID={`select-playlist-${pl.id}`} style={{ flex: 1 }} onPress={() => void selectPlaylistFromSettings(pl.id)}>
                   <Text style={[styles.plName, { color: colors.onSurface }]} numberOfLines={1}>{pl.name}</Text>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 }}>
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: typeColor + "22", borderRadius: RADIUS.pill, paddingHorizontal: 8, paddingVertical: 3 }}>
@@ -1014,7 +1026,7 @@ export default function SettingsTab() {
                     );
                   })()}
                 </FocusButton>
-                <FocusButton testID={`settings-select-action-${pl.id}`} onPress={() => void setActivePlaylist(pl.id)} style={{minWidth:62,minHeight:38,borderRadius:RADIUS.pill,borderWidth:1,borderColor:colors.brandPrimary,backgroundColor:active?colors.surfaceSecondary:colors.brandPrimary,alignItems:"center",justifyContent:"center",paddingHorizontal:10,marginLeft:SPACING.sm}}><Text style={{color:active?colors.brandPrimary:colors.onBrandPrimary,fontWeight:"900"}}>{active?"AKTİF":"SEÇ"}</Text></FocusButton>
+                <FocusButton testID={`settings-select-action-${pl.id}`} onPress={() => void selectPlaylistFromSettings(pl.id)} style={{minWidth:62,minHeight:38,borderRadius:RADIUS.pill,borderWidth:1,borderColor:colors.brandPrimary,backgroundColor:active?colors.surfaceSecondary:colors.brandPrimary,alignItems:"center",justifyContent:"center",paddingHorizontal:10,marginLeft:SPACING.sm}}><Text style={{color:active?colors.brandPrimary:colors.onBrandPrimary,fontWeight:"900"}}>{active?"AKTİF":"SEÇ"}</Text></FocusButton>
                 {active && <Ionicons name="radio-button-on" size={20} color={colors.brandPrimary} />}
                 {/* LİSTE KİLİDİ (v9.3.0) — profil PIN'inden bağımsız */}
                 <FocusButton

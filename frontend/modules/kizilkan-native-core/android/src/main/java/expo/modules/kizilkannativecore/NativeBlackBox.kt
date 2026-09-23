@@ -54,6 +54,29 @@ object NativeBlackBox {
   private var previousHandler: Thread.UncaughtExceptionHandler? = null
   @Volatile private var appSessionId: String = ""
 
+  /**
+   * v17.6.0 — ANR ANINDA "NE YAPILIYORDU" BİLGİSİ
+   * ---------------------------------------------------------------------------
+   * SORUN: ANR kayıtları NATIVE tarafta üretiliyor; JS tarafındaki iş etiketi
+   * (markTask ile ayarlanan `_task`) buraya hiç ulaşmıyordu. Cihaz kayıtlarında
+   * 47 ANR'ın tamamında bu alan boştu ve "kilitlenme anında ne yapılıyordu?"
+   * sorusu YANITSIZ kalıyordu — bu da ANR'ı çözmenin önündeki tek engeldi.
+   *
+   * Çözüm: JS, uzun süren işlerin başında/sonunda bu alanı günceller (tek bir
+   * string, kilit gerektirmez). Gözcü kilitlenmeyi yakaladığında o anki değeri
+   * kayda ekler. Değer yalnız iş ETİKETİDİR (ör. "refresh:playlist"),
+   * kullanıcı verisi taşımaz.
+   */
+  private val lastMainAckUptime = java.util.concurrent.atomic.AtomicLong(SystemClock.uptimeMillis())
+  @Volatile private var currentTask: String = "idle"
+  @Volatile private var currentTaskStartedAt: Long = 0L
+
+  @JvmStatic
+  fun setCurrentTask(label: String) {
+    currentTask = if (label.isBlank()) "idle" else label.take(80)
+    currentTaskStartedAt = if (currentTask == "idle") 0L else System.currentTimeMillis()
+  }
+
   fun initialize(context: Context): Map<String, Any> {
     val app = context.applicationContext
     if (initialized.compareAndSet(false, true)) {
@@ -303,6 +326,8 @@ object NativeBlackBox {
     val beat = object : Runnable {
       override fun run() {
         lastMainAck.set(SystemClock.elapsedRealtime())
+        // v17.7.0: uptimeMillis DERİN UYKUDA İLERLEMEZ — gerçek kilitlenme ölçümü budur.
+        lastMainAckUptime.set(SystemClock.uptimeMillis())
         main.postDelayed(this, WATCHDOG_PERIOD_MS)
       }
     }
@@ -312,19 +337,46 @@ object NativeBlackBox {
       try {
         val now = SystemClock.elapsedRealtime()
         val lag = now - lastMainAck.get()
+        /**
+         * v17.7.0 — YANLIŞ POZİTİF ANR KAYITLARI GİDERİLDİ
+         * ---------------------------------------------------------------------
+         * CİHAZ KANITI (20.09): 34 kaydın 33'ünde iş etiketi "idle", yığınlarda
+         * MessageQueue.nativePollOnce (ana iş parçacığı UYUYOR) ve süreler
+         * 559/454/119 saniye. Gerçek bir ANR'da sistem uygulamayı 5 saniyede
+         * öldürür; 9 dakikalık "kilitlenme" mümkün değildir.
+         *
+         * SEBEP: Ölçüm elapsedRealtime() ile yapılıyordu ve bu saat CİHAZ DERİN
+         * UYKUDAYKEN DE İLERLER. Telefon uyuyunca ana looper'ın kalp atışı
+         * durur, uyanınca aradaki fark "kilitlenme" sanılırdı. Kayıtlar bu
+         * yanlış pozitiflerle dolup GERÇEK sorunları gizliyordu.
+         *
+         * ÇÖZÜM: Kilitlenme ölçüsü uptimeMillis() ile yapılır — bu saat derin
+         * uykuda İLERLEMEZ, yalnız cihaz uyanıkken sayar. İki saat arasındaki
+         * fark (sleptMs) da kayda yazılır, böylece uyku etkisi görünür kalır.
+         */
+        val nowUptime = SystemClock.uptimeMillis()
+        val lagUptime = nowUptime - lastMainAckUptime.get()
+        val sleptMs = (lag - lagUptime).coerceAtLeast(0L)
         val previous = lastAnrRecord.get()
-        if (lag >= WATCHDOG_WARN_MS && now - previous >= WATCHDOG_REPEAT_MS && lastAnrRecord.compareAndSet(previous, now)) {
+        if (lagUptime >= WATCHDOG_WARN_MS && now - previous >= WATCHDOG_REPEAT_MS && lastAnrRecord.compareAndSet(previous, now)) {
           val mainThread = Looper.getMainLooper().thread
           val stack = mainThread.stackTrace.take(80).map { it.toString() }
           val payload = JSONObject()
             .put("at", System.currentTimeMillis())
             .put("elapsedRealtimeMs", now)
             .put("kind", "MAIN_THREAD_STALL")
-            .put("lagMs", lag)
+            // v17.7.0: lagMs artık GERÇEK kilitlenme (uyku hariç). Diğer ikisi
+            // karşılaştırma için: toplam geçen süre ve uykuda geçen kısım.
+            .put("lagMs", lagUptime)
+            .put("wallLagMs", lag)
+            .put("sleptMs", sleptMs)
             .put("thread", mainThread.name)
             .put("stack", JSONArray(stack))
             .put("memory", JSONObject(runtimeMemory(context)))
             .put("appSessionId", appSessionId)
+            // v17.6.0: kilitlenme anındaki JS iş etiketi ve o işin yaşı.
+            .put("task", currentTask)
+            .put("taskAgeMs", if (currentTaskStartedAt > 0L) System.currentTimeMillis() - currentTaskStartedAt else 0L)
           writeCriticalSync(context, payload)
           try {
             insertEvent(
