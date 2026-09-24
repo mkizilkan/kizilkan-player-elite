@@ -11,6 +11,12 @@ import { storage } from "@/src/utils/storage";
 
 const EPISODE_URL_KEY = "kizilkan.episode.url.";
 
+function hashText(value: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < value.length; i++) { h ^= value.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
 function fmtBytes(bytes: number): string {
   if (!bytes) return "0 B";
   const k = 1024;
@@ -61,7 +67,7 @@ export default function DownloadsScreen() {
 
   const router = useRouter();
   const { colors } = useTheme();
-  const { downloads, pause, resume, cancel, remove, clearCompleted } = useDownloads();
+  const { downloads, pause, resume, cancel, remove, clearCompleted, exportToDevice, share } = useDownloads();
 
   const active = downloads.filter(d => d.status !== "completed");
   const completed = downloads.filter(d => d.status === "completed");
@@ -79,7 +85,20 @@ export default function DownloadsScreen() {
       poster: item.poster,
     };
     await storage.setItem(EPISODE_URL_KEY + synth.id, JSON.stringify(synth));
-    router.push({ pathname: "/player", params: { id: synth.id } });
+    router.push({ pathname: "/player", params: { id: synth.id, ext: "true" } });
+  };
+
+  const openRecording = async (r: { name: string; uri: string }) => {
+    haptic.medium();
+    const synth = {
+      id: `rec-${Math.abs(hashText(r.uri))}`,
+      url: r.uri,
+      name: r.name,
+      group: "Kayıtlar",
+      container_ext: (r.name.split(".").pop() || "mp4").replace(/[^a-zA-Z0-9]/g, ""),
+    };
+    await storage.setItem(EPISODE_URL_KEY + synth.id, JSON.stringify(synth));
+    router.push({ pathname: "/player", params: { id: synth.id, ext: "true" } });
   };
 
   const confirmRemove = (item: DownloadItem) => {
@@ -118,7 +137,7 @@ export default function DownloadsScreen() {
               <TouchableOpacity
                 key={r.uri}
                 testID={`rec-${r.name}`}
-                onPress={() => router.push({ pathname: "/player", params: { localUri: r.uri, title: r.name } })}
+                onPress={() => void openRecording(r)}
                 style={{
                   flexDirection: "row", alignItems: "center", gap: SPACING.md,
                   backgroundColor: colors.surfaceSecondary, borderColor: colors.border,
@@ -242,9 +261,29 @@ export default function DownloadsScreen() {
                     {fmtBytes(item.totalBytes)} • {item.ext.toUpperCase()} • Çevrimdışı hazır
                   </Text>
                 </View>
-                <TouchableOpacity testID={`remove-${item.id}`} onPress={() => confirmRemove(item)} hitSlop={8}>
-                  <Ionicons name="trash-outline" size={22} color={colors.onSurfaceSecondary} />
-                </TouchableOpacity>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm }}>
+                  <TouchableOpacity
+                    testID={`export-${item.id}`}
+                    onPress={async (e) => {
+                      e.stopPropagation?.();
+                      const r = await exportToDevice(item.id);
+                      Alert.alert(r.ok ? "Cihaza aktarıldı" : "Aktarılamadı", r.message);
+                    }}
+                    hitSlop={8}
+                  >
+                    <Ionicons name="folder-open-outline" size={21} color={colors.brandPrimary} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    testID={`share-${item.id}`}
+                    onPress={async (e) => { e.stopPropagation?.(); await share(item.id); }}
+                    hitSlop={8}
+                  >
+                    <Ionicons name="share-social-outline" size={21} color={colors.onSurfaceSecondary} />
+                  </TouchableOpacity>
+                  <TouchableOpacity testID={`remove-${item.id}`} onPress={() => confirmRemove(item)} hitSlop={8}>
+                    <Ionicons name="trash-outline" size={22} color={colors.onSurfaceSecondary} />
+                  </TouchableOpacity>
+                </View>
               </TouchableOpacity>
             ))}
           </>

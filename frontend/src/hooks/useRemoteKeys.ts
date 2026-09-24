@@ -37,6 +37,10 @@ export type RemoteKey =
   | "select"
   /** Geri tuşu BASILI TUTULDU — kanal listesine dön (v7.6.0). */
   | "backLongPress"
+  /** v17.5.0: Son izlenen kanala dön (zap-back). */
+  | "lastChannel"
+  /** Android TV renkli program tuşları (KEYCODE_PROG_*). */
+  | "red" | "green" | "yellow" | "blue"
   | "digit0" | "digit1" | "digit2" | "digit3" | "digit4"
   | "digit5" | "digit6" | "digit7" | "digit8" | "digit9";
 

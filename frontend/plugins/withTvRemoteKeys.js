@@ -105,6 +105,9 @@ const KOTLIN_BLOCK = `
     }
 
     val name = when (keyCode) {
+      // v17.5.0: Son kanala dön. Çoğu TV kumandasında ayrı bir tuş vardır;
+      // bulunmayan kumandalarda uygulama içindeki düğmeden kullanılır.
+      android.view.KeyEvent.KEYCODE_LAST_CHANNEL -> "lastChannel"
       android.view.KeyEvent.KEYCODE_CHANNEL_UP -> "channelUp"
       android.view.KeyEvent.KEYCODE_CHANNEL_DOWN -> "channelDown"
       android.view.KeyEvent.KEYCODE_MEDIA_NEXT -> "contentNext"
@@ -117,6 +120,10 @@ const KOTLIN_BLOCK = `
       android.view.KeyEvent.KEYCODE_MEDIA_REWIND -> "rewind"
       android.view.KeyEvent.KEYCODE_INFO -> "info"
       android.view.KeyEvent.KEYCODE_GUIDE -> "guide"
+      android.view.KeyEvent.KEYCODE_PROG_RED -> "red"
+      android.view.KeyEvent.KEYCODE_PROG_GREEN -> "green"
+      android.view.KeyEvent.KEYCODE_PROG_YELLOW -> "yellow"
+      android.view.KeyEvent.KEYCODE_PROG_BLUE -> "blue"
       android.view.KeyEvent.KEYCODE_0, android.view.KeyEvent.KEYCODE_NUMPAD_0 -> "digit0"
       android.view.KeyEvent.KEYCODE_1, android.view.KeyEvent.KEYCODE_NUMPAD_1 -> "digit1"
       android.view.KeyEvent.KEYCODE_2, android.view.KeyEvent.KEYCODE_NUMPAD_2 -> "digit2"

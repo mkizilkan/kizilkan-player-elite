@@ -9,7 +9,7 @@
  *
  * HEDEF SEÇENEKLERİ:
  *  - "app": Uygulama içi (varsayılan, en güvenli, izin gerektirmez)
- *  - "downloads": Cihaz İndirilenler klasörü (tamamlanınca kopyalanır)
+ *  - "downloads": Kullanıcının SAF ile seçtiği cihaz klasörü (tamamlanınca gerçek kopya)
  *  - "gallery": Galeri/Filmler (medya kütüphanesine eklenir)
  *
  * Not: Android'de "her klasöre yaz" (SAF) karmaşık ve indirme kütüphanesiyle
@@ -56,7 +56,7 @@ function formatBytes(bytes: number): string {
 
 const TARGETS: { key: SaveTarget; icon: keyof typeof Ionicons.glyphMap; label: string; desc: string }[] = [
   { key: "app", icon: "phone-portrait", label: "Uygulama içi", desc: "En güvenli, uygulama içinden izlenir" },
-  { key: "downloads", icon: "download", label: "İndirilenler klasörü", desc: "Diğer uygulamalarla da açılabilir" },
+  { key: "downloads", icon: "folder-open", label: "Cihaza aktar", desc: "İndirme bitince Android klasör seçici açılır" },
 ];
 
 export function DownloadDialog({ visible, fileName, sourceUrl, defaultTarget = "app", onConfirm, onClose }: Props) {

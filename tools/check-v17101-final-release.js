@@ -1,0 +1,11 @@
+const fs=require('fs');let bad=0;const ok=(c,m)=>{console.log((c?'PASS: ':'FAIL: ')+m);if(!c)bad++};
+const app=JSON.parse(fs.readFileSync('frontend/app.json','utf8'));const pkg=JSON.parse(fs.readFileSync('frontend/package.json','utf8'));
+const read=p=>fs.readFileSync(p,'utf8');
+const [ma,mi,pa]=String(pkg.version).split('.').map(Number),vc=ma*10000+mi*100+pa;ok(ma>17||(ma===17&&(mi>10||(mi===10&&pa>=1))),'package version >= 17.10.1');ok(app.expo.version===pkg.version,'Expo/package synchronized');ok(app.expo.ios?.buildNumber===pkg.version,'iOS/package synchronized');ok(app.expo.android?.versionCode===vc,'Android versionCode synchronized');ok(String(app.expo.extra?.kizilkanReleaseLabel||'').includes(pkg.version),'release label synchronized');
+const dl=read('frontend/app/downloads.tsx');ok(/pathname:\s*"\/player"[\s\S]{0,100}ext:\s*"true"/.test(dl),'download local playback external flag');
+const settings=read('frontend/app/(tabs)/settings.tsx');ok(!settings.includes('Chromecast / AirPlay')&&!settings.includes('Chromecast ve AirPlay'),'AirPlay false UI claim removed');
+const gate=read('tools/check-v1710-ultrascale-scan.js');ok(gate.includes('[1-9]\\d*'),'legacy semver gate accepts 17.10+');
+const focus=read('frontend/src/store/TvFocusMemoryContext.tsx');ok(focus.includes('Telefon/tablet'),'cross-platform return memory retained');
+const cast=read('frontend/src/components/CastButton.tsx');ok(cast.includes('playlistSource === "xtream"'),'Cast .ts rewrite remains Xtream-only');
+const rec=read('frontend/src/store/PlaylistContext.tsx');ok(rec.includes('background')&&rec.includes('AbortController'),'recovery background abort contract');
+if(bad){console.error(`v17.10.1 final gate: ${bad} hata`);process.exit(1)} console.log('PASS: v17.10.1 FINAL RELEASE GATE TEMIZ');

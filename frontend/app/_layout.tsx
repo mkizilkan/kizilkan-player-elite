@@ -38,7 +38,7 @@ import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { ErrorBoundary } from "@/src/components/ErrorBoundary";
 import { ThemeProvider } from "@/src/theme/ThemeContext";
 import { ProfileProvider, useProfiles } from "@/src/store/ProfileContext";
-import { PlaylistProvider } from "@/src/store/PlaylistContext";
+import { PlaylistProvider, usePlaylists } from "@/src/store/PlaylistContext";
 import { ParentalProvider } from "@/src/store/ParentalContext";
 import { LibraryProvider } from "@/src/store/LibraryContext";
 import { DownloadProvider } from "@/src/store/DownloadContext";
@@ -46,12 +46,15 @@ import { registerQuickActions } from "@/src/utils/quickActions";
 import { requestBaselinePermissions } from "@/src/utils/permissions";
 import { prepareExternalStream } from "@/src/utils/externalOpen";
 import { AppState, View } from "react-native";
-import { PlayerProvider } from "@/src/player/PlayerContext";
+import { PlayerProvider, usePlayer } from "@/src/player/PlayerContext";
 import PlayerHost from "@/src/player/PlayerHost";
+import PlaylistRepairOverlay from "@/src/components/PlaylistRepairOverlay";
 import { TvProvider, useTv } from "@/src/store/TvContext";
 import { TvFocusMemoryProvider, TvFocusScope } from "@/src/store/TvFocusMemoryContext";
 import { markAppBackground, markAppForeground, persistAppPath } from "@/src/utils/appSession";
 import { initializeDiagnostics, recordDiagnostic, setDiagnosticAppState, startMemorySampling } from "@/src/utils/diagnostics";
+import { storage } from "@/src/utils/storage";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 // Açılış ekranı, fontlar hazır olana kadar ekranda kalsın.
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -72,6 +75,46 @@ function ProfileSessionGate({ children }: { children: ReactNode }) {
   // PIN korumalı route bir frame bile görünmesin; redirect tamamlanana kadar siyah bariyer.
   if (blocked) return <View style={{ flex: 1, backgroundColor: "#000" }} />;
   return <>{children}</>;
+}
+
+
+const START_LAST_KEY = "kizilkan.player.startLast.";
+const LAST_LIVE_KEY = "kizilkan.player.lastLive.";
+let coldStartAutoplayConsumed = false;
+
+/** v17.10.0: yalnız process cold-start'ta, profil + Room doğrulandıktan sonra son çalışan canlı kanalı açar. */
+function StartupLastChannelGate() {
+  const pathname = usePathname();
+  const { activeProfile } = useProfiles();
+  const { activePlaylist, isLoading, loadedProfileId } = usePlaylists();
+  const { openPlayer, visible } = usePlayer();
+  useEffect(() => {
+    if (coldStartAutoplayConsumed || visible || isLoading || !activeProfile?.id || !activePlaylist?.id) return;
+    if (loadedProfileId !== activeProfile.id) return;
+    const homeReady = pathname === "/" || pathname === "/tv-home" || pathname.includes("(tabs)");
+    if (!homeReady) return;
+    let cancelled = false;
+    void (async () => {
+      const enabled = await storage.getItem<boolean>(START_LAST_KEY + activeProfile.id, false);
+      if (!enabled || cancelled) { coldStartAutoplayConsumed = true; return; }
+      let saved: any = null;
+      try { saved = JSON.parse((await storage.getItem<string>(LAST_LIVE_KEY + activeProfile.id, "")) || "null"); } catch {}
+      if (!saved?.channelId || String(saved.playlistId || "") !== String(activePlaylist.id)) { coldStartAutoplayConsumed = true; return; }
+      let exists = true;
+      if (KizilkanNativeCore.available) exists = !!(await KizilkanNativeCore.getItem(activePlaylist.id, "live", String(saved.channelId)));
+      else exists = !!activePlaylist.channels?.some(c => String(c.id) === String(saved.channelId));
+      if (cancelled || !exists) { coldStartAutoplayConsumed = true; return; }
+      coldStartAutoplayConsumed = true;
+      const origin = pathname === "/tv-home" ? "tv-home" : "library";
+      openPlayer({ id: String(saved.channelId), kind: "live", nav: { origin, focusKey: `${origin}:live:${String(saved.channelId)}` } });
+      void recordDiagnostic("player", "STARTUP_LAST_CHANNEL_OPEN", { playlistId: activePlaylist.id, channelId: String(saved.channelId) });
+    })().catch((e:any) => {
+      coldStartAutoplayConsumed = true;
+      void recordDiagnostic("player", "STARTUP_LAST_CHANNEL_SKIP", { error: String(e?.message || e) });
+    });
+    return () => { cancelled = true; };
+  }, [pathname, activeProfile?.id, activePlaylist?.id, isLoading, loadedProfileId, visible, openPlayer]);
+  return null;
 }
 
 /** Bildirim izni istemeden önce beklenen süre (kullanıcı splash'i görsün). */
@@ -176,6 +219,7 @@ export default function RootLayout() {
                   <LibraryProvider>
                     <DownloadProvider>
                       <PlayerProvider>
+                      <StartupLastChannelGate />
                       <StatusBar style="light" />
                       {/*
                         TV OVERSCAN NOTU (v7.7.0'da KALDIRILDI)
@@ -192,6 +236,8 @@ export default function RootLayout() {
                         <Stack.Screen name="index" />
                         <Stack.Screen name="onboarding" />
                         <Stack.Screen name="tv-home" />
+                        <Stack.Screen name="local-media" />
+                        <Stack.Screen name="recoverable-playlists" />
                         {/* v8.8.0 + v9.8.0: Oynatıcı ekranının arka planı SİYAH.
                             Eskiden Stack'in varsayılan arka planı tema rengiydi;
                             video yüklenirken üstte tema renginde bir şerit
@@ -243,6 +289,10 @@ export default function RootLayout() {
                           <PlayerHost />
                         </TvFocusScope>
                       </View>
+                      {/* v17.9.10: Boş-kabuk onarımı nereden tetiklenirse tetiklensin
+                          (profil sonrası otomatik seçim / playlist yönetimi / Ayarlar SEÇ)
+                          aynı gerçek aşamalar tüm uygulamanın üstünde görünür. */}
+                      <PlaylistRepairOverlay />
                       </PlayerProvider>
                     </DownloadProvider>
                   </LibraryProvider>

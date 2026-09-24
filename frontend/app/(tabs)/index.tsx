@@ -54,6 +54,7 @@ import { TvHomeContent } from "@/app/tv-home";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
 import { savePlayerNavigationScope } from "@/src/player/navigationScope";
+import { useTvFocusMemory } from "@/src/store/TvFocusMemoryContext";
 
 const ALL = "__all__";
 type Tab = "live" | "vod" | "series";
@@ -86,10 +87,11 @@ function ClassicLiveTvScreen() {
    */
   const [previewChannel, setPreviewChannel] = useState<any>(null);
   // TV: odaklanan satır her zaman ekranda kalsın (v7.2.0)
-  const { listRef, onItemFocus, onScrollToIndexFailed } = useFocusScroll<any>();
+  const { listRef, onItemFocus, onScrollToIndexFailed, centerIndex } = useFocusScroll<any>();
+  const returnFocus = useTvFocusMemory("library");
   const router = useRouter();
   const { colors } = useTheme();
-  const { activePlaylist, playlists, toggleFavorite, isFavorite, addToRecent, updatePlaylist, ensureHeavyLoaded, nativeSummary,freshnessStatus } = usePlaylists();
+  const { activePlaylist, playlists, toggleFavorite, isFavorite, addToRecent, updatePlaylist, ensureHeavyLoaded, nativeSummary,freshnessStatus, lastRefreshSummary, clearRefreshSummary} = usePlaylists();
   const { activeProfile } = useProfiles();
   const { settings: parental, isCategoryLocked, isUnlockedInSession, toggleCategoryLock } = useParental();
   const { isItemHidden, isGroupHidden, hiddenModeUnlocked, toggleHiddenItem, toggleHiddenGroup, toggleWatchlist, inWatchlist } = useLibrary();
@@ -745,6 +747,57 @@ function ClassicLiveTvScreen() {
     return isCustom ? applyItemOrder(list as any, selectedCat, ordering) : list;
   }, [displayList, selectedCat, overrides, customGroups, ordering]);
 
+  /**
+   * v17.10.0 — Player dönüşünde TELEFON/TABLET/TV ortak konum restore.
+   * Stable key doğrudan item kimliğine bağlıdır. Büyük Room katalogunda hedef
+   * mevcut JS penceresinde değilse yalnız hedef çevresindeki küçük pencere
+   * sorgulanır; on binlerce öğe hydrate edilmez.
+   */
+  useEffect(() => {
+    const req = returnFocus.restoreRequest;
+    if (!req || !activePlaylist?.id) return;
+    const m = /^library:(live|vod|series):(.+)$/.exec(req.key);
+    if (!m) return;
+    const targetKind = m[1] as Tab;
+    const targetId = m[2];
+    if (targetKind !== tab) { setTab(targetKind); return; }
+    const loadedIndex = (filtered as any[]).findIndex(x => String(x?.id) === targetId);
+    if (loadedIndex >= 0) {
+      if (targetKind === "live") centerIndex(loadedIndex, 6);
+      // PosterGrid kendi explicit restoreKey'i ile VOD/Dizi'yi ortalar.
+      if (targetKind === "live") setTimeout(() => returnFocus.clearRestore(req.nonce), isTvLayout ? 420 : 220);
+      return;
+    }
+    if (!KizilkanNativeCore.available || selectedIsCustomGroup) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const group = selectedCat === ALL ? "__all__" : selectedCat;
+        const pos = await KizilkanNativeCore.getPlaybackNeighbors(activePlaylist.id, targetKind, targetId, { group, search: "", wrap: false });
+        if (cancelled || !pos?.found) return;
+        const offset = Math.max(0, Number(pos.position || 0) - (targetKind === "live" ? 30 : 24));
+        const page = await KizilkanNativeCore.queryItems<any>(activePlaylist.id, targetKind, { group, offset, limit: targetKind === "live" ? 80 : 72 });
+        if (cancelled) return;
+        setNativePageOwnerId(activePlaylist.id);
+        if (targetKind === "live") {
+          setNativeLiveItems(page.items || []);
+          nativeLiveOffsetRef.current = offset + (page.items?.length || 0);
+          setNativeLiveHasMore(!!page.hasMore);
+          setNativeLiveTotal(Number(page.total || 0));
+        } else {
+          setNativeLibraryItems(page.items || []);
+          nativeLibraryOffsetRef.current = offset + (page.items?.length || 0);
+          setNativeLibraryHasMore(!!page.hasMore);
+          setNativeLibraryTotal(Number(page.total || 0));
+        }
+        void recordDiagnostic("navigation", "PLAYER_RETURN_WINDOW_LOADED", { playlistId: activePlaylist.id, kind: targetKind, itemId: targetId, position: pos.position, offset, returned: page.items?.length || 0 });
+      } catch (e:any) {
+        void recordDiagnostic("navigation", "PLAYER_RETURN_RESTORE_FAILED", { playlistId: activePlaylist.id, kind: targetKind, itemId: targetId, error: String(e?.message || e) });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [returnFocus.restoreRequest?.nonce, activePlaylist?.id, tab, filtered, selectedCat, selectedIsCustomGroup, centerIndex, isTvLayout]);
+
   // v15.2.3 — EPG ISOLATION: kanal listesi EPG'yi ASLA beklemez. İlk görünür
   // pencerenin EPG'si etkileşimler bittikten sonra küçük batch ile arkadan gelir.
   const epgTargets = useMemo(() => (filtered as any[]).slice(0, 16), [filtered]);
@@ -943,11 +996,36 @@ function ClassicLiveTvScreen() {
           <KizilkanLogo size="md" showSubtitle={false} showIcon align="left" />
           {freshnessStatus?.playlistId===activePlaylist.id&&<Text style={{color:colors.onSurfaceSecondary,fontSize:11}}>{freshnessStatus.message}</Text>}
           <Text style={[styles.subtitle, { color: colors.onSurfaceSecondary }]} numberOfLines={1}>
-            {activePlaylist.name} • {liveCount} kanal
-            {hasVod ? ` • ${vodCount} film` : ""}
-            {hasSeries ? ` • ${seriesCount} dizi` : ""}
+            {activePlaylist.name}
             {activePlaylist.serverCodeBinding?.code ? ` • Kod ${activePlaylist.serverCodeBinding.code}` : ""}
           </Text>
+          {/**
+            * v17.9.8 — SİMGELİ İÇERİK ÖZETİ (kullanıcı isteği)
+            * Canlı/film/dizi sayıları düz metin yerine renkli, ikonlu rozetlerle
+            * gösterilir. Sayılar binlik ayraçla biçimlenir (16.484 gibi).
+            * nativeSummary önce, yoksa meta sayıları (Native Core'da meta boş
+            * olabilir; ikisi de kapsanır).
+            */}
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
+            {[
+              { icon: "tv" as const, label: "Canlı", val: liveCount, tint: "#e53935" },
+              ...(hasVod ? [{ icon: "film" as const, label: "Film", val: vodCount, tint: "#8e24aa" }] : []),
+              ...(hasSeries ? [{ icon: "albums" as const, label: "Dizi", val: seriesCount, tint: "#1e88e5" }] : []),
+            ].map(b => (
+              <View key={b.label} style={{
+                flexDirection: "row", alignItems: "center", gap: 4,
+                backgroundColor: colors.surfaceSecondary,
+                borderLeftWidth: 3, borderLeftColor: b.tint,
+                paddingVertical: 3, paddingHorizontal: 8, borderRadius: 8,
+              }}>
+                <Ionicons name={b.icon} size={13} color={b.tint} />
+                <Text style={{ color: colors.onSurface, fontSize: 12, fontWeight: "800" }}>
+                  {Number(b.val || 0).toLocaleString("tr-TR")}
+                </Text>
+                <Text style={{ color: colors.onSurfaceSecondary, fontSize: 11 }}>{b.label}</Text>
+              </View>
+            ))}
+          </View>
         </View>
         {epgLoading && <ActivityIndicator size="small" color={colors.brandPrimary} />}
         <FocusButton
@@ -1011,6 +1089,8 @@ function ClassicLiveTvScreen() {
                 onToggleFavorite={() => toggleFavorite(item.id)}
                 onPress={() => guardedOpenChannel(item)}
                 onLongPress={() => showChannelActions(item)}
+                focusKey={`library:live:${item.id}`}
+                focusScope="library"
               />
             )}
             initialNumToRender={12}
@@ -1047,10 +1127,43 @@ function ClassicLiveTvScreen() {
           emptyText={tab === "vod" ? "Bu kategoride film yok" : "Bu kategoride dizi yok"}
           onEndReached={() => { if (nativeLibraryPaged && nativeLibraryHasMore) void loadNativeLibraryPage(false); }}
           onEndReachedThreshold={0.55}
+          focusKeyForItem={(item) => `library:${tab}:${item.id}`}
+          focusScope="library"
+          restoreKey={returnFocus.restoreRequest?.key || null}
+          onRestoreConsumed={() => { const req = returnFocus.restoreRequest; if (req) returnFocus.clearRestore(req.nonce); }}
         />
       )}
 
       {/* KANAL ÖNİZLEME PANELİ (v7.6.0) — TV'ye özel */}
+      {/**
+        * v17.4.1 — YENİLEME ÖZETİ (kullanıcı isteği)
+        * "Güncellenince hangi kategoriden ne kadar içerik eklenip silindi
+        * kullanıcıya hem TV box'ta hem telefonda güzelce görünsün."
+        * Aynı bileşen iki platformda da kullanılır; TV'de odaklanabilir kapatma
+        * düğmesiyle kumandadan da kapatılabilir.
+        */}
+      {!!lastRefreshSummary && (
+        <View style={{
+          marginHorizontal: SPACING.md, marginBottom: SPACING.sm, padding: SPACING.md,
+          borderRadius: RADIUS.md, borderWidth: 1,
+          borderColor: lastRefreshSummary.suspicious ? colors.error : colors.brandPrimary,
+          backgroundColor: (lastRefreshSummary.suspicious ? colors.error : colors.brandPrimary) + "14",
+        }}>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: SPACING.xs }}>
+            <Text style={{ color: lastRefreshSummary.suspicious ? colors.error : colors.brandPrimary, fontWeight: FONT.weight.bold, flex: 1 }} numberOfLines={1}>
+              {lastRefreshSummary.suspicious ? "Güncellendi — dikkat" : "Liste güncellendi"}
+              {lastRefreshSummary.playlistName ? ` · ${lastRefreshSummary.playlistName}` : ""}
+            </Text>
+            <FocusButton testID="refresh-summary-close" onPress={clearRefreshSummary} style={{ padding: 6 }}>
+              <Ionicons name="close" size={20} color={colors.onSurfaceSecondary} />
+            </FocusButton>
+          </View>
+          <Text style={{ color: colors.onSurface, fontSize: FONT.size.sm, lineHeight: 20 }}>
+            {lastRefreshSummary.text}
+          </Text>
+        </View>
+      )}
+
       <Modal
         visible={!!previewChannel}
         transparent

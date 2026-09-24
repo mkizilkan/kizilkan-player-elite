@@ -37,7 +37,7 @@ export interface DownloadItem {
   progress: number;
   /** GERÇEK RESUME: pause anında saklanan devam verisi (5GB kopunca baştan inmesin). */
   resumeData?: string | null;
-  /** Kullanıcının seçtiği hedef. app = uygulama içi, downloads = paylaşılabilir. */
+  /** Kullanıcının seçtiği hedef. app = uygulama içi, downloads = SAF ile kullanıcının seçtiği klasöre gerçek kopya. */
   saveTarget?: "app" | "downloads";
 }
 
@@ -49,6 +49,8 @@ interface DownloadContextValue {
   cancel: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
   clearCompleted: () => Promise<void>;
+  exportToDevice: (id: string) => Promise<{ ok: boolean; message: string }>;
+  share: (id: string) => Promise<{ ok: boolean; message: string }>;
   isDownloaded: (id: string) => boolean;
   getLocalUri: (id: string) => string | undefined;
 }
@@ -57,6 +59,28 @@ const DownloadContext = createContext<DownloadContextValue | null>(null);
 
 // Runtime map of active DownloadResumable instances (not persisted)
 const activeMap = new Map<string, any>();
+
+/** Android Storage Access Framework ile private dosyayı kullanıcının seçtiği klasöre kopyala.
+ * Büyük dosyayı JS belleğine ALMAZ; copyAsync native dosya akışını kullanır. */
+async function exportUriWithSaf(localUri: string, displayName: string, ext: string): Promise<string> {
+  if (Platform.OS !== "android") throw new Error("Klasöre aktarma şu anda Android'de destekleniyor");
+  const SAF: any = (FileSystem as any).StorageAccessFramework;
+  if (!SAF?.requestDirectoryPermissionsAsync || !SAF?.createFileAsync) {
+    throw new Error("Android klasör erişimi bu cihazda kullanılamıyor");
+  }
+  const permission = await SAF.requestDirectoryPermissionsAsync();
+  if (!permission?.granted || !permission?.directoryUri) throw new Error("Klasör seçimi iptal edildi");
+  const safeBase = String(displayName || "video")
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim() || "video";
+  const cleanExt = String(ext || "mp4").replace(/[^a-zA-Z0-9]/g, "") || "mp4";
+  const fileName = safeBase.toLowerCase().endsWith(`.${cleanExt.toLowerCase()}`) ? safeBase : `${safeBase}.${cleanExt}`;
+  const mime = cleanExt.toLowerCase() === "mkv" ? "video/x-matroska" : cleanExt.toLowerCase() === "ts" ? "video/mp2t" : "video/mp4";
+  const dest = await SAF.createFileAsync(permission.directoryUri, fileName, mime);
+  await FileSystem.copyAsync({ from: localUri, to: dest });
+  return dest;
+}
 
 export function DownloadProvider({ children }: { children: React.ReactNode }) {
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
@@ -163,15 +187,15 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
           completedAt: Date.now(),
           resumeData: null,
         });
-        // "İndirilenler" hedefi seçildiyse: tamamlanınca paylaş/kaydet menüsü aç.
-        // (SAF yerine sharing — native-risksiz, kullanıcı istediği yere kaydeder.)
+        // "Cihaza aktar" hedefi seçildiyse Android SAF ile gerçek klasör seçimi yap.
+        // Aktarım iptal/başarısız olsa bile private kopya güvenle korunur.
         if (item.saveTarget === "downloads") {
           try {
-            const Sharing = await import("expo-sharing");
-            if (await Sharing.isAvailableAsync()) {
-              await Sharing.shareAsync(result.uri);
-            }
-          } catch { /* paylaşım iptal edilebilir — dosya app içinde zaten hazır */ }
+            await exportUriWithSaf(result.uri, item.name, safeExt);
+          } catch (e: any) {
+            // İndirme BAŞARILI; yalnız dışa aktarma tamamlanmadı. Kullanıcı İndirilenler ekranından tekrar deneyebilir.
+            patchOne(item.id, { error: `Dosya uygulamada hazır. Cihaza aktarma: ${String(e?.message || e)}` });
+          }
         }
       } else {
         // May have been paused/canceled — leave state alone
@@ -254,6 +278,30 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     });
   }, [persist]);
 
+  const exportToDevice = useCallback(async (id: string) => {
+    const item = persistRef.current.find(d => d.id === id);
+    if (!item?.localUri || item.status !== "completed") return { ok: false, message: "İndirilen dosya bulunamadı" };
+    try {
+      await exportUriWithSaf(item.localUri, item.name, item.ext);
+      return { ok: true, message: "Dosya seçtiğiniz klasöre aktarıldı" };
+    } catch (e: any) {
+      return { ok: false, message: String(e?.message || e || "Aktarma başarısız") };
+    }
+  }, []);
+
+  const share = useCallback(async (id: string) => {
+    const item = persistRef.current.find(d => d.id === id);
+    if (!item?.localUri || item.status !== "completed") return { ok: false, message: "İndirilen dosya bulunamadı" };
+    try {
+      const Sharing = await import("expo-sharing");
+      if (!(await Sharing.isAvailableAsync())) return { ok: false, message: "Paylaşım bu cihazda kullanılamıyor" };
+      await Sharing.shareAsync(item.localUri);
+      return { ok: true, message: "Paylaşım ekranı açıldı" };
+    } catch (e: any) {
+      return { ok: false, message: String(e?.message || e || "Paylaşım başarısız") };
+    }
+  }, []);
+
   const isDownloaded = useCallback((id: string) => {
     return persistRef.current.some(d => d.id === id && d.status === "completed");
   }, []);
@@ -265,7 +313,7 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <DownloadContext.Provider value={{
-      downloads, add, pause, resume, cancel, remove, clearCompleted, isDownloaded, getLocalUri,
+      downloads, add, pause, resume, cancel, remove, clearCompleted, exportToDevice, share, isDownloaded, getLocalUri,
     }}>
       {children}
     </DownloadContext.Provider>

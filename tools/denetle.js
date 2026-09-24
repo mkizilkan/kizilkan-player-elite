@@ -15,10 +15,16 @@ const TOOLS = __dirname;
 const PROJECT_ROOT = path.resolve(TOOLS, "..");
 const FRONTEND_ROOT = path.join(PROJECT_ROOT, "frontend");
 if (!fs.existsSync(path.join(FRONTEND_ROOT, "package.json"))) throw new Error("frontend/package.json bulunamadı");
-if (process.cwd() !== FRONTEND_ROOT) process.chdir(FRONTEND_ROOT);
+if (process.cwd() !== PROJECT_ROOT) process.chdir(PROJECT_ROOT);
 // TypeScript artık tools/_ts.js ile taşınabilir şekilde çözülür (sabit yol yok).
 
 const CHECKS = [
+  ["check-v17102-timeshift-release.js", "v17.10.2 app-owned live timeshift / catch-up hard-gate", ""],
+  ["check-v17102-surgical-release.js", "v17.10.2 surgical hard-gate", ""],
+  ["check-v17100-platform-hardening.js", "v17.10.0 platform/recovery/focus/cast hard-gate", ""],
+  ["check-v17101-final-release.js", "v17.10.1 final release hard-gate", ""],
+  ["check-v17910-empty-shell-recovery.js", "v17.9.10 empty-shell staged Room / global progress hard-gate", ""],
+  ["check-v17910-playlist-recovery.js", "v17.9.10 empty-shell recovery / visible progress / persisted barrier hard-gate", ""],
   ["test-v1730-functional.js", "v17.3.0 scoped refresh / source isolation / DNS dedup functional tests", ""],
   ["check-v16143-regression-contract.js", "v16.14.3+ regression preservation contract", ""],
   ["check-v16143-corrective-hardgate.js", "v16.14.3+ corrective hard-gate", ""],
@@ -105,19 +111,28 @@ const CHECKS = [
   ["check-v1722-mpv-surface-kotlin.js", "v17.2.2 MPV TextureView non-null Surface Kotlin corrective contract", ""],
 ];
 
+const FRONTEND_CWD_CHECKS = new Set([
+  // Bu eski denetleyiciler app/ ve src/ yollarını frontend köküne göre açar.
+  // denetle.js repo kökünden çağrılsa da CI/Termux sonucu aynı kalmalıdır.
+  "checkdefs.js", "checkcalls.js", "checkjsx.js", "checktdz.js", "checkhooksrc.js", "checkimports.js",
+]);
+
 let failed = 0;
 console.log("═══ KIZILKAN PLAYER — DENETİM ═══\n");
 
 for (const [file, label, argMode] of CHECKS) {
   let args = "";
-  if (argMode === "src/store/*.tsx") args = "src/store/*.tsx src/theme/*.tsx";
+  if (argMode === "src/store/*.tsx") args = "frontend/src/store/*.tsx frontend/src/theme/*.tsx";
   else if (argMode === "APP_SRC") {
     // Dosya adlarında parantez olabilir ((tabs) klasörü) -> tırnak şart.
-    args = execSync(`find app src -name "*.tsx" -o -name "*.ts"`)
+    args = execSync(`find frontend/app frontend/src -name "*.tsx" -o -name "*.ts"`)
       .toString().trim().split("\n").map(p => JSON.stringify(p)).join(" ");
   }
   try {
-    const out = execSync(`node ${path.join(TOOLS, file)} ${args}`, { encoding: "utf8" });
+    const out = execSync(`node ${path.join(TOOLS, file)} ${args}`, {
+      encoding: "utf8",
+      cwd: FRONTEND_CWD_CHECKS.has(file) ? FRONTEND_ROOT : PROJECT_ROOT,
+    });
     const last = out.trim().split("\n").pop();
     const clean = /TEMIZ|TEMİZ|YOK$|^PASS[: ]/.test(last);
     if (!clean) { failed++; console.log(out.trim()); }

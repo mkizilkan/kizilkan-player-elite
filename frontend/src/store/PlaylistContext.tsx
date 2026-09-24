@@ -1,5 +1,5 @@
 import {withCatalogLock,freshnessDue} from "@/src/utils/catalogOperations";
-import {refreshPlaylistContent,type CatalogKind,type RefreshProgress} from "@/src/utils/refreshPlaylist";
+import {refreshPlaylistContent,type CatalogKind,type RefreshProgress,type IncrementalCatalogDelivery} from "@/src/utils/refreshPlaylist";
 /**
  * KIZILKAN PLAYER — Oynatma Listesi Deposu (Context)
  * Dosya   : frontend/src/store/PlaylistContext.tsx
@@ -44,6 +44,7 @@ import {refreshPlaylistContent,type CatalogKind,type RefreshProgress} from "@/sr
  */
 
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import { AppState } from 'react-native';
 import { storage } from '@/src/utils/storage';
 import { bigStore } from '@/src/utils/storage/bigStore';
 import { Playlist } from '@/src/types';
@@ -103,6 +104,22 @@ function fromMeta(meta: PlaylistMeta, heavy?: { channels?: any[]; vod?: any[]; s
   };
 }
 
+export type PlaylistRepairProgress = {
+  playlistId: string;
+  playlistName: string;
+  source: string;
+  mode: "primary" | "fallback";
+  phase: "verify" | "dns" | "login" | "content" | "save" | "roomVerify" | "paused" | "ready" | "error";
+  message: string;
+  progress: RefreshProgress | null;
+  startedAt: number;
+  lastProgressAt: number;
+  /** v17.10.0: background süresi aktif bekleme süresine katılmaz. */
+  pausedAt?: number | null;
+  pausedTotalMs?: number;
+  partial?: boolean;
+};
+
 interface PlaylistContextValue {
   playlists: Playlist[];
   activePlaylist: Playlist | null;
@@ -129,6 +146,11 @@ interface PlaylistContextValue {
   /* ---- v16.4.0 ---- */
   /** Ağır veri/onarım sürüyor mu? */
   heavyLoading: boolean;
+  /** v17.9.10: boş-kabuk onarımının kullanıcıya gösterilecek gerçek aşaması. */
+  repairProgress: PlaylistRepairProgress | null;
+  /** v17.4.1: son yenilemede ne eklendi/silindi (null = gösterilecek özet yok). */
+  lastRefreshSummary: {playlistId:string;playlistName:string;text:string;suspicious:boolean;at:number}|null;
+  clearRefreshSummary: () => void;
   /** İçeriği olmayan ve onarılamayan liste kimliği (null = sorun yok). */
   repairFailedId: string | null;
 }
@@ -174,7 +196,51 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
    *                  eskiden seçim sessizce başarısız oluyordu.
    */
   const [heavyLoading, setHeavyLoading] = useState(false);
+  const [repairProgress, setRepairProgress] = useState<PlaylistRepairProgress | null>(null);
   const [repairFailedId, setRepairFailedId] = useState<string | null>(null);
+  type RepairLifecycleRuntime = {
+    playlistId: string; controller: AbortController | null; pausedAt: number | null; pausedTotalMs: number;
+    wake: (() => void) | null; onPause: (() => void) | null; traceId: string;
+  };
+  const appStateRef = useRef(String(AppState.currentState || 'active'));
+  const repairLifecycleRef = useRef<RepairLifecycleRuntime | null>(null);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', nextState => {
+      const prev = appStateRef.current;
+      appStateRef.current = String(nextState || 'active');
+      const rt = repairLifecycleRef.current;
+      if (!rt) return;
+      const nextActive = nextState === 'active';
+      const wasActive = prev === 'active';
+      if (wasActive && !nextActive) {
+        if (!rt.pausedAt) rt.pausedAt = Date.now();
+        try { rt.controller?.abort(); } catch {}
+        try { rt.onPause?.(); } catch {}
+        void recordDiagnostic('catalog','PLAYLIST_REPAIR_BACKGROUND_PAUSE',{playlistId:rt.playlistId,backgroundAt:rt.pausedAt},{traceId:rt.traceId,stage:'catalogRecovery',outcome:'paused'});
+      } else if (!wasActive && nextActive && rt.pausedAt) {
+        const foregroundAt = Date.now();
+        const pausedMs = Math.max(0, foregroundAt - rt.pausedAt);
+        rt.pausedTotalMs += pausedMs;
+        rt.pausedAt = null;
+        const wake = rt.wake; rt.wake = null;
+        try { wake?.(); } catch {}
+        void recordDiagnostic('catalog','PLAYLIST_REPAIR_FOREGROUND_RESUME',{playlistId:rt.playlistId,foregroundAt,pausedMs,pausedTotalMs:rt.pausedTotalMs},{traceId:rt.traceId,stage:'catalogRecovery',outcome:'resumed'});
+      }
+    });
+    return () => { try { sub.remove(); } catch {} };
+  }, []);
+  /**
+   * v17.9.10: eski 30 sn ceza kaldırıldı. Same-target singleflight aktif işi
+   * zaten birleştiriyor; bu kısa pencere yalnız başarısız iş biter bitmez oluşan
+   * dokunma/yeniden-render fırtınasını söndürür.
+   */
+  /**
+   * v17.4.1 — SON YENİLEME ÖZETİ.
+   * Ekranlar bunu okuyup kullanıcıya "neler eklendi/silindi" gösterir.
+   * Telefon ve TV aynı metni kullanır.
+   */
+  const [lastRefreshSummary, setLastRefreshSummary] = useState<{playlistId:string;playlistName:string;text:string;suspicious:boolean;at:number}|null>(null);
   // v11.5.0: Bellekteki playlist state'inin hangi profile ait olduğunu işaretler.
   // activeProfile değiştiği anda effect henüz başlamamış olsa bile tüketiciler
   // eski profil listesini "hazır" sanmasın.
@@ -187,6 +253,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   // yeni seçimi ezmesin.
   const activeSwitchGeneration = useRef(0);
   const activeSwitchWriteQueue = useRef<Promise<void>>(Promise.resolve());
+  // v17.9.10: yalnız başarısız/ardışık repair fırtınasını 2.5 sn bastırır; aktif aynı hedef zaten singleflight ile join olur.
   const repairAttemptAt = useRef<Map<string, number>>(new Map());
   // v16.14.2 P0: GERÇEK same-target single-flight. İkinci çağrı erken resolve olmaz;
   // ilk geçişin AYNI Promise'ine join olur. Böylece `await setActivePlaylist(id)`
@@ -211,6 +278,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         setLoadedProfileId(null);
         setPlaylists([]);
         setActiveId(null);
+        setHeavyLoading(false);
+        setRepairProgress(null);
+        setRepairFailedId(null);
         /**
          * KRİTİK (v6.3.0): "yüklendi" işaretlerini de temizle.
          * ESKİ HATA: loadedHeavy seti profil değişiminde temizlenmiyordu.
@@ -288,6 +358,41 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         if (profileLoadGeneration.current !== generation || currentPid() !== requestedPid) return;
         playlistsRef.current = initial;
         setPlaylists(initial);
+
+        /**
+         * v17.9.5 — YETİM LİSTE TEŞHİSİ (salt okuma, hiçbir şey silmez/değiştirmez)
+         * -------------------------------------------------------------------
+         * SORUN (kullanıcı 22.09): Room'da 58 snapshot + ~1.9M medya satırı
+         * varken arayüz 0-1 liste görüyordu. Meta ile Room arasındaki bağ
+         * kopmuş. Kurtarma yazmadan ÖNCE kök nedeni ölçüyoruz: kaç snapshot
+         * meta'da var, kaçı yetim, taşıma bayrağı ne durumda.
+         * Bu sonuçla v17.9.6'da GÜVENLİ, kullanıcı onaylı kurtarma yazılacak.
+         */
+        void (async () => {
+          try {
+            if (!KizilkanNativeCore.available) return;
+            const inv = await KizilkanNativeCore.getSnapshotInventory();
+            const metaIds = new Set((metas || []).map((m: any) => String(m.id)));
+            const orphans = inv.filter(sn => !metaIds.has(String(sn.playlistId)));
+            const migratedFlag = await storage.getItem<string>(MIGRATED_KEY, '');
+            const globalMetaLeft = await storage.getItem<string>(GLOBAL_META_KEY, '');
+            void recordDiagnostic('database', 'ORPHAN_SNAPSHOT_AUDIT', {
+              profileId: requestedPid,
+              metaPlaylists: metaIds.size,
+              roomSnapshots: inv.length,
+              orphanSnapshots: orphans.length,
+              orphanSample: orphans.slice(0, 12).map(o => ({
+                id: String(o.playlistId).slice(0, 40),
+                total: o.total, live: o.channels, vod: o.vod, series: o.series,
+                importedAt: o.importedAt,
+              })),
+              migratedFlag: migratedFlag ? migratedFlag.slice(0, 40) : '(yok)',
+              globalMetaLeft: !!globalMetaLeft,
+            });
+          } catch (e: any) {
+            void recordDiagnostic('database', 'ORPHAN_SNAPSHOT_AUDIT_ERROR', { error: String(e?.message || e) });
+          }
+        })();
         if (KizilkanNativeCore.available && aid) {
           // Room canonical activation: persisted key yalnız adaydır; aktif state ancak
           // setActivePlaylist verify/repair tamamlanınca yayınlanır. Timer React render
@@ -415,16 +520,94 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   }, [profileId]);
 
   /** Metadata'yı AsyncStorage'a yazar (hafif, limitsiz güvenli). */
-  const persistMeta = useCallback(async (list: Playlist[]) => {
-    const metas = list.map(toMeta);
+  /**
+   * v17.3.2 — LİSTE SİLİNME KORUMASI + COMMIT YARIŞ KİLİDİ
+   * ==========================================================================
+   * SORUN (kullanıcı bildirimi, devir belgesi P0): "bir liste eklenirken diğer
+   * listeler siliniyor."
+   *
+   * KÖK NEDEN: persistMeta çağıranlar (addPlaylist/updatePlaylist/remove...)
+   * önce `playlistsRef.current`'ı okuyup TÜM listeyi yeniden yazıyor. Bu ref
+   * bayatsa veya henüz dolmamışsa (profil geçişi, ilk yükleme bitmeden ekleme,
+   * iki eklemenin çakışması) yazılan dizi eksik oluyor ve diskteki diğer
+   * listeler SESSİZCE kayboluyor. Meta tek dosya olduğu için kayıp kalıcı.
+   *
+   * İKİ KATMANLI ÇÖZÜM:
+   *  1) SİLME KORUMASI: yazmadan hemen önce diskteki meta okunur. Diskte olup
+   *     yazılacak dizide OLMAYAN bir liste varsa, bu ancak kullanıcı gerçekten
+   *     silmişse meşrudur. Meşru silmeler `allowRemoval` ile açıkça bildirilir;
+   *     bildirilmeyen kayıplar geri eklenir ve olay kaydedilir. Yani "kaza
+   *     eseri silme" fiilen imkânsız hale gelir.
+   *  2) YARIŞ KİLİDİ: tüm meta yazmaları tek sıraya alınır (commitQueue).
+   *     Eşzamanlı ekleme/güncelleme artık birbirinin üzerine yazamaz.
+   *
+   * NOT: Bu koruma veri KAYBINI engeller; kullanıcının bilerek yaptığı silme
+   * işlemleri allowRemoval ile normal şekilde çalışmaya devam eder.
+   */
+  const commitQueue = useRef<Promise<unknown>>(Promise.resolve());
+  /** v17.9.1: son native senkronun öğe düzeyindeki farkı (liste kimliğine göre). */
+  const lastNativeDiffRef = useRef<Map<string, any>>(new Map());
+
+  /** Tüm meta yazmalarını sıraya alır; eşzamanlı çağrılar birbirini ezmez. */
+  const runExclusive = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
+    const next = commitQueue.current.then(task, task);
+    // Zincirin hata yüzünden kopmasını engelle (sonraki işler yine çalışsın).
+    commitQueue.current = next.then(() => undefined, () => undefined);
+    return next;
+  }, []);
+
+  const persistMeta = useCallback(async (list: Playlist[], opts?: { allowRemoval?: string[] }) => {
     const pid = currentPid();
-    const ok = await storage.setItem(metaKey(pid), JSON.stringify(metas));
+    const key = metaKey(pid);
+    let metas = list.map(toMeta);
+
+    // --- SİLME KORUMASI ---
+    try {
+      const rawExisting = await storage.getItem<string>(key, '');
+      if (rawExisting) {
+        const existing: PlaylistMeta[] = JSON.parse(rawExisting) || [];
+        if (Array.isArray(existing) && existing.length > 0) {
+          const nextIds = new Set(metas.map(m => m.id));
+          const allowed = new Set(opts?.allowRemoval || []);
+          const vanished = existing.filter(m => m && m.id && !nextIds.has(m.id) && !allowed.has(m.id));
+          if (vanished.length > 0) {
+            // Bu listeler silinmek İSTENMEDİ; yazma onları kaybediyordu.
+            void recordDiagnostic('database', 'PLAYLIST_DELETION_BLOCKED', {
+              // NOT: anahtar adı bilerek "profileId" DEĞİL — checkdeps.js bu
+              // tanımlayıcıyı kapanış değişkeni sanıp yanlış uyarı veriyor.
+              pid,
+              blocked: vanished.length,
+              blockedIds: vanished.map(m => m.id).slice(0, 10),
+              incoming: metas.length,
+              existing: existing.length,
+            });
+            metas = [...metas, ...vanished];
+          }
+        }
+      }
+    } catch (e: any) {
+      // Koruma okuması başarısızsa yazmayı engelleme; yalnız kaydet.
+      void recordDiagnostic('database', 'PLAYLIST_DELETION_GUARD_ERROR', { error: String(e?.message || e) });
+    }
+
+    const ok = await storage.setItem(key, JSON.stringify(metas));
     if (!ok) {
       throw new Error('Liste bilgisi kaydedilemedi (meta yazma hatası).');
     }
+    /**
+     * v17.9.6 — İlk liste eklendi işareti. playlist-select ekranı bunu okuyup
+     * "0 liste → add-playlist yönlendirmesi"ni yalnız İLK kurulumda yapar;
+     * kullanıcı bir kez liste eklediyse geçici boş durumda tuzağa düşmez.
+     * En az bir liste kaydedildiğinde işaretlenir.
+     */
+    if (metas.length > 0) {
+      try { await storage.setItem(`kizilkan.firstListAdded.${pid}`, true); } catch { /* önemsiz */ }
+    }
   }, []);
 
-  const addPlaylist = useCallback(async (p: Playlist) => {
+  const addPlaylist = useCallback(async (p: Playlist) => runExclusive(async () => {
+    // v17.3.2: Ekleme artık SIRAYA alınır. Eskiden iki ekleme çakışınca her biri
+    // kendi (bayat) listesini yazıyor ve biri diğerini siliyordu.
     // GPT ELITE v12.6.0: +18 analizi kayıt kritik yolunda senkron yapılmaz.
 
     // 1) Ağır veriyi DOSYAYA yaz — başarıyı kontrol et.
@@ -483,7 +666,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     // tutup +18 pre-scan yapma; bu hem heap'i hem event-loop'u yeniden şişirir.
     // isAdultContent gerektiğinde lazy hesaplar. Web/legacy yolunda eski preload korunur.
     if (!KizilkanNativeCore.available) scheduleAdultFlags(p.channels, p.vod, p.series);
-  }, [persistMeta]);
+  }), [persistMeta, runExclusive]);
 
   /**
    * v15.2.2-RC1: Native foreground importer ağır dosyayı + Room indeksini zaten
@@ -491,7 +674,8 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
    * Yalnız metadata/state kaydedilir; legacy ekran tam veriyi isterse
    * ensureHeavyLoaded -> Native Core/Room üzerinden hydrate eder.
    */
-  const addPreparedPlaylist = useCallback(async (p: Playlist) => {
+  const addPreparedPlaylist = useCallback(async (p: Playlist) => runExclusive(async () => {
+    // v17.3.2: Native içe aktarma yolu da sıraya alınır (addPlaylist ile aynı risk).
     const summary = KizilkanNativeCore.available ? await KizilkanNativeCore.getPlaylistSummary(p.id) : null;
     if (!summary?.roomIndexed) throw new Error('Native playlist indeksi doğrulanamadı.');
     const normalizedP: Playlist = {
@@ -512,14 +696,16 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     await persistMeta(next);
     await storage.setItem(activeKey(currentPid()), p.id);
     setActiveId(p.id);
-  }, [persistMeta]);
+  }), [persistMeta, runExclusive]);
 
-  const removePlaylist = useCallback(async (id: string) => {
+  const removePlaylist = useCallback(async (id: string) => runExclusive(async () => {
+    // v17.3.2: Bu MEŞRU bir silme; allowRemoval ile bildirilir. Bildirilmezse
+    // silme koruması listeyi geri ekler ve kullanıcı "silinmiyor" derdi.
     const current = playlistsRef.current;
     const next = current.filter(pl => pl.id !== id);
     playlistsRef.current = next;
     setPlaylists(next);
-    await persistMeta(next);
+    await persistMeta(next, { allowRemoval: [id] });
     await bigStore.remove(id);
     loadedHeavy.current.delete(id);
     if (activeId === id) {
@@ -529,7 +715,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       if (newActive) await storage.setItem(activeKey(pid2), newActive);
       else await storage.removeItem(activeKey(pid2));
     }
-  }, [persistMeta, activeId]);
+  }), [persistMeta, activeId, runExclusive]);
 
   const commitPlaylistUpdate = useCallback(async (id: string, patch: Partial<Playlist>) => {
     const requestedProfile=currentPid();
@@ -573,6 +759,8 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           series: target.catalogSync?.seriesFingerprint,
         });
         committedSummary = sync?.summary || null;
+        // v17.9.1: native fark raporunu, raporu üreten yenileme yoluna aktar.
+        if ((sync as any)?.diff) lastNativeDiffRef.current.set(id, (sync as any).diff);
         if (!sync?.roomVerified || !committedSummary?.roomIndexed) {
           void recordDiagnostic('database', 'PLAYLIST_COMMIT_FAILED', { playlistId: id, stage: 'incremental-room-verify' });
           throw new Error('Playlist incremental Room/SQLite commit doğrulanamadı.');
@@ -681,10 +869,41 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       const pl=playlistsRef.current.find(p=>p.id===id)!;
       const catalogKinds=kinds.filter((k):k is CatalogKind=>k!=='epg');
       if(catalogKinds.length){
+        /**
+         * v17.4.1 — FARK RAPORU MERKEZİ YOLA TAŞINDI.
+         * v17.4.0'da rapor yalnız playlist-select ekranındaki ELLE yenileme
+         * yoluna eklenmişti; kullanıcının gördüğü ise liste seçilince çalışan
+         * OTOMATİK yenilemedir (bu fonksiyon). Bu yüzden ekranda hiçbir özet
+         * çıkmıyordu. Artık her iki yol da buradan geçtiği için rapor tek
+         * yerde üretilir.
+         */
+        const beforeSnapshot={channels:pl.channels,vod:pl.vod,series:pl.series};
         const result=await refreshPlaylistContent(pl,progress,{kinds:catalogKinds,forceUnconditional});
         if(!owns())return;
         if(!result.ok||!result.patch)throw new Error(result.message);
         await commitPlaylistUpdate(id,{...result.patch,lastRefreshedAt:new Date().toISOString(),lastRefreshOk:true,lastFreshnessCheckAt:Date.now()});
+        try{
+          const {buildRefreshDiff,formatRefreshDiff,diffTelemetry,diffFromNative}=await import('@/src/utils/refreshDiff');
+          /**
+           * v17.9.1 — FARK KAYNAĞI DÜZELTİLDİ.
+           * Native Core modunda pl.channels/vod/series bellekte BOŞ dizilerdir
+           * (içerik Room'da). Bu yüzden JS karşılaştırması "önce" değerini her
+           * zaman 0 veriyordu. Öncelik artık native'de hesaplanan farktadır;
+           * yalnız native yoksa (web) JS karşılaştırması kullanılır.
+           */
+          const nativeDiff=lastNativeDiffRef.current.get(id);
+          lastNativeDiffRef.current.delete(id);
+          const after={
+            channels:(result.patch as any).channels??pl.channels,
+            vod:(result.patch as any).vod??pl.vod,
+            series:(result.patch as any).series??pl.series,
+          };
+          const diff=diffFromNative(nativeDiff)||buildRefreshDiff(beforeSnapshot,after);
+          void recordDiagnostic('catalog','PLAYLIST_REFRESH_DIFF',{playlistId:id,diffSource:nativeDiff?'native':'js',...diffTelemetry(diff,forceUnconditional?'manual':'auto')});
+          setLastRefreshSummary({playlistId:id,playlistName:pl.name,text:formatRefreshDiff(diff),suspicious:diff.suspiciousDrop,at:Date.now()});
+        }catch(e:any){
+          void recordDiagnostic('catalog','PLAYLIST_REFRESH_DIFF_ERROR',{playlistId:id,error:String(e?.message||e)});
+        }
       }
       if(kinds.includes('epg')&&owns()){
         if(!pl.epgUrl)throw new Error('Bu liste için EPG adresi tanımlı değil.');
@@ -704,7 +923,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     const valid=()=>!cancelled&&currentPid()===pid&&activeSwitchGeneration.current===generation;
     const check=()=>{void(async()=>{
       const pl=playlistsRef.current.find(p=>p.id===id);
-      if(!pl||pl.source==='m3u_file'||!valid())return;
+      if(!pl||pl.source==='m3u_file'||pl.autoRefreshEnabled===false||!valid())return;
       const attemptKey=pid+':'+id;
       if(!freshnessDue(freshnessAttempts.current.get(attemptKey)||pl.lastFreshnessCheckAt||0,pl.freshnessMinutes))return;
       freshnessAttempts.current.set(attemptKey,Date.now());
@@ -725,7 +944,8 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     })();};
     check();
     const timer=setInterval(check,60_000);
-    return()=>{cancelled=true;clearInterval(timer);};
+    const appStateSub=AppState.addEventListener('change',state=>{ if(state==='active')check(); });
+    return()=>{cancelled=true;clearInterval(timer);try{appStateSub.remove();}catch{}};
   },[activeId,loadedProfileId,profileId]);
 
   /**
@@ -804,6 +1024,193 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     }
   }, [activeId, ensureHeavyLoaded, persistMeta, updatePlaylist]);
 
+  /**
+   * v17.9.10 — TEK MERKEZİ BOŞ-KABUK ONARIM MOTORU
+   * -----------------------------------------------------------------------
+   * Önceki sürümlerde primary/fallback iki ayrı self-repair bloğuydu ve ikisi
+   * de refreshPlaylistContent() ilerlemesini UI'ya taşımıyordu. Ayrıca Xtream
+   * üç dev kataloğu aynı anda JS belleğinde tutuyordu. Artık iki yol burada
+   * birleşir; manuel yenilemeyle aynı RefreshProgress kullanılır.
+   *
+   * Xtream recovery özelinde kataloglar live→vod→series sırasıyla alınır ve
+   * HER KIND hazır olur olmaz Room'a commit edilir. Bu, aynı anda üç büyük
+   * array + üç JSON kopyasının bellekte kalmasını engeller. Aktivasyon yine
+   * SON Room doğrulamasından sonra yapılır; verified activation korunur.
+   */
+  const repairMissingPlaylist = useCallback(async (
+    broken: Playlist,
+    id: string,
+    generation: number,
+    traceId: string,
+    mode: "primary" | "fallback",
+  ): Promise<NativePlaylistSummary> => {
+    const lastRepair=repairAttemptAt.current.get(id)||0;
+    if(Date.now()-lastRepair<2500){
+      setRepairFailedId(id);
+      void recordDiagnostic('catalog','PLAYLIST_SELF_REPAIR_THROTTLED',{playlistId:id,generation,cooldownMs:2500});
+      throw new Error('Playlist onarımı az önce denendi; 2,5 saniyelik güvenlik aralığından sonra tekrar deneyin.');
+    }
+    repairAttemptAt.current.set(id,Date.now());
+    const startedAt=Date.now();
+    const runtime:RepairLifecycleRuntime={playlistId:id,controller:null,pausedAt:null,pausedTotalMs:0,wake:null,onPause:null,traceId};
+    repairLifecycleRef.current=runtime;
+    let lastProgress:RefreshProgress|null=null;
+    let lastTelemetryKey='';
+    const playlistName=broken.name||id;
+    const activeElapsed=()=>Math.max(0,Date.now()-startedAt-runtime.pausedTotalMs-(runtime.pausedAt?Date.now()-runtime.pausedAt:0));
+    const publishState=(phase:PlaylistRepairProgress['phase'],message:string,progress:RefreshProgress|null=lastProgress,partial?:boolean)=>{
+      const now=Date.now();
+      setRepairProgress({playlistId:id,playlistName,source:broken.source||'',mode,phase,message,progress,startedAt,lastProgressAt:now,pausedAt:runtime.pausedAt,pausedTotalMs:runtime.pausedTotalMs,partial});
+    };
+    const waitUntilForeground=()=>{
+      if(appStateRef.current==='active'&&!runtime.pausedAt)return Promise.resolve();
+      return new Promise<void>(resolve=>{runtime.wake=resolve;});
+    };
+    runtime.onPause=()=>publishState('paused','Uygulama arka plandayken hazırlama işlemi bekletildi.',lastProgress);
+    const onProgress=(p:RefreshProgress)=>{
+      lastProgress=p;
+      if(appStateRef.current!=='active'||runtime.pausedAt){ publishState('paused','Uygulama arka plandayken hazırlama işlemi bekletildi.',p); return; }
+      const now=Date.now();
+      const phase=(p.phase==='dns'||p.phase==='login'||p.phase==='content'||p.phase==='save'||p.phase==='error')?p.phase:'content';
+      setRepairProgress({playlistId:id,playlistName,source:broken.source||'',mode,phase,message:p.message,progress:p,startedAt,lastProgressAt:now,pausedAt:runtime.pausedAt,pausedTotalMs:runtime.pausedTotalMs});
+      const key=[p.phase,p.live,p.vod,p.series,p.liveCount,p.vodCount,p.seriesCount,p.message].join('|');
+      if(key!==lastTelemetryKey){
+        lastTelemetryKey=key;
+        void recordDiagnostic('catalog','PLAYLIST_REPAIR_PROGRESS',{
+          playlistId:id,playlistName,source:broken.source,mode,phase:p.phase,message:p.message,
+          live:p.live||'',vod:p.vod||'',series:p.series||'',
+          liveCount:p.liveCount??-1,vodCount:p.vodCount??-1,seriesCount:p.seriesCount??-1,
+          liveElapsedMs:p.liveElapsedMs??-1,vodElapsedMs:p.vodElapsedMs??-1,seriesElapsedMs:p.seriesElapsedMs??-1,
+          elapsedMs:activeElapsed(),
+        },{traceId,stage:'catalogRecovery',outcome:p.phase==='error'?'failed':'progress'});
+      }
+    };
+
+    setHeavyLoading(true);
+    setRepairFailedId(null);
+    publishState('verify','Yerel katalog bulunamadı; kaynağından otomatik onarım başlatılıyor.',null);
+    void recordDiagnostic('catalog','PLAYLIST_SELF_REPAIR_START',{playlistId:id,source:broken.source,mode},{traceId,stage:'catalogRecovery',outcome:'started'});
+    void recordFlightRecorderStage(traceId,'catalogRecovery',{playlistId:id,mode,source:broken.source},'started');
+
+    try{
+      const expectedKinds:CatalogKind[]=['live','vod','series'];
+      const completedKinds=new Set<CatalogKind>();
+      await updatePlaylist(id,{
+        catalogRecovery:{state:'running',startedAt,expectedKinds,completedKinds:[]},
+        lastRefreshOk:false,
+      });
+
+      const incrementalDelivery = (broken.source==='xtream'||broken.source==='stalker') ? async (delivery:IncrementalCatalogDelivery) => {
+        if(activeSwitchGeneration.current!==generation)throw new Error('Playlist seçimi değişti; eski onarım sonucu uygulanmadı.');
+        const commitStarted=Date.now();
+        const existingSummary=await KizilkanNativeCore.getPlaylistSummary(id).catch(()=>null);
+        // Missing snapshot ilk EMPTY partial ile bootstrap edilemez. Empty kind
+        // gerçek ve tamamlanmış sayılır; ilk non-empty kind snapshot'ı kurduğunda
+        // diğer kind sayıları zaten 0 olarak güvenli şekilde temsil edilir.
+        if(delivery.items.length===0 && !existingSummary?.roomIndexed){
+          completedKinds.add(delivery.kind);
+          await updatePlaylist(id,{catalogRecovery:{state:'running',startedAt,expectedKinds,completedKinds:Array.from(completedKinds)},lastRefreshOk:false});
+          void recordDiagnostic('catalog','PLAYLIST_REPAIR_EMPTY_KIND_DEFERRED',{
+            playlistId:id,kind:delivery.kind,rawCount:delivery.rawCount,fetchElapsedMs:delivery.fetchElapsedMs,
+          },{traceId,stage:'catalogRecovery',outcome:'success'});
+          return;
+        }
+        if(broken.source==='stalker'&&delivery.kind==='series'&&KizilkanNativeCore.available&&existingSummary?.roomIndexed){
+          await KizilkanNativeCore.beginChunkedPlaylistKindReplace(id,'series'); try{ for(let o=0;o<delivery.items.length;o+=400){ await KizilkanNativeCore.appendPlaylistKindChunk(id,'series',JSON.stringify(delivery.items.slice(o,o+400))); await new Promise<void>(r=>setTimeout(r,0)); } const staged=await KizilkanNativeCore.finishChunkedPlaylistKindReplace(id,'series'); if(!staged?.roomIndexed||Number(staged.series||0)!==delivery.items.length)throw new Error('MAG Series chunk staging Room doğrulaması başarısız.'); await updatePlaylist(id,{seriesCount:delivery.items.length,catalogRecovery:{state:'running',startedAt,expectedKinds,completedKinds:Array.from(completedKinds)},lastRefreshOk:false}); }catch(e){try{await KizilkanNativeCore.cancelChunkedPlaylistKindReplace(id,'series')}catch{} throw e}
+        }else{ const patch:Partial<Playlist>=delivery.kind==='live'?{channels:delivery.items as Playlist['channels']}:delivery.kind==='vod'?{vod:delivery.items as Playlist['vod']}:{series:delivery.items as Playlist['series']}; await updatePlaylist(id,{...patch,catalogRecovery:{state:'running',startedAt,expectedKinds,completedKinds:Array.from(completedKinds)},lastRefreshOk:false}); }
+        const summary=await KizilkanNativeCore.getPlaylistSummary(id).catch(()=>null);
+        if(!summary?.roomIndexed)throw new Error(`${delivery.kind} kataloğu Room'a yazıldı ancak snapshot doğrulanamadı.`);
+        completedKinds.add(delivery.kind);
+        await updatePlaylist(id,{catalogRecovery:{state:'running',startedAt,expectedKinds,completedKinds:Array.from(completedKinds)},lastRefreshOk:false});
+        void recordDiagnostic('catalog','PLAYLIST_REPAIR_KIND_COMMITTED',{
+          playlistId:id,source:broken.source,kind:delivery.kind,rawCount:delivery.rawCount,filteredCount:delivery.filteredCount,
+          fetchElapsedMs:delivery.fetchElapsedMs,commitElapsedMs:Date.now()-commitStarted,
+          roomChannels:summary.channels||0,roomVod:summary.vod||0,roomSeries:summary.series||0,
+        },{traceId,stage:'catalogRecovery',outcome:'success'});
+        // Ağır dizinin referansını bu callback dışına taşımıyoruz; sonraki kind
+        // başlamadan önce GC için uygun hale gelir.
+      } : undefined;
+
+      let res;
+      let resumeCount=0;
+      while(true){
+        if(activeSwitchGeneration.current!==generation)throw new Error('Playlist seçimi değişti; eski onarım sonucu uygulanmadı.');
+        if(appStateRef.current!=='active'||runtime.pausedAt){
+          publishState('paused','Uygulama arka plandayken hazırlama işlemi bekletildi.',lastProgress);
+          await waitUntilForeground();
+          publishState((lastProgress as any)?.phase==='login'?'login':'content','Uygulamaya dönüldü; yarım kalan aşamadan devam ediliyor…',lastProgress);
+        }
+        const controller=new AbortController();
+        runtime.controller=controller;
+        const remainingKinds=expectedKinds.filter(k=>!completedKinds.has(k));
+        res=await refreshPlaylistContent(broken,onProgress,incrementalDelivery?{
+          incrementalDelivery,allowPartialRecovery:true,forceUnconditional:true,
+          kinds:remainingKinds.length?remainingKinds:expectedKinds,signal:controller.signal,
+        }:{forceUnconditional:true,signal:controller.signal});
+        runtime.controller=null;
+        if(controller.signal.aborted&&(runtime.pausedAt||appStateRef.current!=='active')){
+          resumeCount+=1;
+          void recordDiagnostic('catalog','PLAYLIST_REPAIR_STAGE_ABORTED_FOR_BACKGROUND',{playlistId:id,resumeCount,completedKinds:Array.from(completedKinds),activeElapsedMs:activeElapsed()},{traceId,stage:'catalogRecovery',outcome:'paused'});
+          await waitUntilForeground();
+          publishState('content','Uygulamaya dönüldü; tamamlanan kataloglar korunarak devam ediliyor…',lastProgress);
+          continue;
+        }
+        break;
+      }
+      if(activeSwitchGeneration.current!==generation)throw new Error('Playlist seçimi değişti; eski onarım sonucu uygulanmadı.');
+      if(!res.ok)throw new Error(String(res.message||'Playlist otomatik onarımı başarısız.'));
+
+      if(res.patch){
+        publishState('save',res.partial?'Kullanılabilir kataloglar kaydedildi; eksik türler işaretleniyor.':'İçerik cihaza kaydediliyor…',lastProgress,!!res.partial);
+        await updatePlaylist(id,{
+          ...res.patch,
+          lastRefreshedAt:new Date().toISOString(),
+          lastRefreshOk:false,
+          lastFreshnessCheckAt:Date.now(),
+          catalogRecovery:{state:'running',startedAt,expectedKinds,completedKinds:Array.from(completedKinds),failedKinds:res.failedKinds||[]},
+        } as Partial<Playlist>);
+      }
+      if(activeSwitchGeneration.current!==generation)throw new Error('Playlist seçimi değişti; eski onarım sonucu uygulanmadı.');
+
+      publishState('roomVerify','Kaydedilen içerik Room veritabanında doğrulanıyor…',lastProgress,!!res.partial);
+      let summary:NativePlaylistSummary|null=null;
+      try{summary=await KizilkanNativeCore.warmPlaylist(id);}catch{summary=null;}
+      const total=(summary?.channels||0)+(summary?.vod||0)+(summary?.series||0);
+      if(!summary?.roomIndexed||total<=0){
+        void recordDiagnostic('catalog','PLAYLIST_SELF_REPAIR_INDEX_MISSING',{playlistId:id,mode,total});
+        throw new Error('Playlist Room indeksi onarım sonrasında da kullanılabilir içerik içermiyor.');
+      }
+
+      await updatePlaylist(id,{
+        catalogRecovery:{
+          state:res.partial?'partial':'ready',startedAt,completedAt:Date.now(),expectedKinds,
+          completedKinds:Array.from(completedKinds),failedKinds:res.failedKinds||[],
+        },
+        lastRefreshOk:!res.partial,
+      });
+      setRepairFailedId(null);
+      publishState('ready',res.partial?'Liste kullanılabilir durumda; bazı kataloglar eksik kaldı.':'Liste hazır; açılıyor…',lastProgress,!!res.partial);
+      void recordDiagnostic('catalog',res.partial?'PLAYLIST_SELF_REPAIR_PARTIAL':'PLAYLIST_SELF_REPAIR_OK',{
+        playlistId:id,mode,elapsedMs:activeElapsed(),channels:summary.channels||0,vod:summary.vod||0,series:summary.series||0,
+        failedKinds:(res.failedKinds||[]).join(','),message:res.message,
+      },{traceId,stage:'catalogRecovery',outcome:'success'});
+      void recordFlightRecorderStage(traceId,'catalogRecovery',{playlistId:id,mode,partial:!!res.partial,channels:summary.channels||0,vod:summary.vod||0,series:summary.series||0},'success');
+      return summary;
+    }catch(err:any){
+      const message=String(err?.message||err||'Playlist otomatik onarım hatası.');
+      try{await updatePlaylist(id,{catalogRecovery:{state:'failed',startedAt,completedAt:Date.now(),expectedKinds:['live','vod','series'],error:message},lastRefreshOk:false});}catch{}
+      setRepairFailedId(id);
+      publishState('error',message,lastProgress);
+      void recordDiagnostic('catalog','PLAYLIST_SELF_REPAIR_ERROR',{playlistId:id,mode,error:message,elapsedMs:activeElapsed(),pausedTotalMs:runtime.pausedTotalMs},{traceId,stage:'catalogRecovery',outcome:'failed'});
+      void recordFlightRecorderStage(traceId,'catalogRecovery',{playlistId:id,mode,error:message},'failed');
+      throw err instanceof Error?err:new Error(message);
+    }finally{
+      runtime.controller=null; runtime.onPause=null; runtime.wake=null;
+      if(repairLifecycleRef.current===runtime)repairLifecycleRef.current=null;
+      setHeavyLoading(false);
+    }
+  },[updatePlaylist]);
+
   const setActivePlaylist = useCallback(async (id: string) => {
     const existing = activeSwitchInFlight.current.get(id);
     if (existing) {
@@ -842,6 +1249,41 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         if (!verifiedSummary?.roomIndexed) throw new Error('Playlist Room indeksi hazır değil.');
+        /**
+         * v17.5.0 — "0 KANAL" BOŞ KABUK LİSTELER ARTIK DOLDURULUYOR
+         * ---------------------------------------------------------------------
+         * SORUN (kullanıcı bildirimi + ekran görüntüsü): liste "PRIME X APP ·
+         * 0 kanal" görünüyor, seçilse de içerik gelmiyor.
+         *
+         * KÖK NEDEN: Doğrulama yalnız `roomIndexed`'e bakıyordu. "İndeks var
+         * ama içinde HİÇ SATIR YOK" durumu BAŞARI sayılıyor, bu yüzden
+         * v17.3.2'de eklediğim otomatik onarım (catch bloğunda) hiç
+         * tetiklenmiyordu: hata atılmıyordu ki yakalansın.
+         *
+         * ÇÖZÜM: indeks hazır olsa bile üç türün TOPLAMI sıfırsa bu liste
+         * kullanılamaz kabul edilir ve hata atılır. Aşağıdaki catch bloğu
+         * devreye girip içeriği kaynağından yeniden indirir (kendini onarma).
+         * Meta sayaçları içerik olduğunu söylüyorsa uyuşmazlık da kaydedilir.
+         */
+        const shellState=playlistsRef.current.find(pl=>pl.id===id);
+        if(shellState?.catalogRecovery && (shellState.catalogRecovery.state==='running'||shellState.catalogRecovery.state==='failed')){
+          void recordDiagnostic('catalog','PLAYLIST_RECOVERY_BARRIER_HIT',{playlistId:id,generation,recoveryState:shellState.catalogRecovery.state,completedKinds:shellState.catalogRecovery.completedKinds||[]});
+          throw new Error('Playlist katalog onarımı tamamlanmamış; güvenli yeniden onarım gerekiyor.');
+        }
+        const verifiedTotal = (verifiedSummary.channels || 0) + (verifiedSummary.vod || 0) + (verifiedSummary.series || 0);
+        if (verifiedTotal === 0) {
+          // v17.5.0: `target` bu kapsamda tanımlı DEĞİL (CI yakaladı: TS2304).
+          // Aşağıdaki onarım kodunun kullandığı kaynağın aynısını kullanıyoruz.
+          const shell = playlistsRef.current.find(pl => pl.id === id);
+          const metaTotal = (shell?.channelsCount || 0) + (shell?.vodCount || 0) + (shell?.seriesCount || 0);
+          void recordDiagnostic('catalog', 'PLAYLIST_EMPTY_SHELL_DETECTED', {
+            playlistId: id,
+            source: shell?.source || '',
+            metaTotal,
+            hasSource: !!(shell?.m3uUrl || shell?.xtreamServer || shell?.stalkerPortal),
+          });
+          throw new Error('Liste içeriği boş (Room indeksinde hiç kayıt yok).');
+        }
         void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_VERIFY_READY', {
           playlistId: id,
           generation,
@@ -860,119 +1302,30 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         });
 
         /**
-         * v16.4.0 — "BOŞ KABUK" LİSTE OTOMATİK ONARIMI
-         * ---------------------------------------------------------------------
-         * CİHAZ KANITI (28.08 kaydı): 21 kez PLAYLIST_SWITCH_VERIFY_FAILED
-         *   "Playlist Room indeksi ve legacy veri dosyası bulunamadı"
-         * Yani listenin METASI var ama İÇERİĞİ hiç yazılmamış (ekleme sırasında
-         * "Liste içeriği cihaza kaydedilemedi" hatası alınmış, meta yine de
-         * kalmış). Eski davranış: sessizce vazgeç -> kullanıcı için liste
-         * "seçilmiyor" görünüyordu, hiçbir açıklama yoktu.
-         *
-         * YENİ: içerik yoksa ve listenin KAYNAK bilgisi duruyorsa (sunucu,
-         * kullanıcı, şifre, panel kodu, m3u adresi) içerik kaynağından
-         * SESSİZCE yeniden indirilir ve seçim tamamlanır. Kullanıcı hiçbir şey
-         * yapmaz. Onarım da başarısız olursa artık sessiz kalınmaz; durum
-         * kaydedilir ve arayüz bilgilendirilir.
+         * v17.9.10 — PRIMARY/FALLBACK SELF-REPAIR TEK YOL
+         * Kaynak alanı tam ise primary, eski/eksik meta ise fallback etiketiyle
+         * AYNI repairMissingPlaylist motoru çalışır. Böylece iki farklı blok
+         * arasında ilerleme, hata ve OOM davranışı ayrışmaz.
          */
         const broken = playlistsRef.current.find(pl => pl.id === id);
-        const lastRepair=repairAttemptAt.current.get(id)||0;
-        if(Date.now()-lastRepair<30000){setRepairFailedId(id);void recordDiagnostic('catalog','PLAYLIST_SELF_REPAIR_THROTTLED',{playlistId:id,generation});throw new Error('Playlist içeriği henüz hazır değil; otomatik onarım kısa süre önce denendi.');}
-        repairAttemptAt.current.set(id,Date.now());
-        const hasSource = !!(broken?.m3uUrl || broken?.xtreamServer || broken?.stalkerPortal || (broken as any)?.panelCode);
-        if (broken && hasSource) {
-          try {
-            setHeavyLoading(true);
-            void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_START', { playlistId: id, source: broken.source });
-            const { refreshPlaylistContent } = await import('@/src/utils/refreshPlaylist');
-            const res = await refreshPlaylistContent(broken as any);
-            if (activeSwitchGeneration.current !== generation) return;
-            if (res?.ok && res.patch) {
-              await updatePlaylist(id, res.patch as any);
-              try { verifiedSummary = await KizilkanNativeCore.warmPlaylist(id); } catch { verifiedSummary = null as any; }
-              if (verifiedSummary?.roomIndexed) {
-                void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_OK', {
-                  playlistId: id, channels: verifiedSummary.channels || 0,
-                });
-                setRepairFailedId(null);
-              } else {
-                void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_INDEX_MISSING', { playlistId: id });
-                setRepairFailedId(id);
-                throw new Error('Playlist Room indeksi onarım sonrasında da oluşturulamadı.');
-              }
-            } else {
-              if (res?.patch) await updatePlaylist(id, res.patch as any);
-              void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_FAILED', {
-                playlistId: id, message: String(res?.message || 'bilinmiyor'),
-              });
-              setRepairFailedId(id);
-              throw new Error(String(res?.message || 'Playlist otomatik onarımı başarısız.'));
-            }
-          } catch (repairErr: any) {
-            void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_ERROR', {
-              playlistId: id, error: String(repairErr?.message || repairErr),
-            });
-            setRepairFailedId(id);
-            throw repairErr instanceof Error ? repairErr : new Error(String(repairErr || 'Playlist otomatik onarım hatası.'));
-          } finally {
-            setHeavyLoading(false);
-          }
-        } else {
-          /**
-           * v16.5.0 — TEŞHİS BOŞLUĞU KAPATILDI + ONARIM KOŞULU GENİŞLETİLDİ.
-           * v16.4.0'da bu dal SESSİZDİ: cihaz kaydında 14 kez
-           * PLAYLIST_SWITCH_VERIFY_FAILED görüldü ama hiç SELF_REPAIR olayı
-           * yoktu; yani onarım hiç denenmemişti ve NEDEN denenmediği de
-           * anlaşılamıyordu. Artık hangi kaynak alanlarının bulunduğu/eksik
-           * olduğu kaydedilir.
-           *
-           * Ayrıca: kaynak alanları eksik görünse bile liste Xtream/M3U/MAG
-           * olarak işaretliyse ve kullanıcı bilgileri duruyorsa onarım YİNE
-           * denenir — kaynak bilgisi farklı alan adlarında saklanmış olabilir.
-           */
-          void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_SKIPPED', {
-            playlistId: id,
-            found: !!broken,
-            source: broken?.source || '',
-            hasM3u: !!broken?.m3uUrl,
-            hasXtreamServer: !!broken?.xtreamServer,
-            hasXtreamUser: !!broken?.xtreamUsername,
-            hasStalkerPortal: !!broken?.stalkerPortal,
-            hasPanelCode: !!(broken as any)?.panelCode,
-            hasPreferredServer: !!(broken as any)?.preferredServer,
-            keys: broken ? Object.keys(broken).slice(0, 30).join(',') : '',
-          });
-
-          // Son çare: liste var ve bir kaynak TÜRÜ biliniyorsa yenilemeyi dene.
-          if (broken && broken.source) {
-            try {
-              setHeavyLoading(true);
-              void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_START', { playlistId: id, source: broken.source, mode: 'fallback' }, { traceId, stage: 'catalogRecovery', outcome: 'started' });
-              void recordFlightRecorderStage(traceId, 'catalogRecovery', { playlistId: id, mode: 'fallback' }, 'started');
-              const { refreshPlaylistContent } = await import('@/src/utils/refreshPlaylist');
-              const res = await refreshPlaylistContent(broken as any);
-              if (activeSwitchGeneration.current !== generation) return;
-              if (res?.ok && res.patch) {
-                await updatePlaylist(id, res.patch as any);
-                try { verifiedSummary = await KizilkanNativeCore.warmPlaylist(id); } catch { verifiedSummary = null as any; }
-                if (verifiedSummary?.roomIndexed) {
-                  void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_OK', { playlistId: id, mode: 'fallback' });
-                  setRepairFailedId(null);
-                } else { setRepairFailedId(id); throw new Error('Playlist Room indeksi onarım sonrasında da oluşturulamadı.'); }
-              } else {
-                if (res?.patch) await updatePlaylist(id, res.patch as any);
-                void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_FAILED', { playlistId: id, mode: 'fallback', message: String(res?.message || '') });
-                setRepairFailedId(id); throw new Error(String(res?.message || 'Playlist otomatik onarımı başarısız.'));
-              }
-            } catch (err2: any) {
-              void recordDiagnostic('catalog', 'PLAYLIST_SELF_REPAIR_ERROR', { playlistId: id, mode: 'fallback', error: String(err2?.message || err2) });
-              setRepairFailedId(id); throw err2 instanceof Error ? err2 : new Error(String(err2 || 'Playlist otomatik onarım hatası.'));
-            } finally { setHeavyLoading(false); }
-          } else {
-            setRepairFailedId(id);
-            throw new Error('Playlist kaynağı bulunamadığı için otomatik onarım yapılamadı.');
-          }
+        if(!broken){
+          setRepairFailedId(id);
+          throw new Error('Playlist metadata kaydı bulunamadığı için otomatik onarım yapılamadı.');
         }
+        const hasSource=!!(broken.m3uUrl||broken.xtreamServer||broken.stalkerPortal||(broken as any).panelCode||(broken as any).serverCodeBinding);
+        if(!hasSource){
+          void recordDiagnostic('catalog','PLAYLIST_SELF_REPAIR_SOURCE_FALLBACK',{
+            playlistId:id,source:broken.source||'',hasM3u:!!broken.m3uUrl,hasXtreamServer:!!broken.xtreamServer,
+            hasXtreamUser:!!broken.xtreamUsername,hasStalkerPortal:!!broken.stalkerPortal,
+            hasPanelCode:!!(broken as any).panelCode,hasPreferredServer:!!(broken as any).preferredServer,
+            keys:Object.keys(broken).slice(0,30).join(','),
+          });
+        }
+        if(!hasSource&&!broken.source){
+          setRepairFailedId(id);
+          throw new Error('Playlist kaynağı bulunamadığı için otomatik onarım yapılamadı.');
+        }
+        verifiedSummary=await repairMissingPlaylist(broken,id,generation,traceId,hasSource?'primary':'fallback');
       }
     }
 
@@ -1030,7 +1383,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     } finally {
       if (activeSwitchInFlight.current.get(id) === operation) activeSwitchInFlight.current.delete(id);
     }
-  }, [activeId, persistMeta]);
+  }, [activeId, persistMeta, repairMissingPlaylist]);
   activatePlaylistRef.current = setActivePlaylist;
 
   const toggleFavorite = useCallback(async (channelId: string) => {
@@ -1064,7 +1417,8 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         loadedProfileId,nativeSummary,ensureHeavyLoaded,cleanupPlaylistContent,refreshPlaylistKinds,freshnessStatus,
         addPlaylist, addPreparedPlaylist, enrichPlaylistMedia, removePlaylist, updatePlaylist, setActivePlaylist,
         toggleFavorite, isFavorite, addToRecent, clearRecent,
-        heavyLoading, repairFailedId,
+        heavyLoading, repairProgress, repairFailedId,
+        lastRefreshSummary, clearRefreshSummary: () => setLastRefreshSummary(null),
       }}
     >
       {children}

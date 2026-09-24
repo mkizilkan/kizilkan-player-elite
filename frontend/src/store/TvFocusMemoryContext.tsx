@@ -16,10 +16,12 @@ type RestoreRequest = { scope: string; key: string; nonce: number } | null;
 
 type TvFocusMemoryValue = {
   scope: string;
+  isTv: boolean;
   remember: (scope: string, key: string) => void;
   rememberedKey: (scope: string) => string | null;
   requestRestore: (scope?: string, key?: string) => void;
   restoreRequest: RestoreRequest;
+  clearRestore: (nonce?: number) => void;
   routeScope: string;
 };
 
@@ -36,14 +38,16 @@ export function TvFocusMemoryProvider({ children }: { children: React.ReactNode 
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const remember = useCallback((scope: string, key: string) => {
-    if (!isTv || !scope || !key) return;
+    // v17.10.0: konum hafızası artık yalnız TV focus hafızası değil. Telefon/tablet
+    // Player dönüşünde de aynı stable key kullanılır; native preferred-focus ise
+    // yalnız TV tarafında uygulanmaya devam eder.
+    if (!scope || !key) return;
     rememberedRef.current.set(scope, key);
-  }, [isTv]);
+  }, []);
 
   const rememberedKey = useCallback((scope: string) => rememberedRef.current.get(scope) || null, []);
 
   const requestRestore = useCallback((requestedScope?: string, requestedKey?: string) => {
-    if (!isTv) return;
     const scope = requestedScope || routeScope;
     const key = requestedKey || rememberedRef.current.get(scope);
     if (!key) return;
@@ -56,17 +60,24 @@ export function TvFocusMemoryProvider({ children }: { children: React.ReactNode 
     clearTimerRef.current = setTimeout(() => {
       setRestoreRequest(prev => prev?.nonce === nonce ? null : prev);
       clearTimerRef.current = null;
-    }, 350);
+    }, isTv ? 2600 : 1800);
   }, [isTv, routeScope]);
+
+  const clearRestore = useCallback((nonce?: number) => {
+    setRestoreRequest(prev => (!prev || nonce === undefined || prev.nonce === nonce) ? null : prev);
+    if (clearTimerRef.current) { clearTimeout(clearTimerRef.current); clearTimerRef.current = null; }
+  }, []);
 
   const value = useMemo<TvFocusMemoryValue>(() => ({
     scope: routeScope,
+    isTv,
     remember,
     rememberedKey,
     requestRestore,
     restoreRequest,
+    clearRestore,
     routeScope,
-  }), [routeScope, remember, rememberedKey, requestRestore, restoreRequest]);
+  }), [routeScope, isTv, remember, rememberedKey, requestRestore, restoreRequest, clearRestore]);
 
   return <FocusMemoryContext.Provider value={value}>{children}</FocusMemoryContext.Provider>;
 }
@@ -82,7 +93,7 @@ export function useTvFocusMemory(explicitScope?: string) {
 
   const bind = useCallback((key?: string | null) => {
     const stableKey = key || "";
-    const requested = !!stableKey && ctx?.restoreRequest?.scope === scope && ctx.restoreRequest.key === stableKey;
+    const requested = !!ctx?.isTv && !!stableKey && ctx?.restoreRequest?.scope === scope && ctx.restoreRequest.key === stableKey;
     return {
       hasTVPreferredFocus: requested,
       rememberFocus: () => { if (stableKey) ctx?.remember(scope, stableKey); },
@@ -98,5 +109,7 @@ export function useTvFocusMemory(explicitScope?: string) {
     requestRestore,
     requestRouteRestore,
     routeScope: ctx?.routeScope || scope,
+    restoreRequest: ctx?.restoreRequest?.scope === scope ? ctx.restoreRequest : null,
+    clearRestore: ctx?.clearRestore || (() => {}),
   };
 }

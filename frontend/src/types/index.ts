@@ -11,6 +11,11 @@ export interface Channel {
   container_ext?: string | null;
   tv_archive?: number; // 1 if catch-up available
   tv_archive_duration?: number; // days
+  /** v17.10.0 — M3U catch-up metadata, EXTINF üzerinden kayıpsız taşınır. */
+  catchup?: string | null;
+  catchup_source?: string | null;
+  catchup_days?: number | null;
+  catchup_correction?: number | null;
   num?: number;                 // sağlayıcının kanal numarası
   stream_id?: number | string; // for catch-up URL builder
   /** GPT ELITE v12.5.0: +18 filtresi için önceden hesaplanan hızlı bayrak. */
@@ -158,6 +163,8 @@ export interface PlaylistContentSelection {
 export interface Playlist {
   catalogRevision?:number;
   cleanedKinds?:Array<"live"|"vod"|"series"|"epg">;
+  /** v17.10.0: otomatik katalog yenileme. undefined eski davranışı (açık) korur; false kullanıcı tarafından kapatılmıştır. */
+  autoRefreshEnabled?: boolean;
   freshnessMinutes?:number;
   lastFreshnessCheckAt?:number;
   /** Conditional GET validators belong to this exact M3U URL. */
@@ -198,6 +205,16 @@ export interface Playlist {
   lastUsedAt?: string;
   lastRefreshedAt?: string;
   lastRefreshOk?: boolean;
+  /** v17.9.10: boş-kabuk onarımı yarıda kalırsa kısmi Room snapshot hazır sayılmasın. */
+  catalogRecovery?: {
+    state: 'running' | 'ready' | 'partial' | 'failed';
+    startedAt?: number;
+    completedAt?: number;
+    expectedKinds?: Array<'live' | 'vod' | 'series'>;
+    completedKinds?: Array<'live' | 'vod' | 'series'>;
+    failedKinds?: Array<'live' | 'vod' | 'series'>;
+    error?: string;
+  };
   /** v16.13.10: endpoint gerçeği; 404 olan kataloglar desteklenmiyor kabul edilir, çalışan katalog korunur. */
   catalogCapabilities?: {
     live?: 'supported' | 'empty' | 'unsupported_404' | 'error';

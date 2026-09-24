@@ -10,6 +10,16 @@ interface PlaylistSnapshotDao {
   @Query("SELECT * FROM playlist_snapshots WHERE playlistId = :playlistId LIMIT 1")
   fun get(playlistId: String): PlaylistSnapshotEntity?
 
+  /**
+   * v17.9.5 — TEŞHİS: Tüm snapshot envanteri (yetim liste tespiti).
+   * Room'da 58 snapshot varken arayüz 0-1 liste görüyor. Bu sorgu her
+   * snapshot'ın kimliğini, sayılarını ve tarihini verir; JS tarafı meta ile
+   * karşılaştırıp kaçının "yetim" (meta'da karşılıksız) olduğunu ölçer.
+   * SADECE OKUMA — hiçbir şey silmez.
+   */
+  @Query("SELECT * FROM playlist_snapshots ORDER BY importedAtEpochMs DESC")
+  fun getAllSnapshots(): List<PlaylistSnapshotEntity>
+
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   fun put(snapshot: PlaylistSnapshotEntity)
 
@@ -53,6 +63,15 @@ interface MediaItemDao {
 
   @Query("SELECT COUNT(*) FROM media_items WHERE playlistId = :playlistId AND kind = :kind")
   fun count(playlistId: String, kind: String): Int
+
+  /**
+   * v17.9.1 — Yenileme fark raporu için bir türün öğe kimlikleri.
+   * [playlistId, kind, itemId] indeksi sayesinde yalnız indeks okunur; ham
+   * JSON (rawJson) yüklenmez. Fark native tarafta hesaplanır, JS'e 50 bin
+   * öğe taşınmaz.
+   */
+  @Query("SELECT itemId FROM media_items WHERE playlistId = :playlistId AND kind = :kind")
+  fun itemIds(playlistId: String, kind: String): List<String>
 
   @Query("""
     SELECT groupName AS name, COUNT(*) AS count

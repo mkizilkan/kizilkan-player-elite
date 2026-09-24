@@ -40,10 +40,13 @@ function staticChecks() {
   must(player, /generation===stalkerResolveGenerationRef\.current/, 'stale async resolve generation guard missing');
   must(player, /key=\{`vv-\$\{effectiveSurface\}-\$\{activeSessionId\}`\}/, 'Media3 per-session surface remount regression');
   must(player, /resolvedMediaReadyForCurrentChannel/, 'native surface readiness gate missing');
-  must(player, /v2ProfileReady && resolvedMediaReadyForCurrentChannel && !!playbackRequest\?\.url && v2Profile\.engine === "media3"/, 'Media3 old surface can remain during Stalker resolve');
-  must(player, /v2ProfileReady && resolvedMediaReadyForCurrentChannel && !!playbackRequest\?\.url && useVLC/, 'VLC old surface can remain during Stalker resolve');
-  must(player, /v2ProfileReady && resolvedMediaReadyForCurrentChannel && !!playbackRequest\?\.url && useMPV/, 'MPV old surface can remain during Stalker resolve');
-  must(player, /uri=\{playbackRequest\?\.url \|\| playUrl \|\| ""\}/, 'VLC raw channel fallback still present');
+  // v17.10.2: enginePlaybackRequest gates the player while app-owned timeshift
+  // is preparing. It inherits the same Stalker ownership protection and is
+  // stricter than rendering directly from playbackRequest.
+  must(player, /v2ProfileReady && resolvedMediaReadyForCurrentChannel && !!enginePlaybackRequest\?\.url && v2Profile\.engine === "media3"/, 'Media3 old surface can remain during Stalker resolve');
+  must(player, /v2ProfileReady && resolvedMediaReadyForCurrentChannel && !!enginePlaybackRequest\?\.url && useVLC/, 'VLC old surface can remain during Stalker resolve');
+  must(player, /v2ProfileReady && resolvedMediaReadyForCurrentChannel && !!enginePlaybackRequest\?\.url && useMPV/, 'MPV old surface can remain during Stalker resolve');
+  must(player, /uri=\{enginePlaybackRequest\?\.url \|\| playUrl \|\| ""\}/, 'VLC raw channel fallback still present');
   must(player, /const emergencyTouchActive/, 'emergency touch authority missing');
   must(player, /enabled\(visible && !isTv && !emergencyTouchActive\)/, 'gesture not disabled while emergency catcher owns touch');
   must(player, /Date\.now\(\) - lastControlsRevealAtRef\.current < 500/, 'double-toggle guard missing');

@@ -1,6 +1,6 @@
 import * as Crypto from "expo-crypto";
 
-export type HttpRecoveryClass = "not_found" | "session_or_link_expired" | "upstream" | "auth" | "other";
+export type HttpRecoveryClass = "not_found" | "session_or_link_expired" | "upstream" | "auth" | "proxy_auth" | "other";
 export type SourceProvenance = {
   fingerprint: string; createdAt: number; ageMs: number; origin: "stalker_create_link" | "xtream" | "m3u" | "external" | "unknown";
   candidateIndex: number; playlistId: string; channelId: string;
@@ -10,6 +10,7 @@ export function classifyHttpRecovery(status: number): HttpRecoveryClass {
   if (status === 404) return "not_found";
   if (status === 444 || status === 456) return "session_or_link_expired";
   if (status === 401 || status === 403) return "auth";
+  if (status === 407) return "proxy_auth";
   if (status === 520) return "upstream";
   return "other";
 }
@@ -26,7 +27,7 @@ export function extractHttpStatus(text: string): number | null {
   // Some native engines surface only the status code (for example "444").
   // Restrict the fallback to recovery-relevant codes so arbitrary three-digit
   // media metadata cannot be mistaken for an HTTP response.
-  const recoveryCode = value.match(/(?:^|\D)(401|403|404|444|456|520)(?:\D|$)/);
+  const recoveryCode = value.match(/(?:^|\D)(401|403|404|407|444|456|520)(?:\D|$)/);
   return recoveryCode ? Number(recoveryCode[1]) : null;
 }
 

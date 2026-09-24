@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, ScrollView, Image, useWindowDimensions } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -18,6 +18,7 @@ import { haptic } from "@/src/utils/haptic";
 import { FocusButton } from "@/src/components/FocusButton";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { savePlayerNavigationScope } from "@/src/player/navigationScope";
+import { useTvFocusMemory } from "@/src/store/TvFocusMemoryContext";
 
 type Tab = "continue" | "favorites" | "groups" | "watchlist" | "recent";
 
@@ -41,6 +42,7 @@ export default function LibraryTab() {
   const [nativeFavChannels, setNativeFavChannels] = useState<any[]>([]);
   const [nativeRecentChannels, setNativeRecentChannels] = useState<any[]>([]);
   const [nativeWatchlist, setNativeWatchlist] = useState<any[]>([]);
+  const returnFocus=useTvFocusMemory("favorites"); const listRef=useRef<FlatList<any>>(null);
 
   useEffect(() => {
     if (!activePlaylist?.id) { setOverrides({}); return; }
@@ -144,6 +146,7 @@ export default function LibraryTab() {
 
   const posterW = Math.min(140, (width - SPACING.lg * 2 - SPACING.sm * 2) / 3);
   const posterH = posterW * 1.5;
+  useEffect(()=>{const req=returnFocus.restoreRequest;if(!req)return;const m=/^favorites:(.+):([^:]+)$/.exec(req.key);if(!m)return;const scope=m[1],id=m[2];let nt:Tab="favorites",data:any[]=favChannels;if(scope==="recent"){nt="recent";data=recentChannels}else if(scope.startsWith("watchlist:")){nt="watchlist";data=watchlistItems}else if(scope.startsWith("continue:")){nt="continue";data=continueList}if(tab!==nt){setTab(nt);return}const i=data.findIndex((x:any)=>String(x.id)===id);if(i<0)return;const t=setTimeout(()=>{try{listRef.current?.scrollToIndex({index:i,animated:false,viewPosition:0.5})}catch{}setTimeout(()=>returnFocus.clearRestore(req.nonce),300)},80);return()=>clearTimeout(t)},[returnFocus.restoreRequest?.nonce,tab,favChannels,recentChannels,watchlistItems,continueList]);
 
   const openVideo = async (id: string, kind: string, scopeId = "library", orderedIds?: string[]) => {
     haptic.light();
@@ -205,12 +208,14 @@ export default function LibraryTab() {
 
       {tab === "continue" && (
         <FlatList
+          ref={listRef}
           data={continueList}
           keyExtractor={i => i.id}
           contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.md, paddingBottom: SPACING.xxxl }}
           renderItem={({ item }) => (
             <FocusButton
               testID={`continue-${item.id}`}
+              focusScope="favorites" focusKey={`favorites:continue:${item.kind}:${item.id}`}
               onPress={() => { const ids = continueList.filter(x => x.kind === item.kind).map(x => x.id); void openVideo(item.id, item.kind, `continue:${item.kind}`, ids); }}
               activeOpacity={0.75}
               style={[styles.continueCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
@@ -263,12 +268,14 @@ export default function LibraryTab() {
 
       {tab === "favorites" && (
         <FlatList
+          ref={listRef}
           data={favChannels}
           keyExtractor={c => c.id}
           contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.md, paddingBottom: SPACING.xxxl }}
           renderItem={({ item }) => (
             <ChannelRow
               channel={item}
+              focusScope="favorites" focusKey={`favorites:favorites:${item.id}`}
               isFavorite={isFavorite(item.id)}
               onToggleFavorite={() => { haptic.soft(); toggleFavorite(item.id); }}
               onPress={() => {
@@ -351,6 +358,7 @@ export default function LibraryTab() {
 
       {tab === "watchlist" && (
         <FlatList
+          ref={listRef}
           data={watchlistItems}
           keyExtractor={i => i.id}
           numColumns={3}
@@ -360,6 +368,7 @@ export default function LibraryTab() {
           renderItem={({ item }) => (
             <FocusButton
               testID={`watchlist-${item.id}`}
+              focusScope="favorites" focusKey={`favorites:watchlist:${item.__kind}:${item.id}`}
               onPress={() => { const ids = watchlistItems.filter((x:any) => x.__kind === item.__kind).map((x:any) => x.id); void openVideo(item.id, item.__kind, `watchlist:${item.__kind}`, ids); }}
               style={{ width: posterW }}
               activeOpacity={0.8}
@@ -390,12 +399,14 @@ export default function LibraryTab() {
 
       {tab === "recent" && (
         <FlatList
+          ref={listRef}
           data={recentChannels}
           keyExtractor={c => c.id}
           contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.md, paddingBottom: SPACING.xxxl }}
           renderItem={({ item }) => (
             <ChannelRow
               channel={item}
+              focusScope="favorites" focusKey={`favorites:favorites:${item.id}`}
               isFavorite={isFavorite(item.id)}
               onToggleFavorite={() => { haptic.soft(); toggleFavorite(item.id); }}
               onPress={() => {

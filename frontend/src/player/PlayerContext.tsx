@@ -37,6 +37,21 @@ export type PlayerSource = {
   nav?: PlayerNavigationContext;
 } | null;
 
+
+function navigationForItem(nav: PlayerNavigationContext | undefined, id: string, kind: PlayerSessionKind): PlayerNavigationContext | undefined {
+  if (!nav) return nav;
+  const next = { ...nav };
+  // v17.10.0: Player içinde zap/sonraki içerik değişince geri dönüş hedefi ilk
+  // açılan öğede kalmasın. Library ve TV-home stable key sözleşmesi burada tek
+  // merkezde güncellenir. Detail/search gibi özel origin'lerin kendi key'i korunur.
+  if (nav.origin === "library" && (kind === "live" || kind === "vod" || kind === "series")) {
+    next.focusKey = `library:${kind}:${id}`;
+  } else if (nav.origin === "tv-home" && (kind === "live" || kind === "vod" || kind === "series")) {
+    next.focusKey = `tv-home:${kind}:${id}`;
+  }
+  return next;
+}
+
 function inferSessionKind(id: string, ext?: string): PlayerSessionKind {
   if (ext !== "true") return "live";
   if (id.startsWith("vodplay-")) return "vod";
@@ -73,11 +88,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const switchChannel = useCallback((id: string, nav?: PlayerNavigationContext) => {
     // Zap yalnız canlı kanallarda kullanılır. Önceki VOD/ext bayrağını
     // taşımak eski synthetic oturumu yeni kanala sızdırıyordu. Navigation scope korunur.
-    setSource(prev => ({ id, ext: undefined, kind: "live", ...(nav || prev?.nav ? { nav: nav || prev?.nav } : {}) }));
+    setSource(prev => {
+      const baseNav = nav || prev?.nav;
+      const nextNav = navigationForItem(baseNav, id, "live");
+      return { id, ext: undefined, kind: "live", ...(nextNav ? { nav: nextNav } : {}) };
+    });
   }, []);
 
   const switchContent = useCallback((s: { id: string; ext?: string; kind: PlayerSessionKind; nav?: PlayerNavigationContext }) => {
-    setSource(prev => ({ id: s.id, ext: s.ext, kind: s.kind, ...(s.nav || prev?.nav ? { nav: s.nav || prev?.nav } : {}) }));
+    setSource(prev => {
+      const baseNav = s.nav || prev?.nav;
+      const nextNav = navigationForItem(baseNav, s.id, s.kind);
+      return { id: s.id, ext: s.ext, kind: s.kind, ...(nextNav ? { nav: nextNav } : {}) };
+    });
   }, []);
 
   const value = useMemo<PlayerContextValue>(

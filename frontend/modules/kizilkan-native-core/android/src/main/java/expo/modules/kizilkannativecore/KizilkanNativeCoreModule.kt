@@ -46,6 +46,8 @@ import java.util.concurrent.atomic.AtomicLong
  * üzerinde indeksli çalışır ve React'e yalnız görünen sayfa döner.
  */
 class KizilkanNativeCoreModule : Module() {
+  private val liveTimeshiftManager by lazy { LiveTimeshiftManager(context()) }
+
   data class IndexResult(val snapshot: PlaylistSnapshotEntity, val cacheHit: Boolean)
 
   companion object {
@@ -168,6 +170,16 @@ class KizilkanNativeCoreModule : Module() {
       } finally { response?.close() }
     }
 
+    /**
+     * v17.6.0 — JS aktif iş etiketini native ANR gözcüsüne bildirir.
+     * Function (AsyncFunction değil): tek bir alan ataması, kuyruk beklemeden
+     * anında yazılmalı; aksi halde kilitlenme anında etiket bayat kalırdı.
+     */
+    Function("setDiagnosticTask") { label: String ->
+      NativeBlackBox.setCurrentTask(label)
+      true
+    }
+
     AsyncFunction("warmPlaylist") { id: String ->
       val result = ensureIndexed(id)
       summary(result.snapshot, cacheHit = result.cacheHit)
@@ -246,8 +258,39 @@ class KizilkanNativeCoreModule : Module() {
           snapshotRecovered = true
           snapshotRecoveryState = "SNAPSHOT_BOOTSTRAP_EMPTY_FULL_PAYLOAD"
         } else {
-          snapshotRecoveryState = "SNAPSHOT_MISSING_EMPTY_PARTIAL"
-          throw IllegalStateException("Room snapshot bulunamadı ve partial payload ile güvenli onarım mümkün değil: $id")
+          /**
+           * v17.9.9 — TEK KIND (parçalı) PAYLOAD BOOTSTRAP
+           * -------------------------------------------------------------------
+           * SORUN: Büyük katalog tek JSON.stringify ile gönderilince 75 MB'lık
+           * tek blok OOM'a yol açıyordu. Çözüm: JS artık kind'ları AYRI AYRI
+           * gönderiyor (live, sonra vod, sonra series) — tek seferde en fazla
+           * bir kind'lık string bellekte olur.
+           *
+           * Ama bu, snapshot henüz yokken ilk kind'ın "partial" sayılıp
+           * reddedilmesine yol açıyordu (eski davranış: sadece full payload
+           * bootstrap edilirdi). Artık Room satırı olmayan bir listede tek kind
+           * gelse de BOŞ snapshot bootstrap edilir; sonraki kind'lar bunun
+           * üstüne yazar. Güvenli çünkü: her kind kendi Room satırlarını
+           * deleteKind + insert ile atomik değiştirir ve final doğrulama
+           * (aşağıda) her kind için row-count == payload-count şartını korur.
+           */
+          /**
+           * v17.9.9 — TEK KIND (parçalı) BOOTSTRAP, ama BOŞ payload FAIL-CLOSED.
+           * Parçalı gönderimde ilk kind boş snapshot bootstrap edebilir; ANCAK
+           * gelen kind gerçekten VERİ içermiyorsa (0 öğe) ve Room'da hiç satır
+           * yoksa, bu bir onarım değil veri kaybı riskidir — eski fail-closed
+           * koruması burada KORUNUR (SNAPSHOT_MISSING_EMPTY_PARTIAL).
+           */
+          val anyNonEmpty = arrays.values.any { it.length() > 0 }
+          if (anyNonEmpty) {
+            before = PlaylistSnapshotEntity(id, 0L, 0L, 0, 0, 0, System.currentTimeMillis(), 0L)
+            db.snapshotDao().put(before!!)
+            snapshotRecovered = true
+            snapshotRecoveryState = "SNAPSHOT_BOOTSTRAP_EMPTY_PARTIAL_PAYLOAD"
+          } else {
+            snapshotRecoveryState = "SNAPSHOT_MISSING_EMPTY_PARTIAL"
+            throw IllegalStateException("Room snapshot bulunamadı ve boş partial payload ile güvenli onarım mümkün değil: $id")
+          }
         }
       }
       var verifiedBefore=before!!
@@ -292,11 +335,51 @@ class KizilkanNativeCoreModule : Module() {
         }
       }
       val started = SystemClock.elapsedRealtime()
+      /**
+       * v17.9.1 — YENİLEME FARK RAPORU NATIVE TARAFTA HESAPLANIR
+       * -------------------------------------------------------------------
+       * JS tarafında Native Core modunda listeler bellekte BOŞ dizilerle
+       * tutulduğu için "önce" değeri her zaman 0 çıkıyordu (21.09 kaydı:
+       * live önce=0 sonra=16484). Doğru fark tam burada, eski satırlar
+       * silinmeden hemen önce hesaplanır. Kimlik kuralı insertCollection ile
+       * BİREBİR aynıdır (id → stream_id → series_id); sıraya bağlı "row-N"
+       * geri dönüş anahtarları kararlı olmadığı için farka katılmaz.
+       */
+      val diff = linkedMapOf<String, Map<String, Int>>()
+      fun incomingIds(arr: JSONArray): Set<String> {
+        val out = HashSet<String>(arr.length() * 2)
+        for (i in 0 until arr.length()) {
+          val obj = arr.optJSONObject(i) ?: continue
+          val itemId = obj.optString("id", "").trim().ifEmpty {
+            obj.optString("stream_id", "").trim().ifEmpty { obj.optString("series_id", "").trim() }
+          }
+          if (itemId.isNotEmpty()) out.add(itemId)
+        }
+        return out
+      }
+      skipped.forEach { kind ->
+        val n = snapshotCount(kind)
+        diff[kind] = mapOf("before" to n, "after" to n, "added" to 0, "removed" to 0, "unchanged" to n)
+      }
       if (changed.isNotEmpty()) {
         db.runInTransaction {
           val dao = db.mediaDao()
           changed.forEach { kind ->
             val arr = arrays[kind] ?: return@forEach
+            try {
+              val oldIds = dao.itemIds(id, kind).filterNot { it.startsWith("row-") }.toHashSet()
+              val newIds = incomingIds(arr)
+              val kept = oldIds.count { it in newIds }
+              diff[kind] = mapOf(
+                "before" to dao.count(id, kind),
+                "after" to arr.length(),
+                "added" to newIds.count { it !in oldIds },
+                "removed" to oldIds.count { it !in newIds },
+                "unchanged" to kept,
+              )
+            } catch (_: Throwable) {
+              // Fark hesaplanamazsa senkron ETKİLENMEZ; yalnız rapor eksik kalır.
+            }
             dao.deleteKind(id, kind)
             insertCollection(dao, id, kind, arr)
           }
@@ -360,6 +443,7 @@ class KizilkanNativeCoreModule : Module() {
         "snapshotRecovered" to snapshotRecovered,
         "snapshotRecoveryState" to snapshotRecoveryState,
         "elapsedMs" to (SystemClock.elapsedRealtime() - started),
+        "diff" to diff,
       )
       }
     }
@@ -457,6 +541,17 @@ class KizilkanNativeCoreModule : Module() {
       val file = chunkImportFile(id)
       !file.exists() || file.delete()
     }
+
+    AsyncFunction("beginChunkedPlaylistKindReplace") { id: String, kindRaw: String ->
+      val kind=normalizeKind(kindRaw); val file=chunkImportFile("kind_${id}_${kind}"); file.parentFile?.mkdirs(); if(file.exists())file.delete(); file.createNewFile(); true
+    }
+    AsyncFunction("appendPlaylistKindChunk") { id: String, kindRaw: String, jsonArray: String ->
+      val kind=normalizeKind(kindRaw); val file=chunkImportFile("kind_${id}_${kind}"); if(!file.exists())throw IllegalStateException("Kind staging yok: $id/$kind")
+      val arr=JSONTokener(jsonArray).nextValue() as? JSONArray ?: throw IllegalStateException("Kind chunk JSON array değil")
+      BufferedWriter(OutputStreamWriter(FileOutputStream(file,true),Charsets.UTF_8),64*1024).use { out -> for(i in 0 until arr.length()){ val obj=arr.optJSONObject(i)?:continue; out.append(obj.toString()).append('\n') } }; arr.length()
+    }
+    AsyncFunction("finishChunkedPlaylistKindReplace") { id: String, kindRaw: String -> finishChunkedKindReplace(id,normalizeKind(kindRaw)) }
+    AsyncFunction("cancelChunkedPlaylistKindReplace") { id: String, kindRaw: String -> val file=chunkImportFile("kind_${id}_${normalizeKind(kindRaw)}"); !file.exists()||file.delete() }
 
     // v15.2.14: Tam yedek restore, gerçek playlist ID'lerine doğrudan yazmaz.
     // Önce __kzb_stage_* ID'leri tamamen doğrulanır; ardından TEK Room transaction
@@ -616,6 +711,27 @@ class KizilkanNativeCoreModule : Module() {
         activePlayerSession = next
         next
       } else activePlayerSession
+    }
+
+    // v17.10.2 RC1 — application-owned rolling live timeshift.
+    // The native worker owns disk retention + localhost HLS serving; JS only
+    // switches playback to the returned local URL after the first segment is
+    // physically committed. Unsupported sources fail closed and keep the raw
+    // upstream playback path.
+    AsyncFunction("startLiveTimeshift") { sourceUrl: String, headersJson: String, windowSeconds: Int, maxBytes: Double ->
+      liveTimeshiftManager.start(sourceUrl, headersJson, windowSeconds, maxBytes.toLong())
+    }
+
+    AsyncFunction("getLiveTimeshiftStatus") { sessionId: String ->
+      liveTimeshiftManager.status(sessionId)
+    }
+
+    AsyncFunction("stopLiveTimeshift") { sessionId: String ->
+      liveTimeshiftManager.stop(sessionId)
+    }
+
+    AsyncFunction("stopAllLiveTimeshift") {
+      liveTimeshiftManager.stopAll()
     }
 
     AsyncFunction("readPlaylistHeavy") { id: String ->
@@ -826,6 +942,26 @@ class KizilkanNativeCoreModule : Module() {
     AsyncFunction("cancelBulkImport") {
       context().startService(Intent(context(), BulkPlaylistImportService::class.java).apply { action = BulkPlaylistImportService.ACTION_CANCEL })
       true
+    }
+
+    /**
+     * v17.9.5 — TEŞHİS: Room'daki tüm snapshot envanteri.
+     * JS bunu meta ile karşılaştırıp yetim (arayüzde görünmeyen ama Room'da
+     * duran) listeleri tespit eder. Salt okuma; hiçbir şey silmez/değiştirmez.
+     */
+    AsyncFunction("getSnapshotInventory") {
+      val dao = database().snapshotDao()
+      dao.getAllSnapshots().map { snap ->
+        mapOf(
+          "playlistId" to snap.playlistId,
+          "channels" to snap.channelsCount,
+          "vod" to snap.vodCount,
+          "series" to snap.seriesCount,
+          "total" to (snap.channelsCount + snap.vodCount + snap.seriesCount),
+          "importedAt" to snap.importedAtEpochMs,
+          "sourceSize" to snap.sourceSize,
+        )
+      }
     }
 
     Function("getBulkImportSnapshot") {
@@ -1066,6 +1202,12 @@ class KizilkanNativeCoreModule : Module() {
       "importMs" to snapshot.importMs,
     ))
     return summary(snapshot, cacheHit = false)
+  }
+
+  private fun finishChunkedKindReplace(id:String,kind:String):Map<String,Any>{
+    val file=chunkImportFile("kind_${id}_${kind}"); if(!file.exists())throw IllegalStateException("Kind staging dosyası yok: $id/$kind"); val started=SystemClock.elapsedRealtime(); val db=database(); val base=db.snapshotDao().get(id)?:throw IllegalStateException("Room snapshot yok: $id/$kind"); var count=0
+    db.runInTransaction { val dao=db.mediaDao(); dao.deleteKind(id,kind); val batch=ArrayList<MediaItemEntity>(BATCH_SIZE); file.bufferedReader(Charsets.UTF_8,64*1024).useLines { lines -> lines.forEach { line -> val obj=try{JSONTokener(line).nextValue() as? JSONObject}catch(_:Throwable){null}?:return@forEach; val order=count++; val itemId=obj.optString("id","").trim().ifEmpty{obj.optString("stream_id","").trim().ifEmpty{obj.optString("series_id","").trim().ifEmpty{"row-$order"}}}; val name=obj.optString("name",""); val group=obj.optString("group","").trim().ifEmpty{"Diğer"}; batch.add(MediaItemEntity(rowKey="$id|$kind|$itemId|$order",playlistId=id,kind=kind,itemId=itemId,name=name,normalizedName=normalizeSearch(name),groupName=group,searchText=normalizeSearch("$name $group ${obj.optString("genre","")} ${obj.optString("cast","")} ${obj.optString("director","")}"),sortOrder=order,rawJson=obj.toString())); if(batch.size>=BATCH_SIZE){dao.insertAll(batch.toList());batch.clear()} } }; if(batch.isNotEmpty())dao.insertAll(batch); val old=db.snapshotDao().get(id)?:base; db.snapshotDao().put(old.copy(sourceStamp=0L,sourceSize=0L,channelsCount=if(kind=="live")count else old.channelsCount,vodCount=if(kind=="vod")count else old.vodCount,seriesCount=if(kind=="series")count else old.seriesCount,importedAtEpochMs=System.currentTimeMillis(),importMs=SystemClock.elapsedRealtime()-started)) }
+    invalidated.remove(id); val snap=db.snapshotDao().get(id)?:throw IllegalStateException("Room snapshot doğrulanamadı: $id/$kind"); if(!file.delete())file.deleteOnExit(); updateTelemetry(id,mapOf("chunkedKindReplace" to true,"kind" to kind,"count" to count)); return summary(snap,false)
   }
 
   private fun restoreRollbackId(sessionId: String, targetId: String): String =

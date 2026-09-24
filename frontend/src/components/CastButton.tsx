@@ -25,6 +25,7 @@ import { useTheme } from "@/src/theme/ThemeContext";
 import { FONT } from "@/src/theme/themes";
 import { haptic } from "@/src/utils/haptic";
 import { GoogleCast, NativeCastButton } from "@/src/native/cast";
+import { recordDiagnostic } from "@/src/utils/diagnostics";
 
 interface CastSource {
   url: string;
@@ -44,6 +45,10 @@ interface CastSource {
    * baştan izlemek zorunda kalmasın. Canlı yayında anlamsızdır.
    */
   startTimeSec?: number;
+  /** v17.10.0: yalnız Xtream canlı .ts adresleri güvenle .m3u8 adaya çevrilebilir. */
+  playlistSource?: string;
+  /** Default Media Receiver özel UA/Referer/Origin/Cookie uygulayamaz. */
+  requiresHttpHeaders?: boolean;
 }
 
 interface CastButtonProps {
@@ -82,10 +87,11 @@ interface CastButtonProps {
  */
 
 /** Chromecast'in oynatabileceği bir adrese çevirir. */
-export function toCastableUrl(url: string): string {
+export function toCastableUrl(url: string, opts?: { playlistSource?: string; isLive?: boolean }): string {
   const clean = (url || "").split("?")[0];
-  // Xtream canlı yayın: .ts -> .m3u8 (HLS). Chromecast HLS destekler.
-  if (/\.ts$/i.test(clean)) {
+  // v17.10.0: Bu dönüşüm yalnız Xtream canlı endpoint sözleşmesinde güvenlidir.
+  // Genel M3U/Stalker .ts adresinin aynı path'te .m3u8 karşılığı olmak zorunda değildir.
+  if (opts?.isLive && opts?.playlistSource === "xtream" && /\.ts$/i.test(clean)) {
     return url.replace(/\.ts(\?|$)/i, ".m3u8$1");
   }
   return url;
@@ -136,16 +142,27 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
 
   const sourceKey = (src?: CastSource) => {
     if (!src?.url) return "";
-    return `${toCastableUrl(src.url)}\u0000${src.isLive ? "live" : "buffered"}`;
+    return `${toCastableUrl(src.url,{playlistSource:src.playlistSource,isLive:src.isLive})}\u0000${src.isLive ? "live" : "buffered"}`;
   };
+
+  // Her render'da en güncel resume konumu sourceRef'e yazılır. URL değişmeden
+  // Cast başlatılsa bile eski effect snapshot'ı kullanılmaz.
+  sourceRef.current = source;
 
   /** Bağlı oturuma medyayı yükler. */
   const loadInto = async (session: any, opts: { reason?: string; force?: boolean } = {}) => {
     const src = sourceRef.current;
     if (!session || !src?.url) return;
 
-    // Canlı yayınlarda .ts -> .m3u8 (HLS) çevirimi; Chromecast HLS oynatır.
-    const castUrl = toCastableUrl(src.url);
+    if (src.requiresHttpHeaders) {
+      const message = "Bu yayın özel HTTP başlıkları (User-Agent/Referer/Origin/Cookie) gerektiriyor. Chromecast Default Media Receiver bu başlıkları güvenilir biçimde uygulayamaz.";
+      void recordDiagnostic("player","CAST_DIRECT_HEADERS_UNSUPPORTED",{playlistSource:src.playlistSource||"",isLive:!!src.isLive,urlShape:String(src.url).split("?")[0].replace(/\/[^/]+$/, "/…")},{outcome:"blocked"});
+      Alert.alert("Chromecast", message);
+      return;
+    }
+
+    // Yalnız Xtream canlı .ts endpoint'i HLS adayına çevrilir.
+    const castUrl = toCastableUrl(src.url,{playlistSource:src.playlistSource,isLive:src.isLive});
     const key = sourceKey(src);
     if (!opts.force && key && lastLoadedKeyRef.current === key) return;
     const generation = ++loadGenerationRef.current;
@@ -163,6 +180,7 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
         );
         return;
       }
+      void recordDiagnostic("player","CAST_LOAD_START",{reason:opts.reason||"",playlistSource:src.playlistSource||"",isLive:!!src.isLive,contentType:src.contentType||guessMime(castUrl),resumeSec:!src.isLive?Math.floor(src.startTimeSec||0):0},{outcome:"started"});
       await client.loadMedia({
         mediaInfo: {
           contentUrl: castUrl,
@@ -190,12 +208,18 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
       // değiştirmesin.
       if (generation !== loadGenerationRef.current) return;
       lastLoadedKeyRef.current = key;
+      // Remote authority yalnız loadMedia başarıyla tamamlandıktan sonra verilir.
+      // Böylece receiver yükleyemezse telefon sessizce durmaz.
+      notifyRef.current?.(true, session);
+      void recordDiagnostic("player","CAST_LOAD_READY",{reason:opts.reason||"",playlistSource:src.playlistSource||"",isLive:!!src.isLive},{outcome:"success"});
       haptic.success();
 
       // MKV/AVI ise kullanıcıyı bilgilendir (engellemiyoruz, sadece uyarıyoruz).
       const warn = mkvWarning(src.url);
       if (warn) setTimeout(() => Alert.alert("Yayınlanıyor", warn), 800);
     } catch (e: any) {
+      if (connectedRef.current) notifyRef.current?.(false, null);
+      void recordDiagnostic("player","CAST_LOAD_ERROR",{reason:opts.reason||"",playlistSource:src.playlistSource||"",isLive:!!src.isLive,error:String(e?.message||e)},{outcome:"failed"});
       Alert.alert(
         "Chromecast",
         `İçerik cihaza gönderilemedi.\n\n${String(e?.message || e)}\n\n` +
@@ -206,7 +230,6 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
   };
 
   useEffect(() => {
-    sourceRef.current = source;
     const nextKey = sourceKey(source);
     const previousKey = lastSourceKeyRef.current;
     lastSourceKeyRef.current = nextKey;
@@ -233,11 +256,22 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
         setConnected(true);
         connectedRef.current = true;
         sessionRef.current = session;
-        notifyRef.current?.(true, session);
+        // Bağlantı kurulması playback authority anlamına gelmez. Authority ancak
+        // loadMedia başarılıysa veya resumed session'da gerçek MediaStatus varsa verilir.
         if (loadCurrent) void loadInto(session, { reason: "session-start", force: true });
       };
       subStart = sm?.onSessionStarted?.((session: any) => bindSession(session, true));
-      subResume = sm?.onSessionResumed?.((session: any) => bindSession(session, false));
+      subResume = sm?.onSessionResumed?.((session: any) => {
+        bindSession(session, false);
+        try {
+          const client=session?.client||session?.getClient?.();
+          const st=client?.getMediaStatus?.();
+          if(st?.then) st.then((status:any)=>{
+            const ps=String(status?.playerState||"").toLowerCase();
+            if(status && ps && ps!=="idle") notifyRef.current?.(true,session);
+          }).catch(()=>{});
+        } catch {}
+      });
       subEnd = sm?.onSessionEnded?.(() => {
         setConnected(false);
         connectedRef.current = false;
@@ -270,7 +304,12 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
             setConnected(true);
             connectedRef.current = true;
             sessionRef.current = current;
-            notifyRef.current?.(true, current);
+            try {
+              const client=current?.client||current?.getClient?.();
+              const status=await client?.getMediaStatus?.();
+              const ps=String(status?.playerState||"").toLowerCase();
+              if(status && ps && ps!=="idle") notifyRef.current?.(true,current);
+            } catch {}
           }
         } catch (e) {
           console.warn("[Cast] mevcut oturum alınamadı:", e);

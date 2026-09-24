@@ -6,7 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
-import { xtreamCatchupEpg as xtCatchupLocal } from "@/src/utils/iptv";
+import { xtreamCatchupEpg as xtCatchupLocal, buildM3UCatchupUrl } from "@/src/utils/iptv";
 import { storage } from "@/src/utils/storage";
 
 const EPISODE_URL_KEY = "kizilkan.episode.url.";
@@ -20,42 +20,96 @@ export default function CatchupScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const channel = activePlaylist?.channels.find(c => c.id === params.channel);
+  /**
+   * v17.9.1 — KANAL ARTIK ROOM'DAN BULUNUYOR (catchup Native Core'da çalışmıyordu)
+   * ---------------------------------------------------------------------------
+   * Eskiden kanal `activePlaylist.channels.find(...)` ile aranıyordu. Native
+   * Core modunda bu dizi bellekte BOŞTUR (içerik Room'da, bilerek JS'e
+   * taşınmaz). Sonuç: kanal bulunamıyor, ekran erken çıkıyor ve catchup hiç
+   * listelenmiyordu. Aynı kök neden yenileme fark raporundaki "önce=0"
+   * hatasını da üretmişti.
+   * Artık önce bellekteki dizi (web/legacy yol), bulunamazsa Room'dan tek öğe
+   * (getItem) okunur. 16 bin kanal JS'e taşınmaz, yalnız istenen kanal gelir.
+   */
+  // Parametre ayrı bir adla tutulur; aşağıdaki `channel` değişkeniyle karışmaz.
+  const requestedChannelId = String(params.channel || "");
+  const memoryChannel = activePlaylist?.channels?.find(c => c.id === requestedChannelId);
+  const [roomChannel, setRoomChannel] = useState<any>(null);
+  useEffect(() => {
+    let alive = true;
+    if (memoryChannel || !activePlaylist?.id || !requestedChannelId) return;
+    (async () => {
+      try {
+        const { KizilkanNativeCore } = await import("@/modules/kizilkan-native-core");
+        if (!KizilkanNativeCore.available) return;
+        const item = await KizilkanNativeCore.getItem(activePlaylist.id, "live", requestedChannelId);
+        if (alive) setRoomChannel(item || null);
+      } catch { /* bulunamazsa ekran mevcut "kullanılamıyor" durumunu gösterir */ }
+    })();
+    return () => { alive = false; };
+  }, [activePlaylist?.id, requestedChannelId, memoryChannel]);
+  const channel = memoryChannel || roomChannel;
 
   useEffect(() => {
-    if (!activePlaylist || activePlaylist.source !== "xtream" || !channel?.stream_id) {
-      setLoading(false);
-      return;
+    let alive=true;
+    setLoading(true); setError(null);
+    if (!activePlaylist || !channel) { setLoading(false); return; }
+    if(activePlaylist.source === "xtream" && channel?.stream_id){
+      const cred = { server: activePlaylist.xtreamServer!, username: activePlaylist.xtreamUsername!, password: activePlaylist.xtreamPassword! };
+      xtCatchupLocal(cred, String(channel.stream_id))
+        .then(r => {if(alive)setPrograms(r.programs || []);})
+        .catch(e => {if(alive)setError(e.message);})
+        .finally(() => {if(alive)setLoading(false);});
+      return ()=>{alive=false;};
     }
-    // CİHAZ-İÇİ: backend proxy (emergent) yerine doğrudan Xtream API.
-    const cred = {
-      server: activePlaylist.xtreamServer!,
-      username: activePlaylist.xtreamUsername!,
-      password: activePlaylist.xtreamPassword!,
-    };
-    xtCatchupLocal(cred, String(channel.stream_id))
-      .then(r => setPrograms(r.programs || []))
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [activePlaylist, channel]);
+    if(activePlaylist.source === "stalker" && channel?.stream_id){
+      import("@/src/utils/stalker").then(async ({stalkerCredsFromPlaylist,stalkerLogin,stalkerArchiveEpg})=>{
+        const cred=stalkerCredsFromPlaylist(activePlaylist as any);
+        const {session}=await stalkerLogin(cred);
+        return stalkerArchiveEpg(cred,session,String(channel.stream_id),Number(channel.tv_archive_duration||7)||7);
+      }).then(r=>{if(alive)setPrograms(r.programs||[]);}).catch(e=>{if(alive)setError(String(e?.message||e));}).finally(()=>{if(alive)setLoading(false);});
+      return ()=>{alive=false;};
+    }
+        if((activePlaylist.source === "m3u_url" || activePlaylist.source === "m3u_file") && channel?.catchup_source){
+      const epgId=String(channel.epg_channel_id||channel.tvg_id||"");
+      if(!epgId){ setPrograms([]); setLoading(false); return; }
+      import("@/src/utils/epg")
+        .then(({getChannelPrograms})=>getChannelPrograms(activePlaylist.id,epgId,activePlaylist.epgUrl))
+        .then(r=>{if(alive)setPrograms((r.programs||[]).filter((p:any)=>Number(p.stop_timestamp||0)<Math.floor(Date.now()/1000)).map((p:any)=>({...p,has_archive:1,now_playing:0})).reverse());})
+        .catch(e=>{if(alive)setError(String(e?.message||e));})
+        .finally(()=>{if(alive)setLoading(false);});
+      return ()=>{alive=false;};
+    }
+    setPrograms([]); setLoading(false);
+    return ()=>{alive=false;};
+  }, [activePlaylist?.id, activePlaylist?.source, activePlaylist?.epgUrl, channel?.id, channel?.stream_id, channel?.catchup_source]);
 
   const playProgram = async (p: any) => {
-    if (!activePlaylist || !channel?.stream_id || activePlaylist.source !== "xtream") return;
+    if (!activePlaylist || !channel) return;
     // v9.12.0: Merkezi buildXtreamTimeshiftUrl (iptv.ts) — URL-encode dahil,
     // epg-timeline ile aynı kaynak.
     const startTs = Number(p.start_timestamp);
     const stopTs = Number(p.stop_timestamp);
     if (!Number.isFinite(startTs) || !Number.isFinite(stopTs)) return;
-    const { buildXtreamTimeshiftUrl } = await import("@/src/utils/iptv");
-    const url = buildXtreamTimeshiftUrl({
-      server: String(activePlaylist.xtreamServer || ""),
-      username: String(activePlaylist.xtreamUsername || ""),
-      password: String(activePlaylist.xtreamPassword || ""),
-      startMs: startTs * 1000,
-      stopMs: stopTs * 1000,
-      streamId: channel.stream_id,
-    });
-    if (!url) return;
+    let variants:string[]=[];
+    if(activePlaylist.source === "xtream" && channel.stream_id){
+      const { buildXtreamTimeshiftVariants } = await import("@/src/utils/iptv");
+      variants = buildXtreamTimeshiftVariants({
+        server: String(activePlaylist.xtreamServer || ""), username: String(activePlaylist.xtreamUsername || ""), password: String(activePlaylist.xtreamPassword || ""),
+        startMs: startTs * 1000, stopMs: stopTs * 1000, streamId: channel.stream_id,
+        timeZone: String((activePlaylist as any)?.serverInfo?.timezone || "") || null,
+      });
+    } else if(activePlaylist.source === "stalker" && p?.archive_cmd){
+      const {stalkerCredsFromPlaylist,stalkerLogin,stalkerCreateLink}=await import("@/src/utils/stalker");
+      const cred=stalkerCredsFromPlaylist(activePlaylist as any);
+      const {session}=await stalkerLogin(cred);
+      const archiveUrl=await stalkerCreateLink(cred,session,String(p.archive_cmd),"itv");
+      if(archiveUrl) variants=[archiveUrl];
+    } else if((activePlaylist.source === "m3u_url" || activePlaylist.source === "m3u_file") && channel.catchup_source){
+      const m3uUrl=buildM3UCatchupUrl(channel,startTs,stopTs);
+      if(m3uUrl) variants=[m3uUrl];
+    }
+    const url=variants[0]; if(!url){ setError("Bu sağlayıcının catch-up şablonu desteklenmiyor veya eksik."); return; }
 
     const syntheticId = `catchup-${channel.id}-${startTs}`;
     await storage.setItem(EPISODE_URL_KEY + syntheticId, JSON.stringify({
@@ -63,6 +117,7 @@ export default function CatchupScreen() {
       name: `${channel.name} • ${p.title}`,
       group: "Catch-up",
       container_ext: "ts",
+      fallbackUrls: variants.slice(1),
     }));
     addToRecent(channel.id);
     router.replace({ pathname: "/player", params: { id: syntheticId, ext: "true" } });

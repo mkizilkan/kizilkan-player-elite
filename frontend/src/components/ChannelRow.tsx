@@ -16,6 +16,10 @@ interface Props {
   onLongPress?: () => void;
   /** TV: bu satır odaklandığında (listeyi kaydırmak için). */
   onFocusItem?: () => void;
+  /** v17.10.0: Player dönüş konumu ile birebir eşleşen stable key. */
+  focusKey?: string;
+  /** Player dönüşünde route yerine explicit liste scope'u kullanılabilir. */
+  focusScope?: string;
   /** TV: SOL tuşuna basılınca (listeden çıkış — kategori paneli). */
   onExitLeft?: () => void;
   /** TV: SAĞ tuşuna basılınca (listeden çıkış — üst araç çubuğu). */
@@ -46,12 +50,12 @@ function progress(start?: string, stop?: string) {
   } catch { return 0; }
 }
 
-function ChannelRowBase({ channel, onPress, onToggleFavorite, onLongPress, onFocusItem, onExitLeft, onExitRight, isFavorite, epg }: Props) {
+function ChannelRowBase({ channel, onPress, onToggleFavorite, onLongPress, onFocusItem, onExitLeft, onExitRight, isFavorite, epg, focusKey, focusScope }: Props) {
   const { colors } = useTheme();
   const { isFocused, onFocus, onBlur } = useTVFocus();
   const { isTv: isTvLayout } = useTv();
-  const focusMemory = useTvFocusMemory();
-  const focusBinding = focusMemory.bind(`channel-row-${channel.id}`);
+  const focusMemory = useTvFocusMemory(focusScope);
+  const focusBinding = focusMemory.bind(focusKey || `channel-row-${channel.id}`);
   const longPressedRef = React.useRef(0);
   /**
    * EPG GÖSTERİMİ (v8.9.1 — kullanıcı uyarısı üzerine düzeltildi)

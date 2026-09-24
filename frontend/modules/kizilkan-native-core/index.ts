@@ -71,15 +71,62 @@ try {
 export const KizilkanNativeCore = {
   available: !!native,
   magExactRequest: async (url: string, headers: Record<string,string>, timeoutMs = 20000): Promise<Record<string, any> | null> => native ? native.magExactRequest(url, JSON.stringify(headers), timeoutMs) : null,
+  /**
+   * v17.6.0 — Aktif iş etiketini native ANR gözcüsüne bildirir.
+   * Kilitlenme yakalandığında kayda bu etiket yazılır; böylece "o an ne
+   * yapılıyordu" sorusu yanıtlanabilir. Yalnız ETİKET gönderilir.
+   * Senkron ve hataya dayanıklı: başarısız olursa akış etkilenmez.
+   */
+  setDiagnosticTask: (label: string): void => {
+    try { native?.setDiagnosticTask?.(String(label || "idle")); } catch { /* yok say */ }
+  },
+
   warmPlaylist: async (id: string): Promise<NativePlaylistSummary | null> => native ? native.warmPlaylist(id) : null,
   importPlaylistHeavyJson: async (id: string, json: string): Promise<NativePlaylistSummary | null> => native ? native.importPlaylistHeavyJson(id, json) : null,
   replacePlaylistKindJson: async (id: string, kind: "live" | "vod" | "series", jsonArray: string): Promise<NativePlaylistSummary | null> => native ? native.replacePlaylistKindJson(id, kind, jsonArray) : null,
-  syncPlaylistKindsJson: async (id: string, payload: Partial<Record<"live" | "vod" | "series", any[]>>, previousFingerprints: { live?: string; vod?: string; series?: string }): Promise<NativeIncrementalSyncResult | null> =>
-    native ? native.syncPlaylistKindsJson(id, JSON.stringify(payload), JSON.stringify(previousFingerprints || {})) : null,
+  /**
+   * v17.9.9 — PARÇALI SENKRON (OOM önlemi)
+   * -------------------------------------------------------------------------
+   * Eskiden ÜÇ kind (live+vod+series) tek JSON.stringify ile birleştirilip
+   * native'e veriliyordu; büyük katalogda (13K+ kanal) bu 75 MB'lık TEK blok
+   * oluşturup OutOfMemoryError'a yol açıyordu (23.09 cihaz kaydı).
+   *
+   * Artık her kind AYRI JSON.stringify + AYRI native çağrısıyla gönderilir.
+   * Böylece bellekte aynı anda en fazla bir kind'lık string bulunur (~1/3
+   * boyut). Native taraf tek-kind (partial) payload'ı v17.9.9'dan beri güvenle
+   * bootstrap eder. Sıra: live → vod → series (canlı önce, kullanıcı en çok
+   * onu bekler). Son çağrının sonucu (birleşik snapshot + fingerprints) döner.
+   *
+   * NOT: Bir kind boşsa (dizi yok gibi) o çağrı atlanır. Hiç kind yoksa
+   * eski tek-çağrı yolu (boş payload) korunur — native onu zaten reddeder.
+   */
+  syncPlaylistKindsJson: async (id: string, payload: Partial<Record<"live" | "vod" | "series", any[]>>, previousFingerprints: { live?: string; vod?: string; series?: string }): Promise<NativeIncrementalSyncResult | null> => {
+    if (!native) return null;
+    const prevJson = JSON.stringify(previousFingerprints || {});
+    const kinds: Array<"live" | "vod" | "series"> = ["live", "vod", "series"];
+    const present = kinds.filter(k => Array.isArray((payload as any)[k]));
+    if (present.length <= 1) {
+      // Tek kind veya boş: bölmenin faydası yok, tek çağrı (mevcut davranış).
+      return native.syncPlaylistKindsJson(id, JSON.stringify(payload), prevJson);
+    }
+    let last: NativeIncrementalSyncResult | null = null;
+    for (const k of present) {
+      // Her kind KENDİ payload nesnesiyle; tek seferde tek kind belleğe alınır.
+      const single: any = {}; single[k] = (payload as any)[k];
+      const singleJson = JSON.stringify(single);
+      single[k] = null; // referansı bırak, GC serbest bıraksın
+      last = await native.syncPlaylistKindsJson(id, singleJson, prevJson);
+    }
+    return last;
+  },
   beginChunkedPlaylistImport: async (id: string): Promise<boolean> => native ? !!(await native.beginChunkedPlaylistImport(id)) : false,
   appendPlaylistChunk: async (id: string, kind: "live" | "vod" | "series", jsonArray: string): Promise<number> => native ? Number(await native.appendPlaylistChunk(id, kind, jsonArray)) : 0,
   finishChunkedPlaylistImport: async (id: string): Promise<NativePlaylistSummary | null> => native ? native.finishChunkedPlaylistImport(id) : null,
   cancelChunkedPlaylistImport: async (id: string): Promise<boolean> => native ? !!(await native.cancelChunkedPlaylistImport(id)) : false,
+  beginChunkedPlaylistKindReplace: async (id:string,kind:"live"|"vod"|"series"):Promise<boolean> => native ? !!(await native.beginChunkedPlaylistKindReplace(id,kind)) : false,
+  appendPlaylistKindChunk: async (id:string,kind:"live"|"vod"|"series",jsonArray:string):Promise<number> => native ? Number(await native.appendPlaylistKindChunk(id,kind,jsonArray)) : 0,
+  finishChunkedPlaylistKindReplace: async (id:string,kind:"live"|"vod"|"series"):Promise<NativePlaylistSummary|null> => native ? native.finishChunkedPlaylistKindReplace(id,kind) : null,
+  cancelChunkedPlaylistKindReplace: async (id:string,kind:"live"|"vod"|"series"):Promise<boolean> => native ? !!(await native.cancelChunkedPlaylistKindReplace(id,kind)) : false,
   applyAtomicPlaylistRestore: async (sessionId: string, mappings: Array<{targetId:string; stageId:string|null}>): Promise<boolean> => native ? !!(await native.applyAtomicPlaylistRestore(sessionId, JSON.stringify(mappings))) : false,
   finalizeAtomicPlaylistRestore: async (sessionId: string, targetIds: string[]): Promise<boolean> => native ? !!(await native.finalizeAtomicPlaylistRestore(sessionId, JSON.stringify(targetIds))) : false,
   rollbackAtomicPlaylistRestore: async (sessionId: string, targetIds: string[]): Promise<boolean> => native ? !!(await native.rollbackAtomicPlaylistRestore(sessionId, JSON.stringify(targetIds))) : false,
@@ -110,6 +157,11 @@ export const KizilkanNativeCore = {
   getPlayerSession: (): number | null => native ? Number(native.getPlayerSession()) : null,
   isPlayerSessionActive: (id: number): boolean => native ? !!native.isPlayerSessionActive(id) : false,
   invalidatePlayerSession: (id = 0): number | null => native ? Number(native.invalidatePlayerSession(id)) : null,
+  startLiveTimeshift: async (sourceUrl: string, headers: Record<string,string> = {}, windowSeconds = 1800, maxBytes = 768 * 1024 * 1024): Promise<Record<string, any> | null> =>
+    native ? native.startLiveTimeshift(sourceUrl, JSON.stringify(headers || {}), Math.floor(windowSeconds), Number(maxBytes)) : null,
+  getLiveTimeshiftStatus: async (sessionId: string): Promise<Record<string, any> | null> => native ? native.getLiveTimeshiftStatus(sessionId) : null,
+  stopLiveTimeshift: async (sessionId: string): Promise<boolean> => native ? !!(await native.stopLiveTimeshift(sessionId)) : false,
+  stopAllLiveTimeshift: async (): Promise<number> => native ? Number(await native.stopAllLiveTimeshift()) : 0,
   fetchAndCacheEpg: async (url: string, playlistId: string, userAgent: string): Promise<{count:number; native?:boolean} | null> => native ? native.fetchAndCacheEpg(url, playlistId, userAgent) : null,
   getEpgNowNext: async (playlistId: string, channelIds: string[], nowSec: number): Promise<Record<string, any>> => native ? native.getEpgNowNext(playlistId, channelIds, Math.floor(nowSec)) : {},
   getEpgChannelPrograms: async (playlistId: string, channelId: string): Promise<any[]> => native ? native.getEpgChannelPrograms(playlistId, channelId) : [],
@@ -134,6 +186,13 @@ export const KizilkanNativeCore = {
   pauseBulkImport: async () => native ? native.pauseBulkImport() : false,
   resumeBulkImport: async () => native ? native.resumeBulkImport() : false,
   cancelBulkImport: async () => native ? native.cancelBulkImport() : false,
+  /**
+   * v17.9.5 — TEŞHİS: Room'daki tüm snapshot envanteri (yetim liste tespiti).
+   * Salt okuma. native yoksa boş dizi.
+   */
+  getSnapshotInventory: async (): Promise<Array<{playlistId:string;channels:number;vod:number;series:number;total:number;importedAt:number;sourceSize:number}>> =>
+    native ? (await native.getSnapshotInventory()) || [] : [],
+
   getBulkImportSnapshot: (): any => {
     if (!native) return {};
     try { return JSON.parse(native.getBulkImportSnapshot() || "{}"); } catch { return {}; }

@@ -111,5 +111,35 @@ export function useFocusScroll<T>() {
     []
   );
 
-  return { listRef, onItemFocus, onScrollToIndexFailed };
+  /**
+   * v17.10.0 — Player'dan dönüşte platform bağımsız GERÇEK ORTALAMA.
+   * Normal D-pad gezinmesinde yukarıdaki görünürlük mantığı korunur; bu metod
+   * yalnız explicit restore isteğinde kullanılır. Büyük/virtualized listede ilk
+   * scroll ölçülmemişse kısa aralıklarla tekrar dener. Telefon/tablet için de
+   * aynı davranış kullanılır; focus talebi yalnız TV bileşeninde uygulanır.
+   */
+  const centerIndex = useCallback((index: number, attempts = 5) => {
+    if (index < 0) return;
+    if (pendingRef.current) clearTimeout(pendingRef.current);
+    let remaining = Math.max(1, attempts);
+    const tryCenter = () => {
+      const list = listRef.current;
+      if (!list) {
+        if (--remaining > 0) pendingRef.current = setTimeout(tryCenter, 90);
+        return;
+      }
+      try {
+        list.scrollToIndex({ index, animated: false, viewPosition: 0.5 });
+        lastCenteredRef.current = index;
+      } catch {
+        try {
+          list.scrollToOffset({ offset: Math.max(0, index) * 64, animated: false });
+        } catch { /* ölçüm yoksa tekrar dene */ }
+        if (--remaining > 0) pendingRef.current = setTimeout(tryCenter, 120);
+      }
+    };
+    tryCenter();
+  }, []);
+
+  return { listRef, onItemFocus, onScrollToIndexFailed, centerIndex };
 }

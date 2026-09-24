@@ -11,7 +11,7 @@ ok(app.expo.ios.buildNumber===pkg.version&&String(app.expo.extra?.kizilkanReleas
 ok(wf.includes('workflow_dispatch:'),'manual workflow trigger preserved');
 ok(wf.includes('yarn install --frozen-lockfile --production=false'),'frozen lockfile + devDependencies CI install');
 ok(wf.includes('TypeScript CLI on-kontrolu - HARD gate')&&wf.includes("require.resolve('typescript/bin/tsc')")&&wf.includes('yarn exec tsc --version'),'TypeScript preflight proof');
-ok(wf.includes('node ../tools/denetle.js')&&wf.includes('yarn exec tsc --noEmit'),'master + semantic TypeScript gates');
+ok((wf.includes('node ../tools/denetle.js')||wf.includes('node tools/denetle.js'))&&wf.includes('yarn exec tsc --noEmit'),'master + semantic TypeScript gates');
 ok(wf.includes('check-mpv-packaging-v16143.js --apk'),'final APK MPV native gate wired after build');
 ok(wf.indexOf('check-mpv-packaging-v16143.js --apk')>wf.indexOf('APK derle'),'MPV APK gate runs after Gradle build');
 ok(wf.includes('apksigner')&&wf.includes('EXPECTED_VERSION_CODE')&&wf.includes('ANDROID_CERT_SHA256'),'APK identity/signature gate preserved');

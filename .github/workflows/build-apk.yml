@@ -69,7 +69,8 @@ jobs:
           node -e "console.log(require.resolve('typescript/bin/tsc'))"
           yarn exec tsc --version
       - name: Statik denetim (denetle.js) - HARD gate
-        run: node ../tools/denetle.js
+        working-directory: .
+        run: node tools/denetle.js
       - name: TypeScript semantik tip kontrolu (tsc --noEmit) - HARD gate
         run: yarn exec tsc --noEmit
       - name: Expo prebuild (android/ uret)

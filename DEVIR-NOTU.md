@@ -1,3 +1,13 @@
+# v17.9.10 RC1 GÜNCEL DEVİR
+
+En güncel teknik devir: `AI-DEVIR-v17.9.10.md`
+
+En güncel sürüm notu: `SURUM-NOTU-v17.9.10-RC1.md`
+
+Doğrulama kaydı: `DOGRULAMA-v17.9.10-RC1.md`
+
+---
+
 # 2026-08-25 — GÜNCEL v15.2.13-RC1 DEVAM NOTU
 
 > **Bu bölüm dosyanın eski başlıklarından üstündür.** v15.2.13-RC1 / versionCode 150213, v15.2.12-RC1 `be124f0` tabanı üzerinde cihazda bulunan bulk scan kontrol görünürlüğü, MAG AccountInfo crash, MAG/Xtream/M3U Live-VOD-Series ve büyük backup sorunlarını düzeltmek üzere hazırlanmıştır. Kaynak değişiklikleri paketleme çalışma kopyasında uygulanmıştır. Henüz GitHub commit/push, tam CI build veya v15.2.13 cihaz acceptance yapılmış değildir; bunlar yapılmış gibi kabul edilmemelidir. Signing/keystore pakete eklenmemelidir.

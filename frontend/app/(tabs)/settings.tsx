@@ -32,6 +32,7 @@ import { FocusButton } from "@/src/components/FocusButton";
 import { refreshPlaylistContent } from "@/src/utils/refreshPlaylist";
 import { playlistTypeLabel, playlistVisualColor, playlistTypeIcon } from "@/src/utils/playlistVisual";
 import { storage } from "@/src/utils/storage";
+import { COLORED_ACTION_LABELS, COLORED_ACTION_ORDER, DEFAULT_COLORED_REMOTE_MAP, loadColoredRemoteMap, saveColoredRemoteMap, type ColoredKey, type ColoredRemoteMap } from "@/src/utils/coloredRemote";
 import {
   PLAYER_BUFFER_KEY, PLAYER_BUFFER_OPTIONS, PLAYER_BUFFER_PRESETS, PLAYER_BUFFER_DEFAULT_MS,
   bufferLabel,
@@ -52,6 +53,8 @@ export default function SettingsTab() {
   const [refreshingAllPlaylists, setRefreshingAllPlaylists] = useState(false);
   const [refreshAllPlaylistProgress, setRefreshAllPlaylistProgress] = useState("");
   const [playerBufferMs, setPlayerBufferMs] = useState<number>(PLAYER_BUFFER_DEFAULT_MS);
+  const [startLastChannel, setStartLastChannel] = useState(false);
+  const [coloredRemoteMap, setColoredRemoteMap] = useState<ColoredRemoteMap>(DEFAULT_COLORED_REMOTE_MAP);
 
   // Parental PIN modal
   const [pinModal, setPinModal] = useState<null | "create" | "change">(null);
@@ -97,6 +100,12 @@ export default function SettingsTab() {
   }, [activePlaylist?.id]);
 
   React.useEffect(() => {
+    if (!activeProfile?.id) return;
+    storage.getItem<boolean>("kizilkan.player.startLast." + activeProfile.id, false).then(v => setStartLastChannel(!!v)).catch(() => {});
+    loadColoredRemoteMap(activeProfile.id).then(setColoredRemoteMap).catch(() => {});
+  }, [activeProfile?.id]);
+
+  React.useEffect(() => {
     storage.getItem<number>(PLAYER_BUFFER_KEY, PLAYER_BUFFER_DEFAULT_MS)
       .then(v => { if (typeof v === "number") setPlayerBufferMs(v); })
       .catch(() => {});
@@ -105,6 +114,15 @@ export default function SettingsTab() {
   const changePlayerBuffer = async (ms: number) => {
     setPlayerBufferMs(ms);
     await storage.setItem(PLAYER_BUFFER_KEY, ms);
+  };
+
+  const cycleColoredAction = async (key: ColoredKey) => {
+    const current = coloredRemoteMap[key];
+    const idx = COLORED_ACTION_ORDER.indexOf(current);
+    const nextAction = COLORED_ACTION_ORDER[(idx + 1) % COLORED_ACTION_ORDER.length];
+    const next = { ...coloredRemoteMap, [key]: nextAction };
+    setColoredRemoteMap(next);
+    if (activeProfile?.id) await saveColoredRemoteMap(activeProfile.id, next);
   };
 
   /** GPT ELITE v14.1.0 — Ayarlar ekranında geri getirilen 2-worker Tümünü Güncelle. */
@@ -144,6 +162,18 @@ export default function SettingsTab() {
     } finally {
       setRefreshingAllPlaylists(false);
       setRefreshAllPlaylistProgress("");
+    }
+  };
+
+  /** v17.9.10 — Ayarlar'daki SEÇ artık Promise hatasını yutmaz.
+   * Otomatik boş-kabuk onarımı global overlay'de canlı ilerler; son hata varsa
+   * kullanıcıya burada açıkça gösterilir. Same-target singleflight Context'te
+   * korunur, bu yüzden art arda dokunma ikinci indirme başlatmaz. */
+  const selectPlaylistFromSettings = async (id:string) => {
+    try {
+      await setActivePlaylist(id);
+    } catch (e:any) {
+      Alert.alert('Playlist seçilemedi', String(e?.message || e || 'Liste içeriği doğrulanamadı.'));
     }
   };
 
@@ -412,6 +442,32 @@ export default function SettingsTab() {
             <View style={{ flex: 1 }}>
               <Text style={[styles.rowTitle, { color: colors.onSurface }]}>İndirilenler</Text>
               <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Çevrimdışı film/dizi/bölüm kütüphaneniz</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
+          </FocusButton>
+
+          <FocusButton
+            testID="local-media-btn"
+            onPress={() => router.push("/local-media")}
+            style={[styles.linkBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+          >
+            <Ionicons name="folder-open-outline" size={20} color={colors.brandPrimary} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Yerel Medya</Text>
+              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Telefon, USB veya SD karttan video aç</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
+          </FocusButton>
+
+          <FocusButton
+            testID="recoverable-playlists-btn"
+            onPress={() => router.push("/recoverable-playlists")}
+            style={[styles.linkBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+          >
+            <Ionicons name="archive-outline" size={20} color={colors.brandPrimary} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Kurtarılabilir Listeler</Text>
+              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Room'da kalmış yetim snapshot'ları görüntüle ve kaynağı yeniden bağla</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
           </FocusButton>
@@ -833,6 +889,29 @@ export default function SettingsTab() {
           )}
         </View>
 
+        <SectionTitle text="AÇILIŞ DAVRANIŞI" />
+        <View style={{ paddingHorizontal: SPACING.lg }}>
+          <FocusButton testID="startup-last-channel-toggle" onPress={async () => { const next=!startLastChannel; setStartLastChannel(next); await storage.setItem("kizilkan.player.startLast." + activeProfile.id, next); }} style={[styles.linkBtn,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
+            <Ionicons name="play-skip-forward-outline" size={20} color={colors.brandPrimary} />
+            <View style={{flex:1}}><Text style={[styles.rowTitle,{color:colors.onSurface}]}>Açılışta son çalışan kanalı başlat</Text><Text style={[styles.rowSub,{color:colors.onSurfaceSecondary}]}>Yalnız soğuk açılışta; profil/PIN ve Room doğrulandıktan sonra</Text></View>
+            <View style={[styles.miniTag,{backgroundColor:startLastChannel?colors.brandPrimary:colors.surfaceTertiary}]}><Text style={[styles.miniTagText,{color:startLastChannel?colors.onBrandPrimary:colors.onSurfaceSecondary}]}>{startLastChannel?"AÇIK":"KAPALI"}</Text></View>
+          </FocusButton>
+        </View>
+
+        <SectionTitle text="TV KUMANDA RENKLİ TUŞLAR" />
+        <View style={{ paddingHorizontal: SPACING.lg }}>
+          <View style={[styles.settingsPanelCard,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
+            {(["red","green","yellow","blue"] as ColoredKey[]).map((key) => {
+              const label = key === "red" ? "Kırmızı" : key === "green" ? "Yeşil" : key === "yellow" ? "Sarı" : "Mavi";
+              return <FocusButton key={key} testID={`colored-key-${key}`} onPress={() => void cycleColoredAction(key)} style={[styles.linkBtn,{backgroundColor:colors.surfaceTertiary,borderColor:colors.border}]}>
+                <Ionicons name="ellipse" size={16} color={key === "red" ? "#E53935" : key === "green" ? "#43A047" : key === "yellow" ? "#FDD835" : "#1E88E5"} />
+                <View style={{flex:1}}><Text style={[styles.rowTitle,{color:colors.onSurface}]}>{label}</Text><Text style={[styles.rowSub,{color:colors.onSurfaceSecondary}]}>{COLORED_ACTION_LABELS[coloredRemoteMap[key]]}</Text></View>
+                <Ionicons name="swap-horizontal" size={18} color={colors.onSurfaceTertiary} />
+              </FocusButton>;
+            })}
+          </View>
+        </View>
+
         {/* TV'ye Yansıtma */}
         <SectionTitle text="TV'YE YANSITMA" />
         <View style={{ paddingHorizontal: SPACING.lg }}>
@@ -843,7 +922,7 @@ export default function SettingsTab() {
           >
             <Ionicons name="tv" size={18} color={colors.brandPrimary} />
             <View style={{ flex: 1 }}>
-              <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Chromecast / AirPlay</Text>
+              <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Chromecast</Text>
               <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>
                 Oynatıcıdaki yayınlama simgesinden kullanılır
               </Text>
@@ -933,6 +1012,34 @@ export default function SettingsTab() {
         {/* Oynatma Listeleri */}
         <SectionTitle text="OYNATMA LİSTELERİ" />
         <View style={{ paddingHorizontal: SPACING.lg }}>
+          {activePlaylist && activePlaylist.source !== "m3u_file" && (
+            <View style={[styles.settingsPanelCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginBottom: SPACING.md }]}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm }}>
+                <Ionicons name="sync-outline" size={20} color={colors.brandPrimary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Otomatik Liste Yenileme</Text>
+                  <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Uygulama açıkken ve ön plana dönünce zamanı gelmiş aktif listeyi güvenli singleflight ile yeniler.</Text>
+                </View>
+                <FocusButton
+                  testID="auto-refresh-toggle"
+                  onPress={() => void updatePlaylist(activePlaylist.id, { autoRefreshEnabled: activePlaylist.autoRefreshEnabled === false })}
+                  style={[styles.smallBtn, { borderColor: colors.border, borderWidth: 1, backgroundColor: activePlaylist.autoRefreshEnabled === false ? colors.surfaceTertiary : colors.brandPrimary }]}
+                >
+                  <Text style={{ color: activePlaylist.autoRefreshEnabled === false ? colors.onSurface : colors.onBrandPrimary, fontWeight: "800" }}>{activePlaylist.autoRefreshEnabled === false ? "KAPALI" : "AÇIK"}</Text>
+                </FocusButton>
+              </View>
+              {activePlaylist.autoRefreshEnabled !== false && (
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm, marginTop: SPACING.sm }}>
+                  {[5,15,30,60,180,360].map(min => (
+                    <FocusButton key={min} testID={`auto-refresh-${min}`} onPress={() => void updatePlaylist(activePlaylist.id, { freshnessMinutes: min })} style={[styles.smallBtn, { borderWidth: 1, borderColor: (activePlaylist.freshnessMinutes || 15) === min ? colors.brandPrimary : colors.border, backgroundColor: (activePlaylist.freshnessMinutes || 15) === min ? colors.brandPrimary + "22" : colors.surfaceTertiary }]}>
+                      <Text style={{ color: colors.onSurface, fontWeight: "700" }}>{min < 60 ? `${min} dk` : `${min/60} sa`}</Text>
+                    </FocusButton>
+                  ))}
+                </View>
+              )}
+            </View>
+          )}
+
           {playlists.length > 0 && (<FocusButton testID="settings-playlist-management" focusable onPress={() => router.push({ pathname: "/playlist-select", params: { manage: "1" } })} style={[styles.linkBtn,{backgroundColor:colors.surfaceSecondary,borderColor:colors.brandPrimary,marginBottom:SPACING.sm}]}><Ionicons name="options" size={22} color={colors.brandPrimary}/><View style={{flex:1}}><Text style={[styles.rowTitle,{color:colors.onSurface}]}>Playlist Yönetimi ve Sıralama</Text><Text style={[styles.rowSub,{color:colors.onSurfaceSecondary}]}>Sırala, sabitle, sürükle-bırak özel sıra oluştur ve SEÇ butonuyla liste değiştir</Text></View><Ionicons name="chevron-forward" size={20} color={colors.brandPrimary}/></FocusButton>)}
           {playlists.length > 0 && (
             <FocusButton
@@ -959,7 +1066,7 @@ export default function SettingsTab() {
             return (
               <View key={pl.id} style={[styles.plCard, { backgroundColor: typeColor + "10", borderColor: active ? colors.brandPrimary : typeColor + "88" }]}>
                 <View style={{ width: 4, alignSelf: "stretch", borderRadius: 4, backgroundColor: typeColor, marginRight: SPACING.sm }} />
-                <FocusButton testID={`select-playlist-${pl.id}`} style={{ flex: 1 }} onPress={() => setActivePlaylist(pl.id)}>
+                <FocusButton testID={`select-playlist-${pl.id}`} style={{ flex: 1 }} onPress={() => void selectPlaylistFromSettings(pl.id)}>
                   <Text style={[styles.plName, { color: colors.onSurface }]} numberOfLines={1}>{pl.name}</Text>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 }}>
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: typeColor + "22", borderRadius: RADIUS.pill, paddingHorizontal: 8, paddingVertical: 3 }}>
@@ -1014,7 +1121,7 @@ export default function SettingsTab() {
                     );
                   })()}
                 </FocusButton>
-                <FocusButton testID={`settings-select-action-${pl.id}`} onPress={() => void setActivePlaylist(pl.id)} style={{minWidth:62,minHeight:38,borderRadius:RADIUS.pill,borderWidth:1,borderColor:colors.brandPrimary,backgroundColor:active?colors.surfaceSecondary:colors.brandPrimary,alignItems:"center",justifyContent:"center",paddingHorizontal:10,marginLeft:SPACING.sm}}><Text style={{color:active?colors.brandPrimary:colors.onBrandPrimary,fontWeight:"900"}}>{active?"AKTİF":"SEÇ"}</Text></FocusButton>
+                <FocusButton testID={`settings-select-action-${pl.id}`} onPress={() => void selectPlaylistFromSettings(pl.id)} style={{minWidth:62,minHeight:38,borderRadius:RADIUS.pill,borderWidth:1,borderColor:colors.brandPrimary,backgroundColor:active?colors.surfaceSecondary:colors.brandPrimary,alignItems:"center",justifyContent:"center",paddingHorizontal:10,marginLeft:SPACING.sm}}><Text style={{color:active?colors.brandPrimary:colors.onBrandPrimary,fontWeight:"900"}}>{active?"AKTİF":"SEÇ"}</Text></FocusButton>
                 {active && <Ionicons name="radio-button-on" size={20} color={colors.brandPrimary} />}
                 {/* LİSTE KİLİDİ (v9.3.0) — profil PIN'inden bağımsız */}
                 <FocusButton
@@ -1527,9 +1634,9 @@ export default function SettingsTab() {
         <Pressable focusable={false} style={styles.modalBg} onPress={() => setShowCastModal(false)}>
           <Pressable focusable={false} style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]} onPress={e => e.stopPropagation()}>
             <Ionicons name="tv" size={40} color={colors.brandPrimary} style={{ alignSelf: "center", marginBottom: SPACING.md }} />
-            <Text style={[styles.modalTitle, { color: colors.onSurface, textAlign: "center" }]}>Chromecast / AirPlay</Text>
+            <Text style={[styles.modalTitle, { color: colors.onSurface, textAlign: "center" }]}>Chromecast</Text>
             <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.base, lineHeight: 22, marginTop: SPACING.md, textAlign: "center" }}>
-              Chromecast ve AirPlay özelliği, Expo Go üzerinde çalışamayan native modüller gerektirir.
+              Chromecast özelliği, Expo Go üzerinde çalışamayan native modüller gerektirir.
               {"\n\n"}Bu özelliği kullanmak için uygulamayı <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>Publish</Text> edip iOS/Android build&apos;i almalısınız.
               Build sonrası cast butonu otomatik olarak aktif olacaktır.
             </Text>

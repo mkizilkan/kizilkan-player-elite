@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, Image, FlatList, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/src/theme/ThemeContext";
@@ -22,9 +22,15 @@ interface Props {
   testIDPrefix?: string;
   onEndReached?: () => void;
   onEndReachedThreshold?: number;
+  /** v17.10.0: Player dönüş key sözleşmesi. */
+  focusKeyForItem?: (item: VodItem | SeriesItem) => string;
+  focusScope?: string;
+  /** Explicit restore isteği; normal D-pad akışında otomatik scroll yapılmaz. */
+  restoreKey?: string | null;
+  onRestoreConsumed?: () => void;
 }
 
-export function PosterGrid({ items, onPressItem, onLongPressItem, ListHeaderComponent, emptyText, testIDPrefix = "poster", onEndReached, onEndReachedThreshold = 0.55 }: Props) {
+export function PosterGrid({ items, onPressItem, onLongPressItem, ListHeaderComponent, emptyText, testIDPrefix = "poster", onEndReached, onEndReachedThreshold = 0.55, focusKeyForItem, focusScope, restoreKey, onRestoreConsumed }: Props) {
   const { isTv: isTvLayout } = useTv();
   /**
    * GPT v10.2.0:
@@ -39,9 +45,35 @@ export function PosterGrid({ items, onPressItem, onLongPressItem, ListHeaderComp
   const COL = responsive.columns.poster;
   const CARD_W = (width - H_PAD * 2 - GAP * (COL - 1)) / COL;
   const POSTER_H = CARD_W * 1.5;
+  const gridRef = useRef<FlatList<VodItem | SeriesItem> | null>(null);
+
+  useEffect(() => {
+    if (!restoreKey || !focusKeyForItem || !items.length) return;
+    const index = items.findIndex(item => focusKeyForItem(item) === restoreKey);
+    if (index < 0) return;
+    let cancelled = false;
+    let tries = 0;
+    const center = () => {
+      if (cancelled) return;
+      tries += 1;
+      try {
+        gridRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0.5 });
+        if (tries >= 2) onRestoreConsumed?.();
+      } catch {
+        try {
+          const row = Math.floor(index / Math.max(1, COL));
+          gridRef.current?.scrollToOffset({ offset: Math.max(0, row * (POSTER_H + 56 + GAP)), animated: false });
+        } catch {}
+      }
+      if (tries < 4) setTimeout(center, 120);
+    };
+    const t = setTimeout(center, 40);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [restoreKey, items, focusKeyForItem, COL, POSTER_H, onRestoreConsumed]);
 
   return (
     <FlatList
+      ref={gridRef}
       key={COL}
       data={items}
       keyExtractor={i => i.id}
@@ -77,6 +109,8 @@ export function PosterGrid({ items, onPressItem, onLongPressItem, ListHeaderComp
           testIDPrefix={testIDPrefix}
           onPress={() => onPressItem(item)}
           onLongPress={onLongPressItem ? () => onLongPressItem(item) : undefined}
+          focusKey={focusKeyForItem?.(item)}
+          focusScope={focusScope}
         />
       )}
       ListEmptyComponent={
@@ -91,11 +125,11 @@ export function PosterGrid({ items, onPressItem, onLongPressItem, ListHeaderComp
   );
 }
 
-function PosterCard({ item, width, height, testIDPrefix, onPress, onLongPress }: { item: any; width: number; height: number; testIDPrefix: string; onPress: () => void; onLongPress?: () => void }) {
+function PosterCard({ item, width, height, testIDPrefix, onPress, onLongPress, focusKey, focusScope }: { item: any; width: number; height: number; testIDPrefix: string; onPress: () => void; onLongPress?: () => void; focusKey?: string; focusScope?: string }) {
   const { colors } = useTheme();
   const { isFocused, onFocus, onBlur } = useTVFocus();
-  const focusMemory = useTvFocusMemory();
-  const focusBinding = focusMemory.bind(`${testIDPrefix}-${item.id}`);
+  const focusMemory = useTvFocusMemory(focusScope);
+  const focusBinding = focusMemory.bind(focusKey || `${testIDPrefix}-${item.id}`);
   return (
     <TouchableOpacity
       testID={`${testIDPrefix}-${item.id}`}

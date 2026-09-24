@@ -180,6 +180,12 @@ export function parseM3U(rawContent: string): ParsedM3U {
         epg_channel_id: attrs['tvg-id'] || attrs['channel-id'] || null,
         logo: attrs['tvg-logo'] || attrs['logo'] || null,
         group: attrs['group-title'] || attrs['group'] || 'Genel',
+        catchup: attrs['catchup'] || null,
+        catchup_source: attrs['catchup-source'] || attrs['catchup_source'] || null,
+        catchup_days: Number(attrs['catchup-days'] || attrs['catchup_days'] || attrs['timeshift'] || 0) || null,
+        catchup_correction: Number(attrs['catchup-correction'] || attrs['catchup_correction'] || 0) || null,
+        tv_archive: (attrs['catchup-source'] || attrs['catchup_source'] || attrs['catchup']) ? 1 : 0,
+        tv_archive_duration: Number(attrs['catchup-days'] || attrs['catchup_days'] || attrs['timeshift'] || 0) || 0,
         url: '',
         container_ext: null,
         stream_id: null,
@@ -259,42 +265,64 @@ async function catalogYield(index: number, every = 400): Promise<void> {
   if (index > 0 && index % every === 0) await new Promise<void>(resolve => setTimeout(resolve, 0));
 }
 
-export async function fetchAndParseM3U(url: string, timeoutMs = 120000): Promise<ParsedM3U> {
+function linkedAbortController(timeoutMs: number, externalSignal?: AbortSignal) {
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), timeoutMs);
+  const abortFromExternal = () => { try { controller.abort(); } catch {} };
+  if (externalSignal?.aborted) abortFromExternal();
+  else externalSignal?.addEventListener?.("abort", abortFromExternal, { once: true } as any);
+  const timer = setTimeout(() => { try { controller.abort(); } catch {} }, timeoutMs);
+  const cleanup = () => {
+    clearTimeout(timer);
+    try { externalSignal?.removeEventListener?.("abort", abortFromExternal); } catch {}
+  };
+  return { controller, cleanup };
+}
+
+function throwIfExternallyAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const e:any = new Error("İşlem uygulama arka plana geçtiği için bekletildi.");
+  e.name = "RecoveryPausedError";
+  e.kind = "BACKGROUND_PAUSE";
+  throw e;
+}
+
+export async function fetchAndParseM3U(url: string, timeoutMs = 120000, externalSignal?: AbortSignal): Promise<ParsedM3U> {
+  throwIfExternallyAborted(externalSignal);
+  const { controller, cleanup } = linkedAbortController(timeoutMs, externalSignal);
   try {
     const res = await fetch(url, {
       signal: controller.signal,
       headers: {
-        // v9.1.0: Merkezi UA sabiti (streamTest.ts) — oynatma, test, EPG ve
-        // liste indirmede AYNI kimlik kullanılır; sağlayıcı tarafında
-        // tutarsızlık kaynaklı reddedilmeler önlenir.
         'User-Agent': UA,
         'Accept': '*/*',
       },
     });
+    throwIfExternallyAborted(externalSignal);
     if (!res.ok) throw new Error(`Sunucu hatası: HTTP ${res.status}`);
     const text = await res.text();
+    throwIfExternallyAborted(externalSignal);
     if (!text || text.length < 8) throw new Error('Boş yanıt döndü');
     return parseM3U(text);
   } finally {
-    clearTimeout(t);
+    cleanup();
   }
 }
 
 /** Conditional requests are used only when a local catalog already exists. */
-export async function fetchAndParseM3UConditional(url:string,validators?:{etag?:string;lastModified?:string}):Promise<{parsed?:ParsedM3U;notModified:boolean;etag?:string;lastModified?:string}>{
-  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120000);
+export async function fetchAndParseM3UConditional(url:string,validators?:{etag?:string;lastModified?:string},externalSignal?:AbortSignal):Promise<{parsed?:ParsedM3U;notModified:boolean;etag?:string;lastModified?:string}>{
+  throwIfExternallyAborted(externalSignal);
+  const {controller,cleanup}=linkedAbortController(120000,externalSignal);
   try{
     const headers:Record<string,string>={'User-Agent':UA,'Accept':'*/*'};
     if(validators?.etag)headers['If-None-Match']=validators.etag;
     else if(validators?.lastModified)headers['If-Modified-Since']=validators.lastModified;
     const res=await fetch(url,{signal:controller.signal,headers});
+    throwIfExternallyAborted(externalSignal);
     if(res.status===304){if(!validators?.etag&&!validators?.lastModified)throw new Error('Beklenmeyen HTTP 304');return{notModified:true,etag:res.headers.get('ETag')||validators.etag,lastModified:res.headers.get('Last-Modified')||validators.lastModified};}
     if(!res.ok)throw new Error(`Sunucu hatası: HTTP ${res.status}`);
-    const body=await res.text();if(!body||body.length<8)throw new Error('Boş yanıt döndü');
+    const body=await res.text();throwIfExternallyAborted(externalSignal);if(!body||body.length<8)throw new Error('Boş yanıt döndü');
     return{notModified:false,parsed:parseM3U(body),etag:res.headers.get('ETag')||undefined,lastModified:res.headers.get('Last-Modified')||undefined};
-  }finally{clearTimeout(timer);}
+  }finally{cleanup();}
 }
 
 // ============================================================================
@@ -319,31 +347,34 @@ function normalizeServer(server: string): string {
   return s.replace(/\/+$/, '');
 }
 
-async function xtGet<T>(url: string, timeoutMs = 60000): Promise<T> {
+async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSignal): Promise<T> {
   let last: any = null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), timeoutMs);
+    throwIfExternallyAborted(externalSignal);
+    const { controller, cleanup } = linkedAbortController(timeoutMs, externalSignal);
     try {
       const res = await fetch(url, {
         signal: controller.signal,
         headers: { 'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16', 'Accept': 'application/json,*/*' },
       });
+      throwIfExternallyAborted(externalSignal);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
+      throwIfExternallyAborted(externalSignal);
       try { return JSON.parse(text) as T; } catch { throw new Error('Geçersiz JSON'); }
-    } catch (e) {
+    } catch (e:any) {
+      if (externalSignal?.aborted) throwIfExternallyAborted(externalSignal);
       last = e;
       if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 350));
-    } finally { clearTimeout(t); }
+    } finally { cleanup(); }
   }
   throw last || new Error('Xtream isteği başarısız');
 }
 
-export async function xtreamLogin(cred: XtreamCredentials): Promise<{ user_info: XtreamAccountInfo; server_info: any }> {
+export async function xtreamLogin(cred: XtreamCredentials, signal?: AbortSignal): Promise<{ user_info: XtreamAccountInfo; server_info: any }> {
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}`;
-  const data = await xtGet<any>(url, 30000);
+  const data = await xtGet<any>(url, 30000, signal);
   if (!data?.user_info) throw new Error('Geçersiz kimlik bilgileri');
   if (data.user_info.auth === 0 || data.user_info.auth === '0') throw new Error('Kullanıcı adı veya şifre hatalı');
   // v5.6.0: Panelin gönderdiği TÜM ek alanları koru.
@@ -369,17 +400,17 @@ export async function xtreamLogin(cred: XtreamCredentials): Promise<{ user_info:
   };
 }
 
-export async function xtreamLiveCategories(cred: XtreamCredentials): Promise<XtreamCategory[]> {
+export async function xtreamLiveCategories(cred: XtreamCredentials, signal?: AbortSignal): Promise<XtreamCategory[]> {
   const base = normalizeServer(cred.server);
-  return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_categories`);
+  return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_categories`, 60000, signal);
 }
 
-export async function xtreamLiveStreams(cred: XtreamCredentials): Promise<Channel[]> {
+export async function xtreamLiveStreams(cred: XtreamCredentials, signal?: AbortSignal): Promise<Channel[]> {
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_streams`;
   const [streams, cats] = await Promise.all([
-    xtGet<any[]>(url, 120000),
-    xtreamLiveCategories(cred).catch(() => [] as XtreamCategory[]),
+    xtGet<any[]>(url, 120000, signal),
+    xtreamLiveCategories(cred, signal).catch(() => [] as XtreamCategory[]),
   ]);
   const catMap = new Map<string, string>(cats.map(c => [String(c.category_id), c.category_name]));
   const out: Channel[] = [];
@@ -407,17 +438,17 @@ export async function xtreamLiveStreams(cred: XtreamCredentials): Promise<Channe
   return out;
 }
 
-export async function xtreamVodCategories(cred: XtreamCredentials): Promise<XtreamCategory[]> {
+export async function xtreamVodCategories(cred: XtreamCredentials, signal?: AbortSignal): Promise<XtreamCategory[]> {
   const base = normalizeServer(cred.server);
-  return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_vod_categories`);
+  return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_vod_categories`, 60000, signal);
 }
 
-export async function xtreamVod(cred: XtreamCredentials): Promise<VodItem[]> {
+export async function xtreamVod(cred: XtreamCredentials, signal?: AbortSignal): Promise<VodItem[]> {
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_vod_streams`;
   const [items, cats] = await Promise.all([
-    xtGet<any[]>(url, 120000),
-    xtreamVodCategories(cred).catch(() => [] as XtreamCategory[]),
+    xtGet<any[]>(url, 120000, signal),
+    xtreamVodCategories(cred, signal).catch(() => [] as XtreamCategory[]),
   ]);
   const catMap = new Map<string, string>(cats.map(c => [String(c.category_id), c.category_name]));
   const out: VodItem[] = [];
@@ -452,17 +483,17 @@ export async function xtreamVod(cred: XtreamCredentials): Promise<VodItem[]> {
   return out;
 }
 
-export async function xtreamSeriesCategories(cred: XtreamCredentials): Promise<XtreamCategory[]> {
+export async function xtreamSeriesCategories(cred: XtreamCredentials, signal?: AbortSignal): Promise<XtreamCategory[]> {
   const base = normalizeServer(cred.server);
-  return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_series_categories`);
+  return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_series_categories`, 60000, signal);
 }
 
-export async function xtreamSeries(cred: XtreamCredentials): Promise<SeriesItem[]> {
+export async function xtreamSeries(cred: XtreamCredentials, signal?: AbortSignal): Promise<SeriesItem[]> {
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_series`;
   const [items, cats] = await Promise.all([
-    xtGet<any[]>(url, 120000),
-    xtreamSeriesCategories(cred).catch(() => [] as XtreamCategory[]),
+    xtGet<any[]>(url, 120000, signal),
+    xtreamSeriesCategories(cred, signal).catch(() => [] as XtreamCategory[]),
   ]);
   const catMap = new Map<string, string>(cats.map(c => [String(c.category_id), c.category_name]));
   const out: SeriesItem[] = [];
@@ -542,12 +573,13 @@ export interface EpgProgram {
 export async function xtreamCatchupEpg(
   cred: XtreamCredentials,
   stream_id: string,
-  limit = 100
+  limit = 100,
+  signal?: AbortSignal
 ): Promise<{ programs: any[] }> {
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_simple_data_table&stream_id=${encodeURIComponent(stream_id)}`;
   try {
-    const data = await xtGet<any>(url, 30000);
+    const data = await xtGet<any>(url, 30000, signal);
     const list = data?.epg_listings || data?.epg || [];
 
     const decode = decodeBase64Utf8;
@@ -652,6 +684,32 @@ export function detectXtreamFromM3U(rawUrl: string): { server: string; username:
 }
 
 /**
+ * v17.10.0 — M3U catchup-source template çözümleyici.
+ * Sağlayıcının EXTINF içindeki ham template'i korunur; yalnız yaygın, açık
+ * zaman tokenları değiştirilir. Bilinmeyen token varsa fail-closed davranır.
+ */
+export function buildM3UCatchupUrl(channel: Pick<Channel,"catchup_source"|"catchup_correction">, startSec:number, stopSec:number): string | null {
+  const template=String(channel?.catchup_source||"").trim();
+  if(!template) return null;
+  const correctionSec=Math.round(Number(channel?.catchup_correction||0)*3600);
+  const start=Math.max(0,Math.floor(startSec+correctionSec));
+  const stop=Math.max(start,Math.floor(stopSec+correctionSec));
+  const duration=Math.max(1,stop-start);
+  const pad=(n:number)=>String(n).padStart(2,"0");
+  const d=new Date(start*1000);
+  const stamp=`${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`;
+  let out=template
+    .replace(/\{utc\}|\$\{utc\}/gi,String(start))
+    .replace(/\{utcend\}|\$\{utcend\}/gi,String(stop))
+    .replace(/\{timestamp\}|\$\{timestamp\}/gi,String(start))
+    .replace(/\{duration\}|\$\{duration\}/gi,String(duration))
+    .replace(/\{start\}|\$\{start\}/gi,stamp);
+  // Bilmediğimiz placeholder'ı sunucuya körlemesine göndermeyelim.
+  if(/\{[^}]+\}|\$\{[^}]+\}/.test(out)) return null;
+  return out;
+}
+
+/**
  * XTREAM TIMESHIFT (CATCH-UP) URL — TEK MERKEZ (v9.12.0)
  * Format: {server}/timeshift/{user}/{pass}/{dakika}/{YYYY-MM-DD:HH-MM}/{stream_id}.ts
  * Kullanıcı adı/parola URL-encode edilir (özel karakter güvenliği).
@@ -660,6 +718,63 @@ export function detectXtreamFromM3U(rawUrl: string): { server: string; username:
  * NOT: Tarih cihazın yerel saatiyle biçimlenir (mevcut çalışan catchup.tsx ile
  * aynı davranış); sağlayıcı farklı timezone bekliyorsa ayrıca ele alınır.
  */
+/**
+ * v17.9.1 — SAĞLAYICI SAAT DİLİMİYLE ZAMAN DAMGASI
+ * ---------------------------------------------------------------------------
+ * Catchup adresi cihazın YEREL saatiyle üretiliyordu; kod yorumu da
+ * "sağlayıcı farklı timezone bekliyorsa ayrıca ele alınır" diyordu. Sağlayıcı
+ * farklı bir dilimdeyse (ör. sunucu Europe/London, cihaz Europe/Istanbul) istek
+ * 2-3 saat kayık programa gidiyor ya da hiç açılmıyordu.
+ * `server_info.timezone` girişte zaten alınıp listeye kaydediliyordu; artık
+ * burada kullanılıyor. Dilim bilinmiyorsa veya Intl desteklemiyorsa eski
+ * davranışa (yerel saat) dönülür.
+ */
+export function formatTimeshiftStamp(ms: number, timeZone?: string | null): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (timeZone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hour12: false,
+      }).formatToParts(new Date(ms));
+      const g = (t: string) => parts.find(p => p.type === t)?.value || "";
+      const hh = g("hour") === "24" ? "00" : g("hour");
+      if (g("year") && g("month") && g("day") && hh && g("minute")) {
+        return `${g("year")}-${g("month")}-${g("day")}:${hh}-${g("minute")}`;
+      }
+    } catch { /* geçersiz dilim: yerel saate dön */ }
+  }
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}:${pad(d.getHours())}-${pad(d.getMinutes())}`;
+}
+
+/**
+ * v17.9.0 — CATCHUP BİÇİM VARYANTLARI
+ * ---------------------------------------------------------------------------
+ * Tek biçim üretiliyordu: /timeshift/.../id.ts. Paneller farklı biçim
+ * bekleyebiliyor; biri tutmazsa catchup "çalışmıyor" görünüyordu.
+ * Birincil biçimden sonra iki yaygın alternatif üretilir; oynatıcının
+ * "sıradaki adrese geç" mekanizması bunları sırayla dener. Yedek DNS
+ * mekanizması da (hostFailover) bu yolları koruyarak ayrıca uygulanır.
+ */
+export function buildXtreamTimeshiftVariants(opts: {
+  server: string; username: string; password: string;
+  startMs: number; stopMs: number; streamId: string | number;
+  timeZone?: string | null;
+}): string[] {
+  const primary = buildXtreamTimeshiftUrl(opts);
+  if (!primary) return [];
+  const base = opts.server.replace(/\/+$/, "");
+  const stamp = formatTimeshiftStamp(opts.startMs, opts.timeZone);
+  const durMin = Math.max(1, Math.ceil((opts.stopMs - opts.startMs) / 60000));
+  const u = encodeURIComponent(opts.username), pw = encodeURIComponent(opts.password);
+  return [
+    primary,
+    primary.replace(/\.ts$/, ".m3u8"),
+    `${base}/timeshift.php?username=${u}&password=${pw}&stream=${opts.streamId}&start=${stamp}&duration=${durMin}`,
+  ].filter((x, i, a) => !!x && a.indexOf(x) === i);
+}
+
 export function buildXtreamTimeshiftUrl(opts: {
   server: string;
   username: string;
@@ -667,13 +782,13 @@ export function buildXtreamTimeshiftUrl(opts: {
   startMs: number;
   stopMs: number;
   streamId: string | number;
+  /** v17.9.1: sağlayıcının saat dilimi (server_info.timezone). */
+  timeZone?: string | null;
 }): string | null {
   const { server, username, password, startMs, stopMs, streamId } = opts;
   if (!server || !username || !password || streamId === undefined || streamId === null || streamId === "") return null;
   if (!Number.isFinite(startMs) || !Number.isFinite(stopMs)) return null;
-  const d = new Date(startMs);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}:${pad(d.getHours())}-${pad(d.getMinutes())}`;
+  const stamp = formatTimeshiftStamp(startMs, opts.timeZone);
   const durMin = Math.max(1, Math.ceil((stopMs - startMs) / 60000));
   const base = server.replace(/\/+$/, "");
   return `${base}/timeshift/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${durMin}/${stamp}/${streamId}.ts`;

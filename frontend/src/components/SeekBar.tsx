@@ -18,7 +18,7 @@
  */
 
 import React, { useRef, useState } from "react";
-import { View, Text, StyleSheet, PanResponder, LayoutChangeEvent } from "react-native";
+import { View, Text, StyleSheet, PanResponder, LayoutChangeEvent, Pressable } from "react-native";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { FONT, SPACING } from "@/src/theme/themes";
 
@@ -27,8 +27,12 @@ interface Props {
   position: number;
   /** Toplam süre (saniye). 0 veya yoksa canlı kabul edilir. */
   duration: number;
-  /** Canlı yayın mı (çubuk yerine rozet gösterilir). */
+  /** Canlı yayın mı. */
   isLive?: boolean;
+  /** App/provider DVR penceresi gerçekten seek edilebilir durumda mı. */
+  liveDvr?: boolean;
+  /** Canlı kenara dönme eylemi. */
+  onGoLive?: () => void;
   /** Sürükleme bitince çağrılır (saniye). */
   onSeek: (seconds: number) => void;
 }
@@ -43,7 +47,7 @@ export function formatTime(total: number): string {
   return h > 0 ? `${h}:${mm}:${String(s).padStart(2, "0")}` : `${mm}:${String(s).padStart(2, "0")}`;
 }
 
-export function SeekBar({ position, duration, isLive, onSeek }: Props) {
+export function SeekBar({ position, duration, isLive, liveDvr = false, onGoLive, onSeek }: Props) {
   const { colors } = useTheme();
   const [width, setWidth] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -56,7 +60,7 @@ export function SeekBar({ position, duration, isLive, onSeek }: Props) {
   widthRef.current = width;
   durationRef.current = duration;
 
-  const seekable = !isLive && duration > 0;
+  const seekable = (!isLive || liveDvr) && duration > 0;
 
   const pan = useRef(
     PanResponder.create({
@@ -87,7 +91,7 @@ export function SeekBar({ position, duration, isLive, onSeek }: Props) {
 
   const onLayout = (e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width);
 
-  // Canlı yayın: çubuk yok, rozet var.
+  // DVR penceresi olmayan lineer canlı yayın: çubuk yok, rozet var.
   if (!seekable) {
     return (
       <View style={styles.liveRow}>
@@ -102,10 +106,11 @@ export function SeekBar({ position, duration, isLive, onSeek }: Props) {
 
   const shown = dragging ? dragValue : position;
   const pct = duration > 0 ? Math.max(0, Math.min(shown / duration, 1)) : 0;
+  const behindLive = liveDvr ? Math.max(0, duration - shown) : 0;
 
   return (
     <View style={styles.wrap}>
-      <Text style={[styles.time, { color: "#fff" }]}>{formatTime(shown)}</Text>
+      <Text style={[styles.time, { color: "#fff" }]}>{liveDvr ? `-${formatTime(behindLive)}` : formatTime(shown)}</Text>
 
       <View style={styles.trackArea} onLayout={onLayout} {...pan.panHandlers}>
         {/* Arka çubuk */}
@@ -131,7 +136,14 @@ export function SeekBar({ position, duration, isLive, onSeek }: Props) {
         />
       </View>
 
-      <Text style={[styles.time, { color: "rgba(255,255,255,0.75)" }]}>{formatTime(duration)}</Text>
+      {liveDvr ? (
+        <Pressable onPress={onGoLive} disabled={!onGoLive} style={styles.liveEdgeButton}>
+          <View style={[styles.liveDot, { backgroundColor: colors.brandPrimary, opacity: behindLive <= 3 ? 1 : 0.45 }]} />
+          <Text style={[styles.liveText, { color: colors.brandPrimary }]}>CANLI</Text>
+        </Pressable>
+      ) : (
+        <Text style={[styles.time, { color: "rgba(255,255,255,0.75)" }]}>{formatTime(duration)}</Text>
+      )}
     </View>
   );
 }
@@ -144,6 +156,7 @@ const styles = StyleSheet.create({
   fill: { position: "absolute", left: 0 },
   thumb: { position: "absolute", width: 14, height: 14, borderRadius: 7 },
   liveRow: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: SPACING.lg, height: 32 },
+  liveEdgeButton: { minWidth: 58, height: 28, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5 },
   liveDot: { width: 8, height: 8, borderRadius: 4 },
   liveText: { fontSize: FONT.size.xs, fontWeight: FONT.weight.bold, letterSpacing: 1 },
 });
