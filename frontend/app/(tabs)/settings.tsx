@@ -16,6 +16,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { LIVE_TIMESHIFT_MODE_OPTIONS, loadLiveTimeshiftMode, saveLiveTimeshiftMode, type LiveTimeshiftMode } from "@/src/player/timeshiftMode";
 import Constants from "expo-constants";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { THEMES, THEME_LABELS, ThemeName, SPACING, RADIUS, FONT } from "@/src/theme/themes";
@@ -45,7 +46,7 @@ export default function SettingsTab() {
   const { colors, themeName, setTheme } = useTheme();
   const { playlists, activePlaylist, setActivePlaylist, removePlaylist, updatePlaylist } = usePlaylists();
   const [nativeGroups, setNativeGroups] = useState<string[]>([]);
-  const { profiles, activeProfile, switchProfile, removeProfile, setPin: setProfPin, verifyAdminPin, adminHasPin } = useProfiles();
+  const { profiles, activeProfile, switchProfile, removeProfile, setPin: setProfPin, verifyAdminPin, adminHasPin, authorizeProfileSession } = useProfiles();
   const { settings: parental, setPin, clearPin, toggleCategoryLock, setAdultHidden, verifyPinAsync, isCategoryLocked } = useParental();
   const [epgInput, setEpgInput] = useState<string>(activePlaylist?.epgUrl || "");
   const [epgLoading, setEpgLoading] = useState(false);
@@ -54,6 +55,9 @@ export default function SettingsTab() {
   const [refreshAllPlaylistProgress, setRefreshAllPlaylistProgress] = useState("");
   const [playerBufferMs, setPlayerBufferMs] = useState<number>(PLAYER_BUFFER_DEFAULT_MS);
   const [startLastChannel, setStartLastChannel] = useState(false);
+  // v17.10.3: canlı zaman kaydırma modu (varsayılan "Duraklatınca")
+  const [timeshiftMode, setTimeshiftMode] = useState<LiveTimeshiftMode>("onPause");
+  useEffect(() => { void loadLiveTimeshiftMode().then(setTimeshiftMode); }, []);
   const [coloredRemoteMap, setColoredRemoteMap] = useState<ColoredRemoteMap>(DEFAULT_COLORED_REMOTE_MAP);
 
   // Parental PIN modal
@@ -667,7 +671,9 @@ export default function SettingsTab() {
                         router.replace("/profile-select");
                         return;
                       }
-                      switchProfile(p.id);
+                      // v17.10.3: PIN'siz geçiş de bir profil girişidir → yetkilendir
+                      // (açılışta son kanal bu profilin kendi ayarıyla çalışsın).
+                      void switchProfile(p.id).then(() => authorizeProfileSession(p.id));
                     }}
                     style={styles.pAction}
                   >
@@ -893,9 +899,42 @@ export default function SettingsTab() {
         <View style={{ paddingHorizontal: SPACING.lg }}>
           <FocusButton testID="startup-last-channel-toggle" onPress={async () => { const next=!startLastChannel; setStartLastChannel(next); await storage.setItem("kizilkan.player.startLast." + activeProfile.id, next); }} style={[styles.linkBtn,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border}]}>
             <Ionicons name="play-skip-forward-outline" size={20} color={colors.brandPrimary} />
-            <View style={{flex:1}}><Text style={[styles.rowTitle,{color:colors.onSurface}]}>Açılışta son çalışan kanalı başlat</Text><Text style={[styles.rowSub,{color:colors.onSurfaceSecondary}]}>Yalnız soğuk açılışta; profil/PIN ve Room doğrulandıktan sonra</Text></View>
+            <View style={{flex:1}}><Text style={[styles.rowTitle,{color:colors.onSurface}]}>Açılışta son çalışan kanalı başlat</Text><Text style={[styles.rowSub,{color:colors.onSurfaceSecondary}]}>Her profil girişinde (seçim + PIN sonrası) o profilin kendi son kanalı</Text></View>
             <View style={[styles.miniTag,{backgroundColor:startLastChannel?colors.brandPrimary:colors.surfaceTertiary}]}><Text style={[styles.miniTagText,{color:startLastChannel?colors.onBrandPrimary:colors.onSurfaceSecondary}]}>{startLastChannel?"AÇIK":"KAPALI"}</Text></View>
           </FocusButton>
+          {/**
+            * v17.10.3 — CANLI ZAMAN KAYDIRMA MODU. Kumandayla gezilebilsin diye
+            * üç ayrı odaklanabilir düğme. Değişiklik bir sonraki kanal açılışında
+            * geçerli olur.
+            */}
+          <View style={[styles.linkBtn,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border,flexDirection:"column",alignItems:"stretch",marginTop:8}]}>
+            <View style={{flexDirection:"row",alignItems:"center",gap:10}}>
+              <Ionicons name="play-back-circle-outline" size={20} color={colors.brandPrimary} />
+              <View style={{flex:1}}>
+                <Text style={[styles.rowTitle,{color:colors.onSurface}]}>Canlı zaman kaydırma</Text>
+                <Text style={[styles.rowSub,{color:colors.onSurfaceSecondary}]}>
+                  {LIVE_TIMESHIFT_MODE_OPTIONS.find(o => o.value === timeshiftMode)?.hint || ""}
+                </Text>
+              </View>
+            </View>
+            <View style={{flexDirection:"row",gap:8,marginTop:10}}>
+              {LIVE_TIMESHIFT_MODE_OPTIONS.map(opt => {
+                const active = timeshiftMode === opt.value;
+                return (
+                  <FocusButton
+                    key={opt.value}
+                    testID={`timeshift-mode-${opt.value}`}
+                    onPress={async () => { setTimeshiftMode(opt.value); await saveLiveTimeshiftMode(opt.value); }}
+                    style={{flex:1,alignItems:"center",paddingVertical:10,borderRadius:RADIUS.sm,borderWidth:1,
+                      borderColor:active?colors.brandPrimary:colors.border,
+                      backgroundColor:active?colors.brandPrimary:colors.surfaceTertiary}}
+                  >
+                    <Text style={{fontSize:FONT.size.sm,fontWeight:FONT.weight.bold,color:active?colors.onBrandPrimary:colors.onSurface}}>{opt.label}</Text>
+                  </FocusButton>
+                );
+              })}
+            </View>
+          </View>
         </View>
 
         <SectionTitle text="TV KUMANDA RENKLİ TUŞLAR" />

@@ -45,6 +45,15 @@ internal class LiveTimeshiftManager(private val context: Context) {
     private const val DEFAULT_MAX_BYTES = 768L * 1024L * 1024L
     private const val TS_PACKET = 188
     private const val TS_SEGMENT_MS = 2_000L
+    /**
+     * v17.10.3 — İLK SEGMENT KISA KESİLİR (açılış gecikmesi)
+     * Oynatıcı ilk segment tamamlanana kadar beklemek zorunda. 2 sn eşiği ve
+     * "kontrol yalnız yeni paket gelince" kuralı, sağlayıcı yayını düzensiz
+     * gönderdiğinde ilk kesimi saniyelerce geciktiriyordu (25.09 cihaz kaydı:
+     * ilk segment 7,6 sn, READY 8,2 sn). İlk segment 0,5 sn'de kesilir;
+     * sonrakiler yine 2 sn. HLS'te kısa bir ilk segment geçerlidir.
+     */
+    private const val FIRST_TS_SEGMENT_MS = 500L
     private const val MIN_KEEP_SEGMENTS = 5
   }
 
@@ -369,6 +378,7 @@ internal class LiveTimeshiftManager(private val context: Context) {
         pmtPacket?.let { out?.write(it); payloadBytes += it.size }
       }
 
+      var producedSegments = 0
       fun finishSegment(nowElapsed: Long) {
         val file = currentFile ?: return
         try { out?.flush(); out?.fd?.sync() } catch (_: Throwable) {}
@@ -377,6 +387,7 @@ internal class LiveTimeshiftManager(private val context: Context) {
         val elapsed = max(250L, nowElapsed - segmentStartedElapsed)
         if (file.length() >= TS_PACKET * 10L) {
           addSegment(Segment(currentSeq, file, elapsed / 1000.0, System.currentTimeMillis()))
+          producedSegments++
         } else file.delete()
         currentFile = null
       }
@@ -414,7 +425,8 @@ internal class LiveTimeshiftManager(private val context: Context) {
           out?.write(packet)
           payloadBytes += packet.size
           val packetNow = SystemClock.elapsedRealtime()
-          if (packetNow - segmentStartedElapsed >= TS_SEGMENT_MS && payloadBytes >= TS_PACKET * 64L) {
+          val minSegmentMs = if (producedSegments == 0) FIRST_TS_SEGMENT_MS else TS_SEGMENT_MS
+          if (packetNow - segmentStartedElapsed >= minSegmentMs && payloadBytes >= TS_PACKET * 64L) {
             finishSegment(packetNow)
             startSegment(packetNow)
           }

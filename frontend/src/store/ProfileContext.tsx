@@ -36,6 +36,13 @@ interface ProfileContextValue {
   authorizeProfileSession: (id: string) => void;
   clearProfileSession: () => void;
   isProfileSessionAuthorized: (id: string) => boolean;
+  /**
+   * v17.10.3 — Her başarılı profil girişinde (seçim + gerekiyorsa PIN) artan
+   * sayaç. "Açılışta son kanal" yalnız bu sayaç ilerlediğinde ve yalnız
+   * girilen profilin kendi ayarı/kanalıyla tetiklenir. Aynı profile ikinci kez
+   * girilince (A → B → A) kimlik değişmediği için sayaç şarttır.
+   */
+  profileEntrySeq: number;
 }
 
 const ProfileContext = createContext<ProfileContextValue | null>(null);
@@ -54,6 +61,7 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
   const [activeId, setActiveId] = useState<string>('default');
   const [isLoading, setIsLoading] = useState(true);
   const [sessionAuthorizedProfileId, setSessionAuthorizedProfileId] = useState<string | null>(null);
+  const [profileEntrySeq, setProfileEntrySeq] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -221,7 +229,10 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
 
   const authorizeProfileSession = useCallback((id: string) => {
     const list = profilesRef.current.length ? profilesRef.current : profiles;
-    if (list.some(p => p.id === id)) setSessionAuthorizedProfileId(id);
+    if (list.some(p => p.id === id)) {
+      setSessionAuthorizedProfileId(id);
+      setProfileEntrySeq(n => n + 1);
+    }
   }, [profiles]);
 
   const clearProfileSession = useCallback(() => setSessionAuthorizedProfileId(null), []);
@@ -233,7 +244,7 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
     <ProfileContext.Provider value={{
       profiles, activeProfile, isLoading,
       addProfile, updateProfile, removeProfile, switchProfile, setPin, verifyPin, verifyPinAsync, verifyAdminPin, adminHasPin,
-      sessionAuthorizedProfileId, authorizeProfileSession, clearProfileSession, isProfileSessionAuthorized,
+      sessionAuthorizedProfileId, authorizeProfileSession, clearProfileSession, isProfileSessionAuthorized, profileEntrySeq,
     }}>
       {children}
     </ProfileContext.Provider>

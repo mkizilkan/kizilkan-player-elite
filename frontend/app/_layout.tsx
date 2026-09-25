@@ -80,40 +80,74 @@ function ProfileSessionGate({ children }: { children: ReactNode }) {
 
 const START_LAST_KEY = "kizilkan.player.startLast.";
 const LAST_LIVE_KEY = "kizilkan.player.lastLive.";
-let coldStartAutoplayConsumed = false;
+/**
+ * v17.10.3 — Hangi profil girişi için son kanal açıldı (profilId:girişSayacı).
+ * Eskiden süreç başına tek bir bayrak vardı (coldStartAutoplayConsumed) ve
+ * kapı açılış ekranında (rota "/") tetiklenebiliyordu.
+ */
+let startupAutoplayEntryKey = "";
 
-/** v17.10.0: yalnız process cold-start'ta, profil + Room doğrulandıktan sonra son çalışan canlı kanalı açar. */
+/**
+ * v17.10.3 — PROFİL GİRİŞİNDEN SONRA, O PROFİLİN KENDİ SON KANALI
+ * ---------------------------------------------------------------------------
+ * SORUN (kullanıcı, 25.09): Özellik açıkken uygulama açılır açılmaz kanal
+ * açılıyordu; profil seçimi ve PIN daha gelmeden. Kök neden:
+ *   1) Açılış (splash) ekranı app/index.tsx'in rotası "/" ve kapı "/" rotasını
+ *      "ana ekran hazır" sayıyordu. expo-router usePathname() grup klasörlerini
+ *      atladığı için ana sekme ekranı da "/" döner; ikisi ayırt edilemiyordu
+ *      (`pathname.includes("(tabs)")` hiçbir zaman doğru olmuyordu).
+ *   2) Önceki oturumun hatırlanan profili "girilmiş" sayılıyordu.
+ * ÇÖZÜM:
+ *   - Tetik yalnız sessionAuthorizedProfileId === aktif profil olduğunda
+ *     (profil seçimi + gerekiyorsa PIN bu oturumda TAMAMLANDI) çalışır.
+ *   - Ana ekran, grup segmentleriyle (useSegments) belirlenir: "(tabs)" ya da
+ *     "tv-home". Açılış ekranı (segment yok) asla ana ekran sayılmaz.
+ *   - Her profil girişi (profileEntrySeq) için EN FAZLA bir kez tetiklenir;
+ *     A → B → A geçişinde her girişte o profilin kendi ayarı ve kanalı kullanılır.
+ *   - Ayar ve son kanal zaten profil kimliğiyle saklanıyordu (değişmedi).
+ */
 function StartupLastChannelGate() {
   const pathname = usePathname();
-  const { activeProfile } = useProfiles();
+  const segments = useSegments();
+  const { activeProfile, sessionAuthorizedProfileId, profileEntrySeq } = useProfiles();
   const { activePlaylist, isLoading, loadedProfileId } = usePlaylists();
   const { openPlayer, visible } = usePlayer();
   useEffect(() => {
-    if (coldStartAutoplayConsumed || visible || isLoading || !activeProfile?.id || !activePlaylist?.id) return;
+    if (visible || isLoading || !activeProfile?.id || !activePlaylist?.id) return;
     if (loadedProfileId !== activeProfile.id) return;
-    const homeReady = pathname === "/" || pathname === "/tv-home" || pathname.includes("(tabs)");
+    // Profil bu oturumda gerçekten girildi mi? (seçim + PIN)
+    if (!profileEntrySeq || sessionAuthorizedProfileId !== activeProfile.id) return;
+    const entryKey = `${activeProfile.id}:${profileEntrySeq}`;
+    if (startupAutoplayEntryKey === entryKey) return;
+    const first = String((segments as string[])[0] || "");
+    const homeReady = first === "(tabs)" || first === "tv-home";
     if (!homeReady) return;
     let cancelled = false;
     void (async () => {
       const enabled = await storage.getItem<boolean>(START_LAST_KEY + activeProfile.id, false);
-      if (!enabled || cancelled) { coldStartAutoplayConsumed = true; return; }
+      if (cancelled) return;
+      if (!enabled) { startupAutoplayEntryKey = entryKey; return; }
       let saved: any = null;
       try { saved = JSON.parse((await storage.getItem<string>(LAST_LIVE_KEY + activeProfile.id, "")) || "null"); } catch {}
-      if (!saved?.channelId || String(saved.playlistId || "") !== String(activePlaylist.id)) { coldStartAutoplayConsumed = true; return; }
+      if (cancelled) return;
+      if (!saved?.channelId || String(saved.playlistId || "") !== String(activePlaylist.id)) { startupAutoplayEntryKey = entryKey; return; }
       let exists = true;
       if (KizilkanNativeCore.available) exists = !!(await KizilkanNativeCore.getItem(activePlaylist.id, "live", String(saved.channelId)));
       else exists = !!activePlaylist.channels?.some(c => String(c.id) === String(saved.channelId));
-      if (cancelled || !exists) { coldStartAutoplayConsumed = true; return; }
-      coldStartAutoplayConsumed = true;
-      const origin = pathname === "/tv-home" ? "tv-home" : "library";
+      if (cancelled) return;
+      startupAutoplayEntryKey = entryKey;
+      if (!exists) return;
+      const origin = first === "tv-home" ? "tv-home" : "library";
       openPlayer({ id: String(saved.channelId), kind: "live", nav: { origin, focusKey: `${origin}:live:${String(saved.channelId)}` } });
-      void recordDiagnostic("player", "STARTUP_LAST_CHANNEL_OPEN", { playlistId: activePlaylist.id, channelId: String(saved.channelId) });
+      void recordDiagnostic("player", "STARTUP_LAST_CHANNEL_OPEN", {
+        playlistId: activePlaylist.id, channelId: String(saved.channelId), profileId: activeProfile.id, entrySeq: profileEntrySeq,
+      });
     })().catch((e:any) => {
-      coldStartAutoplayConsumed = true;
+      startupAutoplayEntryKey = entryKey;
       void recordDiagnostic("player", "STARTUP_LAST_CHANNEL_SKIP", { error: String(e?.message || e) });
     });
     return () => { cancelled = true; };
-  }, [pathname, activeProfile?.id, activePlaylist?.id, isLoading, loadedProfileId, visible, openPlayer]);
+  }, [pathname, segments, activeProfile?.id, activePlaylist?.id, isLoading, loadedProfileId, visible, openPlayer, sessionAuthorizedProfileId, profileEntrySeq]);
   return null;
 }
 

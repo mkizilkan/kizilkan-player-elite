@@ -109,15 +109,47 @@ export const KizilkanNativeCore = {
       // Tek kind veya boş: bölmenin faydası yok, tek çağrı (mevcut davranış).
       return native.syncPlaylistKindsJson(id, JSON.stringify(payload), prevJson);
     }
-    let last: NativeIncrementalSyncResult | null = null;
+    /**
+     * v17.10.3 — PARÇALI SONUÇLARIN BİRLEŞTİRİLMESİ (v17.9.9 hatasının düzeltmesi)
+     * -----------------------------------------------------------------------
+     * Native taraf changed/skipped/diff/fingerprint alanlarını YALNIZ o çağrıya
+     * gelen kind'lar için doldurur (arrays.forEach). v17.9.9'da yalnız SON
+     * çağrının sonucu döndürülüyordu; bu yüzden (25.09 cihaz kaydı):
+     *  - fark raporunda canlı/film "0 → 0" görünüyordu (yalnız dizi vardı),
+     *  - canlı/film parmak izi eski değerle (previous) saklanıyor, her
+     *    yenilemede bu türler gereksiz yere baştan yazılıyordu.
+     * Artık her çağrının KENDİ kind'ına ait alanları toplanır; summary son
+     * çağrıdan alınır (native snapshot her çağrıda tüm sayıları taşır).
+     */
+    const merged: any = {
+      summary: null, changedKinds: [], skippedKinds: [], repairedKinds: [],
+      fingerprints: {}, roomVerified: true, snapshotRecovered: false,
+      snapshotRecoveryState: "", elapsedMs: 0, diff: {},
+    };
     for (const k of present) {
       // Her kind KENDİ payload nesnesiyle; tek seferde tek kind belleğe alınır.
       const single: any = {}; single[k] = (payload as any)[k];
       const singleJson = JSON.stringify(single);
       single[k] = null; // referansı bırak, GC serbest bıraksın
-      last = await native.syncPlaylistKindsJson(id, singleJson, prevJson);
+      const r: any = await native.syncPlaylistKindsJson(id, singleJson, prevJson);
+      if (!r) return null;
+      merged.summary = r.summary ?? merged.summary;
+      for (const f of ["changedKinds", "skippedKinds", "repairedKinds"]) {
+        for (const kind of (r[f] || [])) if (kind === k && !merged[f].includes(kind)) merged[f].push(kind);
+      }
+      // Parmak izi: yalnız bu çağrının kind'ı güvenilirdir (diğerleri "previous").
+      if (r.fingerprints && r.fingerprints[k]) merged.fingerprints[k] = r.fingerprints[k];
+      if (r.diff && r.diff[k]) merged.diff[k] = r.diff[k];
+      merged.roomVerified = merged.roomVerified && r.roomVerified !== false;
+      merged.snapshotRecovered = merged.snapshotRecovered || !!r.snapshotRecovered;
+      if (r.snapshotRecoveryState) merged.snapshotRecoveryState = r.snapshotRecoveryState;
+      merged.elapsedMs += Number(r.elapsedMs || 0);
     }
-    return last;
+    // Payload'da olmayan kind'ların parmak izi önceki değeriyle korunur.
+    for (const k of kinds) {
+      if (!merged.fingerprints[k] && (previousFingerprints as any)?.[k]) merged.fingerprints[k] = (previousFingerprints as any)[k];
+    }
+    return merged as NativeIncrementalSyncResult;
   },
   beginChunkedPlaylistImport: async (id: string): Promise<boolean> => native ? !!(await native.beginChunkedPlaylistImport(id)) : false,
   appendPlaylistChunk: async (id: string, kind: "live" | "vod" | "series", jsonArray: string): Promise<number> => native ? Number(await native.appendPlaylistChunk(id, kind, jsonArray)) : 0,

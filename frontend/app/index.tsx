@@ -21,7 +21,7 @@ export default function Index() {
   const ambientSize = Math.max(160, Math.min(safeDiameter / 1.3, Platform.isTV ? 440 : 300));
   const { isLoading, playlists } = usePlaylists();
   const { colors, isLoading: themeLoading } = useTheme();
-  const { profiles, activeProfile, isLoading: profilesLoading } = useProfiles();
+  const { profiles, activeProfile, isLoading: profilesLoading, authorizeProfileSession } = useProfiles();
 
   const scale = useSharedValue(0.6);
   const opacity = useSharedValue(0);
@@ -94,6 +94,13 @@ export default function Index() {
         } else {
           // Tek ve PIN'siz profilde kısa process recreation konforu korunur.
           const resume = await getRecentResumePath();
+          /**
+           * v17.10.3 — Tek ve PIN'siz profilde kapı tasarım gereği atlanır;
+           * doğrudan ana ekrana dönülüyorsa bu da bir profil girişidir.
+           * Yetkilendirme burada verilir ki "açılışta son kanal" bu profilde
+           * de çalışsın. (profile-select'e gidilirse orada zaten verilir.)
+           */
+          if (resume) authorizeProfileSession(activeProfile.id);
           router.replace((resume || "/profile-select") as any);
         }
       }

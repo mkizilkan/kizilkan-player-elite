@@ -71,6 +71,7 @@ import { useLibrary } from "@/src/store/LibraryContext";
 import { createFlightRecorderChildTrace, getCurrentFlightRecorderTrace, markTask, recordDiagnostic, recordBlackBox, recordFlightRecorderStage } from "@/src/utils/diagnostics";
 import { storage } from "@/src/utils/storage";
 import { alternateHostUrls, isSourceRetryKind, loadPreferredHost, rememberWorkingHost, originOf } from "@/src/player/hostFailover";
+import { LIVE_TIMESHIFT_MODE_DEFAULT, loadLiveTimeshiftMode, type LiveTimeshiftMode } from "@/src/player/timeshiftMode";
 import { haptic } from "@/src/utils/haptic";
 import { CastButton } from "@/src/components/CastButton";
 import { SeekBar, formatTime as fmtDur } from "@/src/components/SeekBar";
@@ -205,6 +206,7 @@ const SPEED_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 const LIVE_TIMESHIFT_WINDOW_SECONDS = 30 * 60;
 const LIVE_TIMESHIFT_MAX_BYTES = 768 * 1024 * 1024;
 const LIVE_TIMESHIFT_PREPARE_TIMEOUT_MS = 12_000;
+// v17.10.3: zaman kaydırma modu → src/player/timeshiftMode.ts (Ayarlar ile paylaşılır)
 type LiveTimeshiftState = {
   phase: "idle" | "preparing" | "ready" | "bypass";
   upstreamUrl: string;
@@ -374,6 +376,11 @@ export default function PlayerHost() {
   // v17.10.2 — provider DVR olmasa da app-owned disk rolling timeshift.
   const [liveTimeshift, setLiveTimeshift] = useState<LiveTimeshiftState>(EMPTY_LIVE_TIMESHIFT);
   const liveTimeshiftGenerationRef = useRef(0);
+  const [liveTimeshiftMode, setLiveTimeshiftMode] = useState<LiveTimeshiftMode>(LIVE_TIMESHIFT_MODE_DEFAULT);
+  /** "onPause" modunda duraklatmayla devreye alınan kanal+adres anahtarı. */
+  const [liveTimeshiftArmKey, setLiveTimeshiftArmKey] = useState("");
+  /** Duraklatmayla devreye alındı: tampon hazır olunca OYNATMA, başa sar ve duraklat. */
+  const liveTimeshiftStartPausedRef = useRef(false);
 
   useEffect(() => {
     Promise.all([
@@ -810,10 +817,34 @@ export default function PlayerHost() {
     return { ...basePlaybackRequest, url: candidate, contentType } as typeof basePlaybackRequest;
   }, [basePlaybackRequest, playbackCandidates, playbackUrlIndex]);
 
+  // v17.10.3: mod her oynatıcı açılışında ayardan okunur (Ayarlar'da değişirse sonraki açılışta geçerli).
+  useEffect(() => {
+    if (!visible) return;
+    let alive = true;
+    void loadLiveTimeshiftMode().then(m => { if (alive) setLiveTimeshiftMode(m); });
+    return () => { alive = false; };
+  }, [visible]);
+
+  /** Bu kanal+adres için duraklatmayla devreye alındı mı? (kanal değişince kendiliğinden düşer) */
+  const liveTimeshiftCurrentArmKey = `${String(channel?.id || "")}|${String(playbackRequest?.url || "")}`;
+  const liveTimeshiftArmedByPause = liveTimeshiftMode === "onPause" && !!liveTimeshiftArmKey && liveTimeshiftArmKey === liveTimeshiftCurrentArmKey;
+  // Kanal değişince "duraklatılmış başlat" bayrağı başka kanala sızmasın.
+  useEffect(() => { liveTimeshiftStartPausedRef.current = false; }, [channel?.id]);
+
   const liveTimeshiftEligible = !!(
     visible && sessionKind === "live" && !castSession && Platform.OS === "android" && KizilkanNativeCore.available &&
-    playbackRequest?.url && /^https?:\/\//i.test(String(playbackRequest.url))
+    playbackRequest?.url && /^https?:\/\//i.test(String(playbackRequest.url)) &&
+    (liveTimeshiftMode === "always" || liveTimeshiftArmedByPause)
   );
+  /**
+   * v17.10.3 — ÇİFT BAĞLANTI DÜZELTMESİ. Effect eskiden playbackRequest?.headers
+   * NESNESİNE bağlıydı; içerik aynı kalsa bile nesne yenilenince effect yeniden
+   * çalışıp aynı kanala ikinci bir kayıt bağlantısı açıyordu (25.09 kaydı: aynı
+   * saniyede iki LIVE_TIMESHIFT_PREPARE). Artık içerikten türeyen anahtar kullanılır.
+   */
+  const liveTimeshiftHeadersKey = useMemo(() => {
+    try { return JSON.stringify(playbackRequest?.headers || {}); } catch { return ""; }
+  }, [playbackRequest?.headers]);
   const liveTimeshiftMatches = !!playbackRequest?.url && liveTimeshift.upstreamUrl === playbackRequest.url;
   const liveTimeshiftReady = liveTimeshiftEligible && liveTimeshiftMatches && liveTimeshift.phase === "ready" && !!liveTimeshift.localUrl;
   const liveTimeshiftPreparing = liveTimeshiftEligible && (!liveTimeshiftMatches || liveTimeshift.phase === "idle" || liveTimeshift.phase === "preparing");
@@ -873,7 +904,9 @@ export default function PlayerHost() {
       pollTimer = setTimeout(() => { void pollReady(); }, 180);
     };
 
-    setRecoveryMessage("Canlı zaman kaydırma tamponu hazırlanıyor…");
+    setRecoveryMessage(liveTimeshiftStartPausedRef.current
+      ? "Duraklatıldı · zaman kaydırma kaydı başlatılıyor…"
+      : "Canlı zaman kaydırma tamponu hazırlanıyor…");
     void KizilkanNativeCore.startLiveTimeshift(
       upstreamUrl, playbackRequest?.headers || {}, LIVE_TIMESHIFT_WINDOW_SECONDS, LIVE_TIMESHIFT_MAX_BYTES,
     ).then(async initial => {
@@ -891,9 +924,15 @@ export default function PlayerHost() {
     return () => {
       cancelled = true;
       if (pollTimer) clearTimeout(pollTimer);
-      if (sessionId) void KizilkanNativeCore.stopLiveTimeshift(sessionId).catch(() => false);
+      if (sessionId) {
+        void KizilkanNativeCore.stopLiveTimeshift(sessionId).catch(() => false);
+        // v17.10.3: durdurma artık kayda geçer (kaydedicinin kapandığı kanıtlanabilsin).
+        void recordDiagnostic("player", "LIVE_TIMESHIFT_STOP", {
+          channelId: String(channel?.id || ""), reason: "session-cleanup", elapsedMs: Date.now() - startedAt,
+        }, { sessionId: playerDiagnosticSessionRef.current, stage: "timeshift", outcome: "stopped" });
+      }
     };
-  }, [liveTimeshiftEligible, playbackRequest?.url, playbackRequest?.headers, channel?.id, playbackUrlIndex]);
+  }, [liveTimeshiftEligible, playbackRequest?.url, liveTimeshiftHeadersKey, channel?.id, playbackUrlIndex]);
 
   // Engine traffic is gated until the local rolling window is ready. This avoids
   // downloading the same live stream twice. Unsupported formats fail open to the
@@ -1705,6 +1744,36 @@ export default function PlayerHost() {
     revealControls();
   };
 
+  /**
+   * v17.10.3 — "Duraklatınca" modu: tampon hazır olunca DURAKLATILMIŞ başla.
+   * Duraklatma anı ≈ tamponun başı (kayıt duraklatınca başladı). Oynatıcı başa
+   * alınır ve duraklatılmış bekler; kullanıcı devam'a basınca oradan oynar.
+   * MPV/VLC kaynak gelince kısa süre kendiliğinden başlayabildiği için pause
+   * ile birlikte seek yapılır (Media3'te zaten play çağrılmıyor).
+   */
+  const seekToRef = useRef(seekTo);
+  seekToRef.current = seekTo;
+  useEffect(() => {
+    if (!liveTimeshiftReady || !liveTimeshiftStartPausedRef.current) return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      if (cancelled || !liveTimeshiftStartPausedRef.current) return;
+      liveTimeshiftStartPausedRef.current = false;
+      try {
+        if (v2Profile.engine === "mpv") void mpvRef.current?.pause();
+        else if (v2Profile.engine === "vlc") vlcRef.current?.pause();
+        else player?.pause?.();
+      } catch { /* motor henüz hazır değilse seek yine uygulanır */ }
+      setIsPlaying(false);
+      seekToRef.current(0);
+      flashMessage("⏸ Duraklatıldı · zaman kaydırma hazır");
+      void recordDiagnostic("player", "LIVE_TIMESHIFT_PAUSED_START", {
+        channelId: String(channel?.id || ""), engine: v2Profile.engine, windowSeconds: Number(liveTimeshift.windowSeconds || 0),
+      }, { sessionId: playerDiagnosticSessionRef.current, stage: "timeshift", outcome: "success" });
+    }, 700);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [liveTimeshiftReady, liveTimeshift.localUrl, v2Profile.engine]);
+
   const goToLiveEdge = () => {
     if (castSession) {
       try {
@@ -2246,9 +2315,23 @@ export default function PlayerHost() {
     const url = enginePlaybackRequest?.url ?? null;
     if (url && url !== lastExoUrlRef.current) {
       lastExoUrlRef.current = url;
-      try { player?.replace?.(media3Source as any); player?.play?.(); } catch {}
+      // v17.10.3: duraklatmayla devreye alınan zaman kaydırmada yerel tampon
+      // yüklenir ama OYNATILMAZ; kullanıcı devam'a basınca oynar.
+      const startPaused = liveTimeshiftStartPausedRef.current && url === liveTimeshift.localUrl;
+      try { player?.replace?.(media3Source as any); if (!startPaused) player?.play?.(); } catch {}
+    } else if (!url && lastExoUrlRef.current && liveTimeshiftStartPausedRef.current) {
+      /**
+       * v17.10.3 — TEK BAĞLANTI. Media3 kalıcıdır; kaynak null olunca eski
+       * doğrudan yayın duraklatılmış hâlde yüklü kalıp bağlantısını açık
+       * tutabilir. Duraklatmayla zaman kaydırma başlatılırken kaydedici ikinci
+       * bağlantıyı açacağından, "1 kullanıcı" hesaplarda sağlayıcı reddedebilir.
+       * Yalnız bu durumda doğrudan kaynak açıkça bırakılır (MPV/VLC zaten
+       * kaynak null olunca kaldırılıyor).
+       */
+      lastExoUrlRef.current = null;
+      try { player?.replace?.(null as any); } catch {}
     }
-  }, [activeSessionId, profileReadySessionId, enginePlaybackRequest?.url, media3Source, useVLC, v2Profile.engine, player]);
+  }, [activeSessionId, profileReadySessionId, enginePlaybackRequest?.url, media3Source, useVLC, v2Profile.engine, player, liveTimeshift.localUrl]);
 
   useEffect(() => {
     // Yalnızca gerçek unmount'ta çalışır. TV'de portre kilitlemek zararlı
@@ -2429,6 +2512,20 @@ export default function PlayerHost() {
           return;
         }
       } catch { /* başarısızsa yerel oynatıcıya düş */ }
+    }
+    /**
+     * v17.10.3 — "Duraklatınca" modu: canlı yayın ilk kez duraklatıldığında
+     * zaman kaydırma devreye alınır. Uygunluk değişince motor trafiği kesilir
+     * (doğrudan bağlantı bırakılır), kaydedici başlar; tampon hazır olunca
+     * oynatıcı başa sarılıp DURAKLATILMIŞ bekler. Devam'a basınca duraklatma
+     * anından oynar. Aşağıdaki normal duraklatma kodu yine çalışır.
+     */
+    if (sessionKind === "live" && isPlaying && liveTimeshiftMode === "onPause" && !liveTimeshiftArmedByPause
+        && !castSession && Platform.OS === "android" && KizilkanNativeCore.available) {
+      liveTimeshiftStartPausedRef.current = true;
+      setLiveTimeshiftArmKey(liveTimeshiftCurrentArmKey);
+      void recordDiagnostic("player", "LIVE_TIMESHIFT_ARM_ON_PAUSE", { channelId: String(channel?.id || "") },
+        { sessionId: playerDiagnosticSessionRef.current, stage: "timeshift", outcome: "started" });
     }
     if (v2Profile.engine === "mpv") {
       if (isPlaying) void mpvRef.current?.pause(); else void mpvRef.current?.play();
