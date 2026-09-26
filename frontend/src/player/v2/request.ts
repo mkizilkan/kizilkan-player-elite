@@ -75,7 +75,8 @@ export function buildPlaybackRequest(args: {
   const lower = url.toLowerCase();
   const expectsVideo = !(
     streamType === "radio" ||
-    ["mp3","aac","m4a","flac","ogg","wav"].includes(ext) ||
+    // v18.1.0: yerel müzik için ses uzantıları genişletildi (opus/oga/wma/amr/mka/alac/aiff).
+    ["mp3","aac","m4a","flac","ogg","oga","opus","wav","wma","amr","mka","alac","aiff","aif"].includes(ext) ||
     ((group.includes("radio") || name.startsWith("radio ")) && !["ts","m3u8","mp4","mkv"].includes(ext))
   );
   const contentType: PlaybackRequest["contentType"] =

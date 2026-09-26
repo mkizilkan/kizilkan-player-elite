@@ -16,7 +16,7 @@ export type PlayerSessionKind = "live" | "vod" | "series" | "catchup" | "externa
 
 /** v17.0.0 — Player navigation/focus scope. Büyük katalog taşınmaz; yalnız sorgu bağlamı. */
 export type PlayerNavigationContext = {
-  origin?: "library" | "search" | "favorites" | "tv-home" | "detail" | "epg" | "unknown";
+  origin?: "library" | "search" | "favorites" | "tv-home" | "detail" | "epg" | "local-media" | "unknown";
   group?: string;
   search?: string;
   wrap?: boolean;
@@ -51,6 +51,11 @@ function navigationForItem(nav: PlayerNavigationContext | undefined, id: string,
   // • Dizi zap'ı BÖLÜM kimliğiyle gelir; listede dizi kartı vardır, bölüm yoktur →
   //   dönüş hedefi açılan DİZİ olarak korunur (üzerine yazılmaz).
   if (kind === "series") return next;
+  // v18.1.0: yerel medya kuyruğunda sonraki/önceki dosyaya geçilince dönüş hedefi o dosya olur.
+  if (nav.origin === "local-media" && kind === "external") {
+    next.focusKey = `local:${id}`;
+    return next;
+  }
   const listId = kind === "vod" && id.startsWith("vodplay-") ? id.slice("vodplay-".length) : id;
   if (nav.origin === "library" && (kind === "live" || kind === "vod")) {
     next.focusKey = `library:${kind}:${listId}`;

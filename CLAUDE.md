@@ -97,6 +97,8 @@ node tools/denetle.js        # sonunda başarısız kapı olmamalı
 | MAG/Stalker | `frontend/src/utils/stalker.ts` |
 | M3U/Xtream, catch-up URL | `frontend/src/utils/iptv.ts` |
 | Telemetri / uçuş kaydedici | `frontend/src/utils/diagnostics.ts` |
+| Yerel medya ekranı / ortak durum | `frontend/app/local-media.tsx`, `frontend/src/utils/localMedia.ts` |
+| Yerel medya native (SAF liste, kapak/süre) | `frontend/modules/kizilkan-native-core/android/.../LocalMediaLibrary.kt` |
 | Denetim koşucusu (Windows uyumlu) | `tools/denetle.js` |
 
 ## 7. Bilinen tuzaklar (gerçek hatalardan öğrenildi)
@@ -142,9 +144,9 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.0.0 RC1 — dal `v18.0.0-rc1-focus-restore-center`)
+## 9. Mevcut durum (v18.1.0 RC1 — dal `v18.1.0-rc1-local-media`)
 
-v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md`.
+v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md`, `AI-DEVIR-v18.1.0.md`.
 
 Cihazda doğrulananlar (v17.10.4'e kadar): timeshift (duraklat/geri-ileri/canlıya dön),
 açılışta son kanal (profil + liste başına), OOM düzeltmesi, boş kabuk onarımı, combo + doğrudan DNS.
@@ -154,11 +156,15 @@ detay dönüşü, ızgara satır düzeltmesi, kategori paneli/şerit ortalama), 
 telemetrisi (`LIVE_TIMESHIFT_HEALTH`, `LIVE_TIMESHIFT_SESSION_SUMMARY`, `LIVE_SESSION_STALL_SUMMARY`,
 zenginleştirilmiş `REBUFFER_*`), `FOCUS_RESTORE_*` olayları.
 
+v18.1.0'da kodlanan, **cihazda henüz test edilmeyen**: yerel medya yenilemesi (native tek sorgu
+listeleme, ses dosyaları, kapak/süre, filtre/sıralama/arama, kuyruk + otomatik geçiş, kaldığın yer,
+ses modu ekranı, yalnız yerel müzikte arka planda çalma + bildirim).
+
 **Açık konular (öncelik sırasıyla, hiçbiri onaysız kodlanmaz):**
 1. **Timeshift "Her zaman" modunda takılma (KANITLANMADI).** v18.0.0 telemetrisi eklendi;
    kullanıcıdan "Her zaman" ve "Kapalı" ile aynı kanalda izleme logu bekleniyor. Şüpheler:
    segment süresi duvar saatiyle yazılıyor (PCR kayması), canlı uçta ≤2 sn tampon, 0,5 sn ilk segment.
-2. **Yerel medya geliştirme + ses dosyası çalma** — kullanıcı istedi; plan sunuldu, onay bekliyor.
+2. Yerel medya v18.1.0 cihaz testi (AI-DEVIR-v18.1.0.md → Cihaz testi).
 3. Media3 canlıda HTTP 401 alırken aynı adres MPV'de açılıyor (başlık/User-Agent farkı şüphesi).
 4. MAG dizi kataloğu ana thread'i kilitliyor (`mag:catalog-series`, ANR).
 5. Combo tarama sırasında ANR (`scan:panel-stream-v172`, 65 sn) — kök neden kanıtlanmadı.

@@ -47,6 +47,8 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class KizilkanNativeCoreModule : Module() {
   private val liveTimeshiftManager by lazy { LiveTimeshiftManager(context()) }
+  // v18.1.0 — yerel medya: tek sorguda SAF klasör listesi + kapak/süre bilgisi.
+  private val localMediaLibrary by lazy { LocalMediaLibrary(context()) }
 
   data class IndexResult(val snapshot: PlaylistSnapshotEntity, val cacheHit: Boolean)
 
@@ -732,6 +734,19 @@ class KizilkanNativeCoreModule : Module() {
 
     AsyncFunction("stopAllLiveTimeshift") {
       liveTimeshiftManager.stopAll()
+    }
+
+    // v18.1.0 — yerel medya kütüphanesi (bkz. LocalMediaLibrary.kt).
+    AsyncFunction("listLocalMediaChildrenJson") { uri: String ->
+      localMediaLibrary.listChildrenJson(uri)
+    }
+
+    AsyncFunction("getLocalMediaInfo") { uri: String ->
+      localMediaLibrary.mediaInfo(uri)
+    }
+
+    AsyncFunction("clearLocalMediaArtCache") {
+      localMediaLibrary.clearArtCache()
     }
 
     AsyncFunction("readPlaylistHeavy") { id: String ->

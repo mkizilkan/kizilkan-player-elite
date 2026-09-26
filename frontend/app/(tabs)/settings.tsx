@@ -458,7 +458,7 @@ export default function SettingsTab() {
             <Ionicons name="folder-open-outline" size={20} color={colors.brandPrimary} />
             <View style={{ flex: 1 }}>
               <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Yerel Medya</Text>
-              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Telefon, USB veya SD karttan video aç</Text>
+              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Telefon, USB veya SD karttan video ve müzik aç</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
           </FocusButton>

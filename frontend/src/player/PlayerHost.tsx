@@ -14,6 +14,7 @@ import {
   Alert,
   useWindowDimensions,
   KeyboardAvoidingView,
+  Image,
   AppState,
   BackHandler,
 } from "react-native";
@@ -72,6 +73,7 @@ import { createFlightRecorderChildTrace, getCurrentFlightRecorderTrace, markTask
 import { storage } from "@/src/utils/storage";
 import { alternateHostUrls, isSourceRetryKind, loadPreferredHost, rememberWorkingHost, originOf } from "@/src/player/hostFailover";
 import { LIVE_TIMESHIFT_MODE_DEFAULT, loadLiveTimeshiftMode, type LiveTimeshiftMode } from "@/src/player/timeshiftMode";
+import { isLocalMediaId, loadLocalQueue, saveLocalProgress, writeLocalPayload, type LocalQueueItem } from "@/src/utils/localMedia";
 import { haptic } from "@/src/utils/haptic";
 import { CastButton } from "@/src/components/CastButton";
 import { SeekBar, formatTime as fmtDur } from "@/src/components/SeekBar";
@@ -308,6 +310,7 @@ export default function PlayerHost() {
         : navOrigin === "library" ? "library"
         : navOrigin === "search" ? "search"
         : navOrigin === "favorites" ? "favorites"
+        : navOrigin === "local-media" ? "local-media"
         : undefined;
       const timer = setTimeout(() => {
         if (targetScope && navFocusKey) requestRestore(targetScope, navFocusKey, "player-close");
@@ -1105,11 +1108,21 @@ export default function PlayerHost() {
     return true;
   }, [activePlaylist?.source, channel?.id]);
 
+  /**
+   * v18.1.0 — YEREL MÜZİK: ses dosyası (expectsVideo:false) + yerel kimlik.
+   * Arka planda çalma ve bildirim yalnız bu oturumlarda açılır; canlı TV,
+   * film ve dizi davranışı değişmez.
+   */
+  const localAudioSession = sessionKind === "external" && isLocalMediaId(params.id) && playbackRequest?.expectsVideo === false;
+  const localAudioTitle = localAudioSession ? String(channel?.name || "") : "";
+  const localAudioArtwork = localAudioSession ? String(externalStream?.poster || "") : "";
+
   const media3Source = useMemo(() => enginePlaybackRequest ? {
     uri: enginePlaybackRequest.url,
     headers: enginePlaybackRequest.headers,
     contentType: enginePlaybackRequest.contentType || "auto",
-  } : null, [enginePlaybackRequest]);
+    ...(localAudioTitle ? { metadata: { title: localAudioTitle, artist: "KIZILKAN · Yerel Müzik", ...(localAudioArtwork ? { artwork: localAudioArtwork } : {}) } } : {}),
+  } : null, [enginePlaybackRequest, localAudioTitle, localAudioArtwork]);
 
   useEffect(() => {
     if (!playbackRequest?.url || activePlaylist?.source !== "xtream" || !channel) return;
@@ -1766,6 +1779,16 @@ export default function PlayerHost() {
     const dur = Math.max(0, Number(playbackDurationRef.current || 0));
     if (cur <= 3 || dur <= 0) return;
 
+    // v18.1.0: yerel dosyalar kütüphanenin "Devam Et" listesine film gibi
+    // yazılmaz (oradan açılınca detay ekranı dosyayı bulamıyordu); kendi deposu var.
+    if (isLocalMediaId(params.id)) {
+      void saveLocalProgress(String(params.id), cur, dur);
+      if (showControlsRef.current || sheetRef.current === "stats") {
+        setVideoStats(prev => ({ ...prev, position: Math.floor(cur), currentTime: cur, duration: dur }));
+      }
+      return;
+    }
+
     const realId = String(params.id || "").replace(/^(vodplay-|epplay-)/, "");
     const kind: "vod" | "series" = String(params.id || "").startsWith("epplay-") ? "series" : "vod";
 
@@ -2016,6 +2039,27 @@ export default function PlayerHost() {
    */
   useEffect(() => {
     let cancelled = false;
+    // v18.1.0 — YEREL MEDYA KUYRUĞU: klasör sırası (yerel medya ekranının
+    // kaydettiği kuyruk) önceki/sonraki ve otomatik geçiş için kullanılır.
+    // Aktif IPTV listesi gerekmez.
+    if (visible && sessionKind === "external" && isLocalMediaId(params.id)) {
+      void loadLocalQueue().then(queue => {
+        if (cancelled) return;
+        const items = queue?.items || [];
+        const idx = items.findIndex(it => it.id === String(params.id));
+        if (idx < 0 || items.length < 2) {
+          setPlaybackNeighbors(null);
+          void recordDiagnostic("player", "LOCAL_MEDIA_QUEUE_MISS", { queueSize: items.length, found: idx >= 0 }, { sessionId: playerDiagnosticSessionRef.current, stage: "local-media", outcome: "skipped" });
+          return;
+        }
+        setPlaybackNeighbors({
+          previous: idx > 0 ? items[idx - 1] : null,
+          next: idx + 1 < items.length ? items[idx + 1] : null,
+          position: idx + 1, total: items.length, source: "synthetic",
+        });
+      }).catch(() => { if (!cancelled) setPlaybackNeighbors(null); });
+      return () => { cancelled = true; };
+    }
     if (!visible || !activePlaylist?.id || !params.id) { setPlaybackNeighbors(null); return () => { cancelled = true; }; }
 
     if (sessionKind === "series") {
@@ -2195,10 +2239,25 @@ export default function PlayerHost() {
       switchContent({ id: syntheticId, ext: "true", kind: "series", nav: source?.nav });
       return;
     }
+
+    // v18.1.0 — yerel medya kuyruğu (klasör sırası).
+    if (sessionKind === "external" && isLocalMediaId(params.id)) {
+      const item = target as LocalQueueItem;
+      if (!item?.id || !item?.uri) { flashMessage("Sıradaki dosya bulunamadı"); return; }
+      await writeLocalPayload(item);
+      flashMessage(`${delta > 0 ? "⏭" : "⏮"} ${item.name || "Dosya"}`);
+      switchContent({ id: item.id, ext: "true", kind: "external", nav: source?.nav });
+      return;
+    }
   };
 
   naturalEndRef.current = (sid, playbackEngine, position=0, duration=0) => {
-    if (!autoNextRef.current || !visible || (sessionKind !== "vod" && sessionKind !== "series")) return;
+    const localQueueSession = sessionKind === "external" && isLocalMediaId(params.id);
+    const localAudioSession = localQueueSession && playbackRequest?.expectsVideo === false;
+    // v18.1.0: yerel müzik, müzik çalar gibi her zaman sıradakine geçer; yerel
+    // video "Sonrakini otomatik" ayarına uyar.
+    const autoNextWanted = autoNextRef.current || localAudioSession;
+    if (!autoNextWanted || !visible || (sessionKind !== "vod" && sessionKind !== "series" && !localQueueSession)) return;
     if (sid <= 0 || !sessionGateRef.current.isActive(sid) || sid !== activeSessionId || endHandledSessionRef.current === sid) return;
     if (!playbackNeighbors?.next || String(playbackNeighbors.next.id||"") === String(channel?.id||"")) return;
     if (successfulSessionRef.current !== sid || !Number.isFinite(duration) || duration <= 0) return;
@@ -2558,6 +2617,28 @@ export default function PlayerHost() {
     setShowControls(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, channel?.id, channel?.url, activePlaylist?.id]);
+
+  /**
+   * v18.1.0 — YEREL MÜZİKTE ARKA PLANDA ÇALMA + BİLDİRİM. expo-video
+   * (Media3) oyuncusunda staysActiveInBackground/showNowPlayingNotification
+   * yalnız yerel ses oturumunda açılır; oturum bitince kapatılır (video/IPTV
+   * eski davranışta: arka planda durur). app.json: expo-video
+   * supportsBackgroundPlayback:true (Android ön plan servisi).
+   */
+  useEffect(() => {
+    const enable = visible && localAudioSession && v2Profile.engine === "media3";
+    try {
+      (player as any).staysActiveInBackground = enable;
+      (player as any).showNowPlayingNotification = enable;
+    } catch { /* eski expo-video: sessizce eski davranış */ }
+    if (visible && localAudioSession) {
+      void recordDiagnostic("player", "LOCAL_AUDIO_BACKGROUND", { enabled: enable, engine: v2Profile.engine }, { sessionId: playerDiagnosticSessionRef.current, stage: "local-media", outcome: enable ? "enabled" : "engine-unsupported" });
+    }
+    return () => {
+      if (!enable) return;
+      try { (player as any).staysActiveInBackground = false; (player as any).showNowPlayingNotification = false; } catch { /* yoksay */ }
+    };
+  }, [player, visible, localAudioSession, v2Profile.engine]);
 
   /**
    * v18.0.0 — OYNATMA / TAMPON YOKLAMASI (timeshift takılma teşhisi, T1).
@@ -4387,6 +4468,28 @@ export default function PlayerHost() {
         </View>
       )}
 
+      {/* v18.1.0 — SES MODU: ses dosyasında siyah ekran yerine kapak + ad + sıra. */}
+      {channel && isSynthetic && playbackRequest?.expectsVideo === false && !error && (
+        <View style={styles.audioModeWrap} pointerEvents="none" testID="player-audio-mode">
+          <View style={[styles.audioModeArt, { borderColor: colors.brandPrimary }]}>
+            {externalStream?.poster ? (
+              <Image source={{ uri: String(externalStream.poster) }} style={{ width: "100%", height: "100%" }} resizeMode="cover" />
+            ) : (
+              <Ionicons name="musical-notes" size={isTv ? 72 : 88} color={colors.brandPrimary} />
+            )}
+          </View>
+          <Text style={styles.audioModeTitle} numberOfLines={2}>{channel.name}</Text>
+          <Text style={styles.audioModeSub} numberOfLines={1}>
+            {[isLocalMediaId(params.id) ? "Yerel müzik" : "Ses yayını",
+              playbackNeighbors?.total ? `${playbackNeighbors.position}/${playbackNeighbors.total}` : "",
+              isPlaying ? "Çalıyor" : "Duraklatıldı"].filter(Boolean).join(" · ")}
+          </Text>
+          {playbackNeighbors?.next?.name ? (
+            <Text style={styles.audioModeNext} numberOfLines={1}>Sıradaki: {String(playbackNeighbors.next.name)}</Text>
+          ) : null}
+        </View>
+      )}
+
       {channel && liveTimeshiftPreparing && !error && (
         <View style={styles.recoveryBanner} pointerEvents="none">
           <ActivityIndicator size="small" color="#fff" />
@@ -4774,7 +4877,7 @@ export default function PlayerHost() {
                 {/* v17.5.0: Kumandasında "son kanal" tuşu olmayan cihazlar için panelden erişim. */}
                 {sessionKind === "live" && <GridBtn testID="player-last-channel-btn" icon="swap-horizontal" label="Son kanala dön" onPress={() => { setShowControls(false); zapToLastChannel(); }} />}
                 {sessionKind === "live" && (liveTimeshiftReady || isSeekable) && <GridBtn testID="player-go-live-btn" icon="radio" label="Canlıya dön" onPress={goToLiveEdge} />}
-                {(sessionKind === "vod" || sessionKind === "series") && <GridBtn testID="player-auto-next-btn" icon="play-skip-forward" label={`Sonrakini otomatik: ${autoPlayNext?'Açık':'Kapalı'}`} highlighted={autoPlayNext} onPress={() => {const next=!autoPlayNext;setAutoPlayNext(next);autoNextRef.current=next;void storage.setItem(AUTO_NEXT_KEY+activeProfile.id,next);}} />}
+                {(sessionKind === "vod" || sessionKind === "series" || (sessionKind === "external" && isLocalMediaId(params.id))) && <GridBtn testID="player-auto-next-btn" icon="play-skip-forward" label={`Sonrakini otomatik: ${autoPlayNext?'Açık':'Kapalı'}`} highlighted={autoPlayNext} onPress={() => {const next=!autoPlayNext;setAutoPlayNext(next);autoNextRef.current=next;void storage.setItem(AUTO_NEXT_KEY+activeProfile.id,next);}} />}
 
                 <GridBtn testID="player-audiodelay-btn" icon="git-compare" label="Senkron" onPress={() => setSheet("audiodelay")} />
                 {(isSynthetic || isSeekable) && (
@@ -5562,6 +5665,27 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.7)",
   },
   errorText: { color: "#fff", fontSize: FONT.size.base, textAlign: "center" },
+  audioModeWrap: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingHorizontal: 24,
+    backgroundColor: "#000",
+  },
+  audioModeArt: {
+    width: 220,
+    height: 220,
+    borderRadius: 18,
+    borderWidth: 2,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  audioModeTitle: { color: "#fff", fontSize: 20, fontWeight: "800", textAlign: "center", maxWidth: 640 },
+  audioModeSub: { color: "rgba(255,255,255,0.72)", fontSize: 13 },
+  audioModeNext: { color: "rgba(255,255,255,0.55)", fontSize: 12, maxWidth: 640 },
   recoveryBanner: {
     position: "absolute", top: "46%", alignSelf: "center", maxWidth: "86%",
     flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16,

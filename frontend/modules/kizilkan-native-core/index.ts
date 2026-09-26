@@ -55,6 +55,22 @@ export type DatabaseMaintenanceResult = {
   checkpoint?: Record<string, any>; before?: DatabaseHealth; after?: DatabaseHealth;
 };
 
+/** v18.1.0 — yerel medya (SAF) liste öğesi. */
+export type LocalMediaEntry = {
+  uri: string;
+  name: string;
+  kind: "dir" | "video" | "audio";
+  mime: string;
+  ext: string;
+  size: number;
+  modified: number;
+};
+export type LocalMediaListing = { ok: boolean; entries: LocalMediaEntry[]; total?: number; skipped?: number; elapsedMs: number; error?: string };
+export type LocalMediaInfo = {
+  ok: boolean; durationMs?: number; hasVideo?: boolean; hasAudio?: boolean; title?: string; artist?: string; album?: string;
+  width?: number; height?: number; bitrate?: number; artPath?: string; elapsedMs?: number; error?: string;
+};
+
 export type NativeQueryPage<T = any> = {
   items: T[];
   offset: number;
@@ -194,6 +210,16 @@ export const KizilkanNativeCore = {
   getLiveTimeshiftStatus: async (sessionId: string): Promise<Record<string, any> | null> => native ? native.getLiveTimeshiftStatus(sessionId) : null,
   stopLiveTimeshift: async (sessionId: string): Promise<boolean> => native ? !!(await native.stopLiveTimeshift(sessionId)) : false,
   stopAllLiveTimeshift: async (): Promise<number> => native ? Number(await native.stopAllLiveTimeshift()) : 0,
+  /** v18.1.0: SAF klasörünün çocukları (yalnız klasör + ses/video) tek native sorguda. */
+  listLocalMediaChildren: async (uri: string): Promise<LocalMediaListing | null> => {
+    if (!native?.listLocalMediaChildrenJson) return null;
+    const raw = await native.listLocalMediaChildrenJson(uri);
+    try { return JSON.parse(String(raw || "{}")) as LocalMediaListing; } catch { return { ok: false, error: "JSON_PARSE", entries: [], elapsedMs: 0 }; }
+  },
+  /** v18.1.0: süre/etiket/kapak (kapak önbellekte JPEG yolu olarak döner). */
+  getLocalMediaInfo: async (uri: string): Promise<LocalMediaInfo | null> =>
+    native?.getLocalMediaInfo ? ((await native.getLocalMediaInfo(uri)) as LocalMediaInfo) : null,
+  clearLocalMediaArtCache: async (): Promise<number> => native?.clearLocalMediaArtCache ? Number(await native.clearLocalMediaArtCache()) : 0,
   fetchAndCacheEpg: async (url: string, playlistId: string, userAgent: string): Promise<{count:number; native?:boolean} | null> => native ? native.fetchAndCacheEpg(url, playlistId, userAgent) : null,
   getEpgNowNext: async (playlistId: string, channelIds: string[], nowSec: number): Promise<Record<string, any>> => native ? native.getEpgNowNext(playlistId, channelIds, Math.floor(nowSec)) : {},
   getEpgChannelPrograms: async (playlistId: string, channelId: string): Promise<any[]> => native ? native.getEpgChannelPrograms(playlistId, channelId) : [],
