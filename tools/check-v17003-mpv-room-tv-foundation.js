@@ -37,7 +37,7 @@ ok(settings.includes('autoFocus={tvLayout === opt.v}'),'TV layout settings focus
 const focusBtn=read('frontend/src/components/FocusButton.tsx');
 ok(focusBtn.includes('React.forwardRef')&&focusBtn.includes('ref={ref}')&&focusBtn.includes('FocusButton.displayName'),'FocusButton forwards native ref');
 const focusMem=read('frontend/src/store/TvFocusMemoryContext.tsx');
-ok(focusMem.includes('requestRestore: (scope?: string, key?: string)')&&focusMem.includes('requestedKey'),'focus memory supports exact stable-key restore');
+ok((focusMem.includes('requestRestore: (scope?: string, key?: string)')||focusMem.includes('requestRestore: (scope?: string, key?: string, source?: string)'))&&focusMem.includes('requestedKey'),'focus memory supports exact stable-key restore');
 const tv=read('frontend/app/tv-home.tsx');
 ok(tv.includes('<TvFocusScope scope="tv-home">')&&tv.includes('focusKey={`tv-home:section:${sec.key}`}')&&tv.includes('focusKey={`tv-home:live:${item.id}`}'),'TV guide has stable scoped focus identities');
 ok(tv.includes('resolveGenerationRef')&&tv.includes('TV_PREVIEW_RESOLVE_FAILED'),'TV preview rejects stale async stream resolutions');

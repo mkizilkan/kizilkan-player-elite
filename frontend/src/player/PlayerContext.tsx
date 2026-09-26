@@ -44,10 +44,18 @@ function navigationForItem(nav: PlayerNavigationContext | undefined, id: string,
   // v17.10.0: Player içinde zap/sonraki içerik değişince geri dönüş hedefi ilk
   // açılan öğede kalmasın. Library ve TV-home stable key sözleşmesi burada tek
   // merkezde güncellenir. Detail/search gibi özel origin'lerin kendi key'i korunur.
-  if (nav.origin === "library" && (kind === "live" || kind === "vod" || kind === "series")) {
-    next.focusKey = `library:${kind}:${id}`;
-  } else if (nav.origin === "tv-home" && (kind === "live" || kind === "vod" || kind === "series")) {
-    next.focusKey = `tv-home:${kind}:${id}`;
+  //
+  // v18.0.0 — LİSTE KİMLİĞİNE ÇEVİRME:
+  // • Film zap'ı "vodplay-<filmId>" sentetik kimliğiyle gelir; listede bu kimlik
+  //   yoktur → önek atılır, listedeki film kartına dönülür.
+  // • Dizi zap'ı BÖLÜM kimliğiyle gelir; listede dizi kartı vardır, bölüm yoktur →
+  //   dönüş hedefi açılan DİZİ olarak korunur (üzerine yazılmaz).
+  if (kind === "series") return next;
+  const listId = kind === "vod" && id.startsWith("vodplay-") ? id.slice("vodplay-".length) : id;
+  if (nav.origin === "library" && (kind === "live" || kind === "vod")) {
+    next.focusKey = `library:${kind}:${listId}`;
+  } else if (nav.origin === "tv-home" && (kind === "live" || kind === "vod")) {
+    next.focusKey = `tv-home:${kind}:${listId}`;
   }
   return next;
 }

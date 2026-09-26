@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
@@ -117,6 +118,54 @@ internal class LiveTimeshiftManager(private val context: Context) {
     @Volatile var server: ServerSocket? = null
     @Volatile var port: Int = 0
 
+    // v18.0.0 — TAKILMA TEŞHİS TELEMETRİSİ (yalnız ölçüm; kayıt/servis davranışı değişmez)
+    // Segment üretimi (TS ve HLS ortak, addSegment'te sayılır)
+    val ingestBytes = AtomicLong(0L)
+    @Volatile var producedSegmentCount = 0L
+    @Volatile var firstSegmentSec = -1.0
+    @Volatile var segMinSec = -1.0
+    @Volatile var segMaxSec = 0.0
+    @Volatile var segSumSec = 0.0
+    // TS: sağlayıcıdan okuma beklemeleri (read() çağrısının bloklandığı süre)
+    @Volatile var readGapMaxMs = 0L
+    @Volatile var readGapsOver1s = 0L
+    // TS: videonun kendi saati (PCR) ile ölçülen süre vs duvar saati ile yazılan süre
+    @Volatile var pcrSamples = 0L
+    @Volatile var pcrMediaSumSec = 0.0
+    @Volatile var pcrWallSumSec = 0.0
+    @Volatile var pcrMaxDriftSec = 0.0
+    @Volatile var pcrDiscontinuities = 0L
+    // HLS: segment indirme süresi (segment süresinden uzunsa gerçek zamandan yavaş)
+    @Volatile var hlsDownloadMaxMs = 0L
+    @Volatile var hlsSlowDownloads = 0L
+    @Volatile var playlistFetchFailures = 0L
+    // Yerel sunucu: oynatıcının ne istediği
+    val playlistRequests = AtomicLong(0L)
+    val segmentRequests = AtomicLong(0L)
+    val segmentNotFoundPruned = AtomicLong(0L)
+    val segmentNotFoundAhead = AtomicLong(0L)
+    @Volatile var lastPlaylistRequestAtMs = 0L
+    @Volatile var lastRequestedSeq = -1L
+    @Volatile var lastRequestedBehind = -1L
+    @Volatile var stoppedAtMs = 0L
+
+    fun noteReadWait(waitMs: Long) {
+      if (waitMs > readGapMaxMs) readGapMaxMs = waitMs
+      if (waitMs >= 1_000L) readGapsOver1s += 1
+    }
+
+    fun notePcrSample(prevFirstPcr: Long, nextFirstPcr: Long, wallSec: Double) {
+      var delta = nextFirstPcr - prevFirstPcr
+      if (delta < 0L) delta += (1L shl 33)
+      val mediaSec = delta / 90_000.0
+      if (mediaSec <= 0.0 || mediaSec > 30.0) { pcrDiscontinuities += 1; return }
+      pcrSamples += 1
+      pcrMediaSumSec += mediaSec
+      pcrWallSumSec += wallSec
+      val drift = abs(mediaSec - wallSec)
+      if (drift > pcrMaxDriftSec) pcrMaxDriftSec = drift
+    }
+
     init {
       root.deleteRecursively()
       root.mkdirs()
@@ -162,6 +211,39 @@ internal class LiveTimeshiftManager(private val context: Context) {
         "startedAtMs" to startedAtMs,
         "lastSegmentAtMs" to lastSegmentAtMs,
         "error" to error,
+        // v18.0.0 telemetri
+        "ingestBytes" to ingestBytes.get(),
+        "ingestKbps" to run {
+          val endMs = if (stoppedAtMs > 0L) stoppedAtMs else System.currentTimeMillis()
+          val sec = ((endMs - startedAtMs).coerceAtLeast(1L)) / 1000.0
+          (ingestBytes.get() * 8.0 / 1000.0) / sec
+        },
+        "producedSegments" to producedSegmentCount,
+        "firstSegmentSec" to firstSegmentSec,
+        "segMinSec" to segMinSec,
+        "segMaxSec" to segMaxSec,
+        "segAvgSec" to (if (producedSegmentCount > 0L) segSumSec / producedSegmentCount else 0.0),
+        "readGapMaxMs" to readGapMaxMs,
+        "readGapsOver1s" to readGapsOver1s,
+        "pcrSamples" to pcrSamples,
+        "pcrMediaSumSec" to pcrMediaSumSec,
+        "pcrWallSumSec" to pcrWallSumSec,
+        "pcrMaxDriftSec" to pcrMaxDriftSec,
+        "pcrDiscontinuities" to pcrDiscontinuities,
+        "hlsDownloadMaxMs" to hlsDownloadMaxMs,
+        "hlsSlowDownloads" to hlsSlowDownloads,
+        "playlistFetchFailures" to playlistFetchFailures,
+        "playlistRequests" to playlistRequests.get(),
+        "segmentRequests" to segmentRequests.get(),
+        "segmentNotFoundPruned" to segmentNotFoundPruned.get(),
+        "segmentNotFoundAhead" to segmentNotFoundAhead.get(),
+        "lastPlaylistRequestAgeMs" to (if (lastPlaylistRequestAtMs > 0L) System.currentTimeMillis() - lastPlaylistRequestAtMs else -1L),
+        "lastRequestedSeq" to lastRequestedSeq,
+        "lastRequestedBehindSegments" to lastRequestedBehind,
+        "oldestSeq" to (snapshot.firstOrNull()?.seq ?: -1L),
+        "newestSeq" to (snapshot.lastOrNull()?.seq ?: -1L),
+        "lastSegmentAgeMs" to (if (lastSegmentAtMs > 0L) System.currentTimeMillis() - lastSegmentAtMs else -1L),
+        "stoppedAtMs" to stoppedAtMs,
       )
     }
 
@@ -203,6 +285,8 @@ internal class LiveTimeshiftManager(private val context: Context) {
         val path = rawPath.substringBefore('?')
         when {
           path == "/" || path == "/playlist.m3u8" -> {
+            playlistRequests.incrementAndGet()
+            lastPlaylistRequestAtMs = System.currentTimeMillis()
             if (!ready) {
               writeTextResponse(out, 503, "text/plain", if (error.isNotBlank()) error else "Timeshift preparing", method == "HEAD")
             } else {
@@ -211,9 +295,23 @@ internal class LiveTimeshiftManager(private val context: Context) {
           }
           path.startsWith("/segment/") -> {
             val seq = path.substringAfterLast('/').substringBefore('.').toLongOrNull()
-            val seg = synchronized(lock) { segments.firstOrNull { it.seq == seq } }
-            if (seg == null || !seg.file.exists()) writeTextResponse(out, 404, "text/plain", "Not Found", method == "HEAD")
-            else writeFileResponse(out, seg.file, contentTypeFor(seg.file), rangeHeader, method == "HEAD")
+            segmentRequests.incrementAndGet()
+            var newestSeq = -1L
+            val seg = synchronized(lock) {
+              newestSeq = segments.peekLast()?.seq ?: -1L
+              segments.firstOrNull { it.seq == seq }
+            }
+            if (seg == null || !seg.file.exists()) {
+              // v18.0.0: 404 sebebi — oynatıcı henüz üretilmemiş (ileri) mi yoksa
+              // pencereden silinmiş (geri) segment mi istedi?
+              if (seq != null && newestSeq >= 0L && seq > newestSeq) segmentNotFoundAhead.incrementAndGet()
+              else segmentNotFoundPruned.incrementAndGet()
+              writeTextResponse(out, 404, "text/plain", "Not Found", method == "HEAD")
+            } else {
+              lastRequestedSeq = seg.seq
+              lastRequestedBehind = if (newestSeq >= 0L) newestSeq - seg.seq else -1L
+              writeFileResponse(out, seg.file, contentTypeFor(seg.file), rangeHeader, method == "HEAD")
+            }
           }
           path.startsWith("/asset/") -> {
             val key = path.substringAfter("/asset/").substringBefore('/')
@@ -335,7 +433,11 @@ internal class LiveTimeshiftManager(private val context: Context) {
               val ext = extensionFromUrl(spec.uri, "ts")
               val seq = localSeq.getAndIncrement()
               val file = File(root, "seg-$seq.$ext")
+              val dlStart = SystemClock.elapsedRealtime()
               downloadToFile(spec.uri, file, spec.byteRange)
+              val dlMs = SystemClock.elapsedRealtime() - dlStart
+              if (dlMs > hlsDownloadMaxMs) hlsDownloadMaxMs = dlMs
+              if (spec.duration > 0.0 && dlMs > (spec.duration * 1000.0).toLong()) hlsSlowDownloads += 1
               addSegment(Segment(seq, file, spec.duration, System.currentTimeMillis(), spec.discontinuity, localKey, localMap))
               highestUpstreamSeq = max(highestUpstreamSeq, spec.upstreamSeq)
             } catch (t: Throwable) {
@@ -351,6 +453,7 @@ internal class LiveTimeshiftManager(private val context: Context) {
         } catch (t: Throwable) {
           if (!running) break
           consecutivePlaylistFailures += 1
+          playlistFetchFailures += 1
           if (segments.isEmpty() || consecutivePlaylistFailures >= 4 || t.message == "HLS_VARIANT_UNSUPPORTED" || t.message == "HLS_ENDLIST_NOT_LIVE") throw t
           Thread.sleep((500L * consecutivePlaylistFailures).coerceAtMost(2_000L))
         }
@@ -367,6 +470,18 @@ internal class LiveTimeshiftManager(private val context: Context) {
       var currentSeq = -1L
       var segmentStartedElapsed = 0L
       var payloadBytes = 0L
+      // v18.0.0 telemetri: segment başındaki ilk PCR; bir önceki segmentin
+      // gerçek (video saati) süresi = bu segmentin ilk PCR'ı − öncekinin ilk PCR'ı.
+      var pcrPid = -1
+      var segFirstPcr = -1L
+      var prevSegFirstPcr = -1L
+      var prevSegWallSec = 0.0
+      fun timedRead(buf: ByteArray): Int {
+        val t0 = SystemClock.elapsedRealtime()
+        val n = input.read(buf)
+        noteReadWait(SystemClock.elapsedRealtime() - t0)
+        return n
+      }
 
       fun startSegment(nowElapsed: Long) {
         currentSeq = localSeq.getAndIncrement()
@@ -374,6 +489,7 @@ internal class LiveTimeshiftManager(private val context: Context) {
         out = FileOutputStream(currentFile!!)
         segmentStartedElapsed = nowElapsed
         payloadBytes = 0L
+        segFirstPcr = -1L
         patPacket?.let { out?.write(it); payloadBytes += it.size }
         pmtPacket?.let { out?.write(it); payloadBytes += it.size }
       }
@@ -388,21 +504,26 @@ internal class LiveTimeshiftManager(private val context: Context) {
         if (file.length() >= TS_PACKET * 10L) {
           addSegment(Segment(currentSeq, file, elapsed / 1000.0, System.currentTimeMillis()))
           producedSegments++
-        } else file.delete()
+          prevSegFirstPcr = segFirstPcr
+          prevSegWallSec = elapsed / 1000.0
+        } else {
+          file.delete()
+          prevSegFirstPcr = -1L
+        }
         currentFile = null
       }
 
       val readBuf = ByteArray(128 * 1024)
       while (running) {
         if (carry.size < TS_PACKET * 4) {
-          val n = input.read(readBuf)
+          val n = timedRead(readBuf)
           if (n <= 0) break
           carry += readBuf.copyOf(n)
         }
         val sync = findTsSync(carry)
         if (sync < 0) {
           carry = if (carry.size > TS_PACKET * 3) carry.takeLast(TS_PACKET * 3).toByteArray() else carry
-          val n = input.read(readBuf)
+          val n = timedRead(readBuf)
           if (n <= 0) break
           carry += readBuf.copyOf(n)
           continue
@@ -421,6 +542,15 @@ internal class LiveTimeshiftManager(private val context: Context) {
             parsePmtPid(packet)?.let { pmtPid = it }
           } else if (pid == pmtPid && pmtPid >= 0) {
             pmtPacket = packet
+          }
+          val pcr = readPcr(packet)
+          if (pcr >= 0L && (pcrPid < 0 || pid == pcrPid)) {
+            if (pcrPid < 0) pcrPid = pid
+            if (segFirstPcr < 0L) {
+              segFirstPcr = pcr
+              if (prevSegFirstPcr >= 0L && prevSegWallSec > 0.0) notePcrSample(prevSegFirstPcr, pcr, prevSegWallSec)
+              prevSegFirstPcr = -1L
+            }
           }
           out?.write(packet)
           payloadBytes += packet.size
@@ -443,7 +573,14 @@ internal class LiveTimeshiftManager(private val context: Context) {
     private fun addSegment(segment: Segment) {
       synchronized(lock) {
         segments.addLast(segment)
-        totalBytes += segment.file.length()
+        val segBytes = segment.file.length()
+        totalBytes += segBytes
+        ingestBytes.addAndGet(segBytes)
+        producedSegmentCount += 1
+        if (firstSegmentSec < 0.0) firstSegmentSec = segment.duration
+        if (segMinSec < 0.0 || segment.duration < segMinSec) segMinSec = segment.duration
+        if (segment.duration > segMaxSec) segMaxSec = segment.duration
+        segSumSec += segment.duration
         lastSegmentAtMs = segment.createdAtMs
         pruneLocked()
         if (!ready && segments.isNotEmpty()) {
@@ -604,6 +741,15 @@ internal class LiveTimeshiftManager(private val context: Context) {
 
   private val sessions = ConcurrentHashMap<String, Session>()
 
+  /**
+   * v18.0.0 — Durdurulan oturumun SON istatistiği. JS, tek-bağlantı kuralı
+   * gereği kaydediciyi hiç bekletmeden durdurur; özet (SESSION_SUMMARY) için
+   * istatistik durdurmadan SONRA buradan okunur. En fazla 8 kayıt tutulur.
+   */
+  private val finishedStats = object : LinkedHashMap<String, Map<String, Any>>(16, 0.75f, false) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Map<String, Any>>?): Boolean = size > 8
+  }
+
   init {
     // Previous process death cannot leave a hidden cache forever. Active files
     // exist only in this manager instance, so startup cleanup is safe.
@@ -627,13 +773,16 @@ internal class LiveTimeshiftManager(private val context: Context) {
     return session.status()
   }
 
-  fun status(id: String): Map<String, Any> = sessions[id]?.status() ?: mapOf(
-    "sessionId" to id, "ready" to false, "running" to false, "localUrl" to "", "error" to "NOT_FOUND",
-  )
+  fun status(id: String): Map<String, Any> = sessions[id]?.status()
+    ?: synchronized(finishedStats) { finishedStats[id] }
+    ?: mapOf("sessionId" to id, "ready" to false, "running" to false, "localUrl" to "", "error" to "NOT_FOUND")
 
   fun stop(id: String): Boolean {
     val s = sessions.remove(id) ?: return false
+    s.stoppedAtMs = System.currentTimeMillis()
     s.stop()
+    val finalStats = LinkedHashMap(s.status()).apply { put("finished", true) }
+    synchronized(finishedStats) { finishedStats[id] = finalStats }
     return true
   }
 
@@ -648,6 +797,22 @@ internal class LiveTimeshiftManager(private val context: Context) {
     val u = url.lowercase(Locale.ROOT)
     val c = contentType.lowercase(Locale.ROOT)
     return u.substringBefore('?').endsWith(".m3u8") || c.contains("mpegurl") || c.contains("vnd.apple.mpegurl")
+  }
+
+  /** v18.0.0: TS adaptation field içindeki PCR tabanı (90 kHz); yoksa -1. */
+  private fun readPcr(p: ByteArray): Long {
+    if (p.size < 11) return -1L
+    val afc = (p[3].toInt() shr 4) and 0x3
+    if (afc != 2 && afc != 3) return -1L
+    val afLen = p[4].toInt() and 0xFF
+    if (afLen < 7) return -1L
+    val flags = p[5].toInt() and 0xFF
+    if ((flags and 0x10) == 0) return -1L
+    return ((p[6].toLong() and 0xFF) shl 25) or
+      ((p[7].toLong() and 0xFF) shl 17) or
+      ((p[8].toLong() and 0xFF) shl 9) or
+      ((p[9].toLong() and 0xFF) shl 1) or
+      ((p[10].toLong() and 0xFF) shr 7)
   }
 
   private fun findTsSync(bytes: ByteArray): Int {

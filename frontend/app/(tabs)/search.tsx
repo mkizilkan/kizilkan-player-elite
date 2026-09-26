@@ -3,7 +3,7 @@ import {
   View, Text, StyleSheet, TextInput, FlatList, TouchableOpacity, ScrollView, Image,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
@@ -27,6 +27,20 @@ export default function SearchTab() {
   const { colors } = useTheme();
   const { activePlaylist, playlists, setActivePlaylist, toggleFavorite, isFavorite, addToRecent, favorites, recent, ensureHeavyLoaded } = usePlaylists();
   const returnFocus=useTvFocusMemory("search"); const resultListRef=useRef<FlatList<any>>(null); const resultLayouts=useRef(new Map<string,{y:number;height:number}>());
+
+  /**
+   * v18.0.0 — DETAYDAN DÖNÜŞ: detay ayrı route; kapanınca konum geri yüklemesi
+   * istenir. TV'de geri yükleme isteği hedef odak alınca kapanır (erken silme yok).
+   */
+  const detailReturnPendingRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!detailReturnPendingRef.current) return;
+      detailReturnPendingRef.current = false;
+      const t = setTimeout(() => returnFocus.requestRestore(undefined, undefined, "detail-return"), 60);
+      return () => clearTimeout(t);
+    }, [returnFocus.requestRestore])
+  );
 
   // v15.2.4: Android'de arama Room/SQLite üzerinde yapılır; bütün katalogu
   // JS/Hermes belleğine hydrate etme. Web/legacy fallback eski yolu korur.
@@ -211,7 +225,7 @@ export default function SearchTab() {
   }, [nativeSeriesResults, seriesItems, debouncedQ, scope, preFilter]);
 
   const totalResults = liveResults.length + vodResults.length + seriesResults.length;
-  useEffect(()=>{const req=returnFocus.restoreRequest;if(!req)return;const layout=resultLayouts.current.get(req.key);if(!layout)return;const t=setTimeout(()=>{resultListRef.current?.scrollToOffset({offset:Math.max(0,layout.y-260+layout.height/2),animated:false});setTimeout(()=>returnFocus.clearRestore(req.nonce),300)},80);return()=>clearTimeout(t)},[returnFocus.restoreRequest?.nonce,totalResults]);
+  useEffect(()=>{const req=returnFocus.restoreRequest;if(!req)return;const layout=resultLayouts.current.get(req.key);if(!layout)return;const t=setTimeout(()=>{resultListRef.current?.scrollToOffset({offset:Math.max(0,layout.y-260+layout.height/2),animated:false});if(!returnFocus.isTv)setTimeout(()=>returnFocus.clearRestore(req.nonce,"centered"),300)},80);return()=>clearTimeout(t)},[returnFocus.restoreRequest?.nonce,totalResults]);
 
   /**
    * v17.8.0 — Başka listeden gelen sonuca dokunulduğunda ÖNCE o listeye geçilir.
@@ -244,6 +258,8 @@ export default function SearchTab() {
       return;
     }
     pushSearch(q);
+    returnFocus.remember(`search:${type}:${item.id}`);
+    detailReturnPendingRef.current = true;
     router.push({ pathname: "/detail", params: { type, id: item.id, navOrigin: "search", navSearch: debouncedQ, focusKey: `search:${type}:${item.id}` } });
   };
 

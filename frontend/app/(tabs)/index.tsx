@@ -14,7 +14,7 @@ import {
   InteractionManager,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
@@ -89,6 +89,38 @@ function ClassicLiveTvScreen() {
   // TV: odaklanan satır her zaman ekranda kalsın (v7.2.0)
   const { listRef, onItemFocus, onScrollToIndexFailed, centerIndex } = useFocusScroll<any>();
   const returnFocus = useTvFocusMemory("library");
+  /** v18.0.0: aynı geri yükleme isteği için tekrar ortalama / Room sorgusu yapılmasın. */
+  const liveRestoreSignatureRef = useRef("");
+  const nativeWindowNonceRef = useRef(-1);
+  /**
+   * v18.0.0 — DETAYDAN DÖNÜŞ: Film/dizi detay ekranı ayrı bir route; kapanınca
+   * eskiden kimse geri yükleme istemiyordu (yalnız PlayerHost istiyordu).
+   * Açılışta hedef hatırlanır, ekran odağı geri gelince istenir. Detay içinden
+   * oynatıcı açılıp zap yapıldıysa PlayerHost hafızayı yeni öğeye güncellemiş olur.
+   */
+  const detailReturnPendingRef = useRef(false);
+  const markDetailReturn = useCallback((key: string) => {
+    returnFocus.remember(key);
+    detailReturnPendingRef.current = true;
+  }, [returnFocus.remember]);
+  useFocusEffect(
+    useCallback(() => {
+      if (!detailReturnPendingRef.current) return;
+      detailReturnPendingRef.current = false;
+      const t = setTimeout(() => returnFocus.requestRestore("library", undefined, "detail-return"), 60);
+      return () => clearTimeout(t);
+    }, [returnFocus.requestRestore])
+  );
+  /**
+   * v18.0.0 — SEKME DÜĞMESİ ODAK YARIŞI: seg-live/vod/series düğmeleri
+   * hasTVPreferredFocus'u sürekli açık tutuyordu; geri dönüşte (özellikle
+   * sekme değişimi gerektiğinde) odak hedef satır yerine düğmeye kaçıyordu.
+   * Geri yükleme isteği gelince tercih KİLİTLENİR; kullanıcı bir sekme
+   * düğmesine basınca açılır (prop'un true'ya geri dönüp odak çalmaması için
+   * istek bitince otomatik açılmaz).
+   */
+  const [segFocusHold, setSegFocusHold] = useState(false);
+  useEffect(() => { if (returnFocus.restoreRequest) setSegFocusHold(true); }, [returnFocus.restoreRequest?.nonce]);
   const router = useRouter();
   const { colors } = useTheme();
   const { activePlaylist, playlists, toggleFavorite, isFavorite, addToRecent, updatePlaylist, ensureHeavyLoaded, nativeSummary,freshnessStatus, lastRefreshSummary, clearRefreshSummary} = usePlaylists();
@@ -141,6 +173,36 @@ function ClassicLiveTvScreen() {
     }
   };
   const [selectedCat, setSelectedCat] = useState<string>(ALL);
+  /**
+   * v18.0.0 — KATEGORİ ŞERİDİ ORTALAMA: yatay şeritte seçili kategori
+   * (yüzlerce kategoride) ekran dışında kalıyordu. Seçim değişince, şerit
+   * yeniden ölçülünce ve geri dönüşte seçili çip şeridin ortasına alınır.
+   * Odak taşınmaz; yalnız kaydırılır (D-pad akışı native kalır).
+   */
+  const chipScrollRef = useRef<ScrollView | null>(null);
+  const chipLayoutsRef = useRef(new Map<string, { x: number; w: number }>());
+  const chipViewportWRef = useRef(0);
+  const selectedCatRef = useRef(selectedCat);
+  selectedCatRef.current = selectedCat;
+  const chipCenteredForRef = useRef("");
+  const centerSelectedChip = useCallback((why: "select" | "layout" | "viewport" | "force") => {
+    const name = selectedCatRef.current;
+    const layout = chipLayoutsRef.current.get(name);
+    const viewportW = chipViewportWRef.current;
+    if (!layout || viewportW <= 0) return;
+    const signature = `${name}#${Math.round(layout.x)}#${Math.round(viewportW)}`;
+    if (why !== "force" && chipCenteredForRef.current === signature) return;
+    chipCenteredForRef.current = signature;
+    try {
+      chipScrollRef.current?.scrollTo({ x: Math.max(0, layout.x - (viewportW - layout.w) / 2), animated: why === "select" });
+    } catch { /* şerit henüz mount değil; onLayout tekrar çağırır */ }
+  }, []);
+  const onChipLayout = useCallback((name: string, x: number, w: number) => {
+    chipLayoutsRef.current.set(name, { x, w });
+    if (name === selectedCatRef.current) centerSelectedChip("layout");
+  }, [centerSelectedChip]);
+  useEffect(() => { centerSelectedChip("select"); }, [selectedCat, centerSelectedChip]);
+  useEffect(() => { if (returnFocus.restoreRequest) centerSelectedChip("force"); }, [returnFocus.restoreRequest?.nonce, centerSelectedChip]);
 
   /**
    * v15.2.1 Native Data Core / Room:
@@ -530,7 +592,7 @@ function ClassicLiveTvScreen() {
       list.push({
         icon: "refresh-circle",
         label: "Tekrar Oynat (baştan)",
-        onPress: () => { void (async () => { const navScopeKey = await resolveCurrentCustomNavScope(); router.push({ pathname: "/detail", params: { type: tab, id: item.id, restart: "1", navOrigin: "library", navGroup: selectedIsCustomGroup ? "__all__" : (selectedCat === ALL ? "__all__" : selectedCat), navScopeKey, focusKey: `library:${tab}:${item.id}` } }); })(); },
+        onPress: () => { void (async () => { const navScopeKey = await resolveCurrentCustomNavScope(); markDetailReturn(`library:${tab}:${item.id}`); router.push({ pathname: "/detail", params: { type: tab, id: item.id, restart: "1", navOrigin: "library", navGroup: selectedIsCustomGroup ? "__all__" : (selectedCat === ALL ? "__all__" : selectedCat), navScopeKey, focusKey: `library:${tab}:${item.id}` } }); })(); },
       });
     }
 
@@ -593,6 +655,7 @@ function ClassicLiveTvScreen() {
     }
     haptic.light();
     const navScopeKey = await resolveCurrentCustomNavScope();
+    markDetailReturn(`library:${tab}:${item.id}`);
     router.push({ pathname: "/detail", params: { type: tab, id: item.id, navOrigin: "library", navGroup: selectedIsCustomGroup ? "__all__" : (selectedCat === ALL ? "__all__" : selectedCat), navScopeKey, focusKey: `library:${tab}:${item.id}` } });
   };
 
@@ -763,18 +826,48 @@ function ClassicLiveTvScreen() {
     if (targetKind !== tab) { setTab(targetKind); return; }
     const loadedIndex = (filtered as any[]).findIndex(x => String(x?.id) === targetId);
     if (loadedIndex >= 0) {
-      if (targetKind === "live") centerIndex(loadedIndex, 6);
       // PosterGrid kendi explicit restoreKey'i ile VOD/Dizi'yi ortalar.
-      if (targetKind === "live") setTimeout(() => returnFocus.clearRestore(req.nonce), isTvLayout ? 420 : 220);
+      if (targetKind !== "live") return;
+      // v18.0.0: aynı istek için filtered her değiştiğinde yeniden ortalama yapma.
+      const signature = `${req.nonce}#${loadedIndex}`;
+      if (liveRestoreSignatureRef.current === signature) return;
+      liveRestoreSignatureRef.current = signature;
+      centerIndex(loadedIndex, {
+        onResult: r => {
+          void recordDiagnostic("navigation", "FOCUS_RESTORE_CENTER", {
+            surface: "library-live", key: req.key, index: loadedIndex, row: r.row, ok: r.ok,
+            attempts: r.attempts, elapsedMs: r.elapsedMs, reason: r.reason, isTv: isTvLayout,
+          }, { stage: "focus-restore", outcome: r.ok ? "centered" : "failed", durationMs: r.elapsedMs });
+          // v18.0.0: eskiden istek 220/420 ms'de siliniyordu; büyük listede satır
+          // daha geç mount olunca TV odağı kaçıyordu. TV'de satır odak alınca
+          // (focus memory) kapanır; telefonda ortalama bitince kapanır.
+          if (!isTvLayout) returnFocus.clearRestore(req.nonce, "centered");
+        },
+      });
       return;
     }
-    if (!KizilkanNativeCore.available || selectedIsCustomGroup) return;
+    if (selectedIsCustomGroup) {
+      void recordDiagnostic("navigation", "FOCUS_RESTORE_SKIP", { surface: "library", kind: targetKind, itemId: targetId, reason: "custom-group-target-not-loaded" }, { stage: "focus-restore", outcome: "skipped" });
+      return;
+    }
+    if (!KizilkanNativeCore.available) {
+      void recordDiagnostic("navigation", "FOCUS_RESTORE_SKIP", { surface: "library", kind: targetKind, itemId: targetId, reason: "target-not-in-list", loaded: (filtered as any[]).length }, { stage: "focus-restore", outcome: "skipped" });
+      return;
+    }
+    // Aynı istek için Room penceresini bir kez yükle (filtered değişince tekrar sorgulama).
+    if (nativeWindowNonceRef.current === req.nonce) return;
+    nativeWindowNonceRef.current = req.nonce;
     let cancelled = false;
+    let settled = false;
     (async () => {
       try {
         const group = selectedCat === ALL ? "__all__" : selectedCat;
         const pos = await KizilkanNativeCore.getPlaybackNeighbors(activePlaylist.id, targetKind, targetId, { group, search: "", wrap: false });
-        if (cancelled || !pos?.found) return;
+        if (cancelled) return;
+        if (!pos?.found) {
+          void recordDiagnostic("navigation", "FOCUS_RESTORE_SKIP", { surface: "library", kind: targetKind, itemId: targetId, group, reason: "not-found-in-room" }, { stage: "focus-restore", outcome: "skipped" });
+          return;
+        }
         const offset = Math.max(0, Number(pos.position || 0) - (targetKind === "live" ? 30 : 24));
         const page = await KizilkanNativeCore.queryItems<any>(activePlaylist.id, targetKind, { group, offset, limit: targetKind === "live" ? 80 : 72 });
         if (cancelled) return;
@@ -793,9 +886,13 @@ function ClassicLiveTvScreen() {
         void recordDiagnostic("navigation", "PLAYER_RETURN_WINDOW_LOADED", { playlistId: activePlaylist.id, kind: targetKind, itemId: targetId, position: pos.position, offset, returned: page.items?.length || 0 });
       } catch (e:any) {
         void recordDiagnostic("navigation", "PLAYER_RETURN_RESTORE_FAILED", { playlistId: activePlaylist.id, kind: targetKind, itemId: targetId, error: String(e?.message || e) });
+      } finally {
+        if (!cancelled) settled = true;
       }
     })();
-    return () => { cancelled = true; };
+    // Sorgu bitmeden effect yeniden çalışırsa (başka bağımlılık değişti) aynı
+    // istek için pencere yüklemesine yeniden izin ver; aksi hâlde hedef hiç gelmez.
+    return () => { cancelled = true; if (!settled && nativeWindowNonceRef.current === req.nonce) nativeWindowNonceRef.current = -1; };
   }, [returnFocus.restoreRequest?.nonce, activePlaylist?.id, tab, filtered, selectedCat, selectedIsCustomGroup, centerIndex, isTvLayout]);
 
   // v15.2.3 — EPG ISOLATION: kanal listesi EPG'yi ASLA beklemez. İlk görünür
@@ -886,9 +983,9 @@ function ClassicLiveTvScreen() {
         <View style={[styles.segment, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
           <FocusButton
             testID="seg-live"
-            onPress={() => { haptic.soft(); setTab("live"); setSelectedCat(ALL); }}
+            onPress={() => { haptic.soft(); setSegFocusHold(false); setTab("live"); setSelectedCat(ALL); }}
             focusable
-            hasTVPreferredFocus={tab === "live"}
+            hasTVPreferredFocus={!segFocusHold && tab === "live"}
             style={[styles.segmentItem, tab === "live" && { backgroundColor: colors.brandPrimary }]}
           >
             <Ionicons name="tv" size={18} color={tab === "live" ? colors.onBrandPrimary : colors.onSurfaceSecondary} />
@@ -898,9 +995,9 @@ function ClassicLiveTvScreen() {
           </FocusButton>
           <FocusButton
             testID="seg-vod"
-            onPress={() => { haptic.soft(); setTab("vod"); setSelectedCat(ALL); }}
+            onPress={() => { haptic.soft(); setSegFocusHold(false); setTab("vod"); setSelectedCat(ALL); }}
             focusable
-            hasTVPreferredFocus={tab === "vod"}
+            hasTVPreferredFocus={!segFocusHold && tab === "vod"}
             style={[styles.segmentItem, tab === "vod" && { backgroundColor: colors.brandPrimary }, !hasVod && styles.segmentDisabled]}
             disabled={!hasVod}
           >
@@ -911,9 +1008,9 @@ function ClassicLiveTvScreen() {
           </FocusButton>
           <FocusButton
             testID="seg-series"
-            onPress={() => { haptic.soft(); setTab("series"); setSelectedCat(ALL); }}
+            onPress={() => { haptic.soft(); setSegFocusHold(false); setTab("series"); setSelectedCat(ALL); }}
             focusable
-            hasTVPreferredFocus={tab === "series"}
+            hasTVPreferredFocus={!segFocusHold && tab === "series"}
             style={[styles.segmentItem, tab === "series" && { backgroundColor: colors.brandPrimary }, !hasSeries && styles.segmentDisabled]}
             disabled={!hasSeries}
           >
@@ -959,8 +1056,14 @@ function ClassicLiveTvScreen() {
             color={colors.onSurface}
           />
         </FocusButton>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-          <CategoryChip label={`Tümü (${nativeLivePaged ? liveCount : nativeLibraryPaged ? nativeLibraryTotal : currentList.length})`} active={selectedCat === ALL} onPress={() => setSelectedCat(ALL)} testID="chip-all" />
+        <ScrollView
+          ref={chipScrollRef}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.chipRow}
+          onLayout={e => { chipViewportWRef.current = e.nativeEvent.layout.width; centerSelectedChip("viewport"); }}
+        >
+          <CategoryChip label={`Tümü (${nativeLivePaged ? liveCount : nativeLibraryPaged ? nativeLibraryTotal : currentList.length})`} active={selectedCat === ALL} onPress={() => setSelectedCat(ALL)} testID="chip-all" onLayoutX={(x, w) => onChipLayout(ALL, x, w)} />
           {categories.map(cat => {
             const cnt = panelCategories.find(entry => entry.name === cat)?.count ?? 0;
             return (
@@ -970,6 +1073,7 @@ function ClassicLiveTvScreen() {
                 active={selectedCat === cat}
                 onPress={() => setSelectedCat(cat)}
                 testID={`chip-${cat}`}
+                onLayoutX={(x, w) => onChipLayout(cat, x, w)}
               />
             );
           })}
@@ -1130,7 +1234,7 @@ function ClassicLiveTvScreen() {
           focusKeyForItem={(item) => `library:${tab}:${item.id}`}
           focusScope="library"
           restoreKey={returnFocus.restoreRequest?.key || null}
-          onRestoreConsumed={() => { const req = returnFocus.restoreRequest; if (req) returnFocus.clearRestore(req.nonce); }}
+          onRestoreConsumed={() => { const req = returnFocus.restoreRequest; if (req) returnFocus.clearRestore(req.nonce, "centered"); }}
         />
       )}
 
@@ -1339,12 +1443,13 @@ function ClassicLiveTvScreen() {
   );
 }
 
-function CategoryChip({ label, active, onPress, testID }: { label: string; active: boolean; onPress: () => void; testID: string }) {
+function CategoryChip({ label, active, onPress, testID, onLayoutX }: { label: string; active: boolean; onPress: () => void; testID: string; onLayoutX?: (x: number, width: number) => void }) {
   const { colors } = useTheme();
   return (
     <FocusButton
       testID={testID}
       onPress={onPress}
+      onLayout={onLayoutX ? (e => onLayoutX(e.nativeEvent.layout.x, e.nativeEvent.layout.width)) : undefined}
       activeOpacity={0.75}
       focusable
       style={[

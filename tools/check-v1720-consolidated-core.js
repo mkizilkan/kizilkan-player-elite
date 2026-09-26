@@ -7,7 +7,7 @@ const core=read('frontend/modules/kizilkan-native-core/android/src/main/java/exp
 const dao=read('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/NativeDataDao.kt');
 const diag=read('frontend/src/utils/diagnostics.ts'); const screen=read('frontend/app/diagnostic.tsx'); const player=read('frontend/src/player/PlayerHost.tsx');
 const checks=[
- ['version 17.2.0+',/^17\.(?:[2-9]|[1-9]\d+)\./.test(pkg.version)&&pkg.version===app.expo.version&&app.expo.android.versionCode>=170200],
+ ['version 17.2.0+',(p=>p.length===3&&p.every(Number.isFinite)&&(p[0]>17||(p[0]===17&&p[1]>=2)))(String(pkg.version).split('.').map(Number))&&pkg.version===app.expo.version&&app.expo.android.versionCode>=170200],
  ['DB cleanup native preview/execute',/previewPlaylistContentCleanup/.test(core)&&/executePlaylistContentCleanup/.test(core)],
  ['DB cleanup transaction',/db\.runInTransaction/.test(core)],
  ['DB delete row counts',/fun deleteKind\([^)]*\): Int/.test(dao)&&/fun deletePlaylist\([^)]*\): Int/.test(dao)],

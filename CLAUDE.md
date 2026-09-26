@@ -122,6 +122,10 @@ node tools/denetle.js        # sonunda başarısız kapı olmamalı
   kullanma; Node ile listele, `execFileSync` ile çalıştır.
 - **OOM mesajlarını doğru oku:** `growth limit 402653184` = uygulamanın Java heap sınırı (~384 MB),
   cihaz RAM'i değil. `largeHeap` açık (`plugins/withLargeHeap.js`).
+- **`expo prebuild` package.json'u değiştirir:** `android`/`ios` betiklerini `expo run:*` yapar.
+  Derleme kontrolünden sonra `git diff frontend/package.json` ile bak, yalnız sürüm kalmalı.
+- **JAVA_HOME eskiyebilir:** JDK güncellenince sistem değişkeni eski klasörü gösterebilir.
+  Gradle için oturumda `$env:JAVA_HOME` ile kurulu JDK'yı ver; sistem ayarını değiştirme.
 - **Sessiz çıkış bırakma:** her `return` noktası bir sebep ile telemetri yazmalı; yoksa sorun
   logdan teşhis edilemiyor.
 
@@ -138,22 +142,28 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v17.10.4 RC1 — dal `v17.10.4-rc1-last-channel-per-playlist`)
+## 9. Mevcut durum (v18.0.0 RC1 — dal `v18.0.0-rc1-focus-restore-center`)
 
-Cihazda doğrulananlar: timeshift (duraklat/geri-ileri/canlıya dön), açılışta son kanal
-(profil + liste başına), OOM düzeltmesi, boş kabuk onarımı, combo + doğrudan DNS.
+v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md`.
+
+Cihazda doğrulananlar (v17.10.4'e kadar): timeshift (duraklat/geri-ileri/canlıya dön),
+açılışta son kanal (profil + liste başına), OOM düzeltmesi, boş kabuk onarımı, combo + doğrudan DNS.
+
+v18.0.0'da kodlanan, **cihazda henüz test edilmeyen**: odak/konum geri yükleme (oynatıcı ve
+detay dönüşü, ızgara satır düzeltmesi, kategori paneli/şerit ortalama), timeshift takılma
+telemetrisi (`LIVE_TIMESHIFT_HEALTH`, `LIVE_TIMESHIFT_SESSION_SUMMARY`, `LIVE_SESSION_STALL_SUMMARY`,
+zenginleştirilmiş `REBUFFER_*`), `FOCUS_RESTORE_*` olayları.
 
 **Açık konular (öncelik sırasıyla, hiçbiri onaysız kodlanmaz):**
-1. **Timeshift "Her zaman" modunda takılma (kullanıcı gözlemi, KANITLANMADI).** 26.09 logunda
-   timeshift oturumu yoktu. Şüphe: yerel HLS'in canlı ucunda oynarken önde ≤2 sn tampon var;
-   17.10.3'teki 0,5 sn ilk segment açılışta payı daraltmış olabilir. Önce telemetri
-   (oturumda seçili mod, timeshift sırasında takılma sayısı/süresi, kaydedicinin veri alım hızı),
-   sonra kanıta göre düzeltme.
-2. Media3 canlıda HTTP 401 alırken aynı adres MPV'de açılıyor (başlık/User-Agent farkı şüphesi).
-3. MAG dizi kataloğu ana thread'i kilitliyor (`mag:catalog-series`, ANR).
-4. Combo tarama sırasında ANR (`scan:panel-stream-v172`, 65 sn) — kök neden kanıtlanmadı.
-5. `iptv.ts` `xtGet` 60 sn zaman aşımı büyük katalog onarımını yarıda kesiyor.
-6. Room temizliği sonrası boş kabuk listeler (seçince onarım yapılıyor; toplu onarım yok).
+1. **Timeshift "Her zaman" modunda takılma (KANITLANMADI).** v18.0.0 telemetrisi eklendi;
+   kullanıcıdan "Her zaman" ve "Kapalı" ile aynı kanalda izleme logu bekleniyor. Şüpheler:
+   segment süresi duvar saatiyle yazılıyor (PCR kayması), canlı uçta ≤2 sn tampon, 0,5 sn ilk segment.
+2. **Yerel medya geliştirme + ses dosyası çalma** — kullanıcı istedi; plan sunuldu, onay bekliyor.
+3. Media3 canlıda HTTP 401 alırken aynı adres MPV'de açılıyor (başlık/User-Agent farkı şüphesi).
+4. MAG dizi kataloğu ana thread'i kilitliyor (`mag:catalog-series`, ANR).
+5. Combo tarama sırasında ANR (`scan:panel-stream-v172`, 65 sn) — kök neden kanıtlanmadı.
+6. `iptv.ts` `xtGet` 60 sn zaman aşımı büyük katalog onarımını yarıda kesiyor.
+7. Room temizliği sonrası boş kabuk listeler (seçince onarım yapılıyor; toplu onarım yok).
 
 ## 10. Nasıl çalışalım
 

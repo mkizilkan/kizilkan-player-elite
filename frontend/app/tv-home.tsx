@@ -159,7 +159,29 @@ export function TvHomeContent() {
   const sideScroll = useFocusScroll<SideItem>();
   const chanScroll = useFocusScroll<any>();
   const returnFocus = useTvFocusMemory("tv-home");
-  const vodGridRef = useRef<FlatList<any> | null>(null);
+  /**
+   * v18.0.0: afiş ızgarası da ortak ortalamayı kullanır (4 sütun → satır sırası).
+   * Eskiden öğe sırası verilip tek deneme yapılıyor, ölçülmemiş satırda hata
+   * sessizce yutuluyordu. onItemFocus ızgaraya BİLEREK bağlanmaz.
+   */
+  const vodScroll = useFocusScroll<any>();
+  const vodGridRef = vodScroll.listRef;
+  // Kararlı (useCallback) fonksiyonlar: effect bağımlılığında hook nesnesi kullanılmaz.
+  const centerChanIndex = chanScroll.centerIndex;
+  const centerVodIndex = vodScroll.centerIndex;
+  const centerSideIndex = sideScroll.centerIndex;
+  const restoreSignatureRef = useRef("");
+  const nativeWindowNonceRef = useRef(-1);
+  /** v18.0.0: film/dizi detayından dönüşte konum geri yüklemesi. */
+  const detailReturnPendingRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!detailReturnPendingRef.current) return;
+      detailReturnPendingRef.current = false;
+      const t = setTimeout(() => returnFocus.requestRestore("tv-home", undefined, "detail-return"), 60);
+      return () => clearTimeout(t);
+    }, [returnFocus.requestRestore])
+  );
 
   const multiPlaylist = playlists.length > 1;
 
@@ -355,20 +377,46 @@ export function TvHomeContent() {
     if (targetKind !== tab) { setTab(targetKind); return; }
     const idx = channels.findIndex((x:any) => String(x?.id) === targetId);
     if (idx >= 0) {
-      if (targetKind === "live") chanScroll.centerIndex(idx, 6);
-      else {
-        try { vodGridRef.current?.scrollToIndex({ index: idx, animated: false, viewPosition: 0.5 }); } catch {}
-      }
-      setTimeout(() => returnFocus.clearRestore(req.nonce), 500);
+      const signature = `${req.nonce}#${idx}`;
+      if (restoreSignatureRef.current === signature) return;
+      restoreSignatureRef.current = signature;
+      const isGrid = targetKind !== "live";
+      (isGrid ? centerVodIndex : centerChanIndex)(idx, {
+        numColumns: isGrid ? 4 : 1,
+        onResult: r => {
+          void recordDiagnostic("navigation", "FOCUS_RESTORE_CENTER", {
+            surface: isGrid ? "tv-home-grid" : "tv-home-live", key: req.key, index: idx, row: r.row, ok: r.ok,
+            attempts: r.attempts, elapsedMs: r.elapsedMs, reason: r.reason, isTv,
+          }, { stage: "focus-restore", outcome: r.ok ? "centered" : "failed", durationMs: r.elapsedMs });
+          // v18.0.0: eskiden istek 500 ms'de siliniyordu; hedef geç mount olursa
+          // odak kaçıyordu. TV'de hedef odak alınca kapanır (focus memory);
+          // dokunmatik cihazda ortalama bitince kapanır.
+          if (!isTv) returnFocus.clearRestore(req.nonce, "centered");
+        },
+      });
       return;
     }
-    if (!nativeMode || selectedCat === FAV) return;
+    if (selectedCat === FAV) {
+      void recordDiagnostic("navigation", "FOCUS_RESTORE_SKIP", { surface: "tv-home", kind: targetKind, itemId: targetId, reason: "favorites-target-not-loaded" }, { stage: "focus-restore", outcome: "skipped" });
+      return;
+    }
+    if (!nativeMode) {
+      void recordDiagnostic("navigation", "FOCUS_RESTORE_SKIP", { surface: "tv-home", kind: targetKind, itemId: targetId, reason: "target-not-in-list", loaded: channels.length }, { stage: "focus-restore", outcome: "skipped" });
+      return;
+    }
+    if (nativeWindowNonceRef.current === req.nonce) return;
+    nativeWindowNonceRef.current = req.nonce;
     let cancelled = false;
+    let settled = false;
     (async () => {
       try {
         const group = selectedCat === ALL ? "__all__" : selectedCat;
         const pos = await KizilkanNativeCore.getPlaybackNeighbors(activePlaylist.id, targetKind, targetId, { group, search: search.trim(), wrap: false });
-        if (cancelled || !pos?.found) return;
+        if (cancelled) return;
+        if (!pos?.found) {
+          void recordDiagnostic("navigation", "FOCUS_RESTORE_SKIP", { surface: "tv-home", kind: targetKind, itemId: targetId, group, reason: "not-found-in-room" }, { stage: "focus-restore", outcome: "skipped" });
+          return;
+        }
         const offset = Math.max(0, Number(pos.position || 0) - (targetKind === "live" ? 50 : 24));
         const page = await KizilkanNativeCore.queryItems<any>(activePlaylist.id, targetKind, { group, search: search.trim(), offset, limit: targetKind === "live" ? 120 : 80 });
         if (cancelled) return;
@@ -378,10 +426,23 @@ export function TvHomeContent() {
         void recordDiagnostic("navigation", "TV_HOME_RETURN_WINDOW_LOADED", { playlistId: activePlaylist.id, kind: targetKind, itemId: targetId, position: pos.position, offset, returned: page.items?.length || 0 });
       } catch (e:any) {
         void recordDiagnostic("navigation", "TV_HOME_RETURN_RESTORE_FAILED", { playlistId: activePlaylist.id, kind: targetKind, itemId: targetId, error: String(e?.message || e) });
+      } finally {
+        if (!cancelled) settled = true;
       }
     })();
-    return () => { cancelled = true; };
-  }, [returnFocus.restoreRequest?.nonce, activePlaylist?.id, tab, channels, nativeMode, selectedCat, search, chanScroll]);
+    return () => { cancelled = true; if (!settled && nativeWindowNonceRef.current === req.nonce) nativeWindowNonceRef.current = -1; };
+  }, [returnFocus.restoreRequest?.nonce, activePlaylist?.id, tab, channels, nativeMode, selectedCat, search, centerChanIndex, centerVodIndex, isTv]);
+
+  /**
+   * v18.0.0 — SOL SÜTUN (kategori) ORTALAMA: geri dönüşte seçili kategori
+   * satırı sol sütunun ortasına alınır (yalnız kaydırma; odak içerikte kalır).
+   */
+  useEffect(() => {
+    if (!returnFocus.restoreRequest) return;
+    const sideIdx = sideItems.findIndex(it => it.kind === "category" && it.name === selectedCat);
+    if (sideIdx < 0) return;
+    centerSideIndex(sideIdx, { attempts: 4 });
+  }, [returnFocus.restoreRequest?.nonce, sideItems, selectedCat, centerSideIndex]);
 
   const openItem = useCallback((item: any) => {
     void (async () => {
@@ -401,10 +462,12 @@ export function TvHomeContent() {
         addToRecent(item.id);
         router.push({ pathname: "/player", params: { id: item.id, navOrigin: "tv-home", navGroup, navSearch: selectedCat === FAV ? "" : search, navScopeKey, focusKey: `tv-home:${tab}:${item.id}` } });
       } else {
+        returnFocus.remember(`tv-home:${tab}:${item.id}`);
+        detailReturnPendingRef.current = true;
         router.push({ pathname: "/detail", params: { type: tab, id: item.id, navOrigin: "tv-home", navGroup, navSearch: selectedCat === FAV ? "" : search, navScopeKey, focusKey: `tv-home:${tab}:${item.id}` } });
       }
     })();
-  }, [tab, addToRecent, router, selectedCat, activePlaylist?.id, search, channels]);
+  }, [tab, addToRecent, router, selectedCat, activePlaylist?.id, search, channels, returnFocus.remember]);
 
   /**
    * ══════════════════════════════════════════════════════════════════════
@@ -646,6 +709,7 @@ export function TvHomeContent() {
             /* AFİŞ IZGARASI — film/dizi (3+4 birleşik alanda) */
             <FlatList
               ref={vodGridRef}
+              onScrollToIndexFailed={vodScroll.onScrollToIndexFailed}
               data={channels}
               keyExtractor={(it: any) => String(it.id)}
               numColumns={4}

@@ -56,6 +56,13 @@ function ChannelRowBase({ channel, onPress, onToggleFavorite, onLongPress, onFoc
   const { isTv: isTvLayout } = useTv();
   const focusMemory = useTvFocusMemory(focusScope);
   const focusBinding = focusMemory.bind(focusKey || `channel-row-${channel.id}`);
+  // v18.0.0: geri yükleme hedefi ZATEN odaktaysa onFocus tekrar gelmez; isteği
+  // burada tamamla (aksi hâlde tercihli odak 4 sn açık kalır, log "timeout" der).
+  const restoreTargetAlreadyFocused = focusBinding.hasTVPreferredFocus && isFocused;
+  React.useEffect(() => {
+    if (restoreTargetAlreadyFocused) focusBinding.rememberFocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restoreTargetAlreadyFocused]);
   const longPressedRef = React.useRef(0);
   /**
    * EPG GÖSTERİMİ (v8.9.1 — kullanıcı uyarısı üzerine düzeltildi)

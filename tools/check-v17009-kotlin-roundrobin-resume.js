@@ -5,7 +5,7 @@ const pkg=JSON.parse(rd('frontend/package.json')), app=JSON.parse(rd('frontend/a
 const svc=rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt');
 const gate8=rd('tools/check-v17008-conservative-checkpoint.js');
 const semver=v=>String(v||'').split('.').map(Number); const atLeast=(v,a,b,c)=>{const x=semver(v);return (x[0]>a)||(x[0]===a&&x[1]>b)||(x[0]===a&&x[1]===b&&x[2]>=c)};
-r(atLeast(pkg.version,17,0,9)&&atLeast(app.expo.version,17,0,9)&&atLeast(app.expo.ios.buildNumber,17,0,9)&&app.expo.android.versionCode>=170009&&/^GPT ELITE v17\.(?:0\.(?:9|[1-9][0-9]+)|[1-9][0-9]*\.\d+) RC1$/.test(app.expo.extra?.kizilkanReleaseLabel||''),'v17.0.9+ sürüm zinciri');
+r(atLeast(pkg.version,17,0,9)&&atLeast(app.expo.version,17,0,9)&&atLeast(app.expo.ios.buildNumber,17,0,9)&&app.expo.android.versionCode>=170009&&(String(app.expo.extra?.kizilkanReleaseLabel||'')===`GPT ELITE v${pkg.version} RC1`),'v17.0.9+ sürüm zinciri');
 r(svc.includes('minOf(32, total)')&&!svc.includes('minOf(32L, total).toInt(); val pool'),'bulk workerCount Int/Long compile uyumu');
 r(svc.includes('if (total == 0L)')&&svc.includes('if (ordinal == 0L)')&&svc.includes('done % 500L == 0L'),'unified Long literal compile uyumu');
 r(!svc.includes('offsets[ai]'),'eski unresolved offsets kalıntısı yok');

@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, ScrollView, Image, useWindowDimensions } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
@@ -43,6 +43,20 @@ export default function LibraryTab() {
   const [nativeRecentChannels, setNativeRecentChannels] = useState<any[]>([]);
   const [nativeWatchlist, setNativeWatchlist] = useState<any[]>([]);
   const returnFocus=useTvFocusMemory("favorites"); const listRef=useRef<FlatList<any>>(null);
+
+  /**
+   * v18.0.0 — DETAYDAN DÖNÜŞ: detay ayrı route; kapanınca konum geri yüklemesi
+   * istenir. TV'de geri yükleme isteği hedef odak alınca kapanır (erken silme yok).
+   */
+  const detailReturnPendingRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!detailReturnPendingRef.current) return;
+      detailReturnPendingRef.current = false;
+      const t = setTimeout(() => returnFocus.requestRestore(undefined, undefined, "detail-return"), 60);
+      return () => clearTimeout(t);
+    }, [returnFocus.requestRestore])
+  );
 
   useEffect(() => {
     if (!activePlaylist?.id) { setOverrides({}); return; }
@@ -146,7 +160,7 @@ export default function LibraryTab() {
 
   const posterW = Math.min(140, (width - SPACING.lg * 2 - SPACING.sm * 2) / 3);
   const posterH = posterW * 1.5;
-  useEffect(()=>{const req=returnFocus.restoreRequest;if(!req)return;const m=/^favorites:(.+):([^:]+)$/.exec(req.key);if(!m)return;const scope=m[1],id=m[2];let nt:Tab="favorites",data:any[]=favChannels;if(scope==="recent"){nt="recent";data=recentChannels}else if(scope.startsWith("watchlist:")){nt="watchlist";data=watchlistItems}else if(scope.startsWith("continue:")){nt="continue";data=continueList}if(tab!==nt){setTab(nt);return}const i=data.findIndex((x:any)=>String(x.id)===id);if(i<0)return;const t=setTimeout(()=>{try{listRef.current?.scrollToIndex({index:i,animated:false,viewPosition:0.5})}catch{}setTimeout(()=>returnFocus.clearRestore(req.nonce),300)},80);return()=>clearTimeout(t)},[returnFocus.restoreRequest?.nonce,tab,favChannels,recentChannels,watchlistItems,continueList]);
+  useEffect(()=>{const req=returnFocus.restoreRequest;if(!req)return;const m=/^favorites:(.+):([^:]+)$/.exec(req.key);if(!m)return;const scope=m[1],id=m[2];let nt:Tab="favorites",data:any[]=favChannels;if(scope==="recent"){nt="recent";data=recentChannels}else if(scope.startsWith("watchlist:")){nt="watchlist";data=watchlistItems}else if(scope.startsWith("continue:")){nt="continue";data=continueList}if(tab!==nt){setTab(nt);return}const i=data.findIndex((x:any)=>String(x.id)===id);if(i<0)return;const t=setTimeout(()=>{try{listRef.current?.scrollToIndex({index:i,animated:false,viewPosition:0.5})}catch{}if(!returnFocus.isTv)setTimeout(()=>returnFocus.clearRestore(req.nonce,"centered"),300)},80);return()=>clearTimeout(t)},[returnFocus.restoreRequest?.nonce,tab,favChannels,recentChannels,watchlistItems,continueList]);
 
   const openVideo = async (id: string, kind: string, scopeId = "library", orderedIds?: string[]) => {
     haptic.light();
@@ -158,6 +172,8 @@ export default function LibraryTab() {
       addToRecent(id);
       router.push({ pathname: "/player", params: { id, navOrigin: "favorites", navScopeKey, focusKey: `favorites:${scopeId}:${id}` } });
     } else {
+      returnFocus.remember(`favorites:${scopeId}:${id}`);
+      detailReturnPendingRef.current = true;
       router.push({ pathname: "/detail", params: { type: safeKind, id, navOrigin: "favorites", navScopeKey, focusKey: `favorites:${scopeId}:${id}` } });
     }
   };

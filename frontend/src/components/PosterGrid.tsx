@@ -8,6 +8,8 @@ import { useTVFocus, posterFocusStyle } from "@/src/hooks/useTVFocus";
 import type { VodItem, SeriesItem } from "@/src/types";
 import { useTv } from "@/src/store/TvContext";
 import { useTvFocusMemory } from "@/src/store/TvFocusMemoryContext";
+import { useFocusScroll } from "@/src/hooks/useFocusScroll";
+import { recordDiagnostic } from "@/src/utils/diagnostics";
 
 const H_PAD = SPACING.lg;
 const GAP = SPACING.sm;
@@ -45,36 +47,55 @@ export function PosterGrid({ items, onPressItem, onLongPressItem, ListHeaderComp
   const COL = responsive.columns.poster;
   const CARD_W = (width - H_PAD * 2 - GAP * (COL - 1)) / COL;
   const POSTER_H = CARD_W * 1.5;
-  const gridRef = useRef<FlatList<VodItem | SeriesItem> | null>(null);
+  /**
+   * v18.0.0 — IZGARA ORTALAMA DÜZELTMESİ:
+   * Çok sütunlu FlatList SATIR sayar; eskiden scrollToIndex'e ÖĞE sırası
+   * veriliyordu → hedef COL kat aşağıda kalıyor ya da "out of range" hatası
+   * yutulup kaba tahmine düşülüyordu. Artık ortak centerIndex satır sırasına
+   * çevirir, ölçülmemiş satırda gerçek ortalama satır yüksekliğini kullanır.
+   * useFocusScroll'un yalnız ref/ortalama/başarısızlık kancası kullanılır;
+   * onItemFocus (D-pad sırasında ikinci kaydırma) BİLEREK bağlanmaz.
+   */
+  const { listRef: gridRef, onScrollToIndexFailed, centerIndex } = useFocusScroll<VodItem | SeriesItem>();
+  const onRestoreConsumedRef = useRef(onRestoreConsumed);
+  onRestoreConsumedRef.current = onRestoreConsumed;
+  const centeredForRef = useRef<string>("");
+  const focusKeyForItemRef = useRef(focusKeyForItem);
+  focusKeyForItemRef.current = focusKeyForItem;
 
   useEffect(() => {
-    if (!restoreKey || !focusKeyForItem || !items.length) return;
-    const index = items.findIndex(item => focusKeyForItem(item) === restoreKey);
+    if (!restoreKey) { centeredForRef.current = ""; return; }
+    const keyFor = focusKeyForItemRef.current;
+    if (!keyFor || !items.length) return;
+    const index = items.findIndex(item => keyFor(item) === restoreKey);
     if (index < 0) return;
-    let cancelled = false;
-    let tries = 0;
-    const center = () => {
-      if (cancelled) return;
-      tries += 1;
-      try {
-        gridRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0.5 });
-        if (tries >= 2) onRestoreConsumed?.();
-      } catch {
-        try {
-          const row = Math.floor(index / Math.max(1, COL));
-          gridRef.current?.scrollToOffset({ offset: Math.max(0, row * (POSTER_H + 56 + GAP)), animated: false });
-        } catch {}
-      }
-      if (tries < 4) setTimeout(center, 120);
-    };
-    const t = setTimeout(center, 40);
-    return () => { cancelled = true; clearTimeout(t); };
-  }, [restoreKey, items, focusKeyForItem, COL, POSTER_H, onRestoreConsumed]);
+    // Aynı istek + aynı konum için tekrar tekrar ortalama yapma (items her
+    // sayfa yüklemesinde yeni dizi olur).
+    const signature = `${restoreKey}#${index}#${COL}`;
+    if (centeredForRef.current === signature) return;
+    centeredForRef.current = signature;
+    const t = setTimeout(() => {
+      centerIndex(index, {
+        numColumns: COL,
+        onResult: r => {
+          void recordDiagnostic("navigation", "FOCUS_RESTORE_CENTER", {
+            surface: "poster-grid", key: restoreKey, index, row: r.row, columns: COL, ok: r.ok,
+            attempts: r.attempts, elapsedMs: r.elapsedMs, reason: r.reason, isTv: isTvLayout,
+          }, { stage: "focus-restore", outcome: r.ok ? "centered" : "failed", durationMs: r.elapsedMs });
+          // Telefonda odak olayı yok: ortalama bitti = geri yükleme bitti.
+          // TV'de istek, hedef kart gerçekten odak alınca kapanır (focus memory).
+          if (!isTvLayout) onRestoreConsumedRef.current?.();
+        },
+      });
+    }, 40);
+    return () => clearTimeout(t);
+  }, [restoreKey, items, COL, centerIndex, isTvLayout]);
 
   return (
     <FlatList
       ref={gridRef}
       key={COL}
+      onScrollToIndexFailed={onScrollToIndexFailed}
       data={items}
       keyExtractor={i => i.id}
       numColumns={COL}
@@ -130,6 +151,13 @@ function PosterCard({ item, width, height, testIDPrefix, onPress, onLongPress, f
   const { isFocused, onFocus, onBlur } = useTVFocus();
   const focusMemory = useTvFocusMemory(focusScope);
   const focusBinding = focusMemory.bind(focusKey || `${testIDPrefix}-${item.id}`);
+  // v18.0.0: geri yükleme hedefi ZATEN odaktaysa onFocus tekrar gelmez; isteği
+  // burada tamamla (aksi hâlde tercihli odak 4 sn açık kalır, log "timeout" der).
+  const restoreTargetAlreadyFocused = focusBinding.hasTVPreferredFocus && isFocused;
+  React.useEffect(() => {
+    if (restoreTargetAlreadyFocused) focusBinding.rememberFocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restoreTargetAlreadyFocused]);
   return (
     <TouchableOpacity
       testID={`${testIDPrefix}-${item.id}`}

@@ -206,6 +206,53 @@ const SPEED_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 const LIVE_TIMESHIFT_WINDOW_SECONDS = 30 * 60;
 const LIVE_TIMESHIFT_MAX_BYTES = 768 * 1024 * 1024;
 const LIVE_TIMESHIFT_PREPARE_TIMEOUT_MS = 12_000;
+/** v18.0.0: sağlık kaydı aralığı (2 sn'lik durum yoklamasının 15 katı = 30 sn). */
+const LIVE_TIMESHIFT_HEALTH_EVERY_TICKS = 15;
+/**
+ * v18.0.0 — TIMESHIFT TELEMETRİ SEÇİCİ. Native kaydedici durumundan takılma
+ * teşhisi için gereken alanları sayısal ve yuvarlanmış olarak seçer.
+ * (Timeshift "Her zaman" takılması §9/1: önce kanıt, sonra düzeltme.)
+ */
+function pickTimeshiftStats(status: Record<string, any> | null | undefined): Record<string, any> {
+  if (!status) return { statusMissing: true };
+  const n = (k: string, digits = 0) => {
+    const v = Number(status[k]);
+    if (!Number.isFinite(v)) return null;
+    const f = Math.pow(10, digits);
+    return Math.round(v * f) / f;
+  };
+  return {
+    recorderMode: String(status.mode || ""),
+    running: !!status.running,
+    finished: !!status.finished,
+    error: String(status.error || "").slice(0, 120),
+    segmentCount: n("segmentCount"),
+    windowSec: n("windowSeconds", 1),
+    ingestKbps: n("ingestKbps"),
+    producedSegments: n("producedSegments"),
+    firstSegmentSec: n("firstSegmentSec", 2),
+    segMinSec: n("segMinSec", 2),
+    segAvgSec: n("segAvgSec", 2),
+    segMaxSec: n("segMaxSec", 2),
+    readGapMaxMs: n("readGapMaxMs"),
+    readGapsOver1s: n("readGapsOver1s"),
+    pcrSamples: n("pcrSamples"),
+    pcrMediaSumSec: n("pcrMediaSumSec", 1),
+    pcrWallSumSec: n("pcrWallSumSec", 1),
+    pcrMaxDriftSec: n("pcrMaxDriftSec", 2),
+    pcrDiscontinuities: n("pcrDiscontinuities"),
+    hlsDownloadMaxMs: n("hlsDownloadMaxMs"),
+    hlsSlowDownloads: n("hlsSlowDownloads"),
+    playlistFetchFailures: n("playlistFetchFailures"),
+    playlistRequests: n("playlistRequests"),
+    segmentRequests: n("segmentRequests"),
+    segmentNotFoundPruned: n("segmentNotFoundPruned"),
+    segmentNotFoundAhead: n("segmentNotFoundAhead"),
+    lastPlaylistRequestAgeMs: n("lastPlaylistRequestAgeMs"),
+    lastRequestedBehindSegments: n("lastRequestedBehindSegments"),
+    lastSegmentAgeMs: n("lastSegmentAgeMs"),
+  };
+}
 // v17.10.3: zaman kaydırma modu → src/player/timeshiftMode.ts (Ayarlar ile paylaşılır)
 type LiveTimeshiftState = {
   phase: "idle" | "preparing" | "ready" | "bypass";
@@ -254,10 +301,17 @@ export default function PlayerHost() {
       const previousSource = lastVisibleSourceRef.current;
       const navFocusKey = previousSource?.nav?.focusKey;
       const navOrigin = previousSource?.nav?.origin;
-      const targetScope = navOrigin === "tv-home" ? "tv-home" : navOrigin === "library" ? "library" : undefined;
+      // v18.0.0: arama ve favoriler de kendi kapsamlarına döner. Eskiden bu
+      // köken'ler "player" kapsamına düşüyordu; o ekranlardaki geri yükleme
+      // effect'i hiç tetiklenmiyordu.
+      const targetScope = navOrigin === "tv-home" ? "tv-home"
+        : navOrigin === "library" ? "library"
+        : navOrigin === "search" ? "search"
+        : navOrigin === "favorites" ? "favorites"
+        : undefined;
       const timer = setTimeout(() => {
-        if (targetScope && navFocusKey) requestRestore(targetScope, navFocusKey);
-        else if (navFocusKey) requestRestore(undefined, navFocusKey);
+        if (targetScope && navFocusKey) requestRestore(targetScope, navFocusKey, "player-close");
+        else if (navFocusKey) requestRestore(undefined, navFocusKey, "player-close");
         else requestRouteRestore();
       }, 40);
       return () => clearTimeout(timer);
@@ -377,6 +431,9 @@ export default function PlayerHost() {
   const [liveTimeshift, setLiveTimeshift] = useState<LiveTimeshiftState>(EMPTY_LIVE_TIMESHIFT);
   const liveTimeshiftGenerationRef = useRef(0);
   const [liveTimeshiftMode, setLiveTimeshiftMode] = useState<LiveTimeshiftMode>(LIVE_TIMESHIFT_MODE_DEFAULT);
+  /** v18.0.0: telemetri kapanışlarında güncel mod (effect bağımlılığı eklemeden). */
+  const liveTimeshiftModeRef = useRef<LiveTimeshiftMode>(LIVE_TIMESHIFT_MODE_DEFAULT);
+  liveTimeshiftModeRef.current = liveTimeshiftMode;
   /** "onPause" modunda duraklatmayla devreye alınan kanal+adres anahtarı. */
   const [liveTimeshiftArmKey, setLiveTimeshiftArmKey] = useState("");
   /** Duraklatmayla devreye alındı: tampon hazır olunca OYNATMA, başa sar ve duraklat. */
@@ -600,8 +657,18 @@ export default function PlayerHost() {
   const nextSessionProfileRef = useRef<EngineProfile | null>(null);
   const successfulSessionRef = useRef<number | null>(null);
   const successfulSessionAtRef = useRef(0);
-  const rebufferActiveRef = useRef<{ sid: number; startedAt: number; engine: string } | null>(null);
+  const rebufferActiveRef = useRef<{ sid: number; startedAt: number; engine: string; timeshift?: boolean } | null>(null);
   const rebufferSequenceRef = useRef(0);
+  /**
+   * v18.0.0 — CANLI OTURUM TAKILMA ÖZETİ (timeshift açık/kapalı kıyası için).
+   * Kanal/oturum başına takılma sayısı ve süresi; timeshift sırasındakiler ayrıca.
+   */
+  const liveStallStatsRef = useRef({
+    key: "", startedAt: 0, stallCount: 0, stallMs: 0, maxStallMs: 0,
+    timeshiftStallCount: 0, timeshiftStallMs: 0, timeshiftUsed: false,
+  });
+  /** v18.0.0: motor bağımsız oynatma/tampon yoklaması (player tanımından sonra atanır). */
+  const timeshiftProbeRef = useRef<() => Record<string, any>>(() => ({}));
   const [activeSessionId, setActiveSessionId] = useState(0);
   const [profileReadySessionId, setProfileReadySessionId] = useState(0);
   const [v2Profile, setV2Profile] = useState<EngineProfile>({ engine: "media3", surface: "surfaceView" });
@@ -925,7 +992,19 @@ export default function PlayerHost() {
       cancelled = true;
       if (pollTimer) clearTimeout(pollTimer);
       if (sessionId) {
-        void KizilkanNativeCore.stopLiveTimeshift(sessionId).catch(() => false);
+        const stoppedSessionId = sessionId;
+        const stallSnapshot = { ...liveStallStatsRef.current };
+        const modeAtStop = liveTimeshiftModeRef.current;
+        // Tek-bağlantı kuralı: durdurma BEKLETİLMEZ; son istatistik durdurmadan
+        // sonra native'in "bitmiş oturum" kaydından okunur (v18.0.0).
+        void KizilkanNativeCore.stopLiveTimeshift(stoppedSessionId).catch(() => false).then(async () => {
+          const finalStatus = await KizilkanNativeCore.getLiveTimeshiftStatus(stoppedSessionId).catch(() => null);
+          void recordDiagnostic("player", "LIVE_TIMESHIFT_SESSION_SUMMARY", {
+            channelId: String(channel?.id || ""), timeshiftMode: modeAtStop, durationMs: Date.now() - startedAt,
+            stallCount: stallSnapshot.timeshiftStallCount, stallMs: stallSnapshot.timeshiftStallMs,
+            ...pickTimeshiftStats(finalStatus),
+          }, { sessionId: playerDiagnosticSessionRef.current, stage: "timeshift", outcome: "summary", durationMs: Date.now() - startedAt });
+        });
         // v17.10.3: durdurma artık kayda geçer (kaydedicinin kapandığı kanıtlanabilsin).
         void recordDiagnostic("player", "LIVE_TIMESHIFT_STOP", {
           channelId: String(channel?.id || ""), reason: "session-cleanup", elapsedMs: Date.now() - startedAt,
@@ -965,7 +1044,18 @@ export default function PlayerHost() {
         return;
       }
       setLiveTimeshift(prev => prev.sessionId === liveTimeshift.sessionId ? { ...prev, windowSeconds: Number(status.windowSeconds || prev.windowSeconds), diskBytes: Number(status.diskBytes || prev.diskBytes), mode: String(status.mode || prev.mode) } : prev);
+      // v18.0.0: 30 sn'de bir kaydedici + oynatıcı sağlık görüntüsü (T5).
+      healthTick += 1;
+      if (healthTick % LIVE_TIMESHIFT_HEALTH_EVERY_TICKS === 0) {
+        const st = liveStallStatsRef.current;
+        void recordDiagnostic("player", "LIVE_TIMESHIFT_HEALTH", {
+          trigger: "interval", channelId: String(channel?.id || ""), timeshiftMode: liveTimeshiftModeRef.current,
+          ...pickTimeshiftStats(status), ...timeshiftProbeRef.current(),
+          sessionStallCount: st.timeshiftStallCount, sessionStallMs: st.timeshiftStallMs,
+        }, { sessionId: playerDiagnosticSessionRef.current, stage: "timeshift", outcome: "health" });
+      }
     };
+    let healthTick = 0;
     const id = setInterval(() => { void refresh(); }, 2000);
     void refresh();
     return () => { cancelled = true; clearInterval(id); };
@@ -2470,8 +2560,73 @@ export default function PlayerHost() {
   }, [visible, channel?.id, channel?.url, activePlaylist?.id]);
 
   /**
+   * v18.0.0 — OYNATMA / TAMPON YOKLAMASI (timeshift takılma teşhisi, T1).
+   * Media3: konum, önde kalan tampon, canlı uca uzaklık (expo-video
+   * currentOffsetFromLive/bufferedPosition). VLC/MPV: saat konumu + süre.
+   */
+  timeshiftProbeRef.current = () => {
+    const r1 = (v: number) => Math.round(v * 10) / 10;
+    const out: Record<string, any> = { engine: v2Profile.engine };
+    try {
+      if (v2Profile.engine === "vlc" || v2Profile.engine === "mpv") {
+        const clock = v2Profile.engine === "vlc" ? vlcClockRef.current : mpvClockRef.current;
+        const pos = Number(clock.positionSeconds || 0);
+        const dur = Number(playbackDurationRef.current || 0);
+        out.positionSec = r1(pos);
+        if (dur > 0) out.liveEdgeDistanceSec = r1(Math.max(0, dur - pos));
+      } else {
+        const p: any = player;
+        const pos = Number(p?.currentTime ?? media3ClockRef.current.positionSeconds ?? 0);
+        out.positionSec = r1(pos);
+        const buffered = Number(p?.bufferedPosition);
+        if (Number.isFinite(buffered) && buffered >= 0) out.bufferAheadSec = r1(buffered - pos);
+        const offset = p?.currentOffsetFromLive;
+        if (typeof offset === "number" && Number.isFinite(offset)) out.offsetFromLiveSec = r1(offset);
+        const dur = Number(p?.duration || 0);
+        if (dur > 0) out.liveEdgeDistanceSec = r1(Math.max(0, dur - pos));
+      }
+    } catch (e: any) {
+      out.probeError = String(e?.message || e).slice(0, 80);
+    }
+    return out;
+  };
+
+  /**
+   * v18.0.0 — CANLI OTURUM TAKILMA ÖZETİ (T6/T7). Timeshift açık da kapalı da
+   * olsa her canlı kanal oturumu kapanınca tek satır özet yazılır; "Her zaman"
+   * ile "Kapalı" aynı kanal/hesapta karşılaştırılabilir.
+   */
+  const liveStallKey = visible && sessionKind === "live" && channel?.id ? String(channel.id) : "";
+  useEffect(() => {
+    if (!liveStallKey) return;
+    liveStallStatsRef.current = {
+      key: liveStallKey, startedAt: Date.now(), stallCount: 0, stallMs: 0, maxStallMs: 0,
+      timeshiftStallCount: 0, timeshiftStallMs: 0, timeshiftUsed: false,
+    };
+    const channelIdAtStart = String(channel?.id || "");
+    return () => {
+      const st = liveStallStatsRef.current;
+      if (st.key !== liveStallKey) return;
+      const durationMs = Date.now() - st.startedAt;
+      if (durationMs < 5_000) return; // hızlı zap: özet gürültü olur
+      void recordDiagnostic("player", "LIVE_SESSION_STALL_SUMMARY", {
+        channelId: channelIdAtStart, durationMs, timeshiftMode: liveTimeshiftModeRef.current, timeshiftUsed: st.timeshiftUsed,
+        stallCount: st.stallCount, stallMs: st.stallMs, maxStallMs: st.maxStallMs,
+        timeshiftStallCount: st.timeshiftStallCount, timeshiftStallMs: st.timeshiftStallMs,
+        stallsPerHour: Math.round((st.stallCount / Math.max(1, durationMs)) * 3_600_000 * 10) / 10,
+      }, { sessionId: playerDiagnosticSessionRef.current, stage: "rebuffer", outcome: "summary", durationMs });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveStallKey]);
+  useEffect(() => {
+    if (liveTimeshiftReady && liveStallStatsRef.current.key) liveStallStatsRef.current.timeshiftUsed = true;
+  }, [liveTimeshiftReady]);
+
+  /**
    * v17.0.0 — Engine-bağımsız rebuffer süre telemetrisi. Startup buffering
    * sayılmaz; yalnız ilk başarılı frame/oynatım sonrasındaki buffering ölçülür.
+   * v18.0.0 — timeshift modu/durumu + tampon yoklaması eklendi (T1); timeshift
+   * sırasında takılma başlarsa kaydedici sağlık görüntüsü de alınır.
    */
   useEffect(() => {
     const afterFirstFrame = firstFrameSeenRef.current || successfulSessionRef.current === activeSessionId;
@@ -2480,24 +2635,47 @@ export default function PlayerHost() {
       if (!visible) rebufferActiveRef.current = null;
       return;
     }
+    const timeshiftContext = sessionKind === "live" ? {
+      timeshiftMode: liveTimeshiftMode, timeshiftPhase: liveTimeshift.phase, timeshiftActive: liveTimeshiftReady,
+    } : {};
     if (isBuffering && !active) {
       const startedAt = Date.now();
-      rebufferActiveRef.current = { sid: activeSessionId, startedAt, engine: v2ProfileKey };
+      rebufferActiveRef.current = { sid: activeSessionId, startedAt, engine: v2ProfileKey, timeshift: liveTimeshiftReady };
       const sequence = ++rebufferSequenceRef.current;
       void recordDiagnostic("player", "REBUFFER_START", {
         sequence, engine: v2ProfileKey, phase: v2Phase, channelId: String(channel?.id || ""),
         afterSeek: Date.now() < userSeekGraceUntilRef.current, sourceCandidate: playbackUrlIndex,
+        ...timeshiftContext, ...(sessionKind === "live" ? timeshiftProbeRef.current() : {}),
       }, { sessionId: playerDiagnosticSessionRef.current, stage: "rebuffer", outcome: "started" });
+      if (liveTimeshiftReady && liveTimeshift.sessionId) {
+        const tsId = liveTimeshift.sessionId;
+        const chId = String(channel?.id || "");
+        void KizilkanNativeCore.getLiveTimeshiftStatus(tsId).catch(() => null).then(status => {
+          void recordDiagnostic("player", "LIVE_TIMESHIFT_HEALTH", {
+            trigger: "stall", sequence, channelId: chId, timeshiftMode: liveTimeshiftModeRef.current, ...pickTimeshiftStats(status),
+          }, { sessionId: playerDiagnosticSessionRef.current, stage: "timeshift", outcome: "health" });
+        });
+      }
       return;
     }
     if (!isBuffering && active && active.sid === activeSessionId) {
       const durationMs = Math.max(0, Date.now() - active.startedAt);
       rebufferActiveRef.current = null;
+      if (sessionKind === "live") {
+        const st = liveStallStatsRef.current;
+        if (st.key) {
+          st.stallCount += 1;
+          st.stallMs += durationMs;
+          if (durationMs > st.maxStallMs) st.maxStallMs = durationMs;
+          if (active.timeshift) { st.timeshiftStallCount += 1; st.timeshiftStallMs += durationMs; }
+        }
+      }
       void recordDiagnostic("player", "REBUFFER_END", {
         engine: active.engine, durationMs, phase: v2Phase, channelId: String(channel?.id || ""), sourceCandidate: playbackUrlIndex,
+        ...timeshiftContext, startedDuringTimeshift: !!active.timeshift,
       }, { sessionId: playerDiagnosticSessionRef.current, stage: "rebuffer", durationMs, outcome: "ended" });
     }
-  }, [visible, activeSessionId, isBuffering, v2ProfileKey, v2Phase, channel?.id, playbackUrlIndex]);
+  }, [visible, activeSessionId, isBuffering, v2ProfileKey, v2Phase, channel?.id, playbackUrlIndex, sessionKind, liveTimeshiftMode, liveTimeshift.phase, liveTimeshift.sessionId, liveTimeshiftReady]);
 
   const togglePlay = () => {
     // YAYIN AKTİFSE komutu TV'deki oynatıcıya gönder (v7.4.0).

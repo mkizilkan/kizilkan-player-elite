@@ -19,7 +19,7 @@
  * ===========================================================================
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Modal,
   View,
@@ -36,6 +36,7 @@ import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { useTVFocus, rowFocusStyle } from "@/src/hooks/useTVFocus";
 import { useFocusScroll } from "@/src/hooks/useFocusScroll";
 import { useTv } from "@/src/store/TvContext";
+import { recordDiagnostic } from "@/src/utils/diagnostics";
 
 export type SectionKey = "live" | "vod" | "series";
 
@@ -88,7 +89,7 @@ export function CategoryPanel({
 }: Props) {
   const { isTv: isTvLayout } = useTv();
   // TV: odaklanan kategori ekranda kalsın + panel açılınca ilk öğe odakta (v7.3.0)
-  const { listRef, onItemFocus, onScrollToIndexFailed } = useFocusScroll<any>();
+  const { listRef, onItemFocus, onScrollToIndexFailed, centerIndex } = useFocusScroll<any>();
   const { colors } = useTheme();
   const [query, setQuery] = useState("");
 
@@ -97,6 +98,30 @@ export function CategoryPanel({
     if (!q) return categories;
     return categories.filter(c => c.name.toLocaleLowerCase("tr").includes(q));
   }, [categories, query]);
+
+  /**
+   * v18.0.0 — SEÇİLİ KATEGORİYE DÖNÜŞ: panel açılınca odak hep İLK satıra
+   * gidiyordu; 200 kategoride seçili olan görünmüyordu. Artık tercihli odak
+   * seçili satırdadır (listede yoksa ilk satır) ve liste o satırı ortalar.
+   */
+  const selectedIndex = useMemo(() => shown.findIndex(c => c.name === selected), [shown, selected]);
+  const preferredIndex = selectedIndex >= 0 ? selectedIndex : 0;
+  useEffect(() => {
+    if (!visible || selectedIndex <= 0) return;
+    const t = setTimeout(() => {
+      centerIndex(selectedIndex, {
+        onResult: r => {
+          void recordDiagnostic("navigation", "FOCUS_RESTORE_CENTER", {
+            surface: "category-panel", section, selectedIndex, ok: r.ok, attempts: r.attempts,
+            elapsedMs: r.elapsedMs, reason: r.reason, isTv: isTvLayout, total: shown.length,
+          }, { stage: "focus-restore", outcome: r.ok ? "centered" : "failed", durationMs: r.elapsedMs });
+        },
+      });
+    }, 60);
+    return () => clearTimeout(t);
+    // shown/section yalnız telemetri için; panel açılışı ve seçili sıra tetikler.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, selectedIndex, centerIndex]);
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} statusBarTranslucent>
@@ -214,7 +239,7 @@ export function CategoryPanel({
             <CategoryRow
               item={item}
               active={item.name === selected}
-              first={index === 0}
+              first={index === preferredIndex}
               onPress={() => { onSelectCategory(item.name); onClose(); }}
               onLongPress={item.custom && onLongPressCategory ? () => onLongPressCategory(item.name) : undefined}
               onFocusItem={() => isTvLayout && onItemFocus(index)}

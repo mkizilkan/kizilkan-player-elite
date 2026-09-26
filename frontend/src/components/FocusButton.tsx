@@ -54,6 +54,13 @@ export const FocusButton = React.forwardRef<React.ElementRef<typeof TouchableOpa
   const focusMemory = useTvFocusMemory(focusScope);
   const stableFocusKey = focusKey || (typeof rest.testID === "string" ? rest.testID : undefined);
   const memoryBinding = focusMemory.bind(stableFocusKey);
+  // v18.0.0: geri yükleme hedefi ZATEN odaktaysa onFocus tekrar gelmez; isteği
+  // burada tamamla (aksi hâlde tercihli odak 4 sn açık kalır, log "timeout" der).
+  const restoreTargetAlreadyFocused = memoryBinding.hasTVPreferredFocus && isFocused;
+  React.useEffect(() => {
+    if (restoreTargetAlreadyFocused) memoryBinding.rememberFocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restoreTargetAlreadyFocused]);
 
   return (
     <TouchableOpacity

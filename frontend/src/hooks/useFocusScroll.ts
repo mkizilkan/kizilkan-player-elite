@@ -87,11 +87,24 @@ export function useFocusScroll<T>() {
   };
 
   /**
+   * v18.0.0: explicit ortalama (centerIndex) sürerken scrollToIndex'in
+   * "ölçülmemiş" geri bildirimi burada yakalanır; centerIndex kendi yeniden
+   * deneme döngüsünü yönetir, aşağıdaki genel geri dönüş ikinci bir kaydırma
+   * üretmez (çift hareket olmasın).
+   */
+  const centeringRef = useRef<{ failed: boolean; averageItemLength: number } | null>(null);
+
+  /**
    * scrollToIndex başarısız olursa (öğe ölçülmemişse) FlatList'in
    * onScrollToIndexFailed olayına bağlanır; yaklaşık konuma gidip tekrar dener.
    */
   const onScrollToIndexFailed = useCallback(
     (info: { index: number; averageItemLength: number }) => {
+      if (centeringRef.current) {
+        centeringRef.current.failed = true;
+        centeringRef.current.averageItemLength = info.averageItemLength;
+        return;
+      }
       const list = listRef.current;
       if (!list) return;
       try {
@@ -118,25 +131,68 @@ export function useFocusScroll<T>() {
    * scroll ölçülmemişse kısa aralıklarla tekrar dener. Telefon/tablet için de
    * aynı davranış kullanılır; focus talebi yalnız TV bileşeninde uygulanır.
    */
-  const centerIndex = useCallback((index: number, attempts = 5) => {
-    if (index < 0) return;
+  /**
+   * v18.0.0 — ORTAK ORTALAMA:
+   * • numColumns > 1 (afiş ızgarası): FlatList sanal listesi SATIR sayar
+   *   (FlatList._getItemCount = ceil(n / numColumns)). Öğe sırası satır
+   *   sırasına çevrilir; eskiden öğe sırası verildiği için hedef sütun sayısı
+   *   kadar kat aşağıda kalıyor ya da "out of range" hatasına düşüyordu.
+   * • Hedef ölçülmemişse sabit 64 px tahmini yerine listenin GERÇEK ölçülen
+   *   ortalama satır yüksekliği ile yaklaşılır, ardından tekrar ortalanır.
+   * • Başarılı ortalamadan sonra bir kez daha doğrulama ortalaması yapılır
+   *   (üstteki satırlar ölçülünce konum kayabilir).
+   * • Sonuç onResult ile bildirilir (telemetri + telefonda isteği kapatma).
+   */
+  const centerIndex = useCallback((index: number, opts?: number | {
+    attempts?: number;
+    numColumns?: number;
+    onResult?: (r: { ok: boolean; attempts: number; row: number; elapsedMs: number; reason: string }) => void;
+  }) => {
+    const o = typeof opts === "number" ? { attempts: opts } : (opts || {});
+    const cols = Math.max(1, Math.floor(o.numColumns || 1));
+    const row = Math.floor(Math.max(0, index) / cols);
+    const maxAttempts = Math.max(1, o.attempts ?? 12);
+    const startedAt = Date.now();
+    const report = (ok: boolean, attempts: number, reason: string) => {
+      centeringRef.current = null;
+      try { o.onResult?.({ ok, attempts, row, elapsedMs: Date.now() - startedAt, reason }); } catch { /* yoksay */ }
+    };
+    if (index < 0) { report(false, 0, "negative-index"); return; }
     if (pendingRef.current) clearTimeout(pendingRef.current);
-    let remaining = Math.max(1, attempts);
+    let attempt = 0;
     const tryCenter = () => {
+      attempt += 1;
       const list = listRef.current;
       if (!list) {
-        if (--remaining > 0) pendingRef.current = setTimeout(tryCenter, 90);
+        if (attempt < maxAttempts) pendingRef.current = setTimeout(tryCenter, 90);
+        else report(false, attempt, "no-list-ref");
         return;
       }
+      centeringRef.current = { failed: false, averageItemLength: 0 };
+      let thrown = "";
       try {
-        list.scrollToIndex({ index, animated: false, viewPosition: 0.5 });
-        lastCenteredRef.current = index;
-      } catch {
-        try {
-          list.scrollToOffset({ offset: Math.max(0, index) * 64, animated: false });
-        } catch { /* ölçüm yoksa tekrar dene */ }
-        if (--remaining > 0) pendingRef.current = setTimeout(tryCenter, 120);
+        list.scrollToIndex({ index: row, animated: false, viewPosition: 0.5 });
+      } catch (e: any) {
+        thrown = String(e?.message || e || "scroll-error").slice(0, 120);
       }
+      const probe = centeringRef.current;
+      centeringRef.current = null;
+      if (!thrown && !probe?.failed) {
+        lastCenteredRef.current = row;
+        // Doğrulama: üst satırlar ölçüldükçe kayma olabilir; bir kez daha ortala.
+        pendingRef.current = setTimeout(() => {
+          try { listRef.current?.scrollToIndex({ index: row, animated: false, viewPosition: 0.5 }); } catch { /* yoksay */ }
+          report(true, attempt, "centered");
+        }, 140);
+        return;
+      }
+      // Ölçülmemiş hedef: gerçek ortalama satır yüksekliğiyle yaklaş, sonra tekrar dene.
+      const avg = probe?.averageItemLength && probe.averageItemLength > 0 ? probe.averageItemLength : 0;
+      if (avg > 0) {
+        try { list.scrollToOffset({ offset: Math.max(0, row * avg), animated: false }); } catch { /* yoksay */ }
+      }
+      if (attempt < maxAttempts) pendingRef.current = setTimeout(tryCenter, 120);
+      else report(false, attempt, thrown || "not-measured");
     };
     tryCenter();
   }, []);
