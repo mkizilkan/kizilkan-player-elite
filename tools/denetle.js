@@ -7,7 +7,29 @@
  * sırasında GERÇEKTEN YAŞANMIŞ bir çökme/hata sınıfından sonra yazıldı.
  * Derleme öncesi çalıştırılırsa o hatalar bir daha kullanıcıya ulaşmaz.
  */
-const { execSync } = require("child_process");
+const { execSync, execFileSync } = require("child_process");
+/**
+ * v17.10.3 — WINDOWS UYUMU. Eskiden argümanlar kabukla hazırlanıyordu:
+ * `frontend/src/store/*.tsx` joker karakteri ve `find` komutu. Windows'ta cmd.exe
+ * jokeri açmıyor, `find` ise bambaşka bir program (PC kurulumunda:
+ * "ENOENT ...store\*.tsx", "File not found - *.ts"). Dosya listesi artık Node ile
+ * üretilir ve alt denetleyici kabuksuz (execFileSync) çalıştırılır: tırnak ve
+ * komut satırı uzunluğu sorunları da ortadan kalkar. Linux'ta çıktı aynıdır.
+ */
+function kizListFiles(dirs, exts, recursive) {
+  const out = [];
+  const visit = (dir) => {
+    let entries = [];
+    try { entries = fs.readdirSync(path.join(PROJECT_ROOT, dir), { withFileTypes: true }); } catch { return; }
+    for (const ent of entries) {
+      const rel = dir + "/" + ent.name;
+      if (ent.isDirectory()) { if (recursive && ent.name !== "node_modules") visit(rel); }
+      else if (exts.some(x => ent.name.endsWith(x))) out.push(rel);
+    }
+  };
+  for (const d of dirs) visit(d);
+  return out;
+}
 const path = require("path");
 const fs = require("fs");
 
@@ -121,15 +143,11 @@ let failed = 0;
 console.log("═══ KIZILKAN PLAYER — DENETİM ═══\n");
 
 for (const [file, label, argMode] of CHECKS) {
-  let args = "";
-  if (argMode === "src/store/*.tsx") args = "frontend/src/store/*.tsx frontend/src/theme/*.tsx";
-  else if (argMode === "APP_SRC") {
-    // Dosya adlarında parantez olabilir ((tabs) klasörü) -> tırnak şart.
-    args = execSync(`find frontend/app frontend/src -name "*.tsx" -o -name "*.ts"`)
-      .toString().trim().split("\n").map(p => JSON.stringify(p)).join(" ");
-  }
+  let args = [];
+  if (argMode === "src/store/*.tsx") args = kizListFiles(["frontend/src/store", "frontend/src/theme"], [".tsx"], false);
+  else if (argMode === "APP_SRC") args = kizListFiles(["frontend/app", "frontend/src"], [".tsx", ".ts"], true);
   try {
-    const out = execSync(`node ${path.join(TOOLS, file)} ${args}`, {
+    const out = execFileSync(process.execPath, [path.join(TOOLS, file), ...args], {
       encoding: "utf8",
       cwd: FRONTEND_CWD_CHECKS.has(file) ? FRONTEND_ROOT : PROJECT_ROOT,
     });

@@ -126,17 +126,40 @@ function StartupLastChannelGate() {
     void (async () => {
       const enabled = await storage.getItem<boolean>(START_LAST_KEY + activeProfile.id, false);
       if (cancelled) return;
-      if (!enabled) { startupAutoplayEntryKey = entryKey; return; }
-      let saved: any = null;
-      try { saved = JSON.parse((await storage.getItem<string>(LAST_LIVE_KEY + activeProfile.id, "")) || "null"); } catch {}
+      /**
+       * v17.10.4 — Her sessiz çıkış artık kayda geçer (25.09'da kapı hiçbir iz
+       * bırakmadığı için sebep logdan görülemiyordu).
+       */
+      const skip = (reason: string, extra?: Record<string, unknown>) => {
+        startupAutoplayEntryKey = entryKey;
+        void recordDiagnostic("player", "STARTUP_LAST_CHANNEL_SKIP", {
+          reason, profileId: activeProfile.id, playlistId: activePlaylist.id, entrySeq: profileEntrySeq, ...(extra || {}),
+        });
+      };
+      if (!enabled) { skip("disabled"); return; }
+      /**
+       * v17.10.4 — SEÇİLEN LİSTENİN KENDİ SON KANALI. Önce profil + liste
+       * anahtarı okunur; yoksa (eski sürümden kalan) profil kaydı yalnız aynı
+       * listeye aitse kullanılır. Bu listede hiç kanal izlenmediyse HİÇBİR ŞEY
+       * AÇILMAZ (kullanıcı kararı, 25.09).
+       */
+      const readSaved = async (key: string) => {
+        try { return JSON.parse((await storage.getItem<string>(key, "")) || "null"); } catch { return null; }
+      };
+      let saved: any = await readSaved(LAST_LIVE_KEY + activeProfile.id + "." + String(activePlaylist.id));
+      if (!saved?.channelId) {
+        const legacy: any = await readSaved(LAST_LIVE_KEY + activeProfile.id);
+        if (legacy?.channelId && String(legacy.playlistId || "") === String(activePlaylist.id)) saved = legacy;
+        else saved = null;
+      }
       if (cancelled) return;
-      if (!saved?.channelId || String(saved.playlistId || "") !== String(activePlaylist.id)) { startupAutoplayEntryKey = entryKey; return; }
+      if (!saved?.channelId) { skip("no-saved-channel-for-playlist"); return; }
       let exists = true;
       if (KizilkanNativeCore.available) exists = !!(await KizilkanNativeCore.getItem(activePlaylist.id, "live", String(saved.channelId)));
       else exists = !!activePlaylist.channels?.some(c => String(c.id) === String(saved.channelId));
       if (cancelled) return;
+      if (!exists) { skip("channel-not-in-playlist", { channelId: String(saved.channelId) }); return; }
       startupAutoplayEntryKey = entryKey;
-      if (!exists) return;
       const origin = first === "tv-home" ? "tv-home" : "library";
       openPlayer({ id: String(saved.channelId), kind: "live", nav: { origin, focusKey: `${origin}:live:${String(saved.channelId)}` } });
       void recordDiagnostic("player", "STARTUP_LAST_CHANNEL_OPEN", {

@@ -3196,11 +3196,20 @@ export default function PlayerHost() {
       }
     }
     if (sessionKind === "live" && activePlaylist?.id && channel?.id && activeProfile?.id) {
-      void storage.setItem(LAST_LIVE_KEY + activeProfile.id, JSON.stringify({
+      const lastLivePayload = JSON.stringify({
         playlistId: String(activePlaylist.id),
         channelId: String(channel.id),
         savedAt: Date.now(),
-      })).catch(() => {});
+      });
+      /**
+       * v17.10.4 — SON KANAL PROFİL + LİSTE BAŞINA. Eskiden profil başına TEK
+       * kayıt vardı; kullanıcı profil girişinden sonra başka liste seçince
+       * (25.09 kaydı: 431bb9db → 0f51aa0e) kayıt uyuşmuyor, özellik hiç
+       * çalışmıyordu. Artık her listenin kendi son kanalı var. Eski profil
+       * anahtarı geriye uyum için yazılmaya devam eder.
+       */
+      void storage.setItem(LAST_LIVE_KEY + activeProfile.id, lastLivePayload).catch(() => {});
+      void storage.setItem(LAST_LIVE_KEY + activeProfile.id + "." + String(activePlaylist.id), lastLivePayload).catch(() => {});
     }
     void recordFlightRecorderStage(lifecycleTraceRef.current || getCurrentFlightRecorderTrace(), 'firstFrame', { engine: profile.engine, firstFrameMs, channelId: String(channel?.id || '') }, 'success');
     void recordDiagnostic("player", "FIRST_FRAME", {
