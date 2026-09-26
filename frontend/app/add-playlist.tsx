@@ -1,7 +1,7 @@
 import {CatalogProgressCards} from "@/src/components/CatalogProgressCards";
 import type {RefreshProgress} from "@/src/utils/refreshPlaylist";
 import {PanelScopePicker} from "@/src/components/PanelScopePicker";
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -283,6 +283,24 @@ export default function AddPlaylist() {
   const [bulkImportStatuses, setBulkImportStatuses] = useState<Record<string, { state: string; message: string; channels?: number; vod?: number; series?: number }>>({});
   const [bulkAccountProgress, setBulkAccountProgress] = useState<Array<{ accountIndex:number; sourceRow?:number; name?:string; state:string; tested:number; total:number; remaining:number; found:number }>>([]);
   const [bulkCandidates, setBulkCandidates] = useState<BulkResolvedCandidate[]>([]);
+  /**
+   * v18.2.0 — SONUÇ SIRALAMA: yüzlerce bulunan hesapta en uzun süreli / en çok
+   * bağlantılı aboneliği bulmak için. "found" = taramadaki bulunma sırası (eski davranış).
+   */
+  const [bulkSort, setBulkSort] = useState<"found" | "expiry" | "connections">("found");
+  const sortedBulkCandidates = useMemo(() => {
+    if (bulkSort === "found") return bulkCandidates;
+    const expOf = (c: BulkResolvedCandidate) => { const n = Number(c.login?.user_info?.exp_date); return Number.isFinite(n) && n > 0 ? n : Number.MAX_SAFE_INTEGER; };
+    const conOf = (c: BulkResolvedCandidate) => { const n = Number(c.login?.user_info?.max_connections); return Number.isFinite(n) ? n : -1; };
+    return [...bulkCandidates].sort((a, b) => bulkSort === "expiry"
+      ? expOf(b) - expOf(a) || conOf(b) - conOf(a)
+      : conOf(b) - conOf(a) || expOf(b) - expOf(a));
+  }, [bulkCandidates, bulkSort]);
+  /** Süresi geçmemiş (ve süresiz) adaylar. */
+  const activeBulkCandidateKeys = useMemo(() => bulkCandidates.filter(c => {
+    const n = Number(c.login?.user_info?.exp_date);
+    return !(Number.isFinite(n) && n > 0 && n * 1000 < Date.now());
+  }).map(c => c.key), [bulkCandidates]);
   const [selectedBulkCandidateKeys, setSelectedBulkCandidateKeys] = useState<string[]>([]);
   const [bulkUseAllValidatedHosts, setBulkUseAllValidatedHosts] = useState(true);
   const [showBulkCandidates, setShowBulkCandidates] = useState(false);
@@ -3521,6 +3539,16 @@ export default function AddPlaylist() {
                   style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
                   <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>DNS: {bulkUseAllValidatedHosts?"Tüm Çalışanlar":"Yalnız Seçilenler"}</Text>
                 </FocusButton>
+                <FocusButton focusable disabled={bulkAdding || bulkCandidates.length<2} testID="bulk-sort-btn"
+                  onPress={()=>setBulkSort(s=>s==="found"?"expiry":s==="expiry"?"connections":"found")}
+                  style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
+                  <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>Sırala: {bulkSort==="found"?"Bulunma":bulkSort==="expiry"?"Bitiş (en geç)":"Bağlantı (en çok)"}</Text>
+                </FocusButton>
+                <FocusButton focusable disabled={bulkAdding || activeBulkCandidateKeys.length===0} testID="bulk-select-active-btn"
+                  onPress={()=>setSelectedBulkCandidateKeys(activeBulkCandidateKeys)}
+                  style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
+                  <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>Aktifleri Seç ({activeBulkCandidateKeys.length})</Text>
+                </FocusButton>
                 <FocusButton focusable disabled={bulkAdding || selectedBulkCandidateKeys.length===0 || !bulkScanFinished} onPress={chooseBulkArchiveMode}
                   style={[styles.bulkBtn,{borderColor:colors.brandPrimary,backgroundColor:colors.surfaceSecondary,opacity:selectedBulkCandidateKeys.length&&bulkScanFinished?1:0.5}]}>
                   <Text style={{color:colors.brandPrimary,fontWeight:FONT.weight.bold}}>TXT'ye Kaydet</Text>
@@ -3543,7 +3571,7 @@ export default function AddPlaylist() {
                 style={styles.bulkScrollableBody}
                 sections={[
                   { title: "accounts", data: bulkAccountProgress.map(a => ({ kind: "account" as const, value: a })) },
-                  { title: "candidates", data: bulkCandidates.map(c => ({ kind: "candidate" as const, value: c })) },
+                  { title: "candidates", data: sortedBulkCandidates.map(c => ({ kind: "candidate" as const, value: c })) },
                 ] as any}
                 keyExtractor={(item:any) => item.kind === "account" ? `bulk-progress-${item.value.accountIndex}` : `bulk-candidate-${item.value.key}`}
                 initialNumToRender={18}

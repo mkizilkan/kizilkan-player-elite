@@ -28,7 +28,7 @@ const model=load('frontend/src/utils/panelDirectoryModel.ts'),plain=x=>JSON.pars
  const hits=await directoryApi.discoverPanelsByCredentials(directoryApi.DEFAULT_CODE_SOURCE,'u','p',undefined,5,1000,shared);assert.equal(physicalProbes,1);assert.equal(hits.length,2);assert.equal(hits[0].server,'http://a.example');
  const controller=new AbortController();controller.abort();await assert.rejects(()=>directoryApi.fetchPanelDirectory(directoryApi.DEFAULT_CODE_SOURCE,{signal:controller.signal}));
  const calls=[];let unchanged=false;const iptv={xtreamLogin:async()=>({user_info:{status:'Active'}}),xtreamLiveStreams:async()=>{calls.push('live');return[{id:'l'}];},xtreamVod:async()=>{calls.push('vod');return[{id:'v'}];},xtreamSeries:async()=>{calls.push('series');return[{id:'s'}];},fetchAndParseM3UConditional:async(_,validators)=>{calls.push(validators?.etag?'conditional':'full');return unchanged?{notModified:true,etag:'"abc"'}:{notModified:false,parsed:{channels:[{id:'l'}],vod:[{id:'v'}],series:[{id:'s'}]},etag:'"abc"'};}};
- const refresh=load('frontend/src/utils/refreshPlaylist.ts',{'./iptv':iptv,'@/src/utils/serverCode':{},'@/src/utils/diagnostics':{markTask:()=>()=>{}},'@/src/utils/contentSelection':{applyContentSelection:x=>x},'@/modules/kizilkan-native-core':{KizilkanNativeCore:{available:true}}}).refreshPlaylistContent;
+ const refresh=load('frontend/src/utils/refreshPlaylist.ts',{'./iptv':iptv,'@/src/utils/serverCode':{},'@/src/utils/diagnostics':{markTask:()=>()=>{},recordDiagnostic:()=>{}},'@/src/player/hostFailover':load('frontend/src/player/hostFailover.ts',{'@/src/utils/storage':{storage:{getItem:async(k,d)=>d,setItem:async()=>{}}}}),'@/src/utils/contentSelection':{applyContentSelection:x=>x},'@/modules/kizilkan-native-core':{KizilkanNativeCore:{available:true}}}).refreshPlaylistContent;
  const pl={id:'a',source:'xtream',xtreamServer:'http://example.com',xtreamUsername:'u',xtreamPassword:'p',channels:[],vod:[],series:[]};
  let r=await refresh(pl,undefined,{kinds:['vod']});assert.equal(r.ok,true);assert.deepEqual(calls,['vod']);assert.equal('channels' in r.patch,false);assert.equal('series' in r.patch,false);assert.equal(r.patch.vod.length,1);
  calls.length=0;r=await refresh(pl);assert.equal(r.ok,true);assert.deepEqual(calls,['live','vod','series']);
@@ -36,6 +36,15 @@ const model=load('frontend/src/utils/panelDirectoryModel.ts'),plain=x=>JSON.pars
  unchanged=true;r=await refresh({...pl,source:'m3u_url',m3uUrl:'http://example.com/list',m3uValidators:{url:'http://example.com/list',etag:'"abc"'}},undefined,{kinds:['series']});assert.equal(r.ok,true);assert.equal('series' in r.patch,false);assert.equal(calls.at(-1),'conditional');
  unchanged=false;r=await refresh({...pl,source:'m3u_url',m3uUrl:'http://example.com/list',m3uValidators:{url:'http://example.com/list',etag:'"abc"'}},undefined,{kinds:['series'],forceUnconditional:true});assert.equal(calls.at(-1),'full');assert.equal(r.patch.series.length,1);
  iptv.xtreamVod=async()=>{throw Error('HTTP 503');};r=await refresh(pl,undefined,{kinds:['vod']});assert.equal(r.ok,false);assert.equal(r.patch,undefined);
+ // v18.2.0: birincil DNS düşerse yenileme yedek DNS'e geçer ve liste o adrese taşınır.
+ { const origLogin=iptv.xtreamLogin,origVod=iptv.xtreamVod;const tried=[];
+   iptv.xtreamLogin=async cred=>{tried.push(cred.server);if(cred.server.includes('dead.example'))throw Error('network');return{user_info:{status:'Active'}};};
+   iptv.xtreamVod=async()=>[{id:'v'}];
+   const rb=await refresh({...pl,xtreamServer:'http://dead.example',backupHosts:['http://backup.example:8080']},undefined,{kinds:['vod']});
+   assert.equal(rb.ok,true);assert.deepEqual(tried,['http://dead.example','http://backup.example:8080']);assert.equal(rb.patch.xtreamServer,'http://backup.example:8080');
+   iptv.xtreamLogin=async()=>{throw Error('network');};
+   const rf=await refresh({...pl,xtreamServer:'http://dead.example',backupHosts:['http://also-dead.example']},undefined,{kinds:['vod']});assert.equal(rf.ok,false);
+   iptv.xtreamLogin=origLogin;iptv.xtreamVod=origVod; }
  const ops=load('frontend/src/utils/catalogOperations.ts');assert.equal(ops.freshnessDue(1000,15,1001),false);assert.equal(ops.freshnessDue(1000,15,901001),true);
  const data=new Map([['kizilkan.profiles',JSON.stringify([{id:'family'}])],['kizilkan.player.autoNext.family','true'],['kizilkan.playlists.meta.family',JSON.stringify([{id:'pl',m3uValidators:{url:'https://example.com/list',etag:'"abc"'},serverCodeBinding:{sources:[{source:'splayer'}]}}])]]);
  const backup=load('frontend/src/utils/backup.ts',{'@/src/utils/storage':{storage:{getItem:async(k,d)=>data.get(k)??d,setItem:async(k,v)=>{data.set(k,v);return true;},removeItem:async k=>{data.delete(k);return true;}}},'@/src/utils/storage/bigStore':{bigStore:{}}});

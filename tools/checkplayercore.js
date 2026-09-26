@@ -344,7 +344,9 @@ if (fs.existsSync(liveScreenPath)) {
   const live = fs.readFileSync(liveScreenPath,'utf8');
   requireText(live, 'EPG ISOLATION', 'EPG non-blocking isolation');
   requireText(live, 'InteractionManager.runAfterInteractions', 'EPG deferred after interactions');
-  requireText(live, '.slice(0, 16)', 'bounded initial EPG window');
+  // v18.2.0: EPG penceresi görünen satırdan itibaren kayar ama yine 16 kanalla SINIRLI.
+  if (live.includes('.slice(0, 16)') || live.includes('epgWindowStart + 16')) console.log('✓ bounded initial EPG window');
+  else requireText(live, '.slice(0, 16)', 'bounded initial EPG window');
 }
 requireText(src, 'successfulSessionAtRef', 'late playback error success timestamp');
 requireText(src, 'bayat source error', 'stale post-first-frame error guard');

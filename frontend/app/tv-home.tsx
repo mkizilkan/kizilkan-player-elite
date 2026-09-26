@@ -57,6 +57,7 @@ import { normalize } from "@/src/utils/fuzzy";
 import { KizilkanNativeCore, type NativePlaylistSummary } from "@/modules/kizilkan-native-core";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
 import { TvFocusScope, useTvFocusMemory } from "@/src/store/TvFocusMemoryContext";
+import { isNewItem } from "@/src/utils/newBadge";
 
 /**
  * TVFocusGuideView (v9.12.0) — yalnızca react-native-tvos fork'unda vardır.
@@ -71,6 +72,8 @@ import { VideoView, useVideoPlayer } from "expo-video";
 
 const ALL = "__ALL__";
 const FAV = "__FAV__";
+/** v18.2.0 (B2): sol sütunda "Son izlenenler" kısa yolu (yalnız canlı). */
+const RECENT = "__RECENT__";
 const SIDE_ROW_H = 46;
 const CHAN_ROW_H = 52;
 
@@ -110,8 +113,10 @@ export function TvHomeContent() {
    */
   const {
     playlists, activePlaylist, setActivePlaylist, isLoading, ensureHeavyLoaded,
-    favorites, toggleFavorite, isFavorite, addToRecent,
+    favorites, toggleFavorite, isFavorite, addToRecent, recent,
   } = usePlaylists();
+  const recentRef = useRef<string[]>(recent || []);
+  recentRef.current = recent || [];
 
   // v15.2.24-RC3: Android/Room mevcutken TV ana ekranı ağır Live/VOD/Series
   // dizilerini JS heap'e taşımamalı. Native Core olmayan platformlarda legacy davranış korunur.
@@ -155,6 +160,24 @@ export function TvHomeContent() {
    * bu yüzden kumanda gezinmesini yavaşlatmaz.
    */
   const [epgMap, setEpgMap] = useState<Record<string, any>>({});
+  /**
+   * v18.2.0 — EPG PENCERESİ: eskiden yalnız İLK 60 kanalın EPG'si alınıyordu;
+   * aşağı inince sütun "—" gösteriyordu. Artık görünen ilk satırdan itibaren
+   * (öncesi 10, sonrası 50) alınır ve mevcut haritaya BİRLEŞTİRİLİR.
+   */
+  const [epgWindowStart, setEpgWindowStart] = useState(0);
+  const epgMapRef = useRef<Record<string, any>>({});
+  epgMapRef.current = epgMap;
+  const epgWindowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** v18.2.0: EPG sütunu kanal listesiyle birlikte kayar (eskiden bağımsızdı → yanlış satır). */
+  const epgListRef = useRef<FlatList<any> | null>(null);
+  const onChanViewable = useRef(({ viewableItems }: { viewableItems: Array<{ index: number | null }> }) => {
+    const first = viewableItems.reduce((m, v) => (v.index != null && v.index < m ? v.index : m), Number.MAX_SAFE_INTEGER);
+    if (first === Number.MAX_SAFE_INTEGER) return;
+    if (epgWindowTimerRef.current) clearTimeout(epgWindowTimerRef.current);
+    epgWindowTimerRef.current = setTimeout(() => setEpgWindowStart(first), 250);
+  }).current;
+  const chanViewabilityConfig = useRef({ itemVisiblePercentThreshold: 30 }).current;
 
   const sideScroll = useFocusScroll<SideItem>();
   const chanScroll = useFocusScroll<any>();
@@ -225,11 +248,18 @@ export function TvHomeContent() {
       let items:any[] = [];
       let hasMore = false;
       let nextOffset = nativeOffsetRef.current;
-      if (selectedCat === FAV) {
-        // Favoriler kullanıcı tarafından sınırlı bir kümedir; yalnız seçili playlistte
-        // var olan kimlikler native Room'dan alınır, tam katalog hydrate edilmez.
-        const favIds = Array.from(new Set((favorites || []).map(String)));
-        items = favIds.length ? await KizilkanNativeCore.getItemsByIds(id, tab, favIds) : [];
+      if (selectedCat === FAV || selectedCat === RECENT) {
+        // Favoriler / son izlenenler kullanıcı tarafından sınırlı bir kümedir; yalnız
+        // seçili playlistte var olan kimlikler native Room'dan alınır, tam katalog
+        // hydrate edilmez. v18.2.0: son izlenenler en yeniden eskiye sıralı kalır.
+        // recent REF üzerinden okunur: her kanal açılışında değiştiği için bağımlılık
+        // olsaydı oynatıcıdan dönüşte liste baştan yüklenip konum kaybolurdu.
+        const wanted = Array.from(new Set(((selectedCat === RECENT ? recentRef.current : favorites) || []).map(String)));
+        items = wanted.length ? await KizilkanNativeCore.getItemsByIds(id, tab, wanted) : [];
+        if (selectedCat === RECENT) {
+          const order = new Map(wanted.map((x, i) => [x, i]));
+          items = [...items].sort((a: any, b: any) => (order.get(String(a?.id)) ?? 1e9) - (order.get(String(b?.id)) ?? 1e9));
+        }
         const q = normalize(search.trim());
         if (q) items = items.filter((x:any) => normalize(String(x?.name || "")).includes(q) || normalize(String(x?.group || "")).includes(q));
         hasMore = false;
@@ -262,6 +292,14 @@ export function TvHomeContent() {
     if (!nativeMode) { setNativeItems([]); nativeOffsetRef.current = 0; return; }
     void loadNativePage(true);
   }, [nativeMode, activePlaylist?.id, tab, selectedCat, search, parental.adultHidden, loadNativePage]);
+  // v18.2.0: "Son izlenenler" açıkken yeni kanal izlenince liste güncellenir
+  // (en yeni en üstte olduğu için konum kaybı yok). Diğer kategorilerde tetiklenmez.
+  const recentSignature = (recent || []).slice(0, 50).join("|");
+  useEffect(() => {
+    if (!nativeMode || selectedCat !== RECENT) return;
+    void loadNativePage(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recentSignature]);
 
   /** Aktif listedeki, seçili sekmeye ait görünür/native sayfa öğeleri. */
   const baseList = useMemo(() => {
@@ -302,11 +340,46 @@ export function TvHomeContent() {
     ];
   }, [activePlaylist, nativeMode, nativeSummary]);
 
+  /**
+   * v18.2.0 — SAYI DÜZELTMESİ: Room modunda baseList yalnız o an yüklü SAYFADIR
+   * (≤250). Eskiden "TÜMÜ" sayısı 250'de takılıyor, favori sayısı yalnız bu
+   * sayfadakileri sayıyordu. Artık TÜMÜ Room özetinden, favori/son izlenen
+   * sayısı da bu listede gerçekten var olan kimliklerden gelir.
+   */
+  const [nativeShortcutCounts, setNativeShortcutCounts] = useState<{ fav: number; recent: number }>({ fav: 0, recent: 0 });
+  const favKey = (favorites || []).join("|");
+  const recentKey = (recent || []).join("|");
+  useEffect(() => {
+    if (!nativeMode || !activePlaylist?.id) return;
+    let cancelled = false;
+    const id = activePlaylist.id;
+    (async () => {
+      try {
+        const favIds = Array.from(new Set((favorites || []).map(String)));
+        const recIds = tab === "live" ? Array.from(new Set((recent || []).map(String))) : [];
+        const [f, r] = await Promise.all([
+          favIds.length ? KizilkanNativeCore.getItemsByIds(id, tab, favIds) : Promise.resolve([]),
+          recIds.length ? KizilkanNativeCore.getItemsByIds(id, tab, recIds) : Promise.resolve([]),
+        ]);
+        if (!cancelled) setNativeShortcutCounts({ fav: (f as any[]).length, recent: (r as any[]).length });
+      } catch { /* sayı gösterilemezse 0 kalır; liste açılınca yine sorgulanır */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nativeMode, activePlaylist?.id, tab, favKey, recentKey]);
+
   const sideItems = useMemo<SideItem[]>(() => {
-    const favCount = baseList.filter(x => (favorites || []).includes(x.id)).length;
+    const favCount = nativeMode ? nativeShortcutCounts.fav : baseList.filter(x => (favorites || []).includes(x.id)).length;
+    const recentCount = nativeMode
+      ? nativeShortcutCounts.recent
+      : baseList.filter(x => (recent || []).map(String).includes(String(x.id))).length;
+    const allCount = nativeMode
+      ? Number((tab === "vod" ? nativeSummary?.vod : tab === "series" ? nativeSummary?.series : nativeSummary?.channels) ?? baseList.length)
+      : baseList.length;
     const head: SideItem[] = [
+      ...(tab === "live" ? [{ kind: "category" as const, name: RECENT, count: recentCount, playlistId: activePlaylist?.id || "" }] : []),
       { kind: "category", name: FAV, count: favCount, playlistId: activePlaylist?.id || "" },
-      { kind: "category", name: ALL, count: baseList.length, playlistId: activePlaylist?.id || "" },
+      { kind: "category", name: ALL, count: allCount, playlistId: activePlaylist?.id || "" },
     ];
 
     if (!multiPlaylist) {
@@ -332,8 +405,9 @@ export function TvHomeContent() {
         id: pl.id,
         name: pl.name,
         open,
-        // v15.0.1 BUILD FIX: Playlist runtime sözleşmesinde channelCount yok; yüklenmiş kanal dizisi tek gerçek kaynaktır.
-        count: pl.channels?.length || 0,
+        // v15.0.1 BUILD FIX: Playlist runtime sözleşmesinde channelCount yok.
+        // v18.2.0: Room modunda channels BOŞ dizidir → sayı 0 görünüyordu; channelsCount kullanılır.
+        count: Number((pl as any).channelsCount ?? pl.channels?.length ?? 0),
       });
       if (open && isActive) {
         out.push(...head);
@@ -348,13 +422,17 @@ export function TvHomeContent() {
       }
     }
     return out;
-  }, [multiPlaylist, categories, baseList, favorites, playlists, activePlaylist?.id, openPlaylists]);
+  }, [multiPlaylist, categories, baseList, favorites, recent, playlists, activePlaylist?.id, openPlaylists, nativeMode, nativeShortcutCounts, nativeSummary, tab]);
 
   /** Orta sütun: seçili kategoriye ve aramaya göre süzülmüş kanallar. */
   const channels = useMemo(() => {
     if (nativeMode) return baseList;
     let list = baseList;
     if (selectedCat === FAV) list = list.filter(x => (favorites || []).includes(x.id));
+    else if (selectedCat === RECENT) {
+      const order = new Map((recent || []).map((x, i) => [String(x), i]));
+      list = list.filter(x => order.has(String(x.id))).sort((a, b) => (order.get(String(a.id)) ?? 0) - (order.get(String(b.id)) ?? 0));
+    }
     else if (selectedCat !== ALL) list = list.filter(x => (x.group || "Diğer") === selectedCat);
 
     const q = normalize(search.trim());
@@ -363,7 +441,7 @@ export function TvHomeContent() {
       normalize(String(x.group || "")).includes(q)
     );
     return list;
-  }, [baseList, selectedCat, favorites, search, nativeMode]);
+  }, [baseList, selectedCat, favorites, recent, search, nativeMode]);
 
   // v17.10.0: TV sütunlu ekranda Player dönüş hedefini önce liste içinde
   // ORTALA, ardından focus-memory preferred focus isteği native'e ulaşsın.
@@ -396,8 +474,8 @@ export function TvHomeContent() {
       });
       return;
     }
-    if (selectedCat === FAV) {
-      void recordDiagnostic("navigation", "FOCUS_RESTORE_SKIP", { surface: "tv-home", kind: targetKind, itemId: targetId, reason: "favorites-target-not-loaded" }, { stage: "focus-restore", outcome: "skipped" });
+    if (selectedCat === FAV || selectedCat === RECENT) {
+      void recordDiagnostic("navigation", "FOCUS_RESTORE_SKIP", { surface: "tv-home", kind: targetKind, itemId: targetId, reason: selectedCat === RECENT ? "recent-target-not-loaded" : "favorites-target-not-loaded" }, { stage: "focus-restore", outcome: "skipped" });
       return;
     }
     if (!nativeMode) {
@@ -447,24 +525,24 @@ export function TvHomeContent() {
   const openItem = useCallback((item: any) => {
     void (async () => {
       haptic.light();
-      const navScopeKey = selectedCat === FAV && activePlaylist?.id
+      const navScopeKey = (selectedCat === FAV || selectedCat === RECENT) && activePlaylist?.id
         ? await savePlayerNavigationScope({
             playlistId: activePlaylist.id, origin: "tv-home", kind: tab,
-            scopeId: `favorites:${search.trim() || "all"}`, ids: channels.map((x:any) => x.id),
+            scopeId: `${selectedCat === RECENT ? "recent" : "favorites"}:${search.trim() || "all"}`, ids: channels.map((x:any) => x.id),
           })
         : undefined;
-      const navGroup = selectedCat === FAV ? "__all__" : (selectedCat === ALL ? "__all__" : selectedCat);
+      const navGroup = (selectedCat === FAV || selectedCat === RECENT) ? "__all__" : (selectedCat === ALL ? "__all__" : selectedCat);
       if (tab === "live") {
         // v9.8.0: Önizlemeyi TAM oynatıcıya geçmeden ANINDA durdur; böylece yeni
         // kanal yüklenene kadar önizleme sesi çakışmaz. (useFocusEffect blur'u
         // iç içe navigatörlerde biraz gecikebiliyor.)
         setScreenFocused(false);
         addToRecent(item.id);
-        router.push({ pathname: "/player", params: { id: item.id, navOrigin: "tv-home", navGroup, navSearch: selectedCat === FAV ? "" : search, navScopeKey, focusKey: `tv-home:${tab}:${item.id}` } });
+        router.push({ pathname: "/player", params: { id: item.id, navOrigin: "tv-home", navGroup, navSearch: (selectedCat === FAV || selectedCat === RECENT) ? "" : search, navScopeKey, focusKey: `tv-home:${tab}:${item.id}` } });
       } else {
         returnFocus.remember(`tv-home:${tab}:${item.id}`);
         detailReturnPendingRef.current = true;
-        router.push({ pathname: "/detail", params: { type: tab, id: item.id, navOrigin: "tv-home", navGroup, navSearch: selectedCat === FAV ? "" : search, navScopeKey, focusKey: `tv-home:${tab}:${item.id}` } });
+        router.push({ pathname: "/detail", params: { type: tab, id: item.id, navOrigin: "tv-home", navGroup, navSearch: (selectedCat === FAV || selectedCat === RECENT) ? "" : search, navScopeKey, focusKey: `tv-home:${tab}:${item.id}` } });
       }
     })();
   }, [tab, addToRecent, router, selectedCat, activePlaylist?.id, search, channels, returnFocus.remember]);
@@ -516,23 +594,34 @@ export function TvHomeContent() {
    *   2. Kategori seçiliyse -> TÜMÜ'ye dön
    *   3. İkisi de temizse  -> profil seçimine dön (normal geri)
    */
+  // v18.2.0: liste değişince EPG haritası sıfırlanmaz (anahtar EPG kimliği; başka
+  // listeye geçince temizlenir) ve pencere başa döner.
+  useEffect(() => { setEpgMap({}); }, [activePlaylist?.id]);
+  useEffect(() => { setEpgWindowStart(0); }, [tab, activePlaylist?.id, selectedCat, search]);
   useEffect(() => {
     if (tab !== "live" || !activePlaylist?.id) return;
     let alive = true;
     (async () => {
       try {
-        const ids = channels
-          .slice(0, 60)
+        const from = Math.max(0, epgWindowStart - 10);
+        const ids = Array.from(new Set(channels
+          .slice(from, epgWindowStart + 50)
           .map((c: any) => c.epg_channel_id || c.tvg_id)
-          .filter(Boolean) as string[];
+          .filter(Boolean) as string[]))
+          // Taze kalması için "şimdi" programı bitmiş olanlar yeniden istenir.
+          .filter(id => {
+            const cur = epgMapRef.current[id];
+            const stop = cur?.now?.stop ? new Date(cur.now.stop).getTime() : 0;
+            return !cur || (stop > 0 && stop < Date.now());
+          });
         if (ids.length === 0) return;
         const { getNowNext } = await import("@/src/utils/epg");
         const res = await getNowNext(activePlaylist.id, ids, (activePlaylist as any).epgUrl);
-        if (alive && res?.data) setEpgMap(res.data);
+        if (alive && res?.data) setEpgMap(prev => ({ ...prev, ...res.data }));
       } catch { /* EPG yoksa sütun boş görünür, sorun değil */ }
     })();
     return () => { alive = false; };
-  }, [tab, activePlaylist?.id, selectedCat, channels.length]);
+  }, [tab, activePlaylist?.id, selectedCat, channels.length, epgWindowStart]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -550,7 +639,7 @@ export function TvHomeContent() {
   }, [epgMap]);
 
   const catLabel = (name: string) =>
-    name === ALL ? "TÜMÜ" : name === FAV ? "⭐ FAVORİLER" : name;
+    name === ALL ? "TÜMÜ" : name === FAV ? "⭐ FAVORİLER" : name === RECENT ? "🕘 SON İZLENENLER" : name;
 
   if (tooNarrow) {
     return (
@@ -741,6 +830,11 @@ export function TvHomeContent() {
                         <Ionicons name="film-outline" size={22} color={colors.onSurfaceTertiary} />
                       </View>
                     )}
+                    {isNewItem(item) ? (
+                      <View style={{ position: "absolute", top: 4, left: 4, backgroundColor: colors.brandPrimary, borderRadius: RADIUS.sm, paddingHorizontal: 4, paddingVertical: 1 }}>
+                        <Text style={{ color: colors.onBrandPrimary, fontSize: 9, fontWeight: "900" }}>YENİ</Text>
+                      </View>
+                    ) : null}
                   </View>
                   <Text style={{ color: colors.onSurface, fontSize: 10, marginTop: 3 }} numberOfLines={2}>
                     {item.name}
@@ -755,6 +849,13 @@ export function TvHomeContent() {
             keyExtractor={(it: any) => String(it.id)}
             onScrollToIndexFailed={chanScroll.onScrollToIndexFailed}
             getItemLayout={(_, index) => ({ length: CHAN_ROW_H, offset: CHAN_ROW_H * index, index })}
+            onScroll={e => {
+              // v18.2.0: EPG sütunu aynı ofsete (satır yükseklikleri eşit: CHAN_ROW_H).
+              try { epgListRef.current?.scrollToOffset({ offset: e.nativeEvent.contentOffset.y, animated: false }); } catch { /* yoksay */ }
+            }}
+            scrollEventThrottle={16}
+            onViewableItemsChanged={onChanViewable}
+            viewabilityConfig={chanViewabilityConfig}
             initialNumToRender={14}
             windowSize={9}
             onEndReached={() => { if (nativeMode && nativeHasMore) void loadNativePage(false); }}
@@ -790,21 +891,30 @@ export function TvHomeContent() {
             VOD/Dizi'de bu sütun kullanılmaz; 3+4 birleşip afiş ızgarası olur. */}
         <View style={styles.epgCol}>
           {tab === "live" ? (
+            <>
+            {/* HİZA (v9.10.0): Kanal sütununda listenin ÜSTÜNDE önizleme
+                (varsa) VE arama kutusu (her zaman, CHAN_ROW_H=52) var. EPG
+                sütunu bunların İKİSİNİ birden telafi etmeli.
+                v18.2.0: boşluk artık listenin DIŞINDA (sabit); liste kanal
+                listesiyle aynı ofsete kaydırıldığı için içeride kalsaydı kayardı. */}
+            <View style={{ height: (tvPreview ? (screenW / 4) * 9 / 16 : 0) + CHAN_ROW_H }} />
             <FlatList
+              ref={epgListRef}
               data={channels}
               keyExtractor={(it: any) => `epg-${it.id}`}
-              initialNumToRender={10}
-              windowSize={5}
-              ListHeaderComponent={
-                /* HİZA (v9.10.0): Kanal sütununda listenin ÜSTÜNDE önizleme
-                   (varsa) VE arama kutusu (her zaman, CHAN_ROW_H=52) var. EPG
-                   sütunu bunların İKİSİNİ birden telafi etmeli; eskiden yalnızca
-                   önizlemeyi sayıyordu → EPG bir satır yukarıda kalıyordu. */
-                <View style={{ height: (tvPreview ? (screenW / 4) * 9 / 16 : 0) + CHAN_ROW_H }} />
-              }
+              initialNumToRender={14}
+              windowSize={9}
+              scrollEnabled={false}
+              showsVerticalScrollIndicator={false}
+              getItemLayout={(_, index) => ({ length: CHAN_ROW_H, offset: CHAN_ROW_H * index, index })}
               renderItem={({ item }) => {
                 const e = epgFor(item);
                 const isSel = highlighted?.id === item.id;
+                // v18.2.0 (B1): seçili kanalda ilerleme + kalan süre.
+                const nowStart = e?.now?.start ? new Date(e.now.start).getTime() : 0;
+                const nowStop = e?.now?.stop ? new Date(e.now.stop).getTime() : 0;
+                const pct = nowStart > 0 && nowStop > nowStart ? Math.min(1, Math.max(0, (Date.now() - nowStart) / (nowStop - nowStart))) : 0;
+                const remainMin = nowStop > Date.now() ? Math.ceil((nowStop - Date.now()) / 60000) : 0;
                 return (
                   <View
                     style={[
@@ -822,7 +932,16 @@ export function TvHomeContent() {
                       >
                         {e?.now?.title || "—"}
                       </Text>
-                      {e?.next ? (
+                      {isSel && pct > 0 ? (
+                        <View style={{ height: 3, borderRadius: 2, backgroundColor: colors.surfaceTertiary, overflow: "hidden", marginVertical: 2 }}>
+                          <View style={{ height: "100%", width: `${pct * 100}%`, backgroundColor: colors.brandPrimary }} />
+                        </View>
+                      ) : null}
+                      {isSel && remainMin > 0 ? (
+                        <Text style={{ color: colors.brandPrimary, fontSize: 10 }} numberOfLines={1}>
+                          {`${remainMin} dk kaldı${e?.next?.title ? ` · Sonra: ${e.next.title}` : ""}`}
+                        </Text>
+                      ) : e?.next ? (
                         <Text style={{ color: colors.onSurfaceTertiary, fontSize: 10 }} numberOfLines={1}>
                           {e.next.title}
                         </Text>
@@ -832,6 +951,7 @@ export function TvHomeContent() {
                 );
               }}
             />
+            </>
           ) : (
             <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: SPACING.md }}>
               <Ionicons name="grid-outline" size={40} color={colors.onSurfaceTertiary} />

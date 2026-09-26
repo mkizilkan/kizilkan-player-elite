@@ -18,7 +18,8 @@ import {
 } from "./iptv";
 import type { Playlist } from "@/src/types";
 import { resolveBoundPanel } from "@/src/utils/serverCode";
-import { markTask } from "@/src/utils/diagnostics";
+import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
+import { normalizeHost } from "@/src/player/hostFailover";
 import { applyContentSelection } from "@/src/utils/contentSelection";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
@@ -133,7 +134,36 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
 
       const cred = { server: resolvedServer, username: pl.xtreamUsername, password: pl.xtreamPassword };
       onProgress?.({ phase: "login", message: "Hesap doğrulanıyor..." });
-      const login = await xtreamLogin(cred, options?.signal);
+      /**
+       * v18.2.0 — YEDEK DNS İLE YENİLEME: birincil adres yanıt vermezse (veya
+       * reddederse) panel DNS'leri + kullanıcının yedek DNS'leri sırayla denenir.
+       * Çalışan adres bulunursa liste o adrese geçer (metadataPatch xtreamServer).
+       */
+      let login: Awaited<ReturnType<typeof xtreamLogin>>;
+      try {
+        login = await xtreamLogin(cred, options?.signal);
+      } catch (primaryError) {
+        const primaryNorm = normalizeHost(resolvedServer);
+        const backups = Array.from(new Set([...(pl.backupHosts || []), ...(bindingPatch?.validatedHosts || [])].map(normalizeHost)))
+          .filter(h => !!h && h !== primaryNorm);
+        let recovered: typeof login | null = null;
+        for (const host of backups) {
+          if (options?.signal?.aborted) break;
+          onProgress?.({ phase: "login", message: `Birincil adres yanıt vermedi; yedek DNS deneniyor: ${host}` });
+          try {
+            recovered = await xtreamLogin({ ...cred, server: host }, options?.signal);
+            resolvedServer = host;
+            cred.server = host;
+            void recordDiagnostic("network", "REFRESH_BACKUP_DNS_OK", { playlistId: pl.id, tried: backups.indexOf(host) + 1, total: backups.length }, { stage: "refresh", outcome: "recovered" });
+            break;
+          } catch { /* sıradaki yedek */ }
+        }
+        if (!recovered) {
+          if (backups.length) void recordDiagnostic("network", "REFRESH_BACKUP_DNS_FAILED", { playlistId: pl.id, total: backups.length }, { stage: "refresh", outcome: "failed" });
+          throw primaryError;
+        }
+        login = recovered;
+      }
 
       const baseCapability=():NonNullable<Playlist['catalogCapabilities']>=>({
         live:pl.catalogCapabilities?.live||'empty',

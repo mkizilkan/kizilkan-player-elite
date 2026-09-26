@@ -10,6 +10,7 @@ import { useTv } from "@/src/store/TvContext";
 import { useTvFocusMemory } from "@/src/store/TvFocusMemoryContext";
 import { useFocusScroll } from "@/src/hooks/useFocusScroll";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
+import { isNewItem } from "@/src/utils/newBadge";
 
 const H_PAD = SPACING.lg;
 const GAP = SPACING.sm;
@@ -180,6 +181,12 @@ function PosterCard({ item, width, height, testIDPrefix, onPress, onLongPress, f
             <Ionicons name="film-outline" size={30} color={colors.onSurfaceSecondary} />
           </View>
         )}
+        {/* v18.2.0: son 7 günde eklenen içerik rozeti */}
+        {isNewItem(item) ? (
+          <View style={[styles.newTag, { backgroundColor: colors.brandPrimary }]}>
+            <Text style={[styles.newTagText, { color: colors.onBrandPrimary }]}>YENİ</Text>
+          </View>
+        ) : null}
         {"rating_5based" in item && item.rating_5based ? (
           <View style={styles.ratingTag}>
             <Ionicons name="star" size={10} color="#FFD700" />
@@ -209,6 +216,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6, paddingVertical: 2,
     borderRadius: RADIUS.sm,
   },
+  newTag: {
+    position: "absolute", top: 6, left: 6,
+    paddingHorizontal: 6, paddingVertical: 2,
+    borderRadius: RADIUS.sm,
+  },
+  newTagText: { fontSize: FONT.size.xs, fontWeight: FONT.weight.black, letterSpacing: 0.5 },
   ratingText: { color: "#fff", fontSize: FONT.size.xs, fontWeight: FONT.weight.bold },
   name: {
     marginTop: 6, fontSize: FONT.size.sm, fontWeight: FONT.weight.semibold, minHeight: 34,

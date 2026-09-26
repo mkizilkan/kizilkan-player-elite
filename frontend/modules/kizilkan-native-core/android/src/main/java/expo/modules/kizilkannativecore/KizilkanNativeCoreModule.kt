@@ -49,6 +49,8 @@ class KizilkanNativeCoreModule : Module() {
   private val liveTimeshiftManager by lazy { LiveTimeshiftManager(context()) }
   // v18.1.0 — yerel medya: tek sorguda SAF klasör listesi + kapak/süre bilgisi.
   private val localMediaLibrary by lazy { LocalMediaLibrary(context()) }
+  // v18.2.0 — Chromecast yayın köprüsü (yerel dosya / başlıklı yayın / TS→HLS canlı).
+  private val castBridge by lazy { CastBridgeServer(context(), liveTimeshiftManager) }
 
   data class IndexResult(val snapshot: PlaylistSnapshotEntity, val cacheHit: Boolean)
 
@@ -747,6 +749,26 @@ class KizilkanNativeCoreModule : Module() {
 
     AsyncFunction("clearLocalMediaArtCache") {
       localMediaLibrary.clearArtCache()
+    }
+
+    // v18.2.0 — Chromecast yayın köprüsü (bkz. CastBridgeServer.kt).
+    AsyncFunction("castBridgeRegisterFile") { uri: String, contentType: String ->
+      castBridge.registerFile(uri, contentType)
+    }
+    AsyncFunction("castBridgeRegisterProxy") { url: String, headersJson: String, contentType: String ->
+      castBridge.registerProxy(url, headersJson, contentType)
+    }
+    AsyncFunction("castBridgeRegisterText") { body: String, contentType: String, name: String ->
+      castBridge.registerText(body, contentType, name)
+    }
+    AsyncFunction("castBridgeStartLiveHls") { url: String, headersJson: String, timeoutMs: Double ->
+      castBridge.startLiveHls(url, headersJson, timeoutMs.toLong())
+    }
+    AsyncFunction("castBridgeStopAll") {
+      castBridge.stopAll()
+    }
+    AsyncFunction("castBridgeStatus") {
+      castBridge.status()
     }
 
     AsyncFunction("readPlaylistHeavy") { id: String ->

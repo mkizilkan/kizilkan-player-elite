@@ -42,7 +42,11 @@ node tools/denetle.js        # sonunda başarısız kapı olmamalı
 ```
 - Kotlin değiştiyse ve Android SDK kuruluysa derleme kontrolü:
   `cd frontend; npx expo prebuild --platform android --clean --no-install; cd android; .\gradlew.bat assembleDebug`
-- **Debug APK'yı telefona KURMA** (bkz. §7 imza uyarısı). Yalnız derleme doğrulaması içindir.
+- **v18.2.0+: Debug APK ayrı pakettir** (`com.gpt.kizilkan.player.dev`, "KIZILKAN DEV", `plugins/withDevVariant.js`);
+  asıl uygulamanın YANINA kurulur, veri ayrıdır → kurulabilir. Asıl paketin üstüne kurulacak APK yalnız
+  aynı release anahtarıyla imzalı `assembleRelease` olabilir (`plugins/withLocalReleaseSigning.js`, anahtar
+  bilgileri yalnız `%USERPROFILE%\.gradle\gradle.properties` içinde; depoya ASLA girmez).
+- PC derlemesi için oturumda: `$env:ANDROID_HOME="C:\Android\Sdk"` ve JDK 17.0.20 (bkz. §7).
 - Doğrulama geçmeden commit/push yapma. Geçtiyse kullanıcıya sonucu özetle.
 
 ## 4. Sürüm ve dal kuralları
@@ -99,6 +103,10 @@ node tools/denetle.js        # sonunda başarısız kapı olmamalı
 | Telemetri / uçuş kaydedici | `frontend/src/utils/diagnostics.ts` |
 | Yerel medya ekranı / ortak durum | `frontend/app/local-media.tsx`, `frontend/src/utils/localMedia.ts` |
 | Yerel medya native (SAF liste, kapak/süre) | `frontend/modules/kizilkan-native-core/android/.../LocalMediaLibrary.kt` |
+| Chromecast yayın köprüsü | `frontend/modules/kizilkan-native-core/android/.../CastBridgeServer.kt`, `src/components/CastButton.tsx` |
+| Yedek DNS yöneticisi | `frontend/src/components/DnsManager.tsx` (+ `app/edit-playlist.tsx`, `src/utils/refreshPlaylist.ts`) |
+| Dış altyazı | `frontend/src/utils/subtitles.ts` |
+| Hangi anahtar güncel | `tools/imza-bul.ps1` |
 | Denetim koşucusu (Windows uyumlu) | `tools/denetle.js` |
 
 ## 7. Bilinen tuzaklar (gerçek hatalardan öğrenildi)
@@ -152,32 +160,27 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.1.0 RC1 — dal `v18.1.0-rc1-local-media`)
+## 9. Mevcut durum (v18.2.0 RC1 — dal `v18.2.0-rc1-epg-combo-cast-dev`)
 
-v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md`, `AI-DEVIR-v18.1.0.md`.
+v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md`, `AI-DEVIR-v18.1.0.md`, `AI-DEVIR-v18.2.0.md`.
 
-Cihazda doğrulananlar (v17.10.4'e kadar): timeshift (duraklat/geri-ileri/canlıya dön),
-açılışta son kanal (profil + liste başına), OOM düzeltmesi, boş kabuk onarımı, combo + doğrudan DNS.
+Cihazda doğrulananlar (v17.10.4'e kadar): timeshift (duraklat/geri-ileri/canlıya dön), açılışta son kanal
+(profil + liste başına), OOM düzeltmesi, boş kabuk onarımı, combo + doğrudan DNS.
 
-v18.0.0'da kodlanan, **cihazda henüz test edilmeyen**: odak/konum geri yükleme (oynatıcı ve
-detay dönüşü, ızgara satır düzeltmesi, kategori paneli/şerit ortalama), timeshift takılma
-telemetrisi (`LIVE_TIMESHIFT_HEALTH`, `LIVE_TIMESHIFT_SESSION_SUMMARY`, `LIVE_SESSION_STALL_SUMMARY`,
-zenginleştirilmiş `REBUFFER_*`), `FOCUS_RESTORE_*` olayları.
-
-v18.1.0'da kodlanan, **cihazda henüz test edilmeyen**: yerel medya yenilemesi (native tek sorgu
-listeleme, ses dosyaları, kapak/süre, filtre/sıralama/arama, kuyruk + otomatik geçiş, kaldığın yer,
-ses modu ekranı, yalnız yerel müzikte arka planda çalma + bildirim).
+**Cihazda henüz test edilmeyenler:** v18.0.0 (odak/konum geri yükleme, timeshift telemetrisi), v18.1.0 (yerel
+medya, ses, arka planda müzik), v18.2.0 (EPG sütunu/pencere, combo link/sıra, yedek DNS yöneticisi + yenileme
+geçişi, Chromecast yayın köprüsü, dış altyazı, son izlenenler, YENİ rozeti, DEV uygulaması).
 
 **Açık konular (öncelik sırasıyla, hiçbiri onaysız kodlanmaz):**
-1. **Timeshift "Her zaman" modunda takılma (KANITLANMADI).** v18.0.0 telemetrisi eklendi;
-   kullanıcıdan "Her zaman" ve "Kapalı" ile aynı kanalda izleme logu bekleniyor. Şüpheler:
-   segment süresi duvar saatiyle yazılıyor (PCR kayması), canlı uçta ≤2 sn tampon, 0,5 sn ilk segment.
-2. Yerel medya v18.1.0 cihaz testi (AI-DEVIR-v18.1.0.md → Cihaz testi).
+1. **Timeshift "Her zaman" takılması (KANITLANMADI).** v18.0.0 telemetrisiyle "Her zaman" ve "Kapalı" log bekleniyor.
+2. **Release anahtarı:** kullanıcıda 2 anahtar var, hangisi güncel bilinmiyor → `tools/imza-bul.ps1`.
 3. Media3 canlıda HTTP 401 alırken aynı adres MPV'de açılıyor (başlık/User-Agent farkı şüphesi).
 4. MAG dizi kataloğu ana thread'i kilitliyor (`mag:catalog-series`, ANR).
 5. Combo tarama sırasında ANR (`scan:panel-stream-v172`, 65 sn) — kök neden kanıtlanmadı.
 6. `iptv.ts` `xtGet` 60 sn zaman aşımı büyük katalog onarımını yarıda kesiyor.
 7. Room temizliği sonrası boş kabuk listeler (seçince onarım yapılıyor; toplu onarım yok).
+8. Chromecast oturumu yalnız kontroller açıkken CastButton'da dinleniyordu (v18.2.0'da oynatıcıya kalıcı
+   dinleyici eklendi); `castSession` durumu da aynı eksiklikten etkilenebilir — cihaz testinde gözlenecek.
 
 ## 10. Nasıl çalışalım
 

@@ -178,6 +178,12 @@ export interface Playlist {
   xtreamPassword?: string;
   /** Sunucu Kodu/Panel Rehberi ile eklenen Xtream listelerinde kalıcı panel bağı. */
   serverCodeBinding?: ServerCodeBinding;
+  /**
+   * v18.2.0 — Kullanıcının elle yönettiği yedek DNS'ler (Liste düzenle → Sunucu
+   * adresleri). "Doğrudan DNS" hesaplarında da çalışır. Oynatıcı ve liste
+   * yenileme, birincil adres başarısız olunca bunları sırayla dener.
+   */
+  backupHosts?: string[];
   stalkerPortal?: string;
   stalkerMac?: string;
   stalkerSerial?: string;

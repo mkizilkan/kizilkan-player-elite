@@ -32,7 +32,8 @@ export const LOCAL_VIDEO_EXT = ["mp4", "mkv", "avi", "mov", "m4v", "webm", "ts",
 export const LOCAL_AUDIO_EXT = ["mp3", "flac", "aac", "m4a", "ogg", "oga", "opus", "wav", "wma", "amr", "mka", "alac", "aiff", "aif"];
 
 export type LocalKind = "video" | "audio";
-export type LocalQueueItem = { id: string; uri: string; name: string; ext: string; kind: LocalKind };
+/** v18.2.0: subtitleUri = aynı klasördeki aynı adlı .srt/.vtt (varsa). */
+export type LocalQueueItem = { id: string; uri: string; name: string; ext: string; kind: LocalKind; subtitleUri?: string };
 export type LocalQueue = { items: LocalQueueItem[]; dirUri?: string; label?: string; createdAt: number };
 export type LocalRecent = LocalQueueItem & { openedAt: number; dirUri?: string };
 export type LocalProgress = { current: number; duration: number; updatedAt: number };
@@ -56,6 +57,42 @@ export function localIdForUri(uri: string): string {
 export function extOfName(name: string): string {
   const dot = name.lastIndexOf(".");
   return dot >= 0 && dot < name.length - 1 ? name.slice(dot + 1).toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+}
+
+export const LOCAL_SUBTITLE_EXT = ["srt", "vtt"];
+
+export function isSubtitleName(name: string): boolean {
+  return LOCAL_SUBTITLE_EXT.includes(extOfName(name));
+}
+
+/** "Film.2023.tr.srt" → "film.2023" (dil soneki ve uzantı atılır, küçük harf). */
+function baseKey(name: string, stripLang: boolean): string {
+  let b = String(name || "").replace(/\.[^.]+$/, "").toLowerCase();
+  if (stripLang) b = b.replace(/\.(tr|tur|turkish|türkçe|en|eng|english|forced|sdh)$/i, "");
+  return b;
+}
+
+/**
+ * Videolara aynı klasördeki altyazıyı eşler. Öncelik: tam aynı ad → Türkçe
+ * soneki (".tr") → herhangi bir dil soneki.
+ */
+export function matchSubtitles(videoNames: string[], subtitles: Array<{ name: string; uri: string }>): Map<string, string> {
+  const exact = new Map<string, string>();
+  const byBase = new Map<string, { uri: string; tr: boolean }>();
+  for (const s of subtitles) {
+    exact.set(baseKey(s.name, false), s.uri);
+    const key = baseKey(s.name, true);
+    const tr = /\.(tr|tur|turkish|türkçe)\.[^.]+$/i.test(s.name);
+    const cur = byBase.get(key);
+    if (!cur || (tr && !cur.tr)) byBase.set(key, { uri: s.uri, tr });
+  }
+  const out = new Map<string, string>();
+  for (const v of videoNames) {
+    const k = baseKey(v, false);
+    const hit = exact.get(k) || byBase.get(k)?.uri;
+    if (hit) out.set(v, hit);
+  }
+  return out;
 }
 
 export function kindOfName(name: string, mime = ""): LocalKind | null {
@@ -95,6 +132,7 @@ export async function writeLocalPayload(item: LocalQueueItem, artUri?: string | 
     group: item.kind === "audio" ? "Yerel Müzik" : "Yerel Medya",
     container_ext: item.ext || (item.kind === "audio" ? "mp3" : "mp4"),
     poster: artUri || null,
+    ...(item.subtitleUri ? { subtitle_uri: item.subtitleUri } : {}),
   }));
 }
 

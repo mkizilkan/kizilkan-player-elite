@@ -154,11 +154,64 @@ function fromUserPasswordLine(line: string, row: number): BulkAccountInput | nul
   return { row, name: "", username, password };
 }
 
+/**
+ * v18.2.0 — HESAP LİNKİ: `http://host:port/get.php?username=U&password=P&type=m3u_plus`
+ * (player_api.php / xmltv.php da olur). Eskiden "://" içeren satırlar tamamen
+ * atlanıyordu → link biçimli combo dosyalarında hesaplar kayboluyordu.
+ * Satırda linkten başka alanlar (ad vb.) olabilir; ilk http(s) adresi alınır.
+ * RN'de URLSearchParams güvenilir olmadığı için sorgu elle çözülür.
+ */
+function queryParam(query: string, name: string): string {
+  for (const part of query.split("&")) {
+    const eq = part.indexOf("=");
+    const k = eq >= 0 ? part.slice(0, eq) : part;
+    if (k.toLowerCase() !== name) continue;
+    const raw = eq >= 0 ? part.slice(eq + 1) : "";
+    try { return decodeURIComponent(raw.replace(/\+/g, " ")); } catch { return raw; }
+  }
+  return "";
+}
+
+export function fromAccountUrl(line: string, row: number): BulkAccountInput | null {
+  const m = /https?:\/\/[^\s|;,"'<>]+/i.exec(String(line || ""));
+  if (!m) return null;
+  const url = m[0];
+  const q = url.indexOf("?");
+  if (q < 0) return null;
+  const query = url.slice(q + 1).split("#")[0];
+  const username = queryParam(query, "username").trim();
+  const password = queryParam(query, "password").trim();
+  if (!username || !password) return null;
+  const origin = /^(https?:\/\/[^/?#]+)/i.exec(url)?.[1] || "";
+  if (!origin) return null;
+  // Linkin dışındaki ilk anlamlı metin hesap adı olarak kullanılır (varsa).
+  const rest = String(line).replace(url, " ").split(/[|;,\t]/).map(x => x.trim()).filter(Boolean);
+  const name = rest.find(x => !/^https?:/i.test(x)) || "";
+  return { row, name, username, password, server: normalizeServer(origin) };
+}
+
+/**
+ * v18.2.0 — İLK SÜTUN SUNUCU MU? Yalnız KESİN sunucu biçimleri (http(s)://,
+ * host:port, IPv4). Gevşek kontrol ("ali.veli" gibi kullanıcı adlarını sunucu
+ * sanma) sıralamayı bozmasın diye burada kullanılmaz.
+ */
+function strictServer(v: string): boolean {
+  const x = String(v || "").trim();
+  return /^https?:\/\//i.test(x) || /^[a-z0-9.-]+:\d{2,5}(?:\/.*)?$/i.test(x) || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(x);
+}
+
 function fromHeaderless(values: string[], row: number): BulkAccountInput | null {
   const vals = values.map(v => v.trim()).filter((v, i, a) => !(i === a.length - 1 && !v));
   if (vals.length < 2) return null;
 
   let name = "", username = "", password = "", locator = "";
+  // v18.2.0: `sunucu|kullanıcı|şifre[|ad]` sırası. Eskiden sunucu adresi kullanıcı
+  // adı sanılıyordu. Yalnız ilk sütun KESİN sunucuysa ve son sütun sunucu değilse.
+  if (vals.length >= 3 && strictServer(vals[0]) && !looksLikeServer(vals[vals.length - 1])) {
+    const [server, u, p, n] = vals;
+    if (!u || !p) return null;
+    return { row, name: n || "", username: u, password: p, server: normalizeServer(server) };
+  }
   if (vals.length >= 4) {
     [name, username, password, locator] = vals;
   } else if (vals.length === 3) {
@@ -188,7 +241,7 @@ export function parseBulkAccounts(text: string): BulkAccountParseResult {
     const blocks = raw.split(/={20,}\s*\r?\nKIZILKAN PLAYER ELITE — HESAP #\d+\s*\r?\n={20,}/i).slice(1);
     const accounts: BulkAccountInput[] = [];
     blocks.forEach((block, i) => {
-      const get = (label: string) => { const m = block.match(new RegExp(`^${label}\\s*:\s*(.+)$`, "mi")); return String(m?.[1] || "").trim(); };
+      const get = (label: string) => { const m = block.match(new RegExp(`^${label}\\s*:\\s*(.+)$`, "mi")); return String(m?.[1] || "").trim(); };
       const username = get("Kullanıcı Adı"); const password = get("Şifre"); const server = get("Birincil Sunucu") || get("Panel / Sunucu");
       const code = get("Sunucu Kodu"); const panelName = get("Panel Adı"); const name = get("Hesap Adı");
       const validatedHosts = Array.from(block.matchAll(/^\s*\[\d+\]\s+(https?:\/\/\S+)\s*$/gmi)).map(m => normalizeServer(m[1]));
@@ -234,7 +287,7 @@ export function parseBulkAccounts(text: string): BulkAccountParseResult {
   const accounts: BulkAccountInput[] = [];
 
   for (let i = start; i < lines.length; i++) {
-    const quickPair = !hasHeader ? fromUserPasswordLine(lines[i], i + 1) : null;
+    const quickPair = !hasHeader ? (fromAccountUrl(lines[i], i + 1) || fromUserPasswordLine(lines[i], i + 1)) : null;
     const values = parseDelimitedLine(lines[i], delimiter);
     const account = quickPair || (hasHeader
       ? fromObject(rowObject(headers, values), i + 1)

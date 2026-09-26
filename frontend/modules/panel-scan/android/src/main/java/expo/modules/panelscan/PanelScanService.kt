@@ -773,7 +773,45 @@ class PanelScanService : Service() {
       Regex("^[a-z0-9.-]+:\\d+(?:/.*)?$", RegexOption.IGNORE_CASE).matches(v) ||
       Regex("\\.[a-z]{2,}(?::\\d+)?(?:/|$)", RegexOption.IGNORE_CASE).containsMatchIn(v)
 
+  // v18.2.0 — HESAP LİNKİ (get.php / player_api.php ?username=&password=). JS
+  // ayrıştırıcıyla (src/utils/bulkAccounts.ts fromAccountUrl) aynı kurallar.
+  private val accountUrlRegexV182 = Regex("https?://[^\\s|;,\"'<>]+", RegexOption.IGNORE_CASE)
+
+  private fun queryParamV182(query: String, name: String): String {
+    for (part in query.split('&')) {
+      val eq = part.indexOf('=')
+      val k = if (eq >= 0) part.substring(0, eq) else part
+      if (!k.equals(name, ignoreCase = true)) continue
+      val raw = if (eq >= 0) part.substring(eq + 1) else ""
+      return try { java.net.URLDecoder.decode(raw, "UTF-8") } catch (_: Throwable) { raw }
+    }
+    return ""
+  }
+
+  private fun fromAccountUrlV182(line: String, row: Int, ordinal: Long): StreamAccountV172? {
+    val url = accountUrlRegexV182.find(line)?.value ?: return null
+    val q = url.indexOf('?')
+    if (q < 0) return null
+    val query = url.substring(q + 1).substringBefore('#')
+    val u = queryParamV182(query, "username").trim()
+    val p = queryParamV182(query, "password").trim()
+    if (u.isBlank() || p.isBlank()) return null
+    val origin = Regex("^(https?://[^/?#]+)", RegexOption.IGNORE_CASE).find(url)?.groupValues?.getOrNull(1) ?: return null
+    val name = line.replace(url, " ").split('|', ';', ',', '\t').map { it.trim() }
+      .firstOrNull { it.isNotBlank() && !it.startsWith("http", ignoreCase = true) } ?: ""
+    return StreamAccountV172(ordinal, row, name, u, p, normalizeServerV172(origin), "", "")
+  }
+
+  // v18.2.0 — yalnız KESİN sunucu biçimi (http(s)://, host:port, IPv4); "ali.veli" sunucu sayılmaz.
+  private fun strictServerV182(v: String): Boolean {
+    val x = v.trim()
+    return Regex("^https?://", RegexOption.IGNORE_CASE).containsMatchIn(x) ||
+      Regex("^[a-z0-9.-]+:\\d{2,5}(?:/.*)?$", RegexOption.IGNORE_CASE).matches(x) ||
+      Regex("^\\d{1,3}(?:\\.\\d{1,3}){3}$").matches(x)
+  }
+
   private fun parseStreamAccountV172(line: String, delimiter: Char, headers: List<String>?, row: Int, ordinal: Long): StreamAccountV172? {
+    if (headers == null) fromAccountUrlV182(line, row, ordinal)?.let { return it }
     if (headers == null && !line.contains(Regex("[|;\\t,]")) && !line.contains("://")) {
       val i = line.indexOf(':')
       if (i > 0 && i < line.length - 1) {
@@ -792,6 +830,11 @@ class PanelScanService : Service() {
       return StreamAccountV172(ordinal,row,first(streamNameKeysV172),u,p,if (server.isBlank()) "" else normalizeServerV172(server),first(streamCodeKeysV172),first(streamPanelKeysV172))
     }
     val v = vals.map { it.trim() }; if (v.size < 2) return null
+    // v18.2.0: `sunucu|kullanıcı|şifre[|ad]` — ilk sütun kesin sunucu, son sütun sunucu değilse.
+    if (v.size >= 3 && strictServerV182(v[0]) && !looksServerV172(v[v.size - 1])) {
+      if (v[1].isBlank() || v[2].isBlank()) return null
+      return StreamAccountV172(ordinal, row, v.getOrElse(3) { "" }, v[1], v[2], normalizeServerV172(v[0]), "", "")
+    }
     var name = ""; var u = ""; var p = ""; var locator = ""
     if (v.size >= 4) { name=v[0]; u=v[1]; p=v[2]; locator=v[3] } else if (v.size == 3) { u=v[0]; p=v[1]; locator=v[2] } else { u=v[0]; p=v[1] }
     if (u.isBlank() || p.isBlank()) return null

@@ -32,7 +32,7 @@ import { recordDiagnostic } from "@/src/utils/diagnostics";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import {
   LOCAL_LAST_DIR_KEY, LOCAL_PREFS_KEY, addLocalRecent, clearLocalRecent, extOfName, fmtDuration, fmtSize,
-  kindOfName, loadLocalInfoCache, loadLocalProgressMap, loadLocalRecent, localIdForUri, saveLocalInfoCache,
+  isSubtitleName, kindOfName, loadLocalInfoCache, loadLocalProgressMap, loadLocalRecent, localIdForUri, matchSubtitles, saveLocalInfoCache,
   saveLocalProgress, saveLocalQueue, uriDisplayName, writeLocalPayload,
   type LocalInfoLite, type LocalKind, type LocalProgress, type LocalQueueItem, type LocalRecent,
 } from "@/src/utils/localMedia";
@@ -53,8 +53,9 @@ type ViewMode = "folder" | "recent";
 const SCOPE = "local-media";
 const INFO_CONCURRENCY = 2;
 
-function entryToItem(e: Entry): LocalQueueItem {
-  return { id: localIdForUri(e.uri), uri: e.uri, name: e.name, ext: e.ext, kind: e.kind === "audio" ? "audio" : "video" };
+function entryToItem(e: Entry, subtitles?: Map<string, string>): LocalQueueItem {
+  const subtitleUri = e.kind === "video" ? subtitles?.get(e.name) : undefined;
+  return { id: localIdForUri(e.uri), uri: e.uri, name: e.name, ext: e.ext, kind: e.kind === "audio" ? "audio" : "video", ...(subtitleUri ? { subtitleUri } : {}) };
 }
 
 function shuffled<T>(list: T[]): T[] {
@@ -91,6 +92,8 @@ function LocalMediaInner() {
   const [progress, setProgress] = useState<Record<string, LocalProgress>>({});
   const [info, setInfo] = useState<Record<string, LocalInfoLite>>({});
   const [listingSource, setListingSource] = useState<"native" | "saf" | "">("");
+  /** v18.2.0: video adı → aynı klasördeki altyazı (.srt/.vtt) adresi. */
+  const [subtitleMap, setSubtitleMap] = useState<Map<string, string>>(new Map());
 
   const SAF: any = (FileSystem as any).StorageAccessFramework;
   const infoRef = useRef<Record<string, LocalInfoLite>>({});
@@ -128,11 +131,13 @@ function LocalMediaInner() {
   }, []);
 
   // ── Klasör okuma ────────────────────────────────────────────────────────
-  const listViaSafFallback = useCallback(async (dir: string): Promise<Entry[]> => {
+  const listViaSafFallback = useCallback(async (dir: string): Promise<{ entries: Entry[]; subs: Array<{ name: string; uri: string }> }> => {
     const uris: string[] = await SAF.readDirectoryAsync(dir);
     const out: Entry[] = [];
+    const subs: Array<{ name: string; uri: string }> = [];
     for (const uri of uris) {
       const name = uriDisplayName(uri);
+      if (isSubtitleName(name)) { subs.push({ name, uri }); continue; }
       const kind = kindOfName(name);
       if (kind) { out.push({ uri, name, isDirectory: false, kind, ext: extOfName(name), size: -1, modified: 0 }); continue; }
       // Uzantısı olan ama medya olmayan dosya: klasör yoklaması gereksiz (v18.1.0 hız).
@@ -142,7 +147,7 @@ function LocalMediaInner() {
         out.push({ uri, name, isDirectory: true, kind: "dir", ext: "", size: -1, modified: 0 });
       } catch { /* dosya */ }
     }
-    return out;
+    return { entries: out, subs };
   }, [SAF]);
 
   const inspectEntries = useCallback(async (dir: string) => {
@@ -151,13 +156,15 @@ function LocalMediaInner() {
     const startedAt = Date.now();
     try {
       let out: Entry[] | null = null;
+      let subs: Array<{ name: string; uri: string }> = [];
       let source: "native" | "saf" = "native";
       let nativeError = "";
       if (KizilkanNativeCore.available) {
         const listing = await KizilkanNativeCore.listLocalMediaChildren(dir).catch((e: any) => ({ ok: false, error: String(e?.message || e), entries: [], elapsedMs: 0 }));
         if (listing?.ok) {
-          out = listing.entries.map(e => ({
-            uri: e.uri, name: e.name, isDirectory: e.kind === "dir", kind: e.kind, ext: e.ext,
+          subs = listing.entries.filter(e => e.kind === "subtitle").map(e => ({ name: e.name, uri: e.uri }));
+          out = listing.entries.filter(e => e.kind !== "subtitle").map(e => ({
+            uri: e.uri, name: e.name, isDirectory: e.kind === "dir", kind: e.kind as Entry["kind"], ext: e.ext,
             size: Number(e.size ?? -1), modified: Number(e.modified || 0),
           }));
         } else nativeError = String(listing?.error || "native-unavailable");
@@ -165,8 +172,12 @@ function LocalMediaInner() {
       if (!out) {
         if (!SAF?.readDirectoryAsync) throw new Error(nativeError || "SAF_UNAVAILABLE");
         source = "saf";
-        out = await listViaSafFallback(dir);
+        const fb = await listViaSafFallback(dir);
+        out = fb.entries;
+        subs = fb.subs;
       }
+      const subMap = matchSubtitles(out.filter(e => e.kind === "video").map(e => e.name), subs);
+      setSubtitleMap(subMap);
       setEntries(out);
       setDirectoryUri(dir);
       setListingSource(source);
@@ -175,6 +186,7 @@ function LocalMediaInner() {
       void recordDiagnostic("import", "LOCAL_MEDIA_LIST", {
         source, count: out.length, dirs: out.filter(e => e.isDirectory).length,
         audio: out.filter(e => e.kind === "audio").length, video: out.filter(e => e.kind === "video").length,
+        subtitles: subs.length, subtitleMatched: subMap.size,
         elapsedMs: Date.now() - startedAt, nativeError: nativeError.slice(0, 120),
       }, { stage: "local-media", outcome: "success", durationMs: Date.now() - startedAt });
     } catch (e: any) {
@@ -292,15 +304,15 @@ function LocalMediaInner() {
   const folderLabel = useMemo(() => directoryUri ? uriDisplayName(directoryUri) : "", [directoryUri]);
 
   const playFromFolder = useCallback((entry: Entry, opts?: { fromStart?: boolean }) => {
-    const queue = mediaInView.map(entryToItem);
-    return playItem(entryToItem(entry), queue, { ...opts, dirUri: directoryUri, label: folderLabel });
-  }, [mediaInView, playItem, directoryUri, folderLabel]);
+    const queue = mediaInView.map(e => entryToItem(e, subtitleMap));
+    return playItem(entryToItem(entry, subtitleMap), queue, { ...opts, dirUri: directoryUri, label: folderLabel });
+  }, [mediaInView, playItem, directoryUri, folderLabel, subtitleMap]);
 
   const playAll = useCallback((shuffle: boolean) => {
-    const queue = (shuffle ? shuffled(mediaInView) : mediaInView).map(entryToItem);
+    const queue = (shuffle ? shuffled(mediaInView) : mediaInView).map(e => entryToItem(e, subtitleMap));
     if (!queue.length) return;
     return playItem(queue[0], queue, { fromStart: true, dirUri: directoryUri, label: folderLabel });
-  }, [mediaInView, playItem, directoryUri, folderLabel]);
+  }, [mediaInView, playItem, directoryUri, folderLabel, subtitleMap]);
 
   const chooseFiles = useCallback(async () => {
     try {
@@ -415,6 +427,7 @@ function LocalMediaInner() {
       ? "Klasör"
       : [
           (e.ext || "").toUpperCase(),
+          (isRecent ? e.subtitleUri : subtitleMap.get(e.name)) ? "CC" : "",
           fmtDuration(meta?.durationMs),
           kind === "audio" ? [meta?.artist, meta?.album].filter(Boolean).join(" — ") : (meta?.height ? `${meta.height}p` : ""),
           !isRecent ? fmtSize(e.size) : "",
@@ -428,7 +441,7 @@ function LocalMediaInner() {
         focusScope={SCOPE}
         onPress={() => {
           if (isRecent) {
-            const queue = recent.map(r => ({ id: r.id, uri: r.uri, name: r.name, ext: r.ext, kind: r.kind }));
+            const queue = recent.map(r => ({ id: r.id, uri: r.uri, name: r.name, ext: r.ext, kind: r.kind, ...(r.subtitleUri ? { subtitleUri: r.subtitleUri } : {}) }));
             void playItem(queue.find(q => q.id === id) || queue[0], queue, { label: "Son açılanlar" });
           } else void openEntry(e as Entry);
         }}

@@ -23,6 +23,8 @@ import {
   xtreamLiveStreams, xtreamVod as xtVodLocal, xtreamSeries as xtSeriesLocal,
 } from "@/src/utils/iptv";
 import { DEFAULT_CODE_SOURCE, resolveServerCode } from "@/src/utils/serverCode";
+import { DnsManager } from "@/src/components/DnsManager";
+import { normalizeHost } from "@/src/player/hostFailover";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
 export default function EditPlaylist() {
@@ -47,6 +49,9 @@ export default function EditPlaylist() {
   const [error, setError] = useState<string | null>(null);
   const [serverCode, setServerCode] = useState(pl?.serverCodeBinding?.code || "");
   const [serverCodeAutoResolve, setServerCodeAutoResolve] = useState(pl?.serverCodeBinding?.autoResolve ?? true);
+  /** v18.2.0: panel DNS'leri + kullanıcı yedekleri (birincil hariç tutulur, DnsManager ekler). */
+  const [dnsHosts, setDnsHosts] = useState<string[]>(() =>
+    Array.from(new Set([...(pl?.serverCodeBinding?.validatedHosts || []), ...((pl as any)?.backupHosts || [])].map(normalizeHost).filter(Boolean))));
   const [playbackUserAgent, setPlaybackUserAgent] = useState(pl?.playbackHeaders?.userAgent || "");
   const [playbackReferer, setPlaybackReferer] = useState(pl?.playbackHeaders?.referer || "");
   const [playbackOrigin, setPlaybackOrigin] = useState(pl?.playbackHeaders?.origin || "");
@@ -148,6 +153,19 @@ export default function EditPlaylist() {
             lastResolvedAt: new Date().toISOString(),
           };
           setServerCodeAutoResolve(false);
+        }
+
+        // v18.2.0 — YEDEK DNS LİSTESİ: kullanıcının tuttuğu adresler kaydedilir; listeden
+        // sildiği panel DNS'leri de doğrulanmış listeden çıkarılır (kod değişmediyse).
+        {
+          const primaryNorm = normalizeHost(patch.xtreamServer || pl.xtreamServer || "");
+          const kept = Array.from(new Set(dnsHosts.map(normalizeHost).filter(h => !!h && h !== primaryNorm)));
+          patch.backupHosts = kept;
+          const binding = patch.serverCodeBinding || pl.serverCodeBinding;
+          if (binding && requestedCode === currentCode) {
+            const allowed = new Set([primaryNorm, ...kept]);
+            patch.serverCodeBinding = { ...binding, validatedHosts: (binding.validatedHosts || []).filter((h: string) => allowed.has(normalizeHost(h))) };
+          }
         }
 
         // v17.1.1: Kimlik/DNS metadata commit'i katalog yenilemesinden bağımsızdır.
@@ -427,6 +445,18 @@ export default function EditPlaylist() {
                   />
                 </TouchableOpacity>
               </View>
+              <DnsManager
+                primary={xtServer || pl.xtreamServer || ""}
+                hosts={dnsHosts}
+                username={xtUser || pl.xtreamUsername || ""}
+                password={xtPass || pl.xtreamPassword || ""}
+                onChange={setDnsHosts}
+                onMakePrimary={h => {
+                  const oldPrimary = normalizeHost(xtServer || pl.xtreamServer || "");
+                  setDnsHosts(prev => Array.from(new Set([...prev.filter(x => x !== h), oldPrimary].filter(Boolean))));
+                  setXtServer(h);
+                }}
+              />
             </>
           )}
 

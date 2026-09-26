@@ -13,6 +13,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { storage } from "@/src/utils/storage";
 import { useProfiles } from "./ProfileContext";
+import { isLocalMediaId, saveLocalProgress } from "@/src/utils/localMedia";
+import { recordDiagnostic } from "@/src/utils/diagnostics";
 
 const PROG_KEY = "kizilkan.progress.";
 const WL_KEY = "kizilkan.watchlist.";
@@ -74,7 +76,25 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
         storage.getItem<string>(HID_ITEM_KEY + profileId, ""),
         storage.getItem<string>(HID_GROUP_KEY + profileId, ""),
       ]);
-      try { setWatchProgress(p ? JSON.parse(p) : {}); } catch { setWatchProgress({}); }
+      let progressMap: Record<string, WatchProgress> = {};
+      try { progressMap = p ? JSON.parse(p) : {}; } catch { progressMap = {}; }
+      /**
+       * v18.2.0 — TEK SEFERLİK TAŞIMA: v18.1.0 öncesinde yerel dosyaların ilerlemesi
+       * buraya film gibi yazılıyordu; "Devam Et" listesinde görünüp açılınca detay
+       * ekranı dosyayı bulamıyordu. Bu kayıtlar yerel medyanın kendi deposuna
+       * TAŞINIR (kaldığın yer kaybolmaz) ve buradan çıkarılır.
+       */
+      const localIds = Object.keys(progressMap).filter(isLocalMediaId);
+      if (localIds.length) {
+        for (const id of localIds) {
+          const e = progressMap[id];
+          if (e && e.duration > 0) await saveLocalProgress(id, Number(e.current || 0), Number(e.duration));
+          delete progressMap[id];
+        }
+        await storage.setItem(PROG_KEY + profileId, JSON.stringify(progressMap));
+        void recordDiagnostic("import", "LOCAL_PROGRESS_MIGRATED", { count: localIds.length }, { stage: "local-media", outcome: "success" });
+      }
+      setWatchProgress(progressMap);
       try { setWatchlist(wl ? JSON.parse(wl) : []); } catch { setWatchlist([]); }
       try { setSearchHistory(sh ? JSON.parse(sh) : []); } catch { setSearchHistory([]); }
       try { setHiddenItems(hi ? JSON.parse(hi) : []); } catch { setHiddenItems([]); }

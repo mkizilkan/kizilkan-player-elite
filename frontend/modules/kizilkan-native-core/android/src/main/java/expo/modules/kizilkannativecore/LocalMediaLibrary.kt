@@ -32,6 +32,8 @@ internal class LocalMediaLibrary(private val context: Context) {
   companion object {
     private val VIDEO_EXT = setOf("mp4", "mkv", "avi", "mov", "m4v", "webm", "ts", "m2ts", "mts", "mpg", "mpeg", "3gp", "flv", "wmv", "vob")
     private val AUDIO_EXT = setOf("mp3", "flac", "aac", "m4a", "ogg", "oga", "opus", "wav", "wma", "amr", "mka", "alac", "aiff", "aif")
+    // v18.2.0: videonun yanındaki dış altyazı dosyaları (liste ekranında gösterilmez, videoya bağlanır).
+    private val SUBTITLE_EXT = setOf("srt", "vtt")
     private const val ART_MAX_PX = 360
   }
 
@@ -46,6 +48,7 @@ internal class LocalMediaLibrary(private val context: Context) {
     val ext = extOf(name)
     if (ext in VIDEO_EXT || mime.startsWith("video/")) return "video"
     if (ext in AUDIO_EXT || mime.startsWith("audio/")) return "audio"
+    if (ext in SUBTITLE_EXT) return "subtitle"
     return null
   }
 

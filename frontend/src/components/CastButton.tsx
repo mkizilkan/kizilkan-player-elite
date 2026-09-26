@@ -49,7 +49,28 @@ interface CastSource {
   playlistSource?: string;
   /** Default Media Receiver özel UA/Referer/Origin/Cookie uygulayamaz. */
   requiresHttpHeaders?: boolean;
+  /**
+   * v18.2.0 — YAYIN KÖPRÜSÜ. Oynatıcı, Chromecast'in doğrudan açamayacağı
+   * kaynaklar (yerel dosya, başlık isteyen yayın, TS canlı) için telefondaki
+   * LAN köprüsünün adresini üretir. null → köprü gerekmez (eski doğrudan yol).
+   * Hata fırlatırsa yükleme durur ve sebep kullanıcıya gösterilir.
+   */
+  resolveCastMedia?: () => Promise<ResolvedCastMedia | null>;
+  /** v18.2.0 (B4): telefonda seçili ses/altyazı dili; alıcıda aynı dil seçilir. */
+  preferredAudioLanguage?: string;
+  preferredTextLanguage?: string;
 }
+
+export type ResolvedCastMedia = {
+  url: string;
+  contentType: string;
+  /** Köprü kullanıldıysa (başlık engeli artık geçerli değil). */
+  bridged: boolean;
+  mode: "file" | "proxy" | "live-hls";
+  /** Dış altyazı (WebVTT) köprü adresi. */
+  textTrackUrl?: string;
+  textTrackLanguage?: string;
+};
 
 interface CastButtonProps {
   /**
@@ -154,18 +175,38 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
     const src = sourceRef.current;
     if (!session || !src?.url) return;
 
-    if (src.requiresHttpHeaders) {
+    const key = sourceKey(src);
+    if (!opts.force && key && lastLoadedKeyRef.current === key) return;
+    const generation = ++loadGenerationRef.current;
+
+    // v18.2.0 — köprü çözümü (yerel dosya / başlıklı yayın / TS canlı → HLS).
+    let resolved: ResolvedCastMedia | null = null;
+    if (src.resolveCastMedia) {
+      try {
+        resolved = await src.resolveCastMedia();
+      } catch (e: any) {
+        if (generation !== loadGenerationRef.current) return;
+        void recordDiagnostic("player","CAST_BRIDGE_FAILED",{reason:opts.reason||"",isLive:!!src.isLive,error:String(e?.message||e).slice(0,160)},{outcome:"failed"});
+        Alert.alert("Chromecast", `Yayın köprüsü hazırlanamadı.\n\n${String(e?.message || e)}\n\nTelefon ve Chromecast aynı Wi-Fi ağında olmalı.`);
+        return;
+      }
+      if (generation !== loadGenerationRef.current) return;
+    }
+
+    if (src.requiresHttpHeaders && !resolved?.bridged) {
       const message = "Bu yayın özel HTTP başlıkları (User-Agent/Referer/Origin/Cookie) gerektiriyor. Chromecast Default Media Receiver bu başlıkları güvenilir biçimde uygulayamaz.";
       void recordDiagnostic("player","CAST_DIRECT_HEADERS_UNSUPPORTED",{playlistSource:src.playlistSource||"",isLive:!!src.isLive,urlShape:String(src.url).split("?")[0].replace(/\/[^/]+$/, "/…")},{outcome:"blocked"});
       Alert.alert("Chromecast", message);
       return;
     }
 
-    // Yalnız Xtream canlı .ts endpoint'i HLS adayına çevrilir.
-    const castUrl = toCastableUrl(src.url,{playlistSource:src.playlistSource,isLive:src.isLive});
-    const key = sourceKey(src);
-    if (!opts.force && key && lastLoadedKeyRef.current === key) return;
-    const generation = ++loadGenerationRef.current;
+    // Yalnız Xtream canlı .ts endpoint'i HLS adayına çevrilir (köprü yoksa).
+    const castUrl = resolved?.url || toCastableUrl(src.url,{playlistSource:src.playlistSource,isLive:src.isLive});
+    const castContentType = resolved?.contentType || src.contentType || guessMime(castUrl);
+    const mediaTracks = resolved?.textTrackUrl ? [{
+      id: 9001, type: "text" as const, subtype: "subtitles" as const, contentId: resolved.textTrackUrl,
+      contentType: "text/vtt", language: resolved.textTrackLanguage || "tr", name: "Altyazı",
+    }] : undefined;
 
     try {
       const client = session.client || session.getClient?.();
@@ -180,11 +221,12 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
         );
         return;
       }
-      void recordDiagnostic("player","CAST_LOAD_START",{reason:opts.reason||"",playlistSource:src.playlistSource||"",isLive:!!src.isLive,contentType:src.contentType||guessMime(castUrl),resumeSec:!src.isLive?Math.floor(src.startTimeSec||0):0},{outcome:"started"});
+      void recordDiagnostic("player","CAST_LOAD_START",{reason:opts.reason||"",playlistSource:src.playlistSource||"",isLive:!!src.isLive,contentType:castContentType,resumeSec:!src.isLive?Math.floor(src.startTimeSec||0):0,bridge:resolved?.mode||"direct",textTrack:!!mediaTracks},{outcome:"started"});
       await client.loadMedia({
         mediaInfo: {
           contentUrl: castUrl,
-          contentType: src.contentType || guessMime(castUrl),
+          contentType: castContentType,
+          ...(mediaTracks ? { mediaTracks } : {}),
           /**
            * STREAM TÜRÜ (v8.1.0) — CANLI YAYINLARIN OYNAMAMASININ KÖK SEBEBİ
            * Paket tipinden doğrulandı: MediaStreamType = "live" | "buffered" | "other"
@@ -199,6 +241,7 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
           },
         },
         autoplay: true,
+        ...(mediaTracks ? { activeTrackIds: [9001] } : {}),
         // Film/dizide telefondaki konumdan devam et (v8.2.0)
         ...(!src.isLive && src.startTimeSec && src.startTimeSec > 5
           ? { startTime: Math.floor(src.startTimeSec) }
@@ -211,8 +254,35 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
       // Remote authority yalnız loadMedia başarıyla tamamlandıktan sonra verilir.
       // Böylece receiver yükleyemezse telefon sessizce durmaz.
       notifyRef.current?.(true, session);
-      void recordDiagnostic("player","CAST_LOAD_READY",{reason:opts.reason||"",playlistSource:src.playlistSource||"",isLive:!!src.isLive},{outcome:"success"});
+      void recordDiagnostic("player","CAST_LOAD_READY",{reason:opts.reason||"",playlistSource:src.playlistSource||"",isLive:!!src.isLive,bridge:resolved?.mode||"direct"},{outcome:"success"});
       haptic.success();
+
+      // v18.2.0 (B4): telefonda seçili ses/altyazı dilini alıcıda da seç.
+      // Alıcı izleri yükleme SONRASI bildirir; birkaç deneme ile eşlenir.
+      const wantAudio = String(src.preferredAudioLanguage || "").toLowerCase().slice(0, 2);
+      const wantText = mediaTracks ? "" : String(src.preferredTextLanguage || "").toLowerCase().slice(0, 2);
+      if (wantAudio || wantText) {
+        void (async () => {
+          for (let attempt = 0; attempt < 6; attempt++) {
+            await new Promise(r => setTimeout(r, 700));
+            if (generation !== loadGenerationRef.current) return;
+            try {
+              const st = await client.getMediaStatus?.();
+              const tracks: any[] = st?.mediaInfo?.mediaTracks || [];
+              if (!tracks.length) continue;
+              const pick = (type: string, lang: string) => tracks.find(t => t.type === type && String(t.language || "").toLowerCase().startsWith(lang));
+              const ids: number[] = [];
+              const a = wantAudio ? pick("audio", wantAudio) : null;
+              const t = wantText ? pick("text", wantText) : null;
+              if (a) ids.push(a.id);
+              if (t) ids.push(t.id);
+              if (ids.length) await client.setActiveTrackIds?.(ids);
+              void recordDiagnostic("player","CAST_TRACKS_APPLIED",{tracks:tracks.length,audio:!!a,text:!!t,attempt},{outcome:ids.length?"success":"no-match"});
+              return;
+            } catch { /* alıcı henüz hazır değil */ }
+          }
+        })();
+      }
 
       // MKV/AVI ise kullanıcıyı bilgilendir (engellemiyoruz, sadece uyarıyoruz).
       const warn = mkvWarning(src.url);

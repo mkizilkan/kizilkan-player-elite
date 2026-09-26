@@ -74,6 +74,9 @@ import { storage } from "@/src/utils/storage";
 import { alternateHostUrls, isSourceRetryKind, loadPreferredHost, rememberWorkingHost, originOf } from "@/src/player/hostFailover";
 import { LIVE_TIMESHIFT_MODE_DEFAULT, loadLiveTimeshiftMode, type LiveTimeshiftMode } from "@/src/player/timeshiftMode";
 import { isLocalMediaId, loadLocalQueue, saveLocalProgress, writeLocalPayload, type LocalQueueItem } from "@/src/utils/localMedia";
+import { cueAt, cuesToVtt, loadSubtitleCues, type SubtitleCue } from "@/src/utils/subtitles";
+import type { ResolvedCastMedia } from "@/src/components/CastButton";
+import { GoogleCast } from "@/src/native/cast";
 import { haptic } from "@/src/utils/haptic";
 import { CastButton } from "@/src/components/CastButton";
 import { SeekBar, formatTime as fmtDur } from "@/src/components/SeekBar";
@@ -409,6 +412,13 @@ export default function PlayerHost() {
   const numericZapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [fit, setFit] = useState<Fit>("contain");
   const [isPlaying, setIsPlaying] = useState(true);
+  /**
+   * v18.2.0 — DIŞ ALTYAZI (.srt/.vtt, yerel videonun yanındaki dosya). Motor
+   * bağımsız: satırlar uygulama tarafından çizilir (Media3/VLC/MPV aynı).
+   */
+  const [extSubCues, setExtSubCues] = useState<SubtitleCue[] | null>(null);
+  const [extSubOn, setExtSubOn] = useState(true);
+  const [extSubText, setExtSubText] = useState("");
   const [isBuffering, setIsBuffering] = useState(true);
   // VLC medyası sarılabilir mi (canlı yayında false) — seek çökme koruması için.
   const [isSeekable, setIsSeekable] = useState(false);
@@ -578,6 +588,13 @@ export default function PlayerHost() {
    * Bağlıyken bu komutlar artık TV'deki oynatıcıya gönderiliyor.
    */
   const [castSession, setCastSession] = useState<any>(null);
+  /**
+   * v18.2.0 — TEK BAĞLANTI (Chromecast köprüsü). TS canlı yayın Chromecast'e
+   * telefondaki kaydedici üzerinden HLS olarak verilirken telefon motoru ve
+   * telefonun kendi timeshift kaydedicisi kaynağı TAMAMEN bırakır; sağlayıcıya
+   * tek bağlantı kalır. Chromecast kapanınca yerel oynatma geri bağlanır.
+   */
+  const [castDetachLocal, setCastDetachLocal] = useState(false);
   // v15.2.5 Cast authority state: remote receiver bağlıyken son gerçek remote
   // konum/capability burada tutulur. Session kapanınca local player bu konumdan
   // devralır; React render gecikmesine güvenilmez.
@@ -866,14 +883,30 @@ export default function PlayerHost() {
   const playbackCandidates = useMemo(() => {
     if (!basePlaybackRequest) return [] as string[];
     const base = [basePlaybackRequest.url, ...(basePlaybackRequest.fallbackUrls || []), ...(((channel as any)?.fallbackUrls as string[] | undefined) || [])];
+    // v18.2.0: panelin doğruladığı DNS'ler + kullanıcının eklediği yedek DNS'ler.
     const hosts = activePlaylist?.source === "xtream"
-      ? ((activePlaylist as any)?.serverCodeBinding?.validatedHosts as string[] | undefined)
+      ? Array.from(new Set([
+          ...(((activePlaylist as any)?.serverCodeBinding?.validatedHosts as string[] | undefined) || []),
+          ...(((activePlaylist as any)?.backupHosts as string[] | undefined) || []),
+        ]))
       : undefined;
     const alternates = hosts?.length
       ? base.flatMap(u => alternateHostUrls(u, hosts, preferredHost))
       : [];
-    return [...base, ...alternates].filter((u, i, arr) => !!u && arr.indexOf(u) === i);
-  }, [basePlaybackRequest, channel, activePlaylist?.source, (activePlaylist as any)?.serverCodeBinding?.validatedHosts, preferredHost]);
+    /**
+     * v18.2.0 — SON ÇALIŞAN DNS ÖNCE. Eskiden hatırlanan DNS yalnız yedekler
+     * arasında öne alınıyordu; birincil DNS ölüyse HER kanal açılışında önce ona
+     * gidilip zaman aşımı bekleniyordu. Hatırlanan DNS doğrulanmış listedeyse ve
+     * birincilden farklıysa o adres ilk sıraya alınır; başarısız olursa sıradaki
+     * birincil adrestir (hiçbir aday kaybolmaz).
+     */
+    const preferredOrigin = preferredHost ? originOf(preferredHost.startsWith("http") ? preferredHost : `http://${preferredHost}`) : "";
+    const baseOrigin = originOf(basePlaybackRequest.url);
+    const preferredValidated = !!preferredOrigin && preferredOrigin !== baseOrigin
+      && !!hosts?.some(h => originOf(/^https?:\/\//i.test(h) ? h : `http://${h}`) === preferredOrigin);
+    const preferredFirst = preferredValidated ? alternates.filter(u => originOf(u) === preferredOrigin) : [];
+    return [...preferredFirst, ...base, ...alternates].filter((u, i, arr) => !!u && arr.indexOf(u) === i);
+  }, [basePlaybackRequest, channel, activePlaylist?.source, (activePlaylist as any)?.serverCodeBinding?.validatedHosts, (activePlaylist as any)?.backupHosts, preferredHost]);
 
   useEffect(() => { setPlaybackUrlIndex(0); }, [channel?.id, playUrl]);
 
@@ -902,7 +935,7 @@ export default function PlayerHost() {
   useEffect(() => { liveTimeshiftStartPausedRef.current = false; }, [channel?.id]);
 
   const liveTimeshiftEligible = !!(
-    visible && sessionKind === "live" && !castSession && Platform.OS === "android" && KizilkanNativeCore.available &&
+    visible && sessionKind === "live" && !castSession && !castDetachLocal && Platform.OS === "android" && KizilkanNativeCore.available &&
     playbackRequest?.url && /^https?:\/\//i.test(String(playbackRequest.url)) &&
     (liveTimeshiftMode === "always" || liveTimeshiftArmedByPause)
   );
@@ -1021,11 +1054,12 @@ export default function PlayerHost() {
   // original upstream request.
   const enginePlaybackRequest = useMemo(() => {
     if (!playbackRequest) return null;
+    if (castDetachLocal) return null; // v18.2.0: Chromecast canlı köprüsü kaynağı kullanıyor
     if (!liveTimeshiftEligible) return playbackRequest;
     if (liveTimeshiftReady) return { ...playbackRequest, url: liveTimeshift.localUrl, headers: {}, contentType: "hls", fallbackUrls: [] } as typeof playbackRequest;
     if (liveTimeshiftMatches && liveTimeshift.phase === "bypass") return playbackRequest;
     return null;
-  }, [playbackRequest, liveTimeshiftEligible, liveTimeshiftReady, liveTimeshiftMatches, liveTimeshift.phase, liveTimeshift.localUrl]);
+  }, [playbackRequest, castDetachLocal, liveTimeshiftEligible, liveTimeshiftReady, liveTimeshiftMatches, liveTimeshift.phase, liveTimeshift.localUrl]);
 
   useEffect(() => {
     if (!liveTimeshiftReady || !liveTimeshift.sessionId) return;
@@ -2617,6 +2651,150 @@ export default function PlayerHost() {
     setShowControls(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, channel?.id, channel?.url, activePlaylist?.id]);
+
+  const extSubUri = String((externalStream as any)?.subtitle_uri || "");
+  useEffect(() => {
+    let alive = true;
+    setExtSubCues(null);
+    setExtSubText("");
+    if (!visible || !extSubUri) return () => { alive = false; };
+    const startedAt = Date.now();
+    void loadSubtitleCues(extSubUri).then(res => {
+      if (!alive) return;
+      setExtSubCues(res.cues.length ? res.cues : null);
+      void recordDiagnostic("player", "EXT_SUBTITLE_LOADED", { cues: res.cues.length, encoding: res.encoding, bytes: res.bytes, elapsedMs: Date.now() - startedAt }, { sessionId: playerDiagnosticSessionRef.current, stage: "subtitle", outcome: res.cues.length ? "success" : "empty" });
+    }).catch((e: any) => {
+      if (!alive) return;
+      void recordDiagnostic("player", "EXT_SUBTITLE_FAILED", { error: String(e?.message || e).slice(0, 160) }, { sessionId: playerDiagnosticSessionRef.current, stage: "subtitle", outcome: "failed" });
+    });
+    return () => { alive = false; };
+  }, [visible, extSubUri]);
+
+  const extSubTextRef = useRef("");
+  useEffect(() => {
+    if (!visible || !extSubOn || !extSubCues?.length) { if (extSubTextRef.current) { extSubTextRef.current = ""; setExtSubText(""); } return; }
+    const tick = () => {
+      let pos = 0;
+      try {
+        if (v2Profile.engine === "vlc" || v2Profile.engine === "mpv") {
+          const clock = v2Profile.engine === "vlc" ? vlcClockRef.current : mpvClockRef.current;
+          // Olaylar arası süre tahmini (en fazla 1,5 sn) — oynuyorsa.
+          const drift = isPlayingRef.current ? Math.min(1.5, Math.max(0, (Date.now() - clock.lastEventAt) / 1000)) : 0;
+          pos = Number(clock.positionSeconds || 0) + drift;
+        } else {
+          // Media3 saati kontroller gizliyken 5 sn'de bir güncellenir; doğrudan oku.
+          pos = Number((player as any)?.currentTime ?? media3ClockRef.current.positionSeconds ?? 0);
+        }
+      } catch { /* konum okunamazsa önceki satır kalır */ return; }
+      const text = cueAt(extSubCues, pos);
+      if (text !== extSubTextRef.current) { extSubTextRef.current = text; setExtSubText(text); }
+    };
+    tick();
+    const id = setInterval(tick, 200);
+    return () => clearInterval(id);
+  }, [visible, extSubOn, extSubCues, v2Profile.engine, player]);
+
+  /**
+   * v18.2.0 — CHROMECAST YAYIN KÖPRÜSÜ ÇÖZÜMLEYİCİ (CastButton yüklemeden önce çağırır).
+   *   yerel dosya            → köprü "file" (+ dış altyazı WebVTT izi)
+   *   canlı, HLS değil       → köprü "live-hls" (kaydedici TS→HLS; telefon kaynağı bırakır)
+   *     (Xtream .ts başlıksızsa eski yol: .m3u8 adresine çevrilir)
+   *   başlık gerektiren      → köprü "proxy" (HLS listesindeki adresler de köprüden)
+   *   diğerleri              → null (doğrudan adres; eski davranış)
+   */
+  const castRequiresHeaders = Boolean(
+    (activePlaylist as any)?.playbackHeaders?.userAgent ||
+    (activePlaylist as any)?.playbackHeaders?.referer ||
+    (activePlaylist as any)?.playbackHeaders?.origin ||
+    Object.keys(playbackRequest?.headers || {}).some(k => String(k).toLowerCase() !== "user-agent")
+  );
+  const castResolveRef = useRef<() => Promise<ResolvedCastMedia | null>>(async () => null);
+  castResolveRef.current = async () => {
+    if (Platform.OS !== "android" || !KizilkanNativeCore.available) return null;
+    const url = String(playbackRequest?.url || "");
+    if (!url) return null;
+    const headers = { ...((playbackRequest?.headers || {}) as Record<string, string>) };
+    const lower = url.toLowerCase().split("?")[0];
+    const ext = (/\.([a-z0-9]{2,5})$/.exec(lower)?.[1]) || String((channel as any)?.container_ext || "").toLowerCase();
+    const MIME: Record<string, string> = {
+      mp4: "video/mp4", m4v: "video/mp4", mov: "video/mp4", webm: "video/webm", mkv: "video/x-matroska",
+      mp3: "audio/mpeg", m4a: "audio/mp4", aac: "audio/aac", flac: "audio/flac", ogg: "audio/ogg", oga: "audio/ogg",
+      opus: "audio/ogg", wav: "audio/wav", ts: "video/mp2t", m3u8: "application/x-mpegURL",
+    };
+    const started = Date.now();
+    const log = (mode: string, ok: boolean, extra: Record<string, any> = {}) => {
+      void recordDiagnostic("player", "CAST_BRIDGE_ROUTE", { mode, ok, elapsedMs: Date.now() - started, sessionKind, ext, ...extra }, { sessionId: playerDiagnosticSessionRef.current, stage: "cast-bridge", outcome: ok ? "success" : "failed" });
+    };
+
+    if (/^(content|file):/i.test(url)) {
+      const ct = MIME[ext] || (playbackRequest?.expectsVideo === false ? "audio/mpeg" : "video/mp4");
+      const r = await KizilkanNativeCore.castBridgeRegisterFile(url, ct);
+      if (!r.ok || !r.url) { log("file", false, { error: r.error }); throw new Error(r.error || "Yerel dosya köprüsü açılamadı"); }
+      let textTrackUrl: string | undefined;
+      if (extSubCues?.length) {
+        const t = await KizilkanNativeCore.castBridgeRegisterText(cuesToVtt(extSubCues), "text/vtt; charset=utf-8", "altyazi.vtt");
+        if (t.ok && t.url) textTrackUrl = t.url;
+      }
+      log("file", true, { subtitle: !!textTrackUrl });
+      return { url: r.url, contentType: ct, bridged: true, mode: "file", textTrackUrl, textTrackLanguage: "tr" };
+    }
+
+    const isHlsUrl = lower.endsWith(".m3u8") || playbackRequest?.contentType === "hls";
+    const xtreamLiveTs = sessionKind === "live" && activePlaylist?.source === "xtream" && lower.endsWith(".ts");
+    if (sessionKind === "live" && !isHlsUrl && (!xtreamLiveTs || castRequiresHeaders)) {
+      // Önce telefon motoru + telefon kaydedicisi kaynağı bıraksın (tek bağlantı).
+      setCastDetachLocal(true);
+      await new Promise(res => setTimeout(res, 700));
+      const r = await KizilkanNativeCore.castBridgeStartLiveHls(url, headers, 15000);
+      if (!r.ok || !r.url) {
+        setCastDetachLocal(false);
+        log("live-hls", false, { error: r.error });
+        throw new Error(r.error === "NO_LAN_IP (Wi-Fi bağlı değil)" ? "Telefon Wi-Fi ağına bağlı değil." : (r.error || "Canlı yayın köprüsü hazırlanamadı"));
+      }
+      log("live-hls", true, { recorderMs: r.elapsedMs });
+      return { url: r.url, contentType: "application/x-mpegURL", bridged: true, mode: "live-hls" };
+    }
+
+    if (castRequiresHeaders) {
+      const ct = isHlsUrl ? "application/x-mpegURL" : (MIME[ext] || "video/mp4");
+      const r = await KizilkanNativeCore.castBridgeRegisterProxy(url, headers, ct);
+      if (!r.ok || !r.url) { log("proxy", false, { error: r.error }); throw new Error(r.error || "Yayın köprüsü açılamadı"); }
+      log("proxy", true, { hls: isHlsUrl });
+      return { url: r.url, contentType: ct, bridged: true, mode: "proxy" };
+    }
+    return null;
+  };
+
+  /**
+   * v18.2.0 — KÖPRÜ GÜVENLİĞİ. CastButton yalnız kontroller görünürken mount
+   * olur; yayın TV tarafından kapatılırsa onConnectionChange(false) GELMEYEBİLİR.
+   * Canlı köprüde bu, telefon motorunun kaynağa hiç geri bağlanmaması (siyah
+   * ekran) demekti. Bu dinleyici oynatıcıyla birlikte hep açıktır.
+   */
+  useEffect(() => {
+    if (!GoogleCast || Platform.OS === "web") return;
+    let sub: any = null;
+    try {
+      const sm = GoogleCast.getSessionManager?.();
+      sub = sm?.onSessionEnded?.(() => {
+        setCastSession(null);
+        setCastDetachLocal(false);
+        void KizilkanNativeCore.castBridgeStopAll().catch(() => 0);
+        void recordDiagnostic("player", "CAST_SESSION_ENDED_HOST", {}, { sessionId: playerDiagnosticSessionRef.current, stage: "cast-bridge", outcome: "ended" });
+      });
+    } catch { /* Cast yok */ }
+    return () => { try { sub?.remove?.(); } catch { /* yoksay */ } };
+  }, []);
+  // Köprü hazırlanıp yükleme hiç tamamlanmadıysa (oturum kurulmadı) yerel kaynağı geri bağla.
+  useEffect(() => {
+    if (!castDetachLocal || castSession) return;
+    const t = setTimeout(() => {
+      setCastDetachLocal(false);
+      void KizilkanNativeCore.castBridgeStopAll().catch(() => 0);
+      void recordDiagnostic("player", "CAST_BRIDGE_DETACH_TIMEOUT", {}, { sessionId: playerDiagnosticSessionRef.current, stage: "cast-bridge", outcome: "recovered" });
+    }, 30_000);
+    return () => clearTimeout(t);
+  }, [castDetachLocal, castSession]);
 
   /**
    * v18.1.0 — YEREL MÜZİKTE ARKA PLANDA ÇALMA + BİLDİRİM. expo-video
@@ -4468,6 +4646,13 @@ export default function PlayerHost() {
         </View>
       )}
 
+      {/* v18.2.0 — DIŞ ALTYAZI katmanı (motor bağımsız). */}
+      {channel && extSubOn && !!extSubText && !error && (
+        <View style={[styles.extSubWrap, { bottom: showControls ? (isTv ? 150 : 120) : (isTv ? 48 : 36) }]} pointerEvents="none" testID="player-ext-subtitle">
+          <Text style={[styles.extSubText, isTv && { fontSize: 26, lineHeight: 34 }]}>{extSubText}</Text>
+        </View>
+      )}
+
       {/* v18.1.0 — SES MODU: ses dosyasında siyah ekran yerine kapak + ad + sıra. */}
       {channel && isSynthetic && playbackRequest?.expectsVideo === false && !error && (
         <View style={styles.audioModeWrap} pointerEvents="none" testID="player-audio-mode">
@@ -4700,6 +4885,11 @@ export default function PlayerHost() {
                    * kapanınca kaldığı yerden devam eder.
                    */
                   setCastSession(conn ? session : null);
+                  if (!conn) {
+                    // v18.2.0: köprü (LAN sunucusu + canlı kaydedici) kapanır; yerel kaynak geri bağlanır.
+                    void KizilkanNativeCore.castBridgeStopAll().catch(() => 0);
+                    setCastDetachLocal(false);
+                  }
                   try {
                     if (conn) {
                       // REMOTE authority: local decoder yalnız duraklatılır; Cast
@@ -4746,12 +4936,11 @@ export default function PlayerHost() {
                   // Default Media Receiver özel HTTP başlıkları uygulayamaz.
                   // Provider/runtime başlığı gereken kaynaklarda sessiz başarısızlık
                   // yerine CastButton doğrudan ve teşhis edilebilir biçimde engeller.
-                  requiresHttpHeaders: Boolean(
-                    (activePlaylist as any)?.playbackHeaders?.userAgent ||
-                    (activePlaylist as any)?.playbackHeaders?.referer ||
-                    (activePlaylist as any)?.playbackHeaders?.origin ||
-                    Object.keys(playbackRequest?.headers || {}).some(k => String(k).toLowerCase() !== "user-agent")
-                  ),
+                  requiresHttpHeaders: castRequiresHeaders,
+                  // v18.2.0: köprü çözümleyici + telefonda seçili diller (B4).
+                  resolveCastMedia: () => castResolveRef.current(),
+                  preferredAudioLanguage: String(selectedAudio?.language || ""),
+                  preferredTextLanguage: String(selectedSubtitle?.language || ""),
                   /**
                    * CHROMECAST FORMAT DÜZELTMESİ (v7.4.0)
                    * ESKİ MANTIK TERSTİ: container_ext varsa (yani .ts canlı
@@ -4877,6 +5066,7 @@ export default function PlayerHost() {
                 {/* v17.5.0: Kumandasında "son kanal" tuşu olmayan cihazlar için panelden erişim. */}
                 {sessionKind === "live" && <GridBtn testID="player-last-channel-btn" icon="swap-horizontal" label="Son kanala dön" onPress={() => { setShowControls(false); zapToLastChannel(); }} />}
                 {sessionKind === "live" && (liveTimeshiftReady || isSeekable) && <GridBtn testID="player-go-live-btn" icon="radio" label="Canlıya dön" onPress={goToLiveEdge} />}
+                {!!extSubCues?.length && <GridBtn testID="player-ext-sub-btn" icon="chatbox-ellipses" label={`Dış altyazı: ${extSubOn ? "Açık" : "Kapalı"}`} highlighted={extSubOn} onPress={() => setExtSubOn(v => !v)} />}
                 {(sessionKind === "vod" || sessionKind === "series" || (sessionKind === "external" && isLocalMediaId(params.id))) && <GridBtn testID="player-auto-next-btn" icon="play-skip-forward" label={`Sonrakini otomatik: ${autoPlayNext?'Açık':'Kapalı'}`} highlighted={autoPlayNext} onPress={() => {const next=!autoPlayNext;setAutoPlayNext(next);autoNextRef.current=next;void storage.setItem(AUTO_NEXT_KEY+activeProfile.id,next);}} />}
 
                 <GridBtn testID="player-audiodelay-btn" icon="git-compare" label="Senkron" onPress={() => setSheet("audiodelay")} />
@@ -5665,6 +5855,27 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.7)",
   },
   errorText: { color: "#fff", fontSize: FONT.size.base, textAlign: "center" },
+  extSubWrap: {
+    position: "absolute",
+    left: 24,
+    right: 24,
+    alignItems: "center",
+    zIndex: 4,
+  },
+  extSubText: {
+    color: "#fff",
+    fontSize: 18,
+    lineHeight: 24,
+    fontWeight: "700",
+    textAlign: "center",
+    backgroundColor: "rgba(0,0,0,0.55)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    textShadowColor: "#000",
+    textShadowRadius: 4,
+    textShadowOffset: { width: 0, height: 1 },
+  },
   audioModeWrap: {
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",

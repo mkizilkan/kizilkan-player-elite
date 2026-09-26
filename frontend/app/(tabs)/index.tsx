@@ -347,6 +347,22 @@ function ClassicLiveTvScreen() {
     if (selectedIsCustomGroup || hasAnyCustomGroups) void ensureHeavyLoaded(activePlaylist.id);
   }, [activePlaylist?.id,activePlaylist?.catalogRevision,nativeLivePaged, nativeLibraryPaged, selectedIsCustomGroup, hasAnyCustomGroups, tab, selectedCat, loadNativeLivePage, loadNativeLibraryPage, ensureHeavyLoaded]);
   const [epgMap, setEpgMap] = useState<Record<string, NowNext>>({});
+  /**
+   * v18.2.0 — EPG PENCERESİ: eskiden yalnız İLK 16 kanalın "ŞİMDİ" bilgisi
+   * alınıyordu; aşağıdaki kanallarda hiç görünmüyordu. Artık görünen ilk satırdan
+   * itibaren 16 kanal alınır (yüklü ve güncel olanlar atlanır) ve haritaya eklenir.
+   */
+  const [epgWindowStart, setEpgWindowStart] = useState(0);
+  const epgMapRef = useRef<Record<string, NowNext>>({});
+  epgMapRef.current = epgMap;
+  const epgWindowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onLiveViewable = useRef(({ viewableItems }: { viewableItems: Array<{ index: number | null }> }) => {
+    const first = viewableItems.reduce((m, v) => (v.index != null && v.index < m ? v.index : m), Number.MAX_SAFE_INTEGER);
+    if (first === Number.MAX_SAFE_INTEGER) return;
+    if (epgWindowTimerRef.current) clearTimeout(epgWindowTimerRef.current);
+    epgWindowTimerRef.current = setTimeout(() => setEpgWindowStart(first), 300);
+  }).current;
+  const liveViewabilityConfig = useRef({ itemVisiblePercentThreshold: 30 }).current;
   const [epgLoading, setEpgLoading] = useState(false);
 
   // Reset category when switching tabs
@@ -897,7 +913,18 @@ function ClassicLiveTvScreen() {
 
   // v15.2.3 — EPG ISOLATION: kanal listesi EPG'yi ASLA beklemez. İlk görünür
   // pencerenin EPG'si etkileşimler bittikten sonra küçük batch ile arkadan gelir.
-  const epgTargets = useMemo(() => (filtered as any[]).slice(0, 16), [filtered]);
+  useEffect(() => { setEpgWindowStart(0); }, [tab, selectedCat, activePlaylist?.id]);
+  const epgTargets = useMemo(() => {
+    const now = Date.now();
+    return (filtered as any[]).slice(epgWindowStart, epgWindowStart + 16).filter(c => {
+      const key = c.epg_channel_id || c.tvg_id || c.stream_id;
+      const cur = key ? epgMapRef.current[key] : undefined;
+      const stop = cur?.now?.stop ? new Date(cur.now.stop).getTime() : 0;
+      return !cur || (stop > 0 && stop < now);
+    });
+    // epgMap bilerek bağımlılık değil: yükleme sonrası tekrar tetiklenmesin.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, epgWindowStart]);
   const epgTargetSignature = useMemo(() => epgTargets.map(c => String(c.stream_id || c.epg_channel_id || c.tvg_id || c.id || "")).join("|"), [epgTargets]);
 
   useEffect(() => {
@@ -1178,6 +1205,8 @@ function ClassicLiveTvScreen() {
             ref={listRef}
             onScrollToIndexFailed={onScrollToIndexFailed}
             data={filtered as any[]}
+            onViewableItemsChanged={onLiveViewable}
+            viewabilityConfig={liveViewabilityConfig}
             onEndReached={() => {
               if (nativeLivePaged && nativeLiveHasMore) void loadNativeLivePage(false);
             }}

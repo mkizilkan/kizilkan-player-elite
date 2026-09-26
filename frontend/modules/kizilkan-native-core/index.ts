@@ -59,7 +59,7 @@ export type DatabaseMaintenanceResult = {
 export type LocalMediaEntry = {
   uri: string;
   name: string;
-  kind: "dir" | "video" | "audio";
+  kind: "dir" | "video" | "audio" | "subtitle";
   mime: string;
   ext: string;
   size: number;
@@ -70,6 +70,9 @@ export type LocalMediaInfo = {
   ok: boolean; durationMs?: number; hasVideo?: boolean; hasAudio?: boolean; title?: string; artist?: string; album?: string;
   width?: number; height?: number; bitrate?: number; artPath?: string; elapsedMs?: number; error?: string;
 };
+
+/** v18.2.0 — Chromecast köprüsü kayıt sonucu. */
+export type CastBridgeResult = { ok: boolean; url?: string; routeId?: string; port?: number; error?: string; recorderSessionId?: string; elapsedMs?: number };
 
 export type NativeQueryPage<T = any> = {
   items: T[];
@@ -220,6 +223,17 @@ export const KizilkanNativeCore = {
   getLocalMediaInfo: async (uri: string): Promise<LocalMediaInfo | null> =>
     native?.getLocalMediaInfo ? ((await native.getLocalMediaInfo(uri)) as LocalMediaInfo) : null,
   clearLocalMediaArtCache: async (): Promise<number> => native?.clearLocalMediaArtCache ? Number(await native.clearLocalMediaArtCache()) : 0,
+  /** v18.2.0 — Chromecast yayın köprüsü: Cast alıcısının erişebileceği LAN adresi üretir. */
+  castBridgeRegisterFile: async (uri: string, contentType: string): Promise<CastBridgeResult> =>
+    native?.castBridgeRegisterFile ? (await native.castBridgeRegisterFile(uri, contentType)) as CastBridgeResult : { ok: false, error: "NATIVE_UNAVAILABLE" },
+  castBridgeRegisterProxy: async (url: string, headers: Record<string, string>, contentType: string): Promise<CastBridgeResult> =>
+    native?.castBridgeRegisterProxy ? (await native.castBridgeRegisterProxy(url, JSON.stringify(headers || {}), contentType)) as CastBridgeResult : { ok: false, error: "NATIVE_UNAVAILABLE" },
+  castBridgeRegisterText: async (body: string, contentType: string, name: string): Promise<CastBridgeResult> =>
+    native?.castBridgeRegisterText ? (await native.castBridgeRegisterText(body, contentType, name)) as CastBridgeResult : { ok: false, error: "NATIVE_UNAVAILABLE" },
+  castBridgeStartLiveHls: async (url: string, headers: Record<string, string>, timeoutMs = 15000): Promise<CastBridgeResult> =>
+    native?.castBridgeStartLiveHls ? (await native.castBridgeStartLiveHls(url, JSON.stringify(headers || {}), Number(timeoutMs))) as CastBridgeResult : { ok: false, error: "NATIVE_UNAVAILABLE" },
+  castBridgeStopAll: async (): Promise<number> => native?.castBridgeStopAll ? Number(await native.castBridgeStopAll()) : 0,
+  castBridgeStatus: async (): Promise<Record<string, any>> => native?.castBridgeStatus ? await native.castBridgeStatus() : {},
   fetchAndCacheEpg: async (url: string, playlistId: string, userAgent: string): Promise<{count:number; native?:boolean} | null> => native ? native.fetchAndCacheEpg(url, playlistId, userAgent) : null,
   getEpgNowNext: async (playlistId: string, channelIds: string[], nowSec: number): Promise<Record<string, any>> => native ? native.getEpgNowNext(playlistId, channelIds, Math.floor(nowSec)) : {},
   getEpgChannelPrograms: async (playlistId: string, channelId: string): Promise<any[]> => native ? native.getEpgChannelPrograms(playlistId, channelId) : [],
