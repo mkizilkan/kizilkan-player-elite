@@ -128,6 +128,14 @@ node tools/denetle.js        # sonunda başarısız kapı olmamalı
   Derleme kontrolünden sonra `git diff frontend/package.json` ile bak, yalnız sürüm kalmalı.
 - **JAVA_HOME eskiyebilir:** JDK güncellenince sistem değişkeni eski klasörü gösterebilir.
   Gradle için oturumda `$env:JAVA_HOME` ile kurulu JDK'yı ver; sistem ayarını değiştirme.
+- **PC'de C++ bağlama hatası (`ld.lld: undefined symbol: operator new`, `std::__ndk1`):** Sebep,
+  Android SDK yolundaki BOŞLUK (`C:\Users\KIZILKAN YOGA\...`). CMake/Ninja derleyiciyi 8.3 kısa adla
+  (`CLANG_~1.EXE`) çağırıyor; bu adla bağlama başarısız, aynı komut `clang++.exe` ile başarılı (26.09.2026
+  kanıtlandı). Proje kodu değil, PC ortamı sorunu. **ÇÖZÜLDÜ (26.09.2026):** `C:\Android\Sdk` junction →
+  gerçek SDK; kullanıcı `ANDROID_HOME=C:\Android\Sdk`, `JAVA_HOME=...jdk-17.0.20.101-hotspot`. Sonrasında
+  tam `assembleDebug` BUILD SUCCESSFUL (~31 dk ilk derleme). SDK yolu değişirse eski yolu hatırlayan
+  `node_modules/*/android/.cxx` klasörleri silinmeli. "object file directory ... 250 characters" CMake
+  uyarısı zararsız (derlemeyi durdurmaz).
 - **Sessiz çıkış bırakma:** her `return` noktası bir sebep ile telemetri yazmalı; yoksa sorun
   logdan teşhis edilemiyor.
 
