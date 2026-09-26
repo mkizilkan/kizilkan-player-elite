@@ -171,6 +171,10 @@ Cihazda doğrulananlar (v17.10.4'e kadar): timeshift (duraklat/geri-ileri/canlı
 medya, ses, arka planda müzik), v18.2.0 (EPG sütunu/pencere, combo link/sıra, yedek DNS yöneticisi + yenileme
 geçişi, Chromecast yayın köprüsü, dış altyazı, son izlenenler, YENİ rozeti, DEV uygulaması).
 
+**Sonraki sürüm:** `PLAN-v18.3.0.md` (taslak; taramaya özel proxy + tek başına çalışan DEV APK; detaylandırma
+kullanıcıyla birlikte yapılacak). Kullanıcı v18.0.0–v18.2.0 APK'larını test edip gözlem yazacak; önce onlar ele alınır.
+Actions: v18.0.0 = build-112, v18.1.0 = build-113, v18.2.0 = build-114 (GitHub Release, başarılı).
+
 **Açık konular (öncelik sırasıyla, hiçbiri onaysız kodlanmaz):**
 1. **Timeshift "Her zaman" takılması (KANITLANMADI).** v18.0.0 telemetrisiyle "Her zaman" ve "Kapalı" log bekleniyor.
 2. **Release anahtarı:** kullanıcıda 2 anahtar var, hangisi güncel bilinmiyor → `tools/imza-bul.ps1`.
