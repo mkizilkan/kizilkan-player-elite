@@ -33,7 +33,8 @@ ok(player.includes('stopLiveTimeshift(sessionId)') && player.includes('const orp
 ok(player.includes('liveDvr={!isSynthetic && (liveTimeshiftReady || isSeekable)}') && player.includes('player-go-live-btn'), 'live DVR seek UI and go-live action are wired');
 ok(seek.includes('(!isLive || liveDvr) && duration > 0') && seek.includes('onGoLive'), 'SeekBar permits real live-window seeking');
 
-ok(player.includes('activePlaylist?.source === "stalker" && channel.stream_id != null') && player.includes('!!channel.catchup_source'), 'PlayerHost exposes MAG and M3U catch-up entry points');
+// v18.4.0: oynatma kararları yerel dosyayı ayıran playlistSource üzerinden verilir (check-v18400-local-source).
+ok(/(?:activePlaylist\?\.source|playlistSource) === "stalker" && channel\.stream_id != null/.test(player) && player.includes('!!channel.catchup_source'), 'PlayerHost exposes MAG and M3U catch-up entry points');
 ok(catchup.includes('stalkerArchiveEpg') && catchup.includes('stalkerCreateLink') && catchup.includes('buildM3UCatchupUrl'), 'catch-up screen resolves real MAG archive and M3U templates');
 ok(stalker.includes('archive_cmd:archiveCmd||undefined') && stalker.includes('archived && !!archiveCmd ? 1 : 0'), 'MAG archive only marks programs playable with a real archive command');
 

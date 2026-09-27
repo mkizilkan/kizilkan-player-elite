@@ -11,7 +11,7 @@ type NativeSnapshot = {
   runId?: string; state?: "STARTING" | "RUNNING" | "PAUSED" | "CANCELLING" | "COMPLETED" | "FAILED" | "CANCELLED"; createdAt?: number; updatedAt?: number;
   mode?: "single" | "bulk" | "unified" | "streaming-file-v172"; running?: boolean; cancelled?: boolean; paused?: boolean;
   tested?: number; total?: number; accountTested?: number; accountTotal?: number; accountIndex?: number;
-  panelTested?: number; panelTotal?: number; found?: number; recoverable?: boolean; recovered?: boolean; panelName?: string; currentServer?: string; error?: string; terminalReason?: string; matches?: any[];
+  panelTested?: number; panelTotal?: number; found?: number; recoverable?: boolean; recovered?: boolean; panelName?: string; currentServer?: string; error?: string; terminalReason?: string; pauseReason?: string; matches?: any[];
   accountStatuses?: Array<{ accountIndex:number; sourceRow?:number; name?:string; state:string; tested:number; total:number; remaining:number; found:number }>;
   batchIndex?: number; batchCount?: number; batchSize?: number; batchStart?: number; batchEnd?: number;
   requestedConcurrency?: number; effectiveConcurrency?: number; sourceFingerprint?: string;
@@ -138,28 +138,48 @@ export const PanelScan = {
   getLastCrash: (): any => { if (!native) return {}; try { return JSON.parse(native.getLastCrash?.() || "{}"); } catch { return {}; } },
   clearDiagnostics: (): boolean => native ? !!native.clearDiagnostics?.() : false,
 
-  // ── v18.3.0: Taramaya özel proxy ──────────────────────────────────────────
-  /** JS'te ayrıştırılmış yapısal proxy girişleriyle native havuzu yapılandırır. */
-  configureScanProxy: async (config: NativeScanProxyConfig): Promise<NativeScanProxyStatus> => {
-    if (!native?.configureScanProxy) return { enabled: false, total: 0, working: 0, dead: 0, lastError: "native-unavailable" };
-    try { return JSON.parse(await native.configureScanProxy(JSON.stringify(config))); }
-    catch (e: any) { return { enabled: false, total: 0, working: 0, dead: 0, lastError: String(e?.message || e) }; }
+  // ── v18.4.0: Taramaya özel proxy (test motoru + rotasyon) ─────────────────
+  setScanProxyEnabled: async (on: boolean): Promise<NativeScanProxyStatus> => {
+    if (!native?.setScanProxyEnabled) return emptyProxyStatus("native-unavailable");
+    try { return JSON.parse(await native.setScanProxyEnabled(on)); } catch (e: any) { return emptyProxyStatus(String(e?.message || e)); }
   },
-  /** Havuzu şimdi test et (çalışanları sırala). */
-  warmScanProxyPool: async (): Promise<NativeScanProxyStatus> => {
-    if (!native?.warmScanProxyPool) return { enabled: false, total: 0, working: 0, dead: 0, lastError: "native-unavailable" };
-    try { return JSON.parse(await native.warmScanProxyPool()); }
-    catch (e: any) { return { enabled: false, total: 0, working: 0, dead: 0, lastError: String(e?.message || e) }; }
+  /** Tür bazında ayrıştırılmış yapısal aday listesini native'e gönder. replace=false → ekle. */
+  loadScanProxyCandidates: async (entries: NativeScanProxyEntry[], replace: boolean): Promise<NativeScanProxyStatus> => {
+    if (!native?.loadScanProxyCandidates) return emptyProxyStatus("native-unavailable");
+    try { return JSON.parse(await native.loadScanProxyCandidates(JSON.stringify(entries), replace)); } catch (e: any) { return emptyProxyStatus(String(e?.message || e)); }
   },
-  /** Kullanıcı "Test et": proxy üzerinden dış IP. */
+  /** Test etmeden kullan (ödemeli rotating gateway). */
+  commitScanProxyCandidates: async (): Promise<NativeScanProxyStatus> => {
+    if (!native?.commitScanProxyCandidates) return emptyProxyStatus("native-unavailable");
+    try { return JSON.parse(await native.commitScanProxyCandidates()); } catch (e: any) { return emptyProxyStatus(String(e?.message || e)); }
+  },
+  clearScanProxy: async (): Promise<NativeScanProxyStatus> => {
+    if (!native?.clearScanProxy) return emptyProxyStatus("native-unavailable");
+    try { return JSON.parse(await native.clearScanProxy()); } catch (e: any) { return emptyProxyStatus(String(e?.message || e)); }
+  },
+  /** Canlılık testini başlat. */
+  startScanProxyTest: async (cfg: ScanProxyTestConfig): Promise<{ started: boolean; error?: string }> => {
+    if (!native?.startScanProxyTest) return { started: false, error: "native-unavailable" };
+    try { return JSON.parse(await native.startScanProxyTest(JSON.stringify(cfg))); } catch (e: any) { return { started: false, error: String(e?.message || e) }; }
+  },
+  pauseScanProxyTest: (): boolean => native ? !!native.pauseScanProxyTest?.() : false,
+  resumeScanProxyTest: (): boolean => native ? !!native.resumeScanProxyTest?.() : false,
+  stopScanProxyTest: async (useTested: boolean): Promise<NativeScanProxyStatus> => {
+    if (!native?.stopScanProxyTest) return emptyProxyStatus("native-unavailable");
+    try { return JSON.parse(await native.stopScanProxyTest(useTested)); } catch (e: any) { return emptyProxyStatus(String(e?.message || e)); }
+  },
+  getScanProxyTestProgress: (): ScanProxyTestProgress => {
+    if (!native?.getScanProxyTestProgress) return { phase: "idle", total: 0, tested: 0, working: 0, dead: 0, transparent: 0, http: 0, socks4: 0, socks5: 0, elapsedMs: 0, etaMs: 0, ratePerSec: 0, ownIp: "", fastest: [] };
+    try { return JSON.parse(native.getScanProxyTestProgress()); } catch { return { phase: "idle", total: 0, tested: 0, working: 0, dead: 0, transparent: 0, http: 0, socks4: 0, socks5: 0, elapsedMs: 0, etaMs: 0, ratePerSec: 0, ownIp: "", fastest: [] }; }
+  },
+  /** Kullanıcı "Test et": ilk çalışan proxy üzerinden dış IP. */
   testScanProxy: async (): Promise<{ ok: boolean; ip?: string; httpCode?: number; proxy?: string; error?: string }> => {
     if (!native?.testScanProxy) return { ok: false, error: "native-unavailable" };
-    try { return JSON.parse(await native.testScanProxy()); }
-    catch (e: any) { return { ok: false, error: String(e?.message || e) }; }
+    try { return JSON.parse(await native.testScanProxy()); } catch (e: any) { return { ok: false, error: String(e?.message || e) }; }
   },
   getScanProxyStatus: (): NativeScanProxyStatus => {
-    if (!native?.getScanProxyStatus) return { enabled: false, total: 0, working: 0, dead: 0, lastError: "" };
-    try { return JSON.parse(native.getScanProxyStatus()); } catch { return { enabled: false, total: 0, working: 0, dead: 0, lastError: "" }; }
+    if (!native?.getScanProxyStatus) return emptyProxyStatus("");
+    try { return JSON.parse(native.getScanProxyStatus()); } catch { return emptyProxyStatus(""); }
   },
   /** JS keşfini proxy'ye yönlendir (serverCode.ts). */
   proxiedProbe: async (url: string, timeoutMs: number): Promise<{ ok: boolean; status: number; body: string; error?: string }> => {
@@ -169,6 +189,10 @@ export const PanelScan = {
   },
 };
 
+function emptyProxyStatus(err: string): NativeScanProxyStatus {
+  return { enabled: false, candidates: 0, pool: 0, dead: 0, alive: 0, poolTested: false, testPhase: "idle", exhausted: false, total: 0, working: 0, lastError: err };
+}
+
 export type NativeScanProxyEntry = {
   scheme: "http" | "https" | "socks4" | "socks5";
   host: string;
@@ -177,19 +201,39 @@ export type NativeScanProxyEntry = {
   pass?: string;
 };
 
-export type NativeScanProxyConfig = {
-  enabled: boolean;
-  order?: "socks5-first";
-  testUrl?: string;
-  testTimeoutMs?: number;
-  maxPool?: number;
-  entries: NativeScanProxyEntry[];
+export type ScanProxyTestConfig = {
+  mode: "system" | "custom";
+  url?: string;
+  expectText?: string;
+  concurrency?: number;
+  timeoutMs?: number;
+  rejectTransparent?: boolean;
+};
+
+export type ScanProxyTestProgress = {
+  phase: "idle" | "running" | "paused" | "done" | "stopped" | "cancelled" | "failed";
+  mode?: string;
+  total: number; tested: number; working: number; dead: number; transparent: number;
+  http: number; socks4: number; socks5: number;
+  elapsedMs: number; etaMs: number; ratePerSec: number;
+  ownIp: string; error?: string;
+  fastest: Array<{ proxy: string; ms: number }>;
 };
 
 export type NativeScanProxyStatus = {
   enabled: boolean;
+  candidates: number;
+  candidatesByScheme?: { http: number; socks4: number; socks5: number };
+  pool: number;
+  poolByScheme?: { http: number; socks4: number; socks5: number };
+  poolTested: boolean;
+  dead: number;
+  alive: number;
+  lastTestAt?: number;
+  testPhase: string;
+  exhausted: boolean;
+  /** Geriye dönük (v18.3.0). */
   total: number;
   working: number;
-  dead: number;
   lastError?: string;
 };

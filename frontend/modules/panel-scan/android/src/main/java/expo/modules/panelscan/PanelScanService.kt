@@ -273,7 +273,7 @@ class PanelScanService : Service() {
         val requestedRunId = intent.getStringExtra("runId") ?: ""
         if (running && requestedRunId == currentRunId) {
           paused.set(false)
-          patchSnapshot { it.put("paused", false).put("running", true).put("state", "RUNNING") }
+          patchSnapshot { it.remove("pauseReason"); it.put("paused", false).put("running", true).put("state", "RUNNING") }
           getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("Panel taraması devam ediyor", 0, 0))
         }
       }
@@ -541,15 +541,12 @@ class PanelScanService : Service() {
       "$scheme://$authority${(uri.rawPath?:"").trimEnd('/')}"
     }.getOrNull()
   }
-  /** Run başına bir kez: kalıcı proxy yapılandırmasını yükle ve havuzu ısıt. */
+  /** Run başına bir kez: kalıcı proxy havuzunu yükle (test kullanıcı denetimindedir). */
   private fun ensureScanProxyReady() {
     if (proxyReadyRunId == currentRunId) return
     synchronized(proxyReadyLock) {
       if (proxyReadyRunId == currentRunId) return
-      runCatching {
-        ScanProxyPool.restoreIfNeeded(applicationContext)
-        if (ScanProxyPool.enabled) ScanProxyPool.warmPool(applicationContext)
-      }
+      runCatching { ScanProxyPool.restoreIfNeeded(applicationContext) }
       proxyReadyRunId = currentRunId
     }
   }
@@ -577,46 +574,67 @@ class PanelScanService : Service() {
     if (!permit.tryAcquire(timeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)) return null
     val u = java.net.URLEncoder.encode(username, "UTF-8")
     val p = java.net.URLEncoder.encode(password, "UTF-8")
-    var conn: HttpURLConnection? = null
-    // v18.3.0: Taramaya özel proxy (yalnız tarama trafiği). Kapalıysa sel=null → doğrudan bağlanır.
-    val sel = ScanProxyPool.select()
-    return try {
-      if (cancelled.get() || Thread.currentThread().isInterrupted) return null
-      val waitMs = (hostBackoffUntil[hostKey] ?: 0L) - System.currentTimeMillis()
-      if (waitMs > 0) Thread.sleep(waitMs.coerceAtMost(5000L))
-      val target = URL("$base/player_api.php?username=$u&password=$p")
-      val opened = (if (sel != null) target.openConnection(sel.proxy) else target.openConnection()) as HttpURLConnection
-      conn = opened
-      activeConnections.add(opened)
-      if (cancelled.get() || Thread.currentThread().isInterrupted) return null
-      opened.connectTimeout = timeoutMs
-      opened.readTimeout = timeoutMs
-      opened.requestMethod = "GET"
-      opened.setRequestProperty("Accept", "application/json")
-      sel?.basicHeader?.let { opened.setRequestProperty("Proxy-Authorization", it) }
-      val code = opened.responseCode
-      if (code == 429 || code == 503) {
-        val retrySeconds = opened.getHeaderField("Retry-After")?.toLongOrNull()?.coerceIn(1L, 5L) ?: 2L
-        hostBackoffUntil[hostKey] = System.currentTimeMillis() + retrySeconds * 1000L
-        recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("state", "HOST_BACKOFF").put("host", hostKey).put("httpCode", code).put("backoffMs", retrySeconds * 1000L))
-        sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, ok = true, banned = false) }
-        return null
+    try {
+      // v18.4.0: Proxy AÇIKKEN ölen proxy AYNI denemeyi düşürmesin diye en çok 3 proxy denenir.
+      // PROXY hatası ≠ sunucu hatası (yanlış negatif önlenir). Kapalıysa tek doğrudan deneme.
+      val maxAttempts = if (ScanProxyPool.enabled) 3 else 1
+      for (attempt in 0 until maxAttempts) {
+        if (cancelled.get() || Thread.currentThread().isInterrupted) return null
+        val sel = ScanProxyPool.select()
+        if (ScanProxyPool.enabled && sel == null) {
+          // Havuz tükendi: kullanıcının kendi IP'sine SESSİZCE düşme; taramayı duraklat.
+          if (ScanProxyPool.isExhausted() && !paused.get()) {
+            paused.set(true)
+            patchSnapshot { it.put("paused", true).put("running", true).put("state", "PAUSED").put("pauseReason", "SCAN_PROXY_EXHAUSTED") }
+            getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("Proxy havuzu tükendi — tarama duraklatıldı", 0, 0))
+            recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("state", "SCAN_PROXY_EXHAUSTED_PAUSE").put("host", hostKey))
+          }
+          return null
+        }
+        var conn: HttpURLConnection? = null
+        try {
+          val waitMs = (hostBackoffUntil[hostKey] ?: 0L) - System.currentTimeMillis()
+          if (waitMs > 0) Thread.sleep(waitMs.coerceAtMost(5000L))
+          val target = URL("$base/player_api.php?username=$u&password=$p")
+          val opened = (if (sel != null) target.openConnection(sel.proxy) else target.openConnection()) as HttpURLConnection
+          conn = opened
+          activeConnections.add(opened)
+          if (cancelled.get() || Thread.currentThread().isInterrupted) return null
+          opened.connectTimeout = timeoutMs
+          opened.readTimeout = timeoutMs
+          opened.requestMethod = "GET"
+          opened.setRequestProperty("Accept", "application/json")
+          sel?.basicHeader?.let { opened.setRequestProperty("Proxy-Authorization", it) }
+          val code = opened.responseCode
+          // Buraya geldiysek proxy isteği İLETTİ → proxy sağlam (TARGET geri bildir).
+          sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, ScanProxyPool.Fault.TARGET) }
+          if (code == 429 || code == 503) {
+            val retrySeconds = opened.getHeaderField("Retry-After")?.toLongOrNull()?.coerceIn(1L, 5L) ?: 2L
+            hostBackoffUntil[hostKey] = System.currentTimeMillis() + retrySeconds * 1000L
+            recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("state", "HOST_BACKOFF").put("host", hostKey).put("httpCode", code).put("backoffMs", retrySeconds * 1000L))
+            return null
+          }
+          if (code !in 200..299) return null
+          hostBackoffUntil.remove(hostKey)
+          val text = opened.inputStream.bufferedReader().use { it.readText() }
+          val data = JSONObject(text)
+          val ui = data.optJSONObject("user_info") ?: return null
+          val auth = ui.opt("auth")?.toString()
+          if (auth == "0" || auth == "false") return null
+          return data
+        } catch (t: Throwable) {
+          // Hata sınıflandır: PROXY suçluysa proxy'yi düşür ve SIRADAKİ proxy ile tekrar dene.
+          val fault = if (sel != null) (if (ScanProxyPool.classify(t) == ScanProxyPool.Fault.TARGET) ScanProxyPool.Fault.TARGET else ScanProxyPool.Fault.PROXY) else ScanProxyPool.Fault.TARGET
+          sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, fault) }
+          if (sel == null || fault == ScanProxyPool.Fault.TARGET) return null
+          // PROXY hatası: döngü sıradaki proxy ile devam eder.
+        } finally {
+          conn?.let { activeConnections.remove(it) }; conn?.disconnect()
+        }
       }
-      if (code !in 200..299) { sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, ok = true, banned = false) }; return null }
-      hostBackoffUntil.remove(hostKey)
-      val text = opened.inputStream.bufferedReader().use { it.readText() }
-      sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, ok = true, banned = false) }
-      val data = JSONObject(text)
-      val ui = data.optJSONObject("user_info") ?: return null
-      val auth = ui.opt("auth")?.toString()
-      if (auth == "0" || auth == "false") return null
-      data
-    } catch (_: Throwable) {
-      // Bağlantı hatası: hedef sunucu değil PROXY suçlu olabilir → proxy'yi geri bildir.
-      sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, ok = false, banned = false) }
-      null
+      return null
     } finally {
-      conn?.let { activeConnections.remove(it) }; conn?.disconnect(); permit.release()
+      permit.release()
     }
   }
 

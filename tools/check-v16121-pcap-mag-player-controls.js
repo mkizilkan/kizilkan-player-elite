@@ -35,7 +35,7 @@ function staticChecks() {
   must(stalker, /pcapDetachedMedia = ses\.compatProfile === "pcap320-minimal" && !trusted/, 'PCAP detached media header policy missing');
   must(player, /resolvedStalkerKey/, 'resolved Stalker ownership key missing');
   must(player, /resolvedStalkerKey === currentStalkerKey/, 'resolved URL ownership check missing');
-  must(player, /activePlaylist\?\.source === "stalker"\s*\? \(resolvedForCurrentStalker \? resolvedUrl : null\)/, 'Stalker raw-url render gate missing');
+  must(player, /(?:activePlaylist\?\.source|playlistSource) === "stalker"\s*\? \(resolvedForCurrentStalker \? resolvedUrl : null\)/, 'Stalker raw-url render gate missing');
   must(player, /setResolvedUrl\(null\);\s*setResolvedHeaders\(\{\}\);\s*setResolvedStalkerKey\(""\);\s*setResolving\(true\)/, 'old resolved URL not cleared before new resolve');
   must(player, /generation===stalkerResolveGenerationRef\.current/, 'stale async resolve generation guard missing');
   must(player, /key=\{`vv-\$\{effectiveSurface\}-\$\{activeSessionId\}`\}/, 'Media3 per-session surface remount regression');

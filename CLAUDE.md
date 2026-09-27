@@ -106,6 +106,9 @@ node tools/denetle.js        # sonunda başarısız kapı olmamalı
 | Chromecast yayın köprüsü | `frontend/modules/kizilkan-native-core/android/.../CastBridgeServer.kt`, `src/components/CastButton.tsx` |
 | Yedek DNS yöneticisi | `frontend/src/components/DnsManager.tsx` (+ `app/edit-playlist.tsx`, `src/utils/refreshPlaylist.ts`) |
 | Dış altyazı | `frontend/src/utils/subtitles.ts` |
+| Taramaya özel proxy (havuz, test motoru, rotasyon) | `frontend/modules/panel-scan/android/.../ScanProxyPool.kt`, `src/utils/scanProxy.ts`, `scanProxyParse.ts`, `app/scan-proxy.tsx` |
+| Medya Merkezi (MediaStore, fotoğraf görüntüleyici) | `frontend/app/media-center.tsx`, `app/photo-viewer.tsx`, `src/utils/deviceMedia.ts`, `deviceMediaModel.ts` |
+| Arka planda oynatma (Media3) tercihi | `frontend/src/player/backgroundPlayback.ts` |
 | Hangi anahtar güncel | `tools/imza-bul.ps1` |
 | Denetim koşucusu (Windows uyumlu) | `tools/denetle.js` |
 
@@ -160,9 +163,9 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.3.0 RC1 — dal `v18.3.0-rc1-scan-proxy`)
+## 9. Mevcut durum (v18.4.0 RC1 — dal `v18.4.0-rc1-media-proxy-fix`)
 
-v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md` … `AI-DEVIR-v18.3.0.md`.
+v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md` … `AI-DEVIR-v18.4.0.md`.
 
 Cihazda doğrulananlar (v17.10.4'e kadar): timeshift (duraklat/geri-ileri/canlıya dön), açılışta son kanal
 (profil + liste başına), OOM düzeltmesi, boş kabuk onarımı, combo + doğrudan DNS.
@@ -172,11 +175,17 @@ medya, ses, arka planda müzik), v18.2.0 (EPG sütunu/pencere, combo link/sıra,
 geçişi, Chromecast yayın köprüsü, dış altyazı, son izlenenler, YENİ rozeti, DEV uygulaması), v18.3.0 (taramaya özel
 proxy: Ayarlar/tarama → "Tarama Proxy'si"; DEV APK'nın PC'siz açılması).
 
-**v18.3.0 (bu sürüm):** Taramaya özel proxy (yalnız tarama trafiği; oynatma/yenileme/EPG/timeshift DEĞİŞMEZ;
-varsayılan KAPALI). Elle/otomatik liste, HTTP+SOCKS4/5, rotating gateway, Keystore AES-GCM şifreli saklama,
-JS keşfi native köprüye taşındı (`proxiedProbe`). DEV APK tek başına: `withDevVariant` debug'a JS paketi gömer.
-Ayrıntı `AI-DEVIR-v18.3.0.md`; plan `PLAN-v18.3.0.md`. Actions: v18.0.0 = build-112, v18.1.0 = build-113,
-v18.2.0 = build-114 (başarılı). Kullanıcı v18.0.0–v18.3.0 APK'larını test edip gözlem yazacak.
+**v18.3.0:** Taramaya özel proxy (ilk sürüm) + PC'siz çalışan DEV APK. Cihazda: proxy çalıştı (21/400), yerel medya MAG aktifken 404 verdi.
+
+**v18.4.0 (bu sürüm):** (1) Yerel medya MAG aktifken 404 — kök neden `PlayerHost` yalnız `activePlaylist.source`'a bakıyordu;
+artık yerel dosya `playlistSource="local"` (kapı `check-v18400-local-source.js`). (2) Proxy test motoru (tür bazlı indirme, canlı
+doğrulanmış katalog, duraklat/devam/yeter, rotasyonlu tekrar, havuz tükenince tarama DURAKLAR). (3) Medya Merkezi (MediaStore;
+müzik/video/fotoğraf, arama/sıralama/gruplama, fotoğraf görüntüleyici). (4) Ayarlar'daki yanlış "yakında/Publish" iddiaları
+düzeltildi; kısayollar ve arka planda oynatma (Media3) eklendi. (5) EPG düğmesi seçili kategorinin rehberini açar.
+Ayrıntı `AI-DEVIR-v18.4.0.md`. Actions: v18.0.0 = build-112, v18.1.0 = build-113, v18.2.0 = build-114.
+
+**Tuzak (v18.4.0):** PlayerHost'ta oynatma kararında `activePlaylist?.source` DOĞRUDAN kullanma → `playlistSource`.
+MAG film/catch-up da `ext=true` ile açılır; "external = yerel" sanma.
 
 **Açık konular (öncelik sırasıyla, hiçbiri onaysız kodlanmaz):**
 1. **Timeshift "Her zaman" takılması (KANITLANMADI).** v18.0.0 telemetrisiyle "Her zaman" ve "Kapalı" log bekleniyor.

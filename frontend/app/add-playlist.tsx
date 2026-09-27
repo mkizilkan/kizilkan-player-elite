@@ -45,6 +45,7 @@ import {
   type PanelDirectoryItem, type PanelCredentialMatch, type ScanExecutionControl,
 } from "@/src/utils/serverCode";
 import { PanelScan, type NativeScanStartResult } from "@/modules/panel-scan";
+import { loadScanProxyConfig, saveScanProxyConfig } from "@/src/utils/scanProxy";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { storage } from "@/src/utils/storage";
 import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
@@ -339,6 +340,8 @@ export default function AddPlaylist() {
   const [nativeScanStopping, setNativeScanStopping] = useState(false);
   const nativePreparationAbortRef = React.useRef<AbortController | null>(null);
   const [bulkScanPaused, setBulkScanPaused] = useState(false);
+  // v18.4.0: proxy havuzu tükenince native tarama duraklar (IP sızmasın); kullanıcı karar verir.
+  const [proxyExhausted, setProxyExhausted] = useState(false);
   const [bulkScanStopping, setBulkScanStopping] = useState(false);
   const bulkPreparationAbortRef = React.useRef<AbortController | null>(null);
   const bulkScanPausedRef = React.useRef(false);
@@ -780,6 +783,7 @@ export default function AddPlaylist() {
         }
         const matches = Array.isArray(snap.matches) ? snap.matches as PanelCredentialMatch[] : [];
         setNativeScanPaused(!!snap.paused);
+        setProxyExhausted(String(snap.pauseReason || "") === "SCAN_PROXY_EXHAUSTED");
         mergeStreamingMatches(matches, title, subtitle);
         const pct = snap.total ? Math.round(((snap.tested || 0) / snap.total) * 100) : 0;
         const createdAt = Number(snap.createdAt || Date.now());
@@ -1794,6 +1798,7 @@ export default function AddPlaylist() {
       completed=Number(snap.accountTested||0); const tested=Number(snap.tested||0), total=Number(snap.total||0), pct=total?Math.round(tested/total*100):0;
       const createdAt = Number(snap.createdAt || Date.now());
       setBulkScanPaused(!!snap.paused);
+      setProxyExhausted(String(snap.pauseReason || "") === "SCAN_PROXY_EXHAUSTED");
       const foundCount = Number(snap.found ?? raw.length);
       const batchLabel = Number.isFinite(Number(snap.batchIndex)) && Number(snap.batchCount || 0) > 0
         ? ` · Parti ${Math.min(Number(snap.batchCount), Number(snap.batchIndex) + 1)}/${Number(snap.batchCount)}` : "";
@@ -1899,6 +1904,7 @@ export default function AddPlaylist() {
         setBulkStreamProgress({read:accountTotal,completed,tested,found:Number(snap.found||0),producerDone:!!snap.producerDone});
         const createdAt = Number(snap.createdAt || Date.now());
         setBulkScanPaused(!!snap.paused);
+      setProxyExhausted(String(snap.pauseReason || "") === "SCAN_PROXY_EXHAUSTED");
         const foundCount = Number(snap.found ?? raw.length);
         const producerLabel = snap.producerDone ? "dosya okuma tamam" : Number(snap.queueCapacity||0) ? `dosya okunuyor · kuyruk ${Number(snap.queueDepth||0)}/${Number(snap.queueCapacity||0)}` : "dosya hazırlanıyor · henüz hesap okunmadı";
         const concurrencyLabel = `\nParalellik: istenen ${snap.requestedConcurrency || requestedConcurrency} · etkin ${snap.effectiveConcurrency || requestedConcurrency} · parti ${snap.batchSize || batchSize}`;
@@ -2646,6 +2652,39 @@ export default function AddPlaylist() {
       setProgress("");
     }
   };
+
+  /**
+   * v18.4.0 — PROXY HAVUZU TÜKENDİ. Native tarama bu durumda kullanıcının kendi IP'sine
+   * SESSİZCE düşmez, duraklar. Kullanıcı: (a) proxy'yi kapatıp kendi bağlantısıyla devam,
+   * (b) proxy'leri yeniden test edip "Devam" ile sürdürür.
+   */
+  const renderProxyExhausted = (runId: string, onResumed: () => void) => !proxyExhausted ? null : (
+    <View style={{ borderWidth: 1, borderColor: colors.error, borderRadius: RADIUS.md, padding: SPACING.md, marginTop: SPACING.sm, backgroundColor: colors.surfaceSecondary, gap: SPACING.sm }}>
+      <Text style={{ color: colors.error, fontWeight: FONT.weight.bold }}>Proxy havuzu tükendi — tarama duraklatıldı</Text>
+      <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm }}>Çalışan proxy kalmadı. IP'nizin habersiz kullanılmaması için tarama bekliyor.</Text>
+      <View style={{ flexDirection: "row", gap: SPACING.sm, flexWrap: "wrap" }}>
+        <FocusButton focusable testID="proxy-exhausted-retest" onPress={() => router.push("/scan-proxy")}
+          style={[styles.bulkBtn, { borderColor: colors.brandPrimary, backgroundColor: colors.surface }]}>
+          <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>Proxy'leri yeniden test et</Text>
+        </FocusButton>
+        <FocusButton focusable testID="proxy-exhausted-direct" onPress={() => {
+          Alert.alert("Kendi bağlantınızla devam", "Tarama proxy olmadan, sizin IP adresinizden sürecek. Sağlayıcı IP'nizi engelleyebilir.", [
+            { text: "Vazgeç", style: "cancel" },
+            { text: "Devam et", onPress: async () => {
+              await PanelScan.setScanProxyEnabled(false);
+              try { const c = await loadScanProxyConfig(); await saveScanProxyConfig({ ...c, enabled: false }); } catch {}
+              if (runId) await PanelScan.resumeScan(runId);
+              setProxyExhausted(false);
+              onResumed();
+            } },
+          ]);
+        }} style={[styles.bulkBtn, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+          <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold }}>Kendi bağlantımla devam</Text>
+        </FocusButton>
+      </View>
+      <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs }}>Yeniden testten sonra buraya dönüp "Devam" deyin.</Text>
+    </View>
+  );
 
   const methods: { key: Method; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
     { key: "m3u_url", label: "M3U URL", icon: "link" },
@@ -3519,6 +3558,7 @@ export default function AddPlaylist() {
                 </View>
               )}
 
+              {!bulkScanFinished && renderProxyExhausted(bulkScanRunIdRef.current, () => { bulkScanPausedRef.current = false; setBulkScanPaused(false); })}
               {!bulkScanFinished && (
                 <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
                   <FocusButton focusable disabled={bulkAdding || bulkScanStopping || !bulkScanRunIdRef.current} onPress={async () => {
@@ -3695,6 +3735,7 @@ export default function AddPlaylist() {
                 </FocusButton>
               </View>
 
+              {nativeScanRunning && renderProxyExhausted(nativeScanRunIdRef.current, () => setNativeScanPaused(false))}
               {!!progress && (nativeScanRunning || loading || bulkAdding) && (
                 <View style={[styles.progressBox, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginBottom: SPACING.sm }]}>
                   <ActivityIndicator size="small" color={colors.brandPrimary} />

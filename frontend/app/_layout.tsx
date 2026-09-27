@@ -218,6 +218,38 @@ export default function RootLayout() {
     void persistAppPath(sessionPath);
   }, [sessionPath, loaded, error]);
 
+  /**
+   * v18.4.0 — ANA EKRAN KISAYOLLARI (uygulama simgesine uzun basma).
+   * Ayarlar "4 kısayol var" diyordu ama hiç kurulmamıştı. Kısayol URL değil, açılış
+   * isteğine işaret olarak gelir; hedef ekrana YALNIZ kullanıcı normal açılış akışından
+   * (profil seçimi / PIN) geçip ana ekrana (sekme veya TV ana ekranı) ulaşınca gidilir.
+   */
+  useEffect(() => {
+    if (!loaded && !error) return;
+    void KizilkanNativeCore.installAppShortcuts([
+      { id: "search", short: "Ara", long: "Kanal/film/dizi ara", icon: "search" },
+      { id: "favorites", short: "Favoriler", icon: "star" },
+      { id: "guide", short: "TV Rehberi", icon: "guide" },
+      { id: "multiview", short: "Çoklu Ekran", icon: "view" },
+    ]).catch(() => 0);
+  }, [loaded, error]);
+  useEffect(() => {
+    if (!loaded && !error) return;
+    const onMain = segments[0] === "(tabs)" || segments[0] === "tv-home";
+    const target: Record<string, string> = { search: "/search", favorites: "/favorites", guide: "/epg-timeline", multiview: "/multi-view" };
+    const tryConsume = () => {
+      if (!onMain) return;
+      const id = KizilkanNativeCore.consumePendingShortcut();
+      if (!id || !target[id]) return;
+      void recordDiagnostic("navigation", "APP_SHORTCUT_OPEN", { id });
+      router.push(target[id] as any);
+    };
+    tryConsume();
+    const sub = AppState.addEventListener("change", s => { if (s === "active") tryConsume(); });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segments[0], loaded, error]);
+
   useEffect(() => {
     if (!loaded && !error) return;
     const init = initializeDiagnostics();
@@ -294,6 +326,9 @@ export default function RootLayout() {
                         <Stack.Screen name="onboarding" />
                         <Stack.Screen name="tv-home" />
                         <Stack.Screen name="local-media" />
+                        <Stack.Screen name="media-center" />
+                        {/* v18.4.0: fotoğraf görüntüleyici tam ekran siyah (tema şeridi görünmesin). */}
+                        <Stack.Screen name="photo-viewer" options={{ contentStyle: { backgroundColor: "#000" } }} />
                         <Stack.Screen name="recoverable-playlists" />
                         {/* v8.8.0 + v9.8.0: Oynatıcı ekranının arka planı SİYAH.
                             Eskiden Stack'in varsayılan arka planı tema rengiydi;

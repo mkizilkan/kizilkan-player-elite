@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, Dimensions } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { useRemoteKeys } from "@/src/hooks/useRemoteKeys";
@@ -27,7 +27,18 @@ export default function EpgTimeline() {
   const [loading, setLoading] = useState(false);
   const [nowLine, setNowLine] = useState(0);
   const [dayNotice, setDayNotice] = useState<string | null>(null);
-  const [selectedGroup, setSelectedGroup] = useState<string>(ALL_GROUP);
+  /**
+   * v18.4.0 — Kanal listesinde hangi kategori seçiliyse rehber O GRUPLA açılır
+   * (ör. "Ulusal" seçiliyken EPG düğmesi → ulusal kanalların rehberi). Kullanıcı
+   * üstteki şeritten diğer gruplara yine geçebilir. Özel kategoriler (Tümü, Favoriler,
+   * Son izlenenler: "__" ile başlar) gerçek grup olmadığından "Tümü" açılır.
+   */
+  const routeParams = useLocalSearchParams<{ group?: string }>();
+  const requestedGroup = String(routeParams.group || "");
+  const [selectedGroup, setSelectedGroup] = useState<string>(() => requestedGroup && !requestedGroup.startsWith("__") ? requestedGroup : ALL_GROUP);
+  const chipScrollRef = useRef<ScrollView>(null);
+  const chipXRef = useRef<Record<string, number>>({});
+  const initialGroupCheckedRef = useRef(false);
   const [timelineStart, setTimelineStart] = useState<Date>(() => {
     const d = new Date();
     d.setMinutes(0, 0, 0);
@@ -106,6 +117,20 @@ export default function EpgTimeline() {
     memoryChannels.forEach(c => { if (c.group) s.add(c.group); });
     return Array.from(s).sort();
   }, [useRoom, roomGroups, memoryChannels]);
+
+  // İstenen grup listede yoksa (liste değişmiş / özel kategori) "Tümü"ne düş; varsa şeridi ona kaydır.
+  useEffect(() => {
+    if (initialGroupCheckedRef.current || !groups.length) return;
+    initialGroupCheckedRef.current = true;
+    if (selectedGroup !== ALL_GROUP && !groups.includes(selectedGroup)) { setSelectedGroup(ALL_GROUP); return; }
+    if (selectedGroup !== ALL_GROUP) {
+      setTimeout(() => {
+        const x = chipXRef.current[selectedGroup];
+        if (typeof x === "number") chipScrollRef.current?.scrollTo({ x: Math.max(0, x - 24), animated: false });
+      }, 120);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups]);
 
   const channels = useMemo(() => {
     if (useRoom) return roomChannels;              // sorgu zaten grup filtreli
@@ -322,7 +347,7 @@ export default function EpgTimeline() {
       </View>
 
       {/* Group filter chips */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+      <ScrollView ref={chipScrollRef} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
         <Chip
           label={`Tümü (${allChannels.length})`}
           active={selectedGroup === ALL_GROUP}
@@ -338,6 +363,8 @@ export default function EpgTimeline() {
               active={selectedGroup === g}
               onPress={() => { haptic.soft(); setSelectedGroup(g); }}
               testID={`epg-chip-${g}`}
+              preferredFocus={selectedGroup === g && requestedGroup === g}
+              onLayout={x => { chipXRef.current[g] = x; }}
             />
           );
         })}
@@ -440,13 +467,15 @@ export default function EpgTimeline() {
   );
 }
 
-function Chip({ label, active, onPress, testID }: { label: string; active: boolean; onPress: () => void; testID: string }) {
+function Chip({ label, active, onPress, testID, preferredFocus, onLayout }: { label: string; active: boolean; onPress: () => void; testID: string; preferredFocus?: boolean; onLayout?: (x: number) => void }) {
   const { colors } = useTheme();
   return (
     <TouchableOpacity
       testID={testID}
       onPress={onPress}
       focusable
+      hasTVPreferredFocus={!!preferredFocus}
+      onLayout={onLayout ? e => onLayout(e.nativeEvent.layout.x) : undefined}
       style={[
         styles.chip,
         { backgroundColor: active ? colors.brandPrimary : colors.surfaceSecondary, borderColor: active ? colors.brandPrimary : colors.border },

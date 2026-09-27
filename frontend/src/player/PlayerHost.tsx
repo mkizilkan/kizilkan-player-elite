@@ -74,6 +74,7 @@ import { storage } from "@/src/utils/storage";
 import { alternateHostUrls, isSourceRetryKind, loadPreferredHost, rememberWorkingHost, originOf } from "@/src/player/hostFailover";
 import { LIVE_TIMESHIFT_MODE_DEFAULT, loadLiveTimeshiftMode, type LiveTimeshiftMode } from "@/src/player/timeshiftMode";
 import { isLocalMediaId, loadLocalQueue, saveLocalProgress, writeLocalPayload, type LocalQueueItem } from "@/src/utils/localMedia";
+import { loadBackgroundPlayback } from "@/src/player/backgroundPlayback";
 import { cueAt, cuesToVtt, loadSubtitleCues, type SubtitleCue } from "@/src/utils/subtitles";
 import type { ResolvedCastMedia } from "@/src/components/CastButton";
 import { GoogleCast } from "@/src/native/cast";
@@ -314,6 +315,7 @@ export default function PlayerHost() {
         : navOrigin === "search" ? "search"
         : navOrigin === "favorites" ? "favorites"
         : navOrigin === "local-media" ? "local-media"
+        : navOrigin === "media-center" ? "media-center"
         : undefined;
       const timer = setTimeout(() => {
         if (targetScope && navFocusKey) requestRestore(targetScope, navFocusKey, "player-close");
@@ -806,6 +808,28 @@ export default function PlayerHost() {
     failedPlaybackAttemptsRef.current.clear();
   }, [channel?.id, playbackRetryNonce]);
 
+  /**
+   * v18.4.0 — YEREL DOSYA KAYNAK AYRIMI.
+   * Cihaz logu (v18.3.0): yerel mp3/mp4, MAG listesi aktifken `create_link`'e
+   * gönderiliyor ve 404 alıyordu (CHANNEL_SELECTED source=stalker, channelId=local-…).
+   * Sebep: oynatma kararları yalnız `activePlaylist.source`'a bakıyordu.
+   * Gerçek dosyalar (yerel medya, indirilenler, kayıtlar) aktif listenin kaynağına
+   * BAĞLANMAZ. MAG film/catch-up da ext=true ile açıldığından ayrım "external"
+   * değil, dosya kimliği/şeması üzerinden yapılır (onlar create_link'e gitmeye devam eder).
+   */
+  const directFileSession = isSynthetic && (isLocalMediaId(params.id) || /^(content|file):\/\//i.test(String(channel?.url || "")));
+  const playlistSource: string | undefined = directFileSession ? "local" : activePlaylist?.source;
+  const playbackPlaylist = directFileSession ? undefined : activePlaylist;
+  useEffect(() => {
+    if (!visible || !directFileSession || !channel?.id) return;
+    void recordDiagnostic("player", "LOCAL_MEDIA_SOURCE_ROUTED", {
+      effectiveSource: "local",
+      activePlaylistSource: String(activePlaylist?.source || ""),
+      scheme: String(channel?.url || "").split(":")[0].slice(0, 12),
+    }, { stage: "local-media", outcome: "success" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, directFileSession, channel?.id]);
+
   // v15.2.24-RC3: Flight Recorder aktif oynatma işini de bilir. Bu görev uzun
   // ömürlüdür; daha yeni refresh/MAG/scan görevleri token-seq modeliyle öncelik
   // kazanır, bittiğinde player görevi tekrar görünür.
@@ -843,15 +867,15 @@ export default function PlayerHost() {
    * Key eşleşmeden o URL kullanılmaz; Stalker'da raw `ffmpeg http://...` komutu
    * da native player'a fallback olarak verilmez.
    */
-  const currentStalkerKey = activePlaylist?.source === "stalker" && channel?.url
+  const currentStalkerKey = playlistSource === "stalker" && channel?.url
     ? `${String(activePlaylist?.id || "")}|${String(channel.id || "")}|${String(channel.url)}`
     : "";
   const resolvedForCurrentStalker = !!currentStalkerKey && resolvedStalkerKey === currentStalkerKey;
   // v16.12.0 FIX: Stalker kanal değişiminde önceki native yüzey yeni resolve
   // tamamlanana kadar ekranda tutulmaz. Böylece eski kanalın son karesi fotoğraf
   // gibi görünmez; yeni URL hazır olana kadar nötr/loading katmanı görünür.
-  const resolvedMediaReadyForCurrentChannel = activePlaylist?.source !== "stalker" || resolvedForCurrentStalker;
-  const playUrl = activePlaylist?.source === "stalker"
+  const resolvedMediaReadyForCurrentChannel = playlistSource !== "stalker" || resolvedForCurrentStalker;
+  const playUrl = playlistSource === "stalker"
     ? (resolvedForCurrentStalker ? resolvedUrl : null)
     : (channel?.url || null);
   const basePlaybackRequest = useMemo(() => {
@@ -860,11 +884,11 @@ export default function PlayerHost() {
       url: playUrl,
       channel,
       override: overrides?.[channel.id || ""],
-      playlist: activePlaylist,
+      playlist: playbackPlaylist,
       isLive: sessionKind === "live",
-      runtimeHeaders: activePlaylist?.source === "stalker" && resolvedForCurrentStalker ? resolvedHeaders : undefined,
+      runtimeHeaders: playlistSource === "stalker" && resolvedForCurrentStalker ? resolvedHeaders : undefined,
     });
-  }, [playUrl, channel, overrides, activePlaylist, sessionKind, resolvedHeaders, resolvedForCurrentStalker]);
+  }, [playUrl, channel, overrides, playbackPlaylist, playlistSource, sessionKind, resolvedHeaders, resolvedForCurrentStalker]);
 
   /**
    * v17.9.0 — Yedek DNS'ler adres listesine eklenir (bkz. hostFailover.ts).
@@ -884,7 +908,7 @@ export default function PlayerHost() {
     if (!basePlaybackRequest) return [] as string[];
     const base = [basePlaybackRequest.url, ...(basePlaybackRequest.fallbackUrls || []), ...(((channel as any)?.fallbackUrls as string[] | undefined) || [])];
     // v18.2.0: panelin doğruladığı DNS'ler + kullanıcının eklediği yedek DNS'ler.
-    const hosts = activePlaylist?.source === "xtream"
+    const hosts = playlistSource === "xtream"
       ? Array.from(new Set([
           ...(((activePlaylist as any)?.serverCodeBinding?.validatedHosts as string[] | undefined) || []),
           ...(((activePlaylist as any)?.backupHosts as string[] | undefined) || []),
@@ -906,7 +930,7 @@ export default function PlayerHost() {
       && !!hosts?.some(h => originOf(/^https?:\/\//i.test(h) ? h : `http://${h}`) === preferredOrigin);
     const preferredFirst = preferredValidated ? alternates.filter(u => originOf(u) === preferredOrigin) : [];
     return [...preferredFirst, ...base, ...alternates].filter((u, i, arr) => !!u && arr.indexOf(u) === i);
-  }, [basePlaybackRequest, channel, activePlaylist?.source, (activePlaylist as any)?.serverCodeBinding?.validatedHosts, (activePlaylist as any)?.backupHosts, preferredHost]);
+  }, [basePlaybackRequest, channel, playlistSource, activePlaylist?.id, (activePlaylist as any)?.serverCodeBinding?.validatedHosts, (activePlaylist as any)?.backupHosts, preferredHost]);
 
   useEffect(() => { setPlaybackUrlIndex(0); }, [channel?.id, playUrl]);
 
@@ -1121,7 +1145,7 @@ export default function PlayerHost() {
   const ownsCurrentRender = () => playbackOwnerRef.current === renderOwnerToken;
 
   const requestStalkerSourceRenewal = React.useCallback((rawError: string, engineName: string): boolean => {
-    if (activePlaylist?.source !== 'stalker') return false;
+    if (playlistSource !== 'stalker') return false;
     const status = extractHttpStatus(rawError);
     if (!shouldRenewResolvedSource(status, sourceProvenanceRef.current.origin)) return false;
     if (stalkerPlaybackRefreshRef.current >= 1) return false;
@@ -1140,7 +1164,7 @@ export default function PlayerHost() {
     stalkerForceFreshRequestedRef.current = true;
     setStalkerFreshResolveNonce(n => n + 1);
     return true;
-  }, [activePlaylist?.source, channel?.id]);
+  }, [playlistSource, channel?.id]);
 
   /**
    * v18.1.0 — YEREL MÜZİK: ses dosyası (expectsVideo:false) + yerel kimlik.
@@ -1159,20 +1183,20 @@ export default function PlayerHost() {
   } : null, [enginePlaybackRequest, localAudioTitle, localAudioArtwork]);
 
   useEffect(() => {
-    if (!playbackRequest?.url || activePlaylist?.source !== "xtream" || !channel) return;
+    if (!playbackRequest?.url || playlistSource !== "xtream" || !channel || !activePlaylist) return;
     let host="",pathShape=""; try{const u=new URL(playbackRequest.url);host=u.host;const parts=u.pathname.split('/').filter(Boolean);pathShape=parts.length>=4?`/${parts[0]}/<user>/<pass>/${parts[parts.length-1]}`:`/${parts.map((x,i)=>i===parts.length-1?x:'<segment>').join('/')}`;}catch{}
     void recordDiagnostic("player","XTREAM_PLAYBACK_PROVENANCE",{playlistId:String(activePlaylist.id||""),channelId:String(channel.id||""),streamId:String(channel.stream_id??""),container:String(channel.container_ext||""),host,pathShape,candidateIndex:playbackUrlIndex,candidateCount:playbackCandidates.length,lastRefreshedAt:String(activePlaylist.lastRefreshedAt||"")});
-  },[playbackRequest?.url,activePlaylist?.id,activePlaylist?.source,activePlaylist?.lastRefreshedAt,channel?.id,channel?.stream_id,channel?.container_ext,playbackUrlIndex,playbackCandidates.length]);
+  },[playbackRequest?.url,activePlaylist?.id,playlistSource,activePlaylist?.lastRefreshedAt,channel?.id,channel?.stream_id,channel?.container_ext,playbackUrlIndex,playbackCandidates.length]);
 
   useEffect(() => {
     if (!playbackRequest?.url || !channel?.id) return;
-    if (activePlaylist?.source === 'stalker') return;
-    const origin = activePlaylist?.source === 'xtream' ? 'xtream' : activePlaylist?.source === 'm3u_url' || activePlaylist?.source === 'm3u_file' ? 'm3u' : isSynthetic ? 'external' : 'unknown';
+    if (playlistSource === 'stalker') return;
+    const origin = playlistSource === 'xtream' ? 'xtream' : playlistSource === 'm3u_url' || playlistSource === 'm3u_file' ? 'm3u' : isSynthetic ? 'external' : 'unknown';
     const createdAt = Date.now();
     fingerprintPlaybackUrl(playbackRequest.url).then(fingerprint => {
       if (playbackRequest?.url) sourceProvenanceRef.current = { fingerprint, createdAt, origin, candidateIndex: playbackUrlIndex };
     }).catch(() => {});
-  }, [playbackRequest?.url, playbackUrlIndex, activePlaylist?.source, channel?.id, isSynthetic]);
+  }, [playbackRequest?.url, playbackUrlIndex, playlistSource, channel?.id, isSynthetic]);
 
   useEffect(() => {
     stalkerPlaybackRefreshRef.current = 0;
@@ -1187,14 +1211,14 @@ export default function PlayerHost() {
     const parentTraceId = getCurrentFlightRecorderTrace();
     const traceId = createFlightRecorderChildTrace(parentTraceId, 'channel', `${String(activePlaylist?.id || '')}|${String(channel.id)}|${started}`);
     lifecycleTraceRef.current = traceId;
-    void recordDiagnostic("player", "CHANNEL_SELECTED", { channelId: String(channel.id), source: activePlaylist?.source || "", contentType: channel?.stream_type || "live", parentTraceId }, { sessionId: playerDiagnosticSessionRef.current, traceId, stage: 'channelSelect', outcome: 'started' });
+    void recordDiagnostic("player", "CHANNEL_SELECTED", { channelId: String(channel.id), source: playlistSource || "", contentType: channel?.stream_type || "live", parentTraceId }, { sessionId: playerDiagnosticSessionRef.current, traceId, stage: 'channelSelect', outcome: 'started' });
     void recordFlightRecorderStage(traceId, 'channelSelect', { playlistId: String(activePlaylist?.id || ''), channelId: String(channel.id), parentTraceId }, 'started');
-  }, [visible, channel?.id, activePlaylist?.source]);
+  }, [visible, channel?.id, playlistSource]);
 
   useEffect(() => {
     const generation=++stalkerResolveGenerationRef.current;
     // Stalker değilse çözüme gerek yok
-    if (!channel?.url || activePlaylist?.source !== "stalker") {
+    if (!channel?.url || playlistSource !== "stalker") {
       setResolvedUrl(null); setResolvedHeaders({}); setResolvedStalkerKey(""); return;
     }
     const requestedKey=`${String(activePlaylist?.id || "")}|${String(channel.id || "")}|${String(channel.url)}`;
@@ -1243,7 +1267,7 @@ export default function PlayerHost() {
       }
     })();
     return () => { alive = false; };
-  }, [channel?.url, activePlaylist?.id, activePlaylist?.source, stalkerFreshResolveNonce]);
+  }, [channel?.url, activePlaylist?.id, playlistSource, stalkerFreshResolveNonce]);
 
 
   /**
@@ -1336,12 +1360,12 @@ export default function PlayerHost() {
   }, [visible, channel?.id, playbackRequest?.url, engine, surfaceMode, hwAccel, isTv, playbackRetryNonce]);
 
   const supportsCatchup = !isSynthetic && !!channel && (
-    (activePlaylist?.source === "xtream" && channel.tv_archive === 1) ||
-    ((activePlaylist?.source === "m3u_url" || activePlaylist?.source === "m3u_file") && !!channel.catchup_source) ||
+    (playlistSource === "xtream" && channel.tv_archive === 1) ||
+    ((playlistSource === "m3u_url" || playlistSource === "m3u_file") && !!channel.catchup_source) ||
     // MAG/Ministra portals often expose archive capability only in per-channel
     // EPG rows. stream_id is enough to enter the archive screen; that screen
     // then accepts only rows carrying a real archive_cmd before create_link.
-    (activePlaylist?.source === "stalker" && channel.stream_id != null)
+    (playlistSource === "stalker" && channel.stream_id != null)
   );
 
   const player = useVideoPlayer(null, (p) => {
@@ -1523,7 +1547,7 @@ export default function PlayerHost() {
           channelName: String(channel?.name || "").slice(0, 60),
           channelGroup: String((channel as any)?.group || "").slice(0, 40),
           playlistId: String(activePlaylist?.id || ""),
-          playlistSource: String(activePlaylist?.source || ""),
+          playlistSource: String(playlistSource || ""),
           urlHost: (() => {
             try { const u = new URL(String(playbackRequest?.url || "")); return `${u.protocol}//${u.host}`; } catch { return ""; }
           })(),
@@ -1563,7 +1587,7 @@ export default function PlayerHost() {
             status: httpStatus, httpClass, sourceAgeMs, sourceOrigin: sourceProvenanceRef.current.origin, urlFingerprint: sourceProvenanceRef.current.fingerprint.slice(0, 16), engine: 'media3'
           }, httpStatus >= 400 ? 'failed' : 'success');
         }
-        const renewResolvedSource = activePlaylist?.source === "stalker" && shouldRenewResolvedSource(httpStatus, sourceProvenanceRef.current.origin);
+        const renewResolvedSource = playlistSource === "stalker" && shouldRenewResolvedSource(httpStatus, sourceProvenanceRef.current.origin);
         if (renewResolvedSource && stalkerPlaybackRefreshRef.current < 1) {
           stalkerPlaybackRefreshRef.current += 1;
           void recordDiagnostic("player", "STALKER_PLAYBACK_SOURCE_RENEW", {
@@ -2740,7 +2764,7 @@ export default function PlayerHost() {
     }
 
     const isHlsUrl = lower.endsWith(".m3u8") || playbackRequest?.contentType === "hls";
-    const xtreamLiveTs = sessionKind === "live" && activePlaylist?.source === "xtream" && lower.endsWith(".ts");
+    const xtreamLiveTs = sessionKind === "live" && playlistSource === "xtream" && lower.endsWith(".ts");
     if (sessionKind === "live" && !isHlsUrl && (!xtreamLiveTs || castRequiresHeaders)) {
       // Önce telefon motoru + telefon kaydedicisi kaynağı bıraksın (tek bağlantı).
       setCastDetachLocal(true);
@@ -2803,20 +2827,35 @@ export default function PlayerHost() {
    * eski davranışta: arka planda durur). app.json: expo-video
    * supportsBackgroundPlayback:true (Android ön plan servisi).
    */
+  /**
+   * v18.4.0 — Ayarlar → "Bildirim Paneli Kontrolü" → "Arka planda oynatmaya devam et".
+   * Açıksa Media3 motorunda canlı/film/dizi de arka planda sürer + bildirim kontrolü.
+   * (Eskiden Ayarlar "Publish sonrası aktif" diyordu; yalnız yerel seste çalışıyordu.)
+   */
+  const [bgPlaybackPref, setBgPlaybackPref] = useState(false);
   useEffect(() => {
-    const enable = visible && localAudioSession && v2Profile.engine === "media3";
+    if (!visible) return;
+    let alive = true;
+    void loadBackgroundPlayback().then(v => { if (alive) setBgPlaybackPref(v); });
+    return () => { alive = false; };
+  }, [visible]);
+  useEffect(() => {
+    const enable = visible && v2Profile.engine === "media3" && (localAudioSession || bgPlaybackPref);
     try {
       (player as any).staysActiveInBackground = enable;
       (player as any).showNowPlayingNotification = enable;
     } catch { /* eski expo-video: sessizce eski davranış */ }
     if (visible && localAudioSession) {
       void recordDiagnostic("player", "LOCAL_AUDIO_BACKGROUND", { enabled: enable, engine: v2Profile.engine }, { sessionId: playerDiagnosticSessionRef.current, stage: "local-media", outcome: enable ? "enabled" : "engine-unsupported" });
+    } else if (visible && bgPlaybackPref) {
+      void recordDiagnostic("player", "PLAYER_BACKGROUND_PLAYBACK", { enabled: enable, engine: v2Profile.engine, kind: sessionKind }, { sessionId: playerDiagnosticSessionRef.current, stage: "background", outcome: enable ? "enabled" : "engine-unsupported" });
     }
     return () => {
       if (!enable) return;
       try { (player as any).staysActiveInBackground = false; (player as any).showNowPlayingNotification = false; } catch { /* yoksay */ }
     };
-  }, [player, visible, localAudioSession, v2Profile.engine]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [player, visible, localAudioSession, bgPlaybackPref, v2Profile.engine]);
 
   /**
    * v18.0.0 — OYNATMA / TAMPON YOKLAMASI (timeshift takılma teşhisi, T1).
@@ -3620,7 +3659,7 @@ export default function PlayerHost() {
      * bir sonraki açılışta önce o denenir, çalışmayan DNS'le vakit kaybedilmez.
      */
     const workingUrl = String(playbackCandidates[playbackUrlIndex] || "");
-    if (activePlaylist?.source === "xtream" && workingUrl) {
+    if (playlistSource === "xtream" && workingUrl && activePlaylist) {
       const workingHost = originOf(workingUrl);
       if (workingHost && workingHost !== preferredHost) {
         void rememberWorkingHost(String(activePlaylist.id), workingUrl);
@@ -3651,12 +3690,12 @@ export default function PlayerHost() {
     void recordFlightRecorderStage(lifecycleTraceRef.current || getCurrentFlightRecorderTrace(), 'firstFrame', { engine: profile.engine, firstFrameMs, channelId: String(channel?.id || '') }, 'success');
     void recordDiagnostic("player", "FIRST_FRAME", {
       channelId: String(channel?.id || ""),
-      source: activePlaylist?.source || "",
+      source: playlistSource || "",
       engine: profile.engine,
       firstFrameMs,
       totalFromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current),
     }, { sessionId: playerDiagnosticSessionRef.current });
-  }, [channel?.id, activePlaylist?.source, activePlaylist?.id, activeProfile?.id, sessionKind, playbackCandidates, playbackUrlIndex, preferredHost]);
+  }, [channel?.id, playlistSource, activePlaylist?.id, activeProfile?.id, sessionKind, playbackCandidates, playbackUrlIndex, preferredHost]);
 
   const markVlcHealthy = React.useCallback((
     sid: number,
@@ -4785,7 +4824,7 @@ export default function PlayerHost() {
               if (!channel?.url) return;
               setTesting(true);
               try {
-                const primaryUrl = playbackRequest?.url || (activePlaylist?.source === "stalker" ? "" : channel.url);
+                const primaryUrl = playbackRequest?.url || (playlistSource === "stalker" ? "" : channel.url);
                 if (!primaryUrl) {
                   Alert.alert("MAG yayın adresi hazır değil", "Kanal testi ham Stalker komutunu oynatıcıya göndermez. create_link çözümünün tamamlanmasını bekleyip tekrar deneyin.");
                   return;
@@ -4921,7 +4960,7 @@ export default function PlayerHost() {
                 }}
                 source={{
                   // v16.12.0: Cast'e de raw Stalker komutu değil çözülmüş medya URL'si gider.
-                  url: playbackRequest?.url || (activePlaylist?.source === "stalker" ? "" : channel.url),
+                  url: playbackRequest?.url || (playlistSource === "stalker" ? "" : channel.url),
                   name: channel.name,
                   poster: (channel as any).logo,
                   /**
@@ -4932,7 +4971,7 @@ export default function PlayerHost() {
                   isLive: !isSynthetic,
                   // Film/dizide telefondaki konumdan devam (v8.2.0)
                   startTimeSec: isSynthetic ? (videoStats.currentTime || 0) : undefined,
-                  playlistSource: activePlaylist?.source,
+                  playlistSource: playlistSource,
                   // Default Media Receiver özel HTTP başlıkları uygulayamaz.
                   // Provider/runtime başlığı gereken kaynaklarda sessiz başarısızlık
                   // yerine CastButton doğrudan ve teşhis edilebilir biçimde engeller.

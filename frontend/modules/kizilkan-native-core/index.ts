@@ -66,6 +66,14 @@ export type LocalMediaEntry = {
   modified: number;
 };
 export type LocalMediaListing = { ok: boolean; entries: LocalMediaEntry[]; total?: number; skipped?: number; elapsedMs: number; error?: string };
+/** v18.4.0 — Medya Merkezi (MediaStore). */
+export type DeviceMediaKind = "video" | "audio" | "image";
+export type DeviceMediaItem = {
+  id: number; uri: string; name: string; size: number;
+  dateAdded: number; dateModified: number; mime: string; folder: string;
+  duration?: number; width?: number; height?: number; artist?: string; album?: string;
+};
+export type DeviceMediaPage = { ok: boolean; kind: DeviceMediaKind; total: number; offset: number; items: DeviceMediaItem[]; elapsedMs?: number; error?: string };
 export type LocalMediaInfo = {
   ok: boolean; durationMs?: number; hasVideo?: boolean; hasAudio?: boolean; title?: string; artist?: string; album?: string;
   width?: number; height?: number; bitrate?: number; artPath?: string; elapsedMs?: number; error?: string;
@@ -223,6 +231,22 @@ export const KizilkanNativeCore = {
   getLocalMediaInfo: async (uri: string): Promise<LocalMediaInfo | null> =>
     native?.getLocalMediaInfo ? ((await native.getLocalMediaInfo(uri)) as LocalMediaInfo) : null,
   clearLocalMediaArtCache: async (): Promise<number> => native?.clearLocalMediaArtCache ? Number(await native.clearLocalMediaArtCache()) : 0,
+  /** v18.4.0 — Medya Merkezi: cihazdaki tüm video/müzik/fotoğraf (MediaStore, sayfalı). */
+  queryDeviceMedia: async (kind: DeviceMediaKind, offset = 0, limit = 5000): Promise<DeviceMediaPage> => {
+    if (!native?.queryDeviceMediaJson) return { ok: false, error: "NATIVE_UNAVAILABLE", kind, total: 0, offset, items: [] };
+    try { return JSON.parse(String(await native.queryDeviceMediaJson(kind, offset, limit) || "{}")) as DeviceMediaPage; }
+    catch (e: any) { return { ok: false, error: String(e?.message || e), kind, total: 0, offset, items: [] }; }
+  },
+  /** v18.4.0 — Ana ekran kısayollarını kur (uzun basma). Dönüş: kurulan sayı. */
+  installAppShortcuts: async (list: Array<{ id: string; short: string; long?: string; icon: string }>): Promise<number> =>
+    native?.installAppShortcuts ? Number(await native.installAppShortcuts(JSON.stringify(list))) : 0,
+  /** v18.4.0 — Kısayolla açıldıysa hedef kimliği (bir kez) döner, yoksa "". */
+  consumePendingShortcut: (): string => native?.consumePendingShortcut ? String(native.consumePendingShortcut() || "") : "",
+  /** v18.4.0 — Ekranı açık tut (slayt gösterisi). */
+  setKeepScreenOn: (on: boolean): boolean => native?.setKeepScreenOn ? !!native.setKeepScreenOn(on) : false,
+  /** v18.4.0 — MediaStore küçük resmi (file:// JPEG, önbellekli) veya "". */
+  getDeviceMediaThumbnail: async (uri: string, sizePx = 256): Promise<string> =>
+    native?.getDeviceMediaThumbnail ? String(await native.getDeviceMediaThumbnail(uri, sizePx) || "") : "",
   /** v18.2.0 — Chromecast yayın köprüsü: Cast alıcısının erişebileceği LAN adresi üretir. */
   castBridgeRegisterFile: async (uri: string, contentType: string): Promise<CastBridgeResult> =>
     native?.castBridgeRegisterFile ? (await native.castBridgeRegisterFile(uri, contentType)) as CastBridgeResult : { ok: false, error: "NATIVE_UNAVAILABLE" },

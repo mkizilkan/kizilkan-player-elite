@@ -51,6 +51,45 @@ class KizilkanNativeCoreModule : Module() {
   private val localMediaLibrary by lazy { LocalMediaLibrary(context()) }
   // v18.2.0 — Chromecast yayın köprüsü (yerel dosya / başlıklı yayın / TS→HLS canlı).
   private val castBridge by lazy { CastBridgeServer(context(), liveTimeshiftManager) }
+  // v18.4.0 — Ana ekran kısayolu: uygulama açılış isteğindeki işaret (URL değil → profil/PIN kapısı atlanmaz).
+  @Volatile private var pendingShortcut: String? = null
+  private val shortcutExtra = "kizilkanShortcut"
+
+  /**
+   * v18.4.0 — Dinamik kısayollar (uygulama simgesine uzun basma). Paket adı çalışma anında
+   * alındığı için DEV (.dev) ve asıl uygulama kendi kısayolunu açar. Android TV başlatıcıları
+   * kısayol göstermez (zararsız). API < 25 → 0.
+   */
+  private fun installShortcuts(json: String): Int {
+    if (android.os.Build.VERSION.SDK_INT < 25) return 0
+    val ctx = context()
+    val sm = ctx.getSystemService(android.content.pm.ShortcutManager::class.java) ?: return 0
+    val launch = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName) ?: return 0
+    val arr = org.json.JSONArray(json)
+    val list = ArrayList<android.content.pm.ShortcutInfo>()
+    for (i in 0 until minOf(arr.length(), sm.maxShortcutCountPerActivity)) {
+      val o = arr.getJSONObject(i)
+      val id = o.getString("id")
+      val intent = android.content.Intent(launch).apply {
+        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        putExtra(shortcutExtra, id)
+      }
+      val iconRes = when (o.optString("icon")) {
+        "search" -> android.R.drawable.ic_menu_search
+        "star" -> android.R.drawable.btn_star_big_on
+        "guide" -> android.R.drawable.ic_menu_agenda
+        else -> android.R.drawable.ic_menu_view
+      }
+      list.add(android.content.pm.ShortcutInfo.Builder(ctx, id)
+        .setShortLabel(o.getString("short"))
+        .setLongLabel(o.optString("long", o.getString("short")))
+        .setIcon(android.graphics.drawable.Icon.createWithResource("android", iconRes))
+        .setIntent(intent)
+        .build())
+    }
+    sm.dynamicShortcuts = list
+    return list.size
+  }
 
   data class IndexResult(val snapshot: PlaylistSnapshotEntity, val cacheHit: Boolean)
 
@@ -747,6 +786,38 @@ class KizilkanNativeCoreModule : Module() {
       localMediaLibrary.mediaInfo(uri)
     }
 
+    // v18.4.0: Ana ekran kısayolları. Hedef ekrana JS, kullanıcı normal açılış akışından
+    // (profil/PIN) geçip ana ekrana ulaşınca gider.
+    OnNewIntent { intent ->
+      intent.getStringExtra(shortcutExtra)?.let { if (it.isNotEmpty()) pendingShortcut = it }
+    }
+    Function("consumePendingShortcut") {
+      var s = pendingShortcut
+      pendingShortcut = null
+      if (s.isNullOrEmpty()) {
+        val launchIntent = appContext.currentActivity?.intent
+        s = launchIntent?.getStringExtra(shortcutExtra)
+        if (!s.isNullOrEmpty()) launchIntent?.removeExtra(shortcutExtra)
+      }
+      s ?: ""
+    }
+    AsyncFunction("installAppShortcuts") { json: String -> installShortcuts(json) }
+    // v18.4.0: Slayt gösterisinde ekran kapanmasın (pencere bayrağı; ayrı keep-awake paketi yok).
+    Function("setKeepScreenOn") { on: Boolean ->
+      val act = appContext.currentActivity ?: return@Function false
+      act.runOnUiThread {
+        if (on) act.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else act.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+      }
+      true
+    }
+    // v18.4.0: Medya Merkezi — cihazdaki tüm video/müzik/fotoğraf (MediaStore) + küçük resim.
+    AsyncFunction("queryDeviceMediaJson") { kind: String, offset: Int, limit: Int ->
+      localMediaLibrary.queryDeviceMediaJson(kind, offset, limit)
+    }
+    AsyncFunction("getDeviceMediaThumbnail") { uri: String, sizePx: Int ->
+      localMediaLibrary.thumbnailFor(uri, sizePx.coerceIn(96, 512))
+    }
     AsyncFunction("clearLocalMediaArtCache") {
       localMediaLibrary.clearArtCache()
     }

@@ -83,4 +83,20 @@ assert.equal(P.targetExposesCredentials('http://panel.example.com'), true);
 assert.equal(P.targetExposesCredentials('https://panel.example.com'), false);
 pass++;
 
+// 19) defaultScheme: şemasız satır kaynağın türünü alır (socks5.txt → socks5)
+{
+  const r = P.parseProxyLine("1.2.3.4:1080", "socks5");
+  assert.deepEqual(norm(r[0]), { scheme: "socks5", host: "1.2.3.4", port: 1080 });
+  // Açık şema defaultScheme'i ezmez
+  const r2 = P.parseProxyLine("http://1.2.3.4:8080", "socks5");
+  assert.equal(r2[0].scheme, "http");
+  pass++;
+}
+// 20) countBySchemeKind
+{
+  const list = P.parseProxyText("http://a:1\nsocks4://b:2\nsocks5://c:3\nsocks5://d:4", "http");
+  assert.deepEqual(norm(P.countBySchemeKind(list)), { http: 1, socks4: 1, socks5: 2 });
+  pass++;
+}
+
 console.log(`PASS: scan-proxy parser — ${pass} test grubu TEMİZ`);

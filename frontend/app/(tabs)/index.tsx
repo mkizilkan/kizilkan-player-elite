@@ -1179,7 +1179,8 @@ function ClassicLiveTvScreen() {
         </FocusButton>
         <FocusButton
           testID="open-epg-timeline-btn"
-          onPress={() => router.push("/epg-timeline")}
+          // v18.4.0: seçili kanal kategorisinin rehberi açılır (diğer gruplara rehberde geçilebilir).
+          onPress={() => router.push({ pathname: "/epg-timeline", params: tab === "live" && selectedCat && selectedCat !== ALL ? { group: selectedCat } : {} })}
           hitSlop={10}
           style={{ marginLeft: SPACING.md }}
         >

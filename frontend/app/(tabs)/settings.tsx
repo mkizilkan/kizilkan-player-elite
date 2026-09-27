@@ -12,6 +12,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Switch,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -33,6 +34,7 @@ import { FocusButton } from "@/src/components/FocusButton";
 import { refreshPlaylistContent } from "@/src/utils/refreshPlaylist";
 import { playlistTypeLabel, playlistVisualColor, playlistTypeIcon } from "@/src/utils/playlistVisual";
 import { storage } from "@/src/utils/storage";
+import { loadBackgroundPlayback, saveBackgroundPlayback } from "@/src/player/backgroundPlayback";
 import { COLORED_ACTION_LABELS, COLORED_ACTION_ORDER, DEFAULT_COLORED_REMOTE_MAP, loadColoredRemoteMap, saveColoredRemoteMap, type ColoredKey, type ColoredRemoteMap } from "@/src/utils/coloredRemote";
 import {
   PLAYER_BUFFER_KEY, PLAYER_BUFFER_OPTIONS, PLAYER_BUFFER_PRESETS, PLAYER_BUFFER_DEFAULT_MS,
@@ -93,6 +95,9 @@ export default function SettingsTab() {
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   // Notification modal
   const [showNotifModal, setShowNotifModal] = useState(false);
+  // v18.4.0: arka planda oynatmaya devam et (Media3) tercihi.
+  const [bgPlayback, setBgPlayback] = useState(false);
+  useEffect(() => { void loadBackgroundPlayback().then(setBgPlayback); }, []);
   // Siri modal
   const [showSiriModal, setShowSiriModal] = useState(false);
   // Formats modal
@@ -430,10 +435,11 @@ export default function SettingsTab() {
             <Ionicons name="recording" size={20} color={colors.brandPrimary} />
             <View style={{ flex: 1 }}>
               <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Kayıt Alma (DVR)</Text>
-              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Canlı yayını cihaza kaydet</Text>
+              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Canlı yayını cihaza kaydet · nasıl yapılır</Text>
             </View>
+            {/* v18.4.0: "YAKINDA" yanlıştı — kayıt oynatıcıda çalışıyor (VLC motoru). */}
             <View style={[styles.miniTag, { backgroundColor: colors.surfaceTertiary }]}>
-              <Text style={[styles.miniTagText, { color: colors.onSurfaceSecondary }]}>YAKINDA</Text>
+              <Text style={[styles.miniTagText, { color: colors.onSurfaceSecondary }]}>VLC</Text>
             </View>
           </FocusButton>
 
@@ -452,13 +458,13 @@ export default function SettingsTab() {
 
           <FocusButton
             testID="local-media-btn"
-            onPress={() => router.push("/local-media")}
+            onPress={() => router.push("/media-center")}
             style={[styles.linkBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
           >
-            <Ionicons name="folder-open-outline" size={20} color={colors.brandPrimary} />
+            <Ionicons name="albums-outline" size={20} color={colors.brandPrimary} />
             <View style={{ flex: 1 }}>
-              <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Yerel Medya</Text>
-              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Telefon, USB veya SD karttan video ve müzik aç</Text>
+              <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Medya Merkezi</Text>
+              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Cihazdaki müzik, video ve fotoğraflar · USB/SD klasörleri</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
           </FocusButton>
@@ -615,10 +621,10 @@ export default function SettingsTab() {
             <Ionicons name="notifications" size={20} color={colors.brandPrimary} />
             <View style={{ flex: 1 }}>
               <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Bildirim Paneli Kontrolü</Text>
-              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Android bildirim panelinde media kontrolleri</Text>
+              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Arka planda oynatma + bildirim kontrolleri {bgPlayback ? "(açık)" : "(kapalı)"}</Text>
             </View>
             <View style={[styles.miniTag, { backgroundColor: colors.surfaceTertiary }]}>
-              <Text style={[styles.miniTagText, { color: colors.onSurfaceSecondary }]}>NATIVE</Text>
+              <Text style={[styles.miniTagText, { color: colors.onSurfaceSecondary }]}>MEDIA3</Text>
             </View>
           </FocusButton>
 
@@ -630,10 +636,10 @@ export default function SettingsTab() {
             <Ionicons name="mic" size={20} color={colors.brandPrimary} />
             <View style={{ flex: 1 }}>
               <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Siri / Google Assistant</Text>
-              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Sesli komutla kanal aç</Text>
+              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Sesli komutla kanal aç (desteklenmiyor)</Text>
             </View>
             <View style={[styles.miniTag, { backgroundColor: colors.surfaceTertiary }]}>
-              <Text style={[styles.miniTagText, { color: colors.onSurfaceSecondary }]}>NATIVE</Text>
+              <Text style={[styles.miniTagText, { color: colors.onSurfaceSecondary }]}>YOK</Text>
             </View>
           </FocusButton>
         </View>
@@ -1688,9 +1694,11 @@ export default function SettingsTab() {
             <Ionicons name="tv" size={40} color={colors.brandPrimary} style={{ alignSelf: "center", marginBottom: SPACING.md }} />
             <Text style={[styles.modalTitle, { color: colors.onSurface, textAlign: "center" }]}>Chromecast</Text>
             <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.base, lineHeight: 22, marginTop: SPACING.md, textAlign: "center" }}>
-              Chromecast özelliği, Expo Go üzerinde çalışamayan native modüller gerektirir.
-              {"\n\n"}Bu özelliği kullanmak için uygulamayı <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>Publish</Text> edip iOS/Android build&apos;i almalısınız.
-              Build sonrası cast butonu otomatik olarak aktif olacaktır.
+              {/* v18.4.0: Eskiden "Publish edip build alın" deniyordu; satır "AKTİF" derken pencere çelişiyordu.
+                  Chromecast v18.2.0'dan beri çalışıyor (CastButton + CastBridgeServer). */}
+              Oynatıcıda kontrolleri açın ve <Text style={{ fontWeight: FONT.weight.bold }}>yayınlama simgesine</Text> basın.
+              {"\n\n"}Telefon ile Chromecast <Text style={{ fontWeight: FONT.weight.bold }}>aynı Wi-Fi</Text> ağında olmalı. Yerel dosyalar, başlık/User-Agent isteyen yayınlar ve TS canlı kanallar uygulamanın yayın köprüsüyle gönderilir; seçili ses/altyazı dili alıcıya aktarılır.
+              {"\n\n"}Yayını kapatınca telefonda oynatma kaldığı yerden sürer.
             </Text>
             <FocusButton testID="cast-info-ok-btn" onPress={() => setShowCastModal(false)} style={[styles.mBtn, { backgroundColor: colors.brandPrimary, marginTop: SPACING.lg }]}>
               <Text style={[styles.mBtnText, { color: colors.onBrandPrimary }]}>Anladım</Text>
@@ -1704,14 +1712,23 @@ export default function SettingsTab() {
           <Pressable focusable={false} style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]} onPress={e => e.stopPropagation()}>
             <Ionicons name="recording" size={40} color={colors.brandPrimary} style={{ alignSelf: "center", marginBottom: SPACING.md }} />
             <Text style={[styles.modalTitle, { color: colors.onSurface, textAlign: "center" }]}>Kayıt Alma (DVR)</Text>
-            <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.base, lineHeight: 22, marginTop: SPACING.md, textAlign: "center" }}>
-              Canlı yayın kaydetme, dosya sistemine yazma iznine ve native FFmpeg modülüne ihtiyaç duyar; Expo Go üzerinde çalışamaz.
-              {"\n\n"}Bu özelliği kullanmak için <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>Publish</Text> edip iOS/Android build alın.
-              {"\n\n"}Alternatif: Xtream API kaynağınız Catch-up destekliyorsa, geriye dönük programları player&apos;dan izleyebilirsiniz.
+            {/* v18.4.0: Bu pencere eskiden "Expo Go'da çalışmaz, Publish edin" diyordu; oysa kayıt
+                oynatıcıda ÇALIŞIYOR (PlayerHost startRecording/stopRecording, VLC motoru). Metin gerçeğe uyduruldu. */}
+            <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.base, lineHeight: 22, marginTop: SPACING.md }}>
+              Canlı yayını cihaza kaydedebilirsiniz:
+              {"\n\n"}1) Kanalı açın, kontrolleri gösterin.
+              {"\n"}2) <Text style={{ fontWeight: FONT.weight.bold }}>Kaydet</Text> düğmesine basın ve klasörü seçin: Uygulama klasörü, İndirilenler/KIZILKAN PLAYER ELITE/Record veya kendi klasörünüz.
+              {"\n"}3) Bitirmek için <Text style={{ fontWeight: FONT.weight.bold }}>Kaydı Bitir</Text>. Dosyanın gerçekten oluştuğu kontrol edilir.
+              {"\n\n"}<Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>Not:</Text> Kayıt yalnız <Text style={{ fontWeight: FONT.weight.bold }}>VLC</Text> motorunda çalışır (Media3/MPV kayıt desteklemez). Uygulama klasörüne alınan kayıtlar İndirilenler → KAYITLAR'da listelenir.
             </Text>
-            <FocusButton testID="dvr-info-ok-btn" onPress={() => setShowDvrModal(false)} style={[styles.mBtn, { backgroundColor: colors.brandPrimary, marginTop: SPACING.lg }]}>
-              <Text style={[styles.mBtnText, { color: colors.onBrandPrimary }]}>Anladım</Text>
-            </FocusButton>
+            <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.lg }}>
+              <FocusButton testID="dvr-open-downloads-btn" onPress={() => { setShowDvrModal(false); router.push("/downloads"); }} style={[styles.mBtn, { flex: 1, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border }]}>
+                <Text style={[styles.mBtnText, { color: colors.onSurface }]}>Kayıtlarım</Text>
+              </FocusButton>
+              <FocusButton testID="dvr-info-ok-btn" onPress={() => setShowDvrModal(false)} style={[styles.mBtn, { flex: 1, backgroundColor: colors.brandPrimary }]}>
+                <Text style={[styles.mBtnText, { color: colors.onBrandPrimary }]}>Anladım</Text>
+              </FocusButton>
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -1724,8 +1741,8 @@ export default function SettingsTab() {
             <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.base, lineHeight: 22, marginTop: SPACING.md, textAlign: "center" }}>
               KIZILKAN PLAYER ELITE simgesine uzun bastığınızda 4 hızlı kısayol görürsünüz:
               {"\n\n"}• 🔍 Ara{"\n"}• ❤️ Favoriler{"\n"}• 📅 TV Rehberi{"\n"}• ⚏ Çoklu Ekran
-              {"\n\n"}Bu özellik iOS/Android native build gerektirir. Expo Go&apos;da çalışmaz.
-              Kod tarafında hazır; <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>Publish</Text> sonrası aktif olur.
+              {"\n\n"}Telefon ve tablette çalışır (v18.4.0). Kısayol, uygulamanın normal açılışından (profil seçimi / PIN) sonra ilgili ekrana götürür.
+              {"\n"}Android TV başlatıcıları uygulama kısayolu göstermez.
             </Text>
             <FocusButton testID="shortcuts-info-ok-btn" onPress={() => setShowShortcutsModal(false)} style={[styles.mBtn, { backgroundColor: colors.brandPrimary, marginTop: SPACING.lg }]}>
               <Text style={[styles.mBtnText, { color: colors.onBrandPrimary }]}>Anladım</Text>
@@ -1741,11 +1758,21 @@ export default function SettingsTab() {
             <Ionicons name="notifications" size={40} color={colors.brandPrimary} style={{ alignSelf: "center", marginBottom: SPACING.md }} />
             <Text style={[styles.modalTitle, { color: colors.onSurface, textAlign: "center" }]}>Bildirim Paneli Kontrolü</Text>
             <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.base, lineHeight: 22, marginTop: SPACING.md, textAlign: "center" }}>
-              İzlerken uygulamayı arka plana aldığınızda:
-              {"\n\n"}📱 Android bildirim panelinde{"\n"}▶️ Oynat/Duraklat{"\n"}⏭ İleri/Geri{"\n"}❌ Kapat{"\n\n"}
-              butonları çıkacak. Media session (MediaStyle) native modül gerektirir, Expo Go&apos;da çalışmaz.
-              <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}> Publish</Text> sonrası aktif olur.
+              {/* v18.4.0: Eskiden "Publish sonrası aktif" deniyordu; gerçekte yalnız yerel seste vardı. */}
+              Uygulamayı arka plana aldığınızda oynatma sürer ve Android bildirim panelinde oynat/duraklat kontrolü görünür.
+              {"\n\n"}• Yerel müzik: her zaman açık.
+              {"\n"}• Canlı / film / dizi: aşağıdaki anahtarla açılır.
+              {"\n\n"}<Text style={{ fontWeight: FONT.weight.bold }}>Not:</Text> Yalnız <Text style={{ fontWeight: FONT.weight.bold }}>Media3</Text> motorunda çalışır; VLC ve MPV motorlarında bildirim kontrolü yoktur.
             </Text>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: SPACING.md }}>
+              <Text style={{ color: colors.onSurface, fontSize: FONT.size.base, flex: 1, paddingRight: SPACING.md }}>Arka planda oynatmaya devam et (Media3)</Text>
+              <Switch
+                testID="bg-playback-switch"
+                value={bgPlayback}
+                onValueChange={v => { setBgPlayback(v); void saveBackgroundPlayback(v); }}
+                trackColor={{ true: colors.brandPrimary, false: colors.surfaceTertiary }}
+              />
+            </View>
             <FocusButton testID="notif-info-ok-btn" onPress={() => setShowNotifModal(false)} style={[styles.mBtn, { backgroundColor: colors.brandPrimary, marginTop: SPACING.lg }]}>
               <Text style={[styles.mBtnText, { color: colors.onBrandPrimary }]}>Anladım</Text>
             </FocusButton>
@@ -1796,10 +1823,11 @@ export default function SettingsTab() {
             <Ionicons name="mic" size={40} color={colors.brandPrimary} style={{ alignSelf: "center", marginBottom: SPACING.md }} />
             <Text style={[styles.modalTitle, { color: colors.onSurface, textAlign: "center" }]}>Siri / Google Assistant</Text>
             <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.base, lineHeight: 22, marginTop: SPACING.md, textAlign: "center" }}>
-              &quot;Hey Siri, KIZILKAN&apos;da beIN Sports 1 aç&quot; benzeri komutlar için:
-              {"\n\n"}• iOS App Intents (iOS 16+){"\n"}• Android App Actions (Google Assistant){"\n\n"}
-              Universal Search entegrasyonu native config ve capability gerektirir.
-              <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}> Publish</Text> sonrası App Intent shortcuts otomatik kaydedilir.
+              {/* v18.4.0: Eskiden "Publish sonrası otomatik kaydedilir" deniyordu; kodda hiçbir sesli
+                  komut / App Actions tanımı YOK. Metin gerçeğe uyduruldu (özellik kaldırılmadı, hiç yoktu). */}
+              Sesli komutla kanal açma <Text style={{ fontWeight: FONT.weight.bold }}>şu an desteklenmiyor</Text>.
+              {"\n\n"}Google Assistant &quot;App Actions&quot;, uygulamanın Google Play&apos;de yayınlanmasını gerektirir; APK ile kurulan uygulamada çalışmaz.
+              {"\n\n"}Kanal aramak için uygulama içi Ara ekranını veya ana ekran kısayolunu (simgeye uzun basın → Ara) kullanabilirsiniz.
             </Text>
             <FocusButton testID="siri-info-ok-btn" onPress={() => setShowSiriModal(false)} style={[styles.mBtn, { backgroundColor: colors.brandPrimary, marginTop: SPACING.lg }]}>
               <Text style={[styles.mBtnText, { color: colors.onBrandPrimary }]}>Anladım</Text>

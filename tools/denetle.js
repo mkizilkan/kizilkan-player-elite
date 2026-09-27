@@ -49,6 +49,8 @@ const CHECKS = [
   ["check-v17910-playlist-recovery.js", "v17.9.10 empty-shell recovery / visible progress / persisted barrier hard-gate", ""],
   ["test-v1730-functional.js", "v17.3.0 scoped refresh / source isolation / DNS dedup functional tests", ""],
   ["test-scan-proxy.js", "v18.3.0 scan-proxy line parser (all guide formats, ranges, dedup, masking)", ""],
+  ["check-v18400-local-source.js", "v18.4.0 local file playback never routed through active playlist source (MAG 404)", ""],
+  ["test-device-media.js", "v18.4.0 Media Center model (Turkish search, sort, group, smart filters, quality badge)", ""],
   ["check-v16143-regression-contract.js", "v16.14.3+ regression preservation contract", ""],
   ["check-v16143-corrective-hardgate.js", "v16.14.3+ corrective hard-gate", ""],
   ["check-v16144-ci-hardening.js", "v16.14.4 CI/gate/MPV release-chain contract", ""],

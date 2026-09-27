@@ -576,7 +576,8 @@ export function TvHomeContent() {
     play: () => { if (highlighted) openItem(highlighted); },
     playPause: () => { if (highlighted) openItem(highlighted); },
     // Rehber tuşu: TV rehberine git
-    guide: () => router.push("/epg-timeline"),
+    // v18.4.0: seçili kategorinin rehberi açılır (özel kategoriler → Tümü).
+    guide: () => router.push({ pathname: "/epg-timeline", params: tab === "live" && selectedCat && selectedCat !== ALL ? { group: selectedCat } : {} }),
     // Bilgi tuşu: seçili kanalın detayına git (film/dizi ise)
     info: () => { if (highlighted && tab !== "live") openItem(highlighted); },
     // Uzun-bas geri: aramayı temizle ve TÜMÜ'ye dön (hızlı sıfırlama)
@@ -676,6 +677,10 @@ export function TvHomeContent() {
         <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm }} numberOfLines={1}>
           {activePlaylist?.name || "—"}
         </Text>
+        {/* v18.4.0: görünür Rehber düğmesi — seçili canlı kategorinin rehberi açılır. */}
+        <FocusButton testID="tvh-guide" focusKey="tv-home:guide" onPress={() => router.push({ pathname: "/epg-timeline", params: tab === "live" && selectedCat && selectedCat !== ALL ? { group: selectedCat } : {} })} focusRadius={20} style={styles.iconBtn}>
+          <Ionicons name="calendar" size={20} color={colors.onSurface} />
+        </FocusButton>
         <FocusButton testID="tvh-settings" focusKey="tv-home:settings" onPress={() => router.push("/(tabs)/settings")} focusRadius={20} style={styles.iconBtn}>
           <Ionicons name="settings-outline" size={20} color={colors.onSurface} />
         </FocusButton>

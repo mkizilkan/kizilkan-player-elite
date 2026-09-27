@@ -196,4 +196,95 @@ internal class LocalMediaLibrary(private val context: Context) {
     try { artDir.listFiles()?.forEach { if (it.delete()) n += 1 } } catch (_: Throwable) {}
     return n
   }
+
+  /**
+   * v18.4.0 — Cihazdaki TÜM medya (MediaStore, tek sorgu). kind: video | audio | image.
+   * Klasör seçmeye gerek kalmadan video/müzik/fotoğrafları bulur. İzin (Android 13+
+   * READ_MEDIA_VIDEO/AUDIO/IMAGES) JS tarafında PermissionsAndroid ile istenir; izin
+   * yoksa MediaStore boş/sınırlı döner (çökme yok). Sayfalı: offset/limit.
+   * Dönen alanlar: id, uri(content://), name, size, dateAdded(sn), dateModified(sn),
+   * mime, folder(bucket), duration(ms), width, height, artist, album.
+   */
+  fun queryDeviceMediaJson(kind: String, offset: Int, limit: Int): String {
+    val started = SystemClock.elapsedRealtime()
+    val out = JSONArray()
+    val collection: Uri = when (kind) {
+      "audio" -> android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+      "image" -> android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+      else -> android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+    }
+    val cols = mutableListOf(
+      android.provider.MediaStore.MediaColumns._ID,
+      android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
+      android.provider.MediaStore.MediaColumns.SIZE,
+      android.provider.MediaStore.MediaColumns.DATE_ADDED,
+      android.provider.MediaStore.MediaColumns.DATE_MODIFIED,
+      android.provider.MediaStore.MediaColumns.MIME_TYPE,
+    )
+    if (Build.VERSION.SDK_INT >= 29) cols.add(android.provider.MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+    if (kind != "image" && Build.VERSION.SDK_INT >= 29) cols.add(android.provider.MediaStore.MediaColumns.DURATION)
+    if (kind != "audio" && Build.VERSION.SDK_INT >= 29) { cols.add(android.provider.MediaStore.MediaColumns.WIDTH); cols.add(android.provider.MediaStore.MediaColumns.HEIGHT) }
+    if (kind == "audio") { cols.add(android.provider.MediaStore.Audio.Media.ARTIST); cols.add(android.provider.MediaStore.Audio.Media.ALBUM) }
+    val sort = "${android.provider.MediaStore.MediaColumns.DATE_ADDED} DESC"
+    var total = 0
+    try {
+      context.contentResolver.query(collection, cols.toTypedArray(), null, null, sort)?.use { c ->
+        total = c.count
+        val safeOffset = offset.coerceAtLeast(0)
+        if (safeOffset > 0 && !c.moveToPosition(safeOffset - 1)) return@use
+        fun idx(name: String) = c.getColumnIndex(name)
+        val iId = idx(android.provider.MediaStore.MediaColumns._ID)
+        val iName = idx(android.provider.MediaStore.MediaColumns.DISPLAY_NAME)
+        val iSize = idx(android.provider.MediaStore.MediaColumns.SIZE)
+        val iAdded = idx(android.provider.MediaStore.MediaColumns.DATE_ADDED)
+        val iMod = idx(android.provider.MediaStore.MediaColumns.DATE_MODIFIED)
+        val iMime = idx(android.provider.MediaStore.MediaColumns.MIME_TYPE)
+        val iBucket = if (Build.VERSION.SDK_INT >= 29) idx(android.provider.MediaStore.MediaColumns.BUCKET_DISPLAY_NAME) else -1
+        val iDur = if (Build.VERSION.SDK_INT >= 29) idx(android.provider.MediaStore.MediaColumns.DURATION) else -1
+        val iW = if (Build.VERSION.SDK_INT >= 29) idx(android.provider.MediaStore.MediaColumns.WIDTH) else -1
+        val iH = if (Build.VERSION.SDK_INT >= 29) idx(android.provider.MediaStore.MediaColumns.HEIGHT) else -1
+        val iArtist = if (kind == "audio") idx(android.provider.MediaStore.Audio.Media.ARTIST) else -1
+        val iAlbum = if (kind == "audio") idx(android.provider.MediaStore.Audio.Media.ALBUM) else -1
+        var n = 0
+        while (c.moveToNext() && n < limit.coerceIn(1, 5000)) {
+          val id = c.getLong(iId)
+          val o = JSONObject()
+            .put("id", id)
+            .put("uri", android.content.ContentUris.withAppendedId(collection, id).toString())
+            .put("name", if (iName >= 0) c.getString(iName) ?: "" else "")
+            .put("size", if (iSize >= 0) c.getLong(iSize) else 0L)
+            .put("dateAdded", if (iAdded >= 0) c.getLong(iAdded) else 0L)
+            .put("dateModified", if (iMod >= 0) c.getLong(iMod) else 0L)
+            .put("mime", if (iMime >= 0) c.getString(iMime) ?: "" else "")
+            .put("folder", if (iBucket >= 0) c.getString(iBucket) ?: "" else "")
+          if (iDur >= 0) o.put("duration", c.getLong(iDur))
+          if (iW >= 0) o.put("width", c.getInt(iW))
+          if (iH >= 0) o.put("height", c.getInt(iH))
+          if (iArtist >= 0) o.put("artist", c.getString(iArtist) ?: "")
+          if (iAlbum >= 0) o.put("album", c.getString(iAlbum) ?: "")
+          out.put(o); n++
+        }
+      }
+    } catch (t: Throwable) {
+      return JSONObject().put("ok", false).put("error", t.message ?: "query").put("items", JSONArray()).toString()
+    }
+    return JSONObject().put("ok", true).put("kind", kind).put("total", total).put("offset", offset)
+      .put("items", out).put("elapsedMs", SystemClock.elapsedRealtime() - started).toString()
+  }
+
+  /**
+   * v18.4.0 — MediaStore küçük resmi (≤ 320 px, JPEG, önbellekli). API 29+ loadThumbnail;
+   * daha eskisinde görüntüden ölçekli okuma. Dönüş: file:// yolu veya "" (yoksa).
+   */
+  fun thumbnailFor(uriStr: String, sizePx: Int): String {
+    return try {
+      val file = File(artDir, "thumb-" + sha1(uriStr + "|" + sizePx) + ".jpg")
+      if (file.exists() && file.length() > 0) return Uri.fromFile(file).toString()
+      val uri = Uri.parse(uriStr)
+      val bmp: Bitmap? = if (Build.VERSION.SDK_INT >= 29) {
+        context.contentResolver.loadThumbnail(uri, android.util.Size(sizePx, sizePx), null)
+      } else null
+      if (bmp != null && writeArt(bmp, file)) Uri.fromFile(file).toString() else ""
+    } catch (_: Throwable) { "" }
+  }
 }

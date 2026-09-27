@@ -1,11 +1,11 @@
 /**
- * KIZILKAN PLAYER v18.3.0 — Taramaya özel proxy ayarları.
+ * KIZILKAN PLAYER v18.4.0 — Taramaya özel proxy ayarları.
  * ===========================================================================
- * Yalnız TARAMA trafiği proxy'den geçer (çoklu hesap/panel keşfi). Oynatma,
- * liste yenileme, EPG, timeshift ETKİLENMEZ. Varsayılan KAPALI (isteğe bağlı).
- * Proxy adres/şifresi cihazda ŞİFRELİ saklanır (native Keystore AES-GCM).
+ * Yalnız TARAMA trafiği proxy'den geçer. Oynatma/yenileme/EPG/timeshift ETKİLENMEZ.
+ * Varsayılan KAPALI. Kaynak × tür seçimi, canlı ilerlemeli test (duraklat/devam/
+ * "bu kadar yeter"), tarama sırasında ölen proxy'de sıradakine geçiş (native).
  */
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Switch, ActivityIndicator, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -15,13 +15,15 @@ import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { FocusButton } from "@/src/components/FocusButton";
 import { haptic } from "@/src/utils/haptic";
 import {
-  loadScanProxyConfig,
-  applyScanProxyConfig,
-  testScanProxy,
-  CURATED_PROXY_SOURCES,
-  DEFAULT_SCAN_PROXY_CONFIG,
-  type ScanProxyConfig,
+  loadScanProxyConfig, applyScanProxyConfig, saveScanProxyConfig,
+  startLivenessTest, pauseLivenessTest, resumeLivenessTest, stopLivenessTest, livenessProgress,
+  testSingleProxy, useWithoutTest, human,
+  PROXY_SOURCE_CATALOG, DEFAULT_SCAN_PROXY_CONFIG,
+  type ScanProxyConfig, type ProxyProtocol,
 } from "@/src/utils/scanProxy";
+import type { ScanProxyTestProgress } from "@/modules/panel-scan";
+
+const PROTOS: ProxyProtocol[] = ["http", "socks4", "socks5"];
 
 export default function ScanProxyScreen() {
   const { colors } = useTheme();
@@ -29,50 +31,73 @@ export default function ScanProxyScreen() {
   const [cfg, setCfg] = useState<ScanProxyConfig>(DEFAULT_SCAN_PROXY_CONFIG);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [dl, setDl] = useState<{ done: number; total: number; label: string } | null>(null);
+  const [status, setStatus] = useState("");
+  const [prog, setProg] = useState<ScanProxyTestProgress | null>(null);
   const [customUrl, setCustomUrl] = useState("");
-  const [statusText, setStatusText] = useState("");
+  const [customScheme, setCustomScheme] = useState<ProxyProtocol>("http");
+  const pollRef = useRef<any>(null);
 
   useEffect(() => {
     let alive = true;
     loadScanProxyConfig().then(c => { if (alive) { setCfg(c); setLoaded(true); } });
-    return () => { alive = false; };
+    return () => { alive = false; if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
   const patch = (p: Partial<ScanProxyConfig>) => setCfg(prev => ({ ...prev, ...p }));
 
-  const toggleAutoUrl = (url: string) => {
+  const toggleProto = (sourceId: string, proto: ProxyProtocol) => {
     setCfg(prev => {
-      const has = prev.autoUrls.includes(url);
-      return { ...prev, autoUrls: has ? prev.autoUrls.filter(u => u !== url) : [...prev.autoUrls, url] };
+      const cur = prev.autoSelections[sourceId] || [];
+      const next = cur.includes(proto) ? cur.filter(x => x !== proto) : [...cur, proto];
+      const map = { ...prev.autoSelections };
+      if (next.length) map[sourceId] = next; else delete map[sourceId];
+      return { ...prev, autoSelections: map };
     });
   };
+  const selectAllProtos = (sourceId: string, protos: ProxyProtocol[]) =>
+    setCfg(prev => ({ ...prev, autoSelections: { ...prev.autoSelections, [sourceId]: protos } }));
+
+  const startPolling = useCallback(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(() => {
+      const p = livenessProgress();
+      setProg(p);
+      if (p.phase !== "running" && p.phase !== "paused") { clearInterval(pollRef.current); pollRef.current = null; }
+    }, 500);
+  }, []);
 
   const onSave = async () => {
-    setBusy(true); setStatusText("");
+    setBusy(true); setStatus(""); setDl(null);
     try {
-      const res = await applyScanProxyConfig(cfg);
-      if (!cfg.enabled) { setStatusText("Proxy kapalı. Tarama doğrudan bağlanır."); return; }
-      const srcLines = res.sources.map(s => `• ${s.url}: ${s.error ? "HATA (" + s.error + ")" : s.count + " proxy"}`).join("\n");
-      setStatusText(`${res.entryCount} proxy yüklendi.\n${srcLines}\n\nTest için "Test et"e basın.`);
-    } catch (e: any) {
-      setStatusText("Kaydetme hatası: " + String(e?.message || e));
-    } finally { setBusy(false); }
+      const res = await applyScanProxyConfig(cfg, (done, total, last) => setDl({ done, total, label: last.label }));
+      setDl(null);
+      if (!cfg.enabled) { setStatus("Proxy kapalı. Tarama doğrudan bağlanır."); return; }
+      const bs = res.byScheme;
+      const lines = res.sources.slice(0, 12).map(s => `• ${s.label}: ${s.error ? "HATA" : human(s.count)}`).join("\n");
+      setStatus(`${human(res.entryCount)} aday yüklendi  (HTTP ${human(bs.http)} · SOCKS4 ${human(bs.socks4)} · SOCKS5 ${human(bs.socks5)}).\n${lines}\n\nCanlılık testini başlatın veya "Test etmeden kullan".`);
+    } catch (e: any) { setStatus("Hata: " + String(e?.message || e)); setDl(null); }
+    finally { setBusy(false); }
   };
 
-  const onTest = async () => {
-    setBusy(true); setStatusText("Proxy test ediliyor…");
-    try {
-      const r = await testScanProxy();
-      if (r.ok) setStatusText(`✔ Proxy çalışıyor.\nDış IP: ${r.ip}\nÇalışan/toplam: ${r.working}/${r.total}\nProxy: ${r.proxy || "-"}`);
-      else setStatusText(`✖ Proxy testi başarısız.\n${r.error || ""}\nÇalışan/toplam: ${r.working ?? 0}/${r.total ?? 0}`);
-    } catch (e: any) {
-      setStatusText("Test hatası: " + String(e?.message || e));
-    } finally { setBusy(false); }
+  const onStartTest = async () => {
+    await saveScanProxyConfig(cfg);
+    const r = await startLivenessTest(cfg.test);
+    if (!r.started) { Alert.alert("Test başlamadı", r.error || "Bilinmeyen hata"); return; }
+    startPolling();
   };
+  const onStopUseTested = async () => { await stopLivenessTest(true); setProg(livenessProgress()); setStatus("Test durduruldu; çalışan proxy'ler havuz olarak kullanılıyor."); };
+  const onSingleTest = async () => {
+    setBusy(true);
+    try { const r = await testSingleProxy(); setStatus(r.ok ? `✔ Proxy çalışıyor.\nDış IP: ${r.ip}\nProxy: ${r.proxy}` : `✖ ${r.error || "başarısız"}`); }
+    finally { setBusy(false); }
+  };
+  const onUseWithout = async () => { const s = await useWithoutTest(); setStatus(`Test edilmeden ${human(s.pool)} proxy havuz yapıldı.`); };
 
   const card = { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, borderWidth: 1, borderRadius: RADIUS.md, padding: SPACING.md } as const;
   const label = { color: colors.onSurface, fontSize: FONT.size.base, fontWeight: FONT.weight.semibold } as const;
   const muted = { color: colors.onSurfaceTertiary, fontSize: FONT.size.sm } as const;
+  const testing = prog?.phase === "running" || prog?.phase === "paused";
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top"]} testID="scan-proxy-screen">
@@ -84,40 +109,24 @@ export default function ScanProxyScreen() {
         <View style={{ width: 26 }} />
       </View>
 
-      {!loaded ? (
-        <ActivityIndicator style={{ marginTop: SPACING.xxl }} color={colors.brandPrimary} />
-      ) : (
+      {!loaded ? <ActivityIndicator style={{ marginTop: SPACING.xxl }} color={colors.brandPrimary} /> : (
         <ScrollView contentContainerStyle={{ padding: SPACING.lg, paddingBottom: SPACING.xxxl, gap: SPACING.md }}>
-          {/* Açıklama */}
           <View style={card}>
-            <Text style={muted}>
-              Proxy YALNIZ çoklu hesap/panel taramasında kullanılır. Sağlayıcı tarama yüzünden IP'nizi engellerse
-              engel proxy'ye düşer; izlemeniz (oynatma, yenileme, EPG) etkilenmez.
-            </Text>
+            <Text style={muted}>Proxy YALNIZ çoklu hesap/panel taramasında kullanılır. Sağlayıcı IP'nizi engellerse engel proxy'ye düşer; izlemeniz etkilenmez.</Text>
           </View>
 
-          {/* Aç/kapa */}
           <View style={[card, { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }]}>
             <View style={{ flex: 1, paddingRight: SPACING.md }}>
               <Text style={label}>Taramada proxy kullan</Text>
               <Text style={muted}>Kapalıyken tarama doğrudan sizin bağlantınızdan yapılır.</Text>
             </View>
-            <Switch
-              testID="scan-proxy-enabled"
-              value={cfg.enabled}
-              onValueChange={v => { haptic.light(); patch({ enabled: v }); }}
-              trackColor={{ true: colors.brandPrimary, false: colors.surfaceTertiary }}
-            />
+            <Switch testID="scan-proxy-enabled" value={cfg.enabled} onValueChange={v => { haptic.light(); patch({ enabled: v }); }}
+              trackColor={{ true: colors.brandPrimary, false: colors.surfaceTertiary }} />
           </View>
 
-          {/* Güvenlik uyarısı */}
           <View style={[card, { borderColor: colors.error }]}>
             <Text style={{ color: colors.error, fontWeight: FONT.weight.bold, fontSize: FONT.size.sm }}>⚠ Güvenlik</Text>
-            <Text style={[muted, { marginTop: SPACING.xs }]}>
-              Panel adresi <Text style={{ fontWeight: FONT.weight.bold }}>http://</Text> ile başlıyorsa kullanıcı adı/şifre
-              proxy sahibine GÖRÜNÜR (https:// ise şifrelidir). Ücretsiz public proxy'ler trafiği kaydedebilir;
-              güvenilir/ödemeli proxy önerilir.
-            </Text>
+            <Text style={[muted, { marginTop: SPACING.xs }]}>Panel <Text style={{ fontWeight: FONT.weight.bold }}>http://</Text> ise kullanıcı adı/şifre proxy sahibine görünür (https:// şifreli). Ücretsiz public proxy trafiği kaydedebilir; güvenilir/ödemeli önerilir.</Text>
           </View>
 
           {/* Kaynak seçimi */}
@@ -125,143 +134,171 @@ export default function ScanProxyScreen() {
             {(["manual", "auto"] as const).map(src => {
               const active = cfg.source === src;
               return (
-                <FocusButton
-                  key={src}
-                  focusKey={`scan-proxy-src-${src}`}
-                  onPress={() => { haptic.light(); patch({ source: src }); }}
-                  style={{
-                    flex: 1, paddingVertical: SPACING.md, borderRadius: RADIUS.md, alignItems: "center",
-                    backgroundColor: active ? colors.brandPrimary : colors.surfaceSecondary,
-                    borderWidth: 1, borderColor: active ? colors.brandPrimary : colors.border,
-                  }}
-                >
-                  <Text style={{ color: active ? colors.onBrandPrimary : colors.onSurface, fontWeight: FONT.weight.semibold }}>
-                    {src === "manual" ? "Elle gir" : "Otomatik liste"}
-                  </Text>
+                <FocusButton key={src} focusKey={`sp-src-${src}`} onPress={() => { haptic.light(); patch({ source: src }); }}
+                  style={{ flex: 1, paddingVertical: SPACING.md, borderRadius: RADIUS.md, alignItems: "center",
+                    backgroundColor: active ? colors.brandPrimary : colors.surfaceSecondary, borderWidth: 1, borderColor: active ? colors.brandPrimary : colors.border }}>
+                  <Text style={{ color: active ? colors.onBrandPrimary : colors.onSurface, fontWeight: FONT.weight.semibold }}>{src === "manual" ? "Elle gir" : "Otomatik liste"}</Text>
                 </FocusButton>
               );
             })}
           </View>
 
-          {/* Elle giriş */}
           {cfg.source === "manual" && (
             <View style={card}>
               <Text style={label}>Proxy satırları</Text>
-              <Text style={[muted, { marginBottom: SPACING.sm }]}>
-                Her satıra bir proxy. Örnekler:{"\n"}
-                socks5://kullanici:sifre@gw.saglayici.com:7777{"\n"}
-                http://1.2.3.4:8080{"\n"}
-                1.2.3.4:1080  (şema yoksa http)
-              </Text>
-              <TextInput
-                testID="scan-proxy-manual"
-                value={cfg.manualText}
-                onChangeText={t => patch({ manualText: t })}
-                placeholder="scheme://kullanici:sifre@host:port"
-                placeholderTextColor={colors.onSurfaceTertiary}
-                multiline
-                autoCapitalize="none"
-                autoCorrect={false}
-                style={{
-                  color: colors.onSurface, backgroundColor: colors.surface, borderColor: colors.border,
-                  borderWidth: 1, borderRadius: RADIUS.sm, padding: SPACING.md, minHeight: 120, textAlignVertical: "top",
-                  fontSize: FONT.size.sm,
-                }}
-              />
+              <Text style={[muted, { marginBottom: SPACING.sm }]}>Her satıra bir proxy:{"\n"}socks5://kullanici:sifre@gw.saglayici.com:7777{"\n"}http://1.2.3.4:8080  ·  1.2.3.4:1080</Text>
+              <TextInput testID="scan-proxy-manual" value={cfg.manualText} onChangeText={t => patch({ manualText: t })}
+                placeholder="scheme://kullanici:sifre@host:port" placeholderTextColor={colors.onSurfaceTertiary}
+                multiline autoCapitalize="none" autoCorrect={false}
+                style={{ color: colors.onSurface, backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: RADIUS.sm, padding: SPACING.md, minHeight: 110, textAlignVertical: "top", fontSize: FONT.size.sm }} />
             </View>
           )}
 
-          {/* Otomatik liste */}
           {cfg.source === "auto" && (
             <View style={card}>
-              <Text style={label}>Kaynaklar</Text>
-              <Text style={[muted, { marginBottom: SPACING.sm }]}>
-                Seçili kaynaklar indirilir, birleştirilir ve test edilir. Ücretsiz listelerin çoğu kısa ömürlüdür.
-              </Text>
-              {CURATED_PROXY_SOURCES.map(s => {
-                const on = cfg.autoUrls.includes(s.url);
+              <Text style={label}>Kaynaklar ve türleri</Text>
+              <Text style={[muted, { marginBottom: SPACING.sm }]}>Her kaynaktan hangi türü indireceğinizi seçin. Ücretsiz listelerin çoğu kısa ömürlüdür; canlılık testi ayıklar.</Text>
+              {PROXY_SOURCE_CATALOG.map(src => {
+                const sel = cfg.autoSelections[src.id] || [];
+                const avail = PROTOS.filter(p => src.urls[p]);
                 return (
-                  <FocusButton
-                    key={s.id}
-                    focusKey={`scan-proxy-source-${s.id}`}
-                    onPress={() => { haptic.light(); toggleAutoUrl(s.url); }}
-                    style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm, paddingVertical: SPACING.sm }}
-                  >
-                    <Ionicons name={on ? "checkbox" : "square-outline"} size={22} color={on ? colors.brandPrimary : colors.onSurfaceTertiary} />
-                    <Text style={{ color: colors.onSurface, fontSize: FONT.size.sm, flex: 1 }}>{s.label}</Text>
-                  </FocusButton>
+                  <View key={src.id} style={{ paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                      <Text style={{ color: colors.onSurface, fontSize: FONT.size.sm, fontWeight: FONT.weight.semibold }}>{src.label}</Text>
+                      <TouchableOpacity onPress={() => { haptic.light(); selectAllProtos(src.id, sel.length === avail.length ? [] as any : avail); }} hitSlop={8}>
+                        <Text style={{ color: colors.brandPrimary, fontSize: FONT.size.xs }}>{sel.length === avail.length ? "Temizle" : "Tümü"}</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.xs }}>
+                      {avail.map(proto => {
+                        const on = sel.includes(proto);
+                        return (
+                          <FocusButton key={proto} focusKey={`sp-${src.id}-${proto}`} onPress={() => { haptic.light(); toggleProto(src.id, proto); }}
+                            style={{ paddingVertical: 6, paddingHorizontal: SPACING.md, borderRadius: RADIUS.pill, borderWidth: 1,
+                              backgroundColor: on ? colors.brandPrimary + "22" : "transparent", borderColor: on ? colors.brandPrimary : colors.border }}>
+                            <Text style={{ color: on ? colors.brandPrimary : colors.onSurfaceSecondary, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>{proto.toUpperCase()}</Text>
+                          </FocusButton>
+                        );
+                      })}
+                    </View>
+                  </View>
                 );
               })}
-              <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.sm }}>
-                <TextInput
-                  testID="scan-proxy-custom-url"
-                  value={customUrl}
-                  onChangeText={setCustomUrl}
-                  placeholder="Özel liste URL'i ekle (txt)"
-                  placeholderTextColor={colors.onSurfaceTertiary}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  style={{
-                    flex: 1, color: colors.onSurface, backgroundColor: colors.surface, borderColor: colors.border,
-                    borderWidth: 1, borderRadius: RADIUS.sm, paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, fontSize: FONT.size.sm,
-                  }}
-                />
-                <FocusButton
-                  focusKey="scan-proxy-add-url"
-                  onPress={() => {
-                    const u = customUrl.trim();
-                    if (!/^https?:\/\//i.test(u)) { Alert.alert("Geçersiz URL", "http(s):// ile başlamalı."); return; }
-                    if (!cfg.autoUrls.includes(u)) patch({ autoUrls: [...cfg.autoUrls, u] });
-                    setCustomUrl("");
-                  }}
-                  style={{ paddingHorizontal: SPACING.md, justifyContent: "center", backgroundColor: colors.surfaceTertiary, borderRadius: RADIUS.sm }}
-                >
-                  <Ionicons name="add" size={22} color={colors.onSurface} />
+              {/* Özel URL */}
+              <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.sm, alignItems: "center" }}>
+                <TextInput value={customUrl} onChangeText={setCustomUrl} placeholder="Özel liste URL'i (txt)" placeholderTextColor={colors.onSurfaceTertiary}
+                  autoCapitalize="none" autoCorrect={false}
+                  style={{ flex: 1, color: colors.onSurface, backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: RADIUS.sm, paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, fontSize: FONT.size.xs }} />
+                <TouchableOpacity onPress={() => { const i = PROTOS.indexOf(customScheme); setCustomScheme(PROTOS[(i + 1) % PROTOS.length]); }}
+                  style={{ paddingHorizontal: SPACING.sm, paddingVertical: SPACING.sm, borderWidth: 1, borderColor: colors.border, borderRadius: RADIUS.sm }}>
+                  <Text style={{ color: colors.onSurface, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>{customScheme.toUpperCase()}</Text>
+                </TouchableOpacity>
+                <FocusButton focusKey="sp-add-url" onPress={() => {
+                  const u = customUrl.trim();
+                  if (!/^https?:\/\//i.test(u)) { Alert.alert("Geçersiz URL", "http(s):// ile başlamalı."); return; }
+                  patch({ customSources: [...cfg.customSources, { url: u, scheme: customScheme }] }); setCustomUrl("");
+                }} style={{ paddingHorizontal: SPACING.md, justifyContent: "center", backgroundColor: colors.surfaceTertiary, borderRadius: RADIUS.sm }}>
+                  <Ionicons name="add" size={20} color={colors.onSurface} />
                 </FocusButton>
               </View>
-              {cfg.autoUrls.filter(u => !CURATED_PROXY_SOURCES.some(s => s.url === u)).map(u => (
-                <View key={u} style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm, marginTop: SPACING.xs }}>
-                  <Ionicons name="link" size={16} color={colors.onSurfaceTertiary} />
-                  <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, flex: 1 }} numberOfLines={1}>{u}</Text>
-                  <TouchableOpacity onPress={() => patch({ autoUrls: cfg.autoUrls.filter(x => x !== u) })} hitSlop={8}>
-                    <Ionicons name="trash" size={16} color={colors.error} />
+              {cfg.customSources.map((c, i) => (
+                <View key={c.url + i} style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm, marginTop: SPACING.xs }}>
+                  <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, flex: 1 }} numberOfLines={1}>{c.scheme.toUpperCase()} · {c.url}</Text>
+                  <TouchableOpacity onPress={() => patch({ customSources: cfg.customSources.filter((_, j) => j !== i) })} hitSlop={8}>
+                    <Ionicons name="trash" size={15} color={colors.error} />
                   </TouchableOpacity>
                 </View>
               ))}
             </View>
           )}
 
-          {/* Durum */}
-          {!!statusText && (
+          {/* Kaydet + indirme ilerlemesi */}
+          <FocusButton focusKey="sp-save" disabled={busy} onPress={() => { haptic.medium(); void onSave(); }}
+            style={{ paddingVertical: SPACING.md, borderRadius: RADIUS.md, alignItems: "center", backgroundColor: colors.brandPrimary, opacity: busy ? 0.6 : 1 }}>
+            <Text style={{ color: colors.onBrandPrimary, fontWeight: FONT.weight.bold }}>{cfg.enabled ? "Kaydet & Listeleri İndir" : "Kaydet"}</Text>
+          </FocusButton>
+          {dl && (
             <View style={card}>
-              <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm }}>{statusText}</Text>
+              <Text style={muted}>İndiriliyor {dl.done}/{dl.total} · {dl.label}</Text>
+              <Bar colors={colors} ratio={dl.total ? dl.done / dl.total : 0} />
             </View>
           )}
 
-          {/* Eylemler */}
-          <View style={{ flexDirection: "row", gap: SPACING.sm }}>
-            <FocusButton
-              focusKey="scan-proxy-save"
-              autoFocus
-              disabled={busy}
-              onPress={() => { haptic.medium(); void onSave(); }}
-              style={{ flex: 1, paddingVertical: SPACING.md, borderRadius: RADIUS.md, alignItems: "center", backgroundColor: colors.brandPrimary, opacity: busy ? 0.6 : 1 }}
-            >
-              <Text style={{ color: colors.onBrandPrimary, fontWeight: FONT.weight.bold }}>Kaydet & Uygula</Text>
-            </FocusButton>
-            <FocusButton
-              focusKey="scan-proxy-test"
-              disabled={busy || !cfg.enabled}
-              onPress={() => { haptic.medium(); void onTest(); }}
-              style={{ flex: 1, paddingVertical: SPACING.md, borderRadius: RADIUS.md, alignItems: "center", backgroundColor: colors.surfaceTertiary, borderWidth: 1, borderColor: colors.border, opacity: (busy || !cfg.enabled) ? 0.6 : 1 }}
-            >
-              <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold }}>Test et</Text>
-            </FocusButton>
-          </View>
+          {/* Canlılık testi */}
+          {cfg.enabled && (
+            <View style={card}>
+              <Text style={label}>Canlılık testi</Text>
+              <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.sm }}>
+                {(["system", "custom"] as const).map(m => {
+                  const active = cfg.test.mode === m;
+                  return (
+                    <FocusButton key={m} focusKey={`sp-tmode-${m}`} onPress={() => patch({ test: { ...cfg.test, mode: m } })}
+                      style={{ flex: 1, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, alignItems: "center", borderWidth: 1, backgroundColor: active ? colors.brandPrimary + "22" : "transparent", borderColor: active ? colors.brandPrimary : colors.border }}>
+                      <Text style={{ color: active ? colors.brandPrimary : colors.onSurfaceSecondary, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>{m === "system" ? "Sistem (dış IP)" : "Kendi siten"}</Text>
+                    </FocusButton>
+                  );
+                })}
+              </View>
+              {cfg.test.mode === "custom" && (
+                <>
+                  <TextInput value={cfg.test.url} onChangeText={t => patch({ test: { ...cfg.test, url: t } })} placeholder="https://kontrol-adresi..." placeholderTextColor={colors.onSurfaceTertiary}
+                    autoCapitalize="none" autoCorrect={false}
+                    style={{ marginTop: SPACING.sm, color: colors.onSurface, backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: RADIUS.sm, paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, fontSize: FONT.size.xs }} />
+                  <TextInput value={cfg.test.expectText} onChangeText={t => patch({ test: { ...cfg.test, expectText: t } })} placeholder="Yanıtta geçmesi gereken metin (isteğe bağlı)" placeholderTextColor={colors.onSurfaceTertiary}
+                    autoCapitalize="none" autoCorrect={false}
+                    style={{ marginTop: SPACING.sm, color: colors.onSurface, backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: RADIUS.sm, paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, fontSize: FONT.size.xs }} />
+                </>
+              )}
+
+              {prog && (prog.phase !== "idle") && (
+                <View style={{ marginTop: SPACING.md }}>
+                  <Text style={{ color: colors.onSurface, fontSize: FONT.size.sm, fontWeight: FONT.weight.semibold }}>
+                    {prog.phase === "running" ? "Test ediliyor…" : prog.phase === "paused" ? "Duraklatıldı" : prog.phase === "stopped" ? "Durduruldu" : "Bitti"} · {prog.tested}/{prog.total}
+                  </Text>
+                  <Bar colors={colors} ratio={prog.total ? prog.tested / prog.total : 0} />
+                  <Text style={[muted, { marginTop: SPACING.xs }]}>
+                    ✔ Çalışan {prog.working}  ·  ✖ Ölü {prog.dead}{prog.transparent ? `  ·  Şeffaf ${prog.transparent}` : ""}{"\n"}
+                    HTTP {prog.http} · SOCKS4 {prog.socks4} · SOCKS5 {prog.socks5}  ·  {prog.ratePerSec}/sn{prog.etaMs > 0 ? `  ·  ~${Math.ceil(prog.etaMs / 1000)} sn` : ""}
+                  </Text>
+                </View>
+              )}
+
+              <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.md, flexWrap: "wrap" }}>
+                {!testing ? (
+                  <FocusButton focusKey="sp-test-start" onPress={() => { haptic.medium(); void onStartTest(); }}
+                    style={{ flexGrow: 1, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, alignItems: "center", backgroundColor: colors.brandPrimary }}>
+                    <Text style={{ color: colors.onBrandPrimary, fontWeight: FONT.weight.bold }}>Testi Başlat</Text>
+                  </FocusButton>
+                ) : (
+                  <>
+                    {prog?.phase === "running"
+                      ? <FocusButton focusKey="sp-test-pause" onPress={() => { pauseLivenessTest(); setProg(livenessProgress()); }} style={{ flexGrow: 1, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, alignItems: "center", borderWidth: 1, borderColor: colors.border }}><Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold }}>Duraklat</Text></FocusButton>
+                      : <FocusButton focusKey="sp-test-resume" onPress={() => { resumeLivenessTest(); startPolling(); }} style={{ flexGrow: 1, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, alignItems: "center", borderWidth: 1, borderColor: colors.brandPrimary }}><Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>Devam</Text></FocusButton>}
+                    <FocusButton focusKey="sp-test-enough" onPress={() => { haptic.medium(); void onStopUseTested(); }} style={{ flexGrow: 1, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, alignItems: "center", backgroundColor: colors.success }}><Text style={{ color: "#fff", fontWeight: FONT.weight.bold }}>Yeter, kullan</Text></FocusButton>
+                    <FocusButton focusKey="sp-test-stop" onPress={() => { void stopLivenessTest(false); setProg(livenessProgress()); }} style={{ flexGrow: 1, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, alignItems: "center", borderWidth: 1, borderColor: colors.error }}><Text style={{ color: colors.error, fontWeight: FONT.weight.bold }}>İptal</Text></FocusButton>
+                  </>
+                )}
+              </View>
+              <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.sm }}>
+                <FocusButton focusKey="sp-use-notest" onPress={() => { haptic.light(); void onUseWithout(); }} style={{ flex: 1, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, alignItems: "center", borderWidth: 1, borderColor: colors.border }}><Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm }}>Test etmeden kullan</Text></FocusButton>
+                <FocusButton focusKey="sp-single" onPress={() => { haptic.light(); void onSingleTest(); }} style={{ flex: 1, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, alignItems: "center", borderWidth: 1, borderColor: colors.border }}><Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm }}>Tek IP testi</Text></FocusButton>
+              </View>
+            </View>
+          )}
+
+          {!!status && <View style={card}><Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm }}>{status}</Text></View>}
           {busy && <ActivityIndicator color={colors.brandPrimary} />}
         </ScrollView>
       )}
     </SafeAreaView>
+  );
+}
+
+function Bar({ colors, ratio }: { colors: any; ratio: number }) {
+  return (
+    <View style={{ height: 6, borderRadius: 3, backgroundColor: colors.surfaceTertiary, marginTop: SPACING.xs, overflow: "hidden" }}>
+      <View style={{ height: 6, width: `${Math.max(0, Math.min(1, ratio)) * 100}%`, backgroundColor: colors.brandPrimary }} />
+    </View>
   );
 }
 

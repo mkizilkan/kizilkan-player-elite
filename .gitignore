@@ -14,3 +14,6 @@ frontend/ios/
 # Log / geçici
 *.log
 .DS_Store
+
+# Metro önbelleği
+frontend/.metro-cache/

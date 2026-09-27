@@ -18,22 +18,46 @@ class PanelScanModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("PanelScan")
 
-    // ── v18.3.0: Taramaya özel proxy ──────────────────────────────────────────
+    // ── v18.4.0: Taramaya özel proxy (test motoru + rotasyon) ─────────────────
     // Yalnız tarama trafiği (probePhysical + proxiedProbe) etkilenir; oynatma/
     // yenileme/EPG/timeshift değişmez. Kimlik bilgileri LOG'a yazılmaz.
-    AsyncFunction("configureScanProxy") { json: String ->
+    AsyncFunction("setScanProxyEnabled") { on: Boolean ->
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
-      ScanProxyPool.configure(context, json).toString()
+      ScanProxyPool.setEnabled(context, on).toString()
     }
-    AsyncFunction("warmScanProxyPool") {
+    // JS listeleri tür bazında ayrıştırıp yapısal aday listesi gönderir. replace=false → ekle.
+    AsyncFunction("loadScanProxyCandidates") { json: String, replace: Boolean ->
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
-      ScanProxyPool.warmPool(context).toString()
+      ScanProxyPool.loadCandidates(context, json, replace).toString()
     }
+    // Test etmeden kullan (ödemeli rotating gateway / elle güvenilir proxy).
+    AsyncFunction("commitScanProxyCandidates") {
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.commitCandidatesAsPool(context).toString()
+    }
+    AsyncFunction("clearScanProxy") {
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.clearAll(context).toString()
+    }
+    // Canlılık testi: {mode, url, expectText, concurrency, timeoutMs, rejectTransparent}
+    AsyncFunction("startScanProxyTest") { cfgJson: String ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.startTest(context, cfgJson).toString()
+    }
+    Function("pauseScanProxyTest") { ScanProxyPool.pauseTest(); true }
+    Function("resumeScanProxyTest") { ScanProxyPool.resumeTest(); true }
+    AsyncFunction("stopScanProxyTest") { useTested: Boolean ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.stopTest(context, useTested).toString()
+    }
+    Function("getScanProxyTestProgress") { ScanProxyPool.getTestProgress().toString() }
     AsyncFunction("testScanProxy") {
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
       ScanProxyPool.testExternalIp(context).toString()
     }
     Function("getScanProxyStatus") {
+      val context = appContext.reactContext
+      if (context != null) ScanProxyPool.restoreIfNeeded(context)
       ScanProxyPool.status().toString()
     }
     // JS keşif (serverCode.ts) proxy AÇIKKEN buraya yönlenir → trafik proxy'yi atlamaz.

@@ -60,8 +60,12 @@ function pushPortRange(
   }
 }
 
-/** Tek satırı ayrıştır; 0, 1 veya (port aralığında) birden çok giriş döndürür. */
-export function parseProxyLine(rawLine: string): ProxyEntry[] {
+/**
+ * Tek satırı ayrıştır; 0, 1 veya (port aralığında) birden çok giriş döndürür.
+ * v18.4.0: `defaultScheme` — satırda şema yoksa kullanılacak tür. Tür bazlı listeler
+ * (ör. socks5.txt, "ip:port" satırları) artık HTTP SANILMAZ; kaynağın türü verilir.
+ */
+export function parseProxyLine(rawLine: string, defaultScheme: ProxyScheme = "http"): ProxyEntry[] {
   let line = (rawLine || "").trim();
   if (!line) return [];
   if (line.startsWith("#") || line.startsWith("//")) return [];
@@ -69,7 +73,7 @@ export function parseProxyLine(rawLine: string): ProxyEntry[] {
   line = line.split(/\s|,|\t|\||;/)[0].trim();
   if (!line) return [];
 
-  let scheme: ProxyScheme = "http";
+  let scheme: ProxyScheme = defaultScheme;
   const schemeMatch = line.match(/^([a-zA-Z0-9]+):\/\//);
   if (schemeMatch) {
     scheme = normalizeScheme(schemeMatch[1]);
@@ -105,17 +109,33 @@ export function parseProxyLine(rawLine: string): ProxyEntry[] {
   return out;
 }
 
+/** Tekilleştirme anahtarı (tür + kimlik + host + port). */
+export function proxyEntryKey(e: ProxyEntry): string {
+  return `${e.scheme}://${e.user || ""}:${e.pass || ""}@${e.host.toLowerCase()}:${e.port}`;
+}
+
 /** Çok satırlı metni ayrıştır; tekilleştir (scheme+host+port+user+pass). */
-export function parseProxyText(text: string): ProxyEntry[] {
+export function parseProxyText(text: string, defaultScheme: ProxyScheme = "http"): ProxyEntry[] {
   const seen = new Set<string>();
   const out: ProxyEntry[] = [];
   for (const line of (text || "").split(/\r?\n/)) {
-    for (const e of parseProxyLine(line)) {
-      const key = `${e.scheme}://${e.user || ""}:${e.pass || ""}@${e.host}:${e.port}`;
+    for (const e of parseProxyLine(line, defaultScheme)) {
+      const key = proxyEntryKey(e);
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(e);
     }
+  }
+  return out;
+}
+
+/** Tür bazında sayım (ekranda "HTTP 20.1k · SOCKS4 3.2k · SOCKS5 24.9k"). */
+export function countBySchemeKind(list: ProxyEntry[]): { http: number; socks4: number; socks5: number } {
+  const out = { http: 0, socks4: 0, socks5: 0 };
+  for (const e of list) {
+    if (e.scheme === "socks4") out.socks4++;
+    else if (e.scheme === "socks5") out.socks5++;
+    else out.http++;
   }
   return out;
 }
