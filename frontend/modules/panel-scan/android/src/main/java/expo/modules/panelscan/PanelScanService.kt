@@ -212,6 +212,9 @@ class PanelScanService : Service() {
   @Volatile private var lastDiagnosticBucket = -1
   @Volatile private var lastDiagnosticAccountBucket = -1
   private val activeConnections = ConcurrentHashMap.newKeySet<HttpURLConnection>()
+  // v18.3.0: Taramaya özel proxy havuzu run başına bir kez ısıtılır.
+  @Volatile private var proxyReadyRunId = ""
+  private val proxyReadyLock = Any()
   // v17.1.1: Aynı DNS'e yüzlerce hesabın aynı anda bindirmesini engelle.
   private val hostPermits = ConcurrentHashMap<String, Semaphore>()
   private val hostBackoffUntil = ConcurrentHashMap<String, Long>()
@@ -538,8 +541,22 @@ class PanelScanService : Service() {
       "$scheme://$authority${(uri.rawPath?:"").trimEnd('/')}"
     }.getOrNull()
   }
+  /** Run başına bir kez: kalıcı proxy yapılandırmasını yükle ve havuzu ısıt. */
+  private fun ensureScanProxyReady() {
+    if (proxyReadyRunId == currentRunId) return
+    synchronized(proxyReadyLock) {
+      if (proxyReadyRunId == currentRunId) return
+      runCatching {
+        ScanProxyPool.restoreIfNeeded(applicationContext)
+        if (ScanProxyPool.enabled) ScanProxyPool.warmPool(applicationContext)
+      }
+      proxyReadyRunId = currentRunId
+    }
+  }
+
   private fun probe(server:String,username:String,password:String,timeoutMs:Int):JSONObject? {
     val base=canonicalPanelHost(server)?:return null
+    ensureScanProxyReady()
     val rawKey=JSONArray().put(base).put(username).put(password).toString()
     val key=java.security.MessageDigest.getInstance("SHA-256").digest(rawKey.toByteArray(Charsets.UTF_8)).joinToString(""){"%02x".format(it)}
     synchronized(probeStripes[(key.hashCode() and Int.MAX_VALUE)%probeStripes.size]){
@@ -561,11 +578,14 @@ class PanelScanService : Service() {
     val u = java.net.URLEncoder.encode(username, "UTF-8")
     val p = java.net.URLEncoder.encode(password, "UTF-8")
     var conn: HttpURLConnection? = null
+    // v18.3.0: Taramaya özel proxy (yalnız tarama trafiği). Kapalıysa sel=null → doğrudan bağlanır.
+    val sel = ScanProxyPool.select()
     return try {
       if (cancelled.get() || Thread.currentThread().isInterrupted) return null
       val waitMs = (hostBackoffUntil[hostKey] ?: 0L) - System.currentTimeMillis()
       if (waitMs > 0) Thread.sleep(waitMs.coerceAtMost(5000L))
-      val opened = URL("$base/player_api.php?username=$u&password=$p").openConnection() as HttpURLConnection
+      val target = URL("$base/player_api.php?username=$u&password=$p")
+      val opened = (if (sel != null) target.openConnection(sel.proxy) else target.openConnection()) as HttpURLConnection
       conn = opened
       activeConnections.add(opened)
       if (cancelled.get() || Thread.currentThread().isInterrupted) return null
@@ -573,22 +593,29 @@ class PanelScanService : Service() {
       opened.readTimeout = timeoutMs
       opened.requestMethod = "GET"
       opened.setRequestProperty("Accept", "application/json")
+      sel?.basicHeader?.let { opened.setRequestProperty("Proxy-Authorization", it) }
       val code = opened.responseCode
       if (code == 429 || code == 503) {
         val retrySeconds = opened.getHeaderField("Retry-After")?.toLongOrNull()?.coerceIn(1L, 5L) ?: 2L
         hostBackoffUntil[hostKey] = System.currentTimeMillis() + retrySeconds * 1000L
         recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("state", "HOST_BACKOFF").put("host", hostKey).put("httpCode", code).put("backoffMs", retrySeconds * 1000L))
+        sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, ok = true, banned = false) }
         return null
       }
-      if (code !in 200..299) return null
+      if (code !in 200..299) { sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, ok = true, banned = false) }; return null }
       hostBackoffUntil.remove(hostKey)
       val text = opened.inputStream.bufferedReader().use { it.readText() }
+      sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, ok = true, banned = false) }
       val data = JSONObject(text)
       val ui = data.optJSONObject("user_info") ?: return null
       val auth = ui.opt("auth")?.toString()
       if (auth == "0" || auth == "false") return null
       data
-    } catch (_: Throwable) { null } finally {
+    } catch (_: Throwable) {
+      // Bağlantı hatası: hedef sunucu değil PROXY suçlu olabilir → proxy'yi geri bildir.
+      sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, ok = false, banned = false) }
+      null
+    } finally {
       conn?.let { activeConnections.remove(it) }; conn?.disconnect(); permit.release()
     }
   }

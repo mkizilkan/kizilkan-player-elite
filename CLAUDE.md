@@ -160,20 +160,23 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.2.0 RC1 — dal `v18.2.0-rc1-epg-combo-cast-dev`)
+## 9. Mevcut durum (v18.3.0 RC1 — dal `v18.3.0-rc1-scan-proxy`)
 
-v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md`, `AI-DEVIR-v18.1.0.md`, `AI-DEVIR-v18.2.0.md`.
+v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md` … `AI-DEVIR-v18.3.0.md`.
 
 Cihazda doğrulananlar (v17.10.4'e kadar): timeshift (duraklat/geri-ileri/canlıya dön), açılışta son kanal
 (profil + liste başına), OOM düzeltmesi, boş kabuk onarımı, combo + doğrudan DNS.
 
 **Cihazda henüz test edilmeyenler:** v18.0.0 (odak/konum geri yükleme, timeshift telemetrisi), v18.1.0 (yerel
 medya, ses, arka planda müzik), v18.2.0 (EPG sütunu/pencere, combo link/sıra, yedek DNS yöneticisi + yenileme
-geçişi, Chromecast yayın köprüsü, dış altyazı, son izlenenler, YENİ rozeti, DEV uygulaması).
+geçişi, Chromecast yayın köprüsü, dış altyazı, son izlenenler, YENİ rozeti, DEV uygulaması), v18.3.0 (taramaya özel
+proxy: Ayarlar/tarama → "Tarama Proxy'si"; DEV APK'nın PC'siz açılması).
 
-**Sonraki sürüm:** `PLAN-v18.3.0.md` (taslak; taramaya özel proxy + tek başına çalışan DEV APK; detaylandırma
-kullanıcıyla birlikte yapılacak). Kullanıcı v18.0.0–v18.2.0 APK'larını test edip gözlem yazacak; önce onlar ele alınır.
-Actions: v18.0.0 = build-112, v18.1.0 = build-113, v18.2.0 = build-114 (GitHub Release, başarılı).
+**v18.3.0 (bu sürüm):** Taramaya özel proxy (yalnız tarama trafiği; oynatma/yenileme/EPG/timeshift DEĞİŞMEZ;
+varsayılan KAPALI). Elle/otomatik liste, HTTP+SOCKS4/5, rotating gateway, Keystore AES-GCM şifreli saklama,
+JS keşfi native köprüye taşındı (`proxiedProbe`). DEV APK tek başına: `withDevVariant` debug'a JS paketi gömer.
+Ayrıntı `AI-DEVIR-v18.3.0.md`; plan `PLAN-v18.3.0.md`. Actions: v18.0.0 = build-112, v18.1.0 = build-113,
+v18.2.0 = build-114 (başarılı). Kullanıcı v18.0.0–v18.3.0 APK'larını test edip gözlem yazacak.
 
 **Açık konular (öncelik sırasıyla, hiçbiri onaysız kodlanmaz):**
 1. **Timeshift "Her zaman" takılması (KANITLANMADI).** v18.0.0 telemetrisiyle "Her zaman" ve "Kapalı" log bekleniyor.

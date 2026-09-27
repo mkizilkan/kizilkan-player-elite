@@ -464,6 +464,19 @@ export default function SettingsTab() {
           </FocusButton>
 
           <FocusButton
+            testID="scan-proxy-btn"
+            onPress={() => router.push("/scan-proxy")}
+            style={[styles.linkBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+          >
+            <Ionicons name="git-network-outline" size={20} color={colors.brandPrimary} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Tarama Proxy'si</Text>
+              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Çoklu hesap taramasını proxy üzerinden yap (isteğe bağlı)</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
+          </FocusButton>
+
+          <FocusButton
             testID="recoverable-playlists-btn"
             onPress={() => router.push("/recoverable-playlists")}
             style={[styles.linkBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}

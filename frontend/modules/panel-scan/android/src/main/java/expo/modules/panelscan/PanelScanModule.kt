@@ -18,6 +18,29 @@ class PanelScanModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("PanelScan")
 
+    // ── v18.3.0: Taramaya özel proxy ──────────────────────────────────────────
+    // Yalnız tarama trafiği (probePhysical + proxiedProbe) etkilenir; oynatma/
+    // yenileme/EPG/timeshift değişmez. Kimlik bilgileri LOG'a yazılmaz.
+    AsyncFunction("configureScanProxy") { json: String ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.configure(context, json).toString()
+    }
+    AsyncFunction("warmScanProxyPool") {
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.warmPool(context).toString()
+    }
+    AsyncFunction("testScanProxy") {
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.testExternalIp(context).toString()
+    }
+    Function("getScanProxyStatus") {
+      ScanProxyPool.status().toString()
+    }
+    // JS keşif (serverCode.ts) proxy AÇIKKEN buraya yönlenir → trafik proxy'yi atlamaz.
+    AsyncFunction("proxiedProbe") { url: String, timeoutMs: Int ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.proxiedGet(context, url, timeoutMs.coerceIn(2000, 30000)).toString()
+    }
 
     // v17.1.1: Büyük TXT/CSV dosyaları JS `response.text()` yoluna alınmaz.
     // ContentResolver InputStream satır satır okunur; ham dosya hiçbir zaman tek

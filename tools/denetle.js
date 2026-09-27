@@ -48,6 +48,7 @@ const CHECKS = [
   ["check-v17910-empty-shell-recovery.js", "v17.9.10 empty-shell staged Room / global progress hard-gate", ""],
   ["check-v17910-playlist-recovery.js", "v17.9.10 empty-shell recovery / visible progress / persisted barrier hard-gate", ""],
   ["test-v1730-functional.js", "v17.3.0 scoped refresh / source isolation / DNS dedup functional tests", ""],
+  ["test-scan-proxy.js", "v18.3.0 scan-proxy line parser (all guide formats, ranges, dedup, masking)", ""],
   ["check-v16143-regression-contract.js", "v16.14.3+ regression preservation contract", ""],
   ["check-v16143-corrective-hardgate.js", "v16.14.3+ corrective hard-gate", ""],
   ["check-v16144-ci-hardening.js", "v16.14.4 CI/gate/MPV release-chain contract", ""],

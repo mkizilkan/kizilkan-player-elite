@@ -1,0 +1,16 @@
+# Bağımlılıklar
+node_modules/
+**/node_modules/
+
+# Expo / native derleme çıktıları (prebuild ile üretilir, depoya girmez)
+frontend/.expo/
+frontend/android/
+frontend/ios/
+**/android/build/
+**/android/.cxx/
+**/.gradle/
+**/build/
+
+# Log / geçici
+*.log
+.DS_Store

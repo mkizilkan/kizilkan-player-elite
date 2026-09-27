@@ -22,13 +22,20 @@ const path = require('path');
 const { withAppBuildGradle, withDangerousMod } = require('@expo/config-plugins');
 
 const MARKER = '// KIZILKAN v18.2.0: DEV variant (applicationIdSuffix .dev)';
+// v18.3.0: DEV APK'yı TEK BAŞINA çalışır yap — debug derlemesine de JS paketini göm.
+// Varsayılan olarak react-native gradle eklentisi yalnız release'de bundle gömer
+// (debuggableVariants = ["debug"]); listeyi boşaltınca debug da index.android.bundle
+// içerir → Metro (npx expo start) KAPALIYKEN gömülü kodla açılır. Metro AÇIKKEN
+// developer support hâlâ etkin olduğu için önce sunucudan yüklenir (canlı güncelleme);
+// erişilemezse gömülü pakete düşer. (Yeni mimari/bridgeless geri dönüşü cihazda doğrulanacak.)
+const BUNDLE_MARKER = '// KIZILKAN v18.3.0: standalone debug bundle (react.debuggableVariants = [])';
 const DEV_APP_NAME = 'KIZILKAN DEV';
 
 const withDevGradle = (config) =>
   withAppBuildGradle(config, (cfg) => {
     if (cfg.modResults.language !== 'groovy') return cfg;
-    if (cfg.modResults.contents.includes(MARKER)) return cfg;
-    cfg.modResults.contents += `
+    if (!cfg.modResults.contents.includes(MARKER)) {
+      cfg.modResults.contents += `
 ${MARKER}
 android {
     buildTypes {
@@ -39,6 +46,15 @@ android {
     }
 }
 `;
+    }
+    if (!cfg.modResults.contents.includes(BUNDLE_MARKER)) {
+      cfg.modResults.contents += `
+${BUNDLE_MARKER}
+react {
+    debuggableVariants = []
+}
+`;
+    }
     return cfg;
   });
 

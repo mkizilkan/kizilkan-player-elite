@@ -137,4 +137,59 @@ export const PanelScan = {
   getDiagnosticEvents: (): any[] => { if (!native) return []; try { const v = JSON.parse(native.getDiagnosticEvents?.() || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } },
   getLastCrash: (): any => { if (!native) return {}; try { return JSON.parse(native.getLastCrash?.() || "{}"); } catch { return {}; } },
   clearDiagnostics: (): boolean => native ? !!native.clearDiagnostics?.() : false,
+
+  // ── v18.3.0: Taramaya özel proxy ──────────────────────────────────────────
+  /** JS'te ayrıştırılmış yapısal proxy girişleriyle native havuzu yapılandırır. */
+  configureScanProxy: async (config: NativeScanProxyConfig): Promise<NativeScanProxyStatus> => {
+    if (!native?.configureScanProxy) return { enabled: false, total: 0, working: 0, dead: 0, lastError: "native-unavailable" };
+    try { return JSON.parse(await native.configureScanProxy(JSON.stringify(config))); }
+    catch (e: any) { return { enabled: false, total: 0, working: 0, dead: 0, lastError: String(e?.message || e) }; }
+  },
+  /** Havuzu şimdi test et (çalışanları sırala). */
+  warmScanProxyPool: async (): Promise<NativeScanProxyStatus> => {
+    if (!native?.warmScanProxyPool) return { enabled: false, total: 0, working: 0, dead: 0, lastError: "native-unavailable" };
+    try { return JSON.parse(await native.warmScanProxyPool()); }
+    catch (e: any) { return { enabled: false, total: 0, working: 0, dead: 0, lastError: String(e?.message || e) }; }
+  },
+  /** Kullanıcı "Test et": proxy üzerinden dış IP. */
+  testScanProxy: async (): Promise<{ ok: boolean; ip?: string; httpCode?: number; proxy?: string; error?: string }> => {
+    if (!native?.testScanProxy) return { ok: false, error: "native-unavailable" };
+    try { return JSON.parse(await native.testScanProxy()); }
+    catch (e: any) { return { ok: false, error: String(e?.message || e) }; }
+  },
+  getScanProxyStatus: (): NativeScanProxyStatus => {
+    if (!native?.getScanProxyStatus) return { enabled: false, total: 0, working: 0, dead: 0, lastError: "" };
+    try { return JSON.parse(native.getScanProxyStatus()); } catch { return { enabled: false, total: 0, working: 0, dead: 0, lastError: "" }; }
+  },
+  /** JS keşfini proxy'ye yönlendir (serverCode.ts). */
+  proxiedProbe: async (url: string, timeoutMs: number): Promise<{ ok: boolean; status: number; body: string; error?: string }> => {
+    if (!native?.proxiedProbe) return { ok: false, status: 0, body: "", error: "native-unavailable" };
+    try { return JSON.parse(await native.proxiedProbe(url, timeoutMs)); }
+    catch (e: any) { return { ok: false, status: 0, body: "", error: String(e?.message || e) }; }
+  },
+};
+
+export type NativeScanProxyEntry = {
+  scheme: "http" | "https" | "socks4" | "socks5";
+  host: string;
+  port: number;
+  user?: string;
+  pass?: string;
+};
+
+export type NativeScanProxyConfig = {
+  enabled: boolean;
+  order?: "socks5-first";
+  testUrl?: string;
+  testTimeoutMs?: number;
+  maxPool?: number;
+  entries: NativeScanProxyEntry[];
+};
+
+export type NativeScanProxyStatus = {
+  enabled: boolean;
+  total: number;
+  working: number;
+  dead: number;
+  lastError?: string;
 };

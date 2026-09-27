@@ -3096,6 +3096,17 @@ export default function AddPlaylist() {
                 Bu hız profili Kodum var, Paneli biliyorum ve Paneli bilmiyorum taramalarının tamamında aynıdır.
               </Text>
 
+              {/* v18.3.0: Taramaya özel proxy (isteğe bağlı) — IP engellenirse engel proxy'ye düşer. */}
+              <FocusButton
+                testID="scan-proxy-link"
+                onPress={() => router.push("/scan-proxy")}
+                style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm, paddingVertical: SPACING.sm, marginTop: SPACING.sm, borderTopWidth: 1, borderTopColor: colors.border }}
+              >
+                <Ionicons name="git-network-outline" size={18} color={colors.brandPrimary} />
+                <Text style={{ color: colors.onSurface, fontSize: FONT.size.sm, flex: 1 }}>Tarama Proxy'si (isteğe bağlı)</Text>
+                <Ionicons name="chevron-forward" size={16} color={colors.onSurfaceTertiary} />
+              </FocusButton>
+
               {/* Kaynak URL — varsayılan uygulama sahibinindir; gelişmiş kullanıcı değiştirebilir. */}
               <FocusButton
                 testID="code-source-toggle"

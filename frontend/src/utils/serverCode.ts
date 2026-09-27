@@ -22,6 +22,7 @@ import { canonicalPanelHost, validPanelHosts, mergeDirectory, type DirectoryPane
 export { canonicalPanelHost, filterDirectory, panelNameKey, validPanelHosts } from "./panelDirectoryModel";
 export type { DirectoryScope, PanelTarget } from "./panelDirectoryModel";
 import { storage } from "@/src/utils/storage";
+import { PanelScan } from "../../modules/panel-scan";
 
 /** Uygulama sahibinin verdiği VARSAYILAN kaynak. Ayarlardan değiştirilebilir.
  *  Storage'da değer yoksa bu kullanılır. */
@@ -280,11 +281,20 @@ async function probeXtreamHost(
   const base = canonicalPanelHost(server);
   if (!base) return null;
   const { signal, cancel } = makeTimeoutSignal(timeoutMs, externalSignal);
+  const url = `${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
   try {
-    const url = `${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
-    const res = await fetch(url, { signal });
-    if (!res.ok) return null;
-    const data = await res.json().catch(() => null);
+    // v18.3.0: Taramaya özel proxy AÇIKSA JS keşfi de proxy'den geçsin (fetch
+    // proxy tanımaz → native köprü). Kapalıysa doğrudan fetch (davranış değişmez).
+    let data: any = null;
+    if (PanelScan.getScanProxyStatus().enabled) {
+      const r = await PanelScan.proxiedProbe(url, timeoutMs);
+      if (!r.ok) return null;
+      data = JSON.parse(r.body || "null");
+    } else {
+      const res = await fetch(url, { signal });
+      if (!res.ok) return null;
+      data = await res.json().catch(() => null);
+    }
     const ui = data?.user_info;
     if (!ui) return null;
     if (ui.auth === 0 || ui.auth === "0") return null;

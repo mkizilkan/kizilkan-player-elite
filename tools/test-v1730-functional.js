@@ -16,7 +16,7 @@ const model=load('frontend/src/utils/panelDirectoryModel.ts'),plain=x=>JSON.pars
  assert.equal(model.filterDirectory(merged,'masteriptv',{codes:['123']}).length,0);assert.equal(model.filterDirectory(merged,'all',{names:['panel a']}).length,1);assert.equal(model.filterDirectory(merged,'all',{keys:['missing']}).length,0);
  const direct=model.filterDirectory(merged,'all',{names:['panel a'],hosts:['https://own.example/','bad host']});assert.equal(direct.length,2);assert.equal(direct[1].panelName,'Doğrudan DNS');assert.deepEqual(plain(direct[1].hosts),['https://own.example']);
  const cache=new Map();let brokenSource='',physicalProbes=0;
- const directoryApi=load('frontend/src/utils/serverCode.ts',{'./panelDirectoryModel':model,'@/src/utils/iptv':{xtreamLogin:async()=>({})},'@/src/utils/storage':{storage:{getItem:async(k,d)=>cache.get(k)||d,setItem:async(k,v)=>cache.set(k,v)}}},{fetch:async url=>{
+ const directoryApi=load('frontend/src/utils/serverCode.ts',{'./panelDirectoryModel':model,'@/src/utils/iptv':{xtreamLogin:async()=>({})},'@/src/utils/storage':{storage:{getItem:async(k,d)=>cache.get(k)||d,setItem:async(k,v)=>cache.set(k,v)}},'../../modules/panel-scan':{PanelScan:{getScanProxyStatus:()=>({enabled:false}),proxiedProbe:async()=>({ok:false,status:0,body:''})}}},{fetch:async url=>{
   if(url.includes('player_api.php')){physicalProbes++;return{ok:true,json:async()=>({user_info:{auth:1},server_info:{}})};}
   if(brokenSource&&url.includes(brokenSource))throw Error('source offline');
   return{ok:true,json:async()=>url.includes('zeroWebServers')?{'123':'Panel A'}:{'Panel A':{Hosts:{one:'http://a.example',two:url.includes('masteriptv')?'http://b.example':'http://a.example'}}}};
