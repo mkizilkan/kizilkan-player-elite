@@ -8,6 +8,7 @@ import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { useDownloads, DownloadItem } from "@/src/store/DownloadContext";
 import { haptic } from "@/src/utils/haptic";
 import { storage } from "@/src/utils/storage";
+import { NativeDownloadsSection } from "@/src/components/NativeDownloadsSection";
 
 const EPISODE_URL_KEY = "kizilkan.episode.url.";
 
@@ -127,6 +128,9 @@ export default function DownloadsScreen() {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: SPACING.lg, paddingBottom: SPACING.xxxl, gap: SPACING.md }}>
+        {/* ═══ v18.6.0: NATIVE (PARÇALI) İNDİRMELER ═══ */}
+        <NativeDownloadsSection />
+
         {/* ═══ KAYITLAR ═══ */}
         {recordings.length > 0 && (
           <View style={{ gap: SPACING.sm }}>

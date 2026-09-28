@@ -1257,8 +1257,25 @@ class PanelScanService : Service() {
         while (paused.get() && !cancelled.get()) Thread.sleep(100)
         if (cancelled.get()) break
 
-        val batchEnd = minOf(accountCount, batchStart + safeBatchSize)
-        val batchIndex = batchStart / safeBatchSize
+        /**
+         * v18.6.0 — PARALELLİK ÇÖKMESİ DÜZELTMESİ (cihaz: "etkin 1", 833 hesap ~15 dk).
+         * KÖK NEDEN: parti sabit 5–15 HESAP idi. Combo'da hesap başına 1 aday olduğundan
+         * parti işi (batchWork) 1–15'te kalıyor ve işçi sayısı buna kırpılıyordu; kalan
+         * hesaplar bir sonraki partiyi (sıralı bariyer) bekliyordu. Artık parti, cihazın
+         * kaldırabileceği işçi sayısını DOYURACAK kadar hesap kapsar (bellek için uçuştaki
+         * aday sayısı ~worker kadar tutulur; checkpoint yine hesap sınırında). batchWork
+         * ve sınırlama sebepleri telemetriye yazılır.
+         */
+        val workerCap = computeEffectiveConcurrency(applicationContext, requested, 250)
+        val targetWork = (workerCap.toLong() * 3L).coerceAtLeast(safeBatchSize.toLong())
+        var batchEnd = minOf(accountCount, batchStart + safeBatchSize)
+        var work = 0L
+        for (ai in batchStart until batchEnd) work += candidatesFor(ai).length().toLong()
+        // İşçileri doyurana kadar hesap ekle (en çok 500 hesap uçuşta — bellek koruması).
+        while (batchEnd < accountCount && work < targetWork && (batchEnd - batchStart) < 500) {
+          work += candidatesFor(batchEnd).length().toLong(); batchEnd++
+        }
+        val batchIndex = batchStart / safeBatchSize.coerceAtLeast(1)
         val batchAccountCount = batchEnd - batchStart
         val expected = IntArray(batchAccountCount)
         val completed = Array(batchAccountCount) { AtomicInteger(0) }
@@ -1275,9 +1292,14 @@ class PanelScanService : Service() {
           continue
         }
 
-        val effective = computeEffectiveConcurrency(applicationContext, requested, safeBatchSize)
+        val effective = workerCap
           .coerceAtMost(batchWork.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(1))
         lastEffective = effective
+        recordExternalDiagnostic(applicationContext, JSONObject()
+          .put("runId", currentRunId).put("mode", "unified").put("state", "BATCH_PLAN")
+          .put("accountIndex", batchStart).put("accountTotal", batchAccountCount)
+          .put("total", batchWork).put("requestedConcurrency", requested).put("effectiveConcurrency", effective)
+          .put("batchSize", workerCap))
         val cursor = AtomicLong(0L)
         val workerFailure = AtomicReference<Throwable?>(null)
         val pool = Executors.newFixedThreadPool(effective)

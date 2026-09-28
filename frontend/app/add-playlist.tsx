@@ -2082,7 +2082,7 @@ export default function AddPlaylist() {
     } catch (e) { console.warn("[v17.0.6 single-scan-ack]", e); }
   }, []);
 
-  const exportBulkCandidatesTxt = React.useCallback(async (safe: boolean, requestedFileName: string) => {
+  const exportBulkCandidatesTxt = React.useCallback(async (safe: boolean, requestedFileName: string, pickFolder = false) => {
     if (bulkArchiveSaving) return;
     const selected = bulkCandidates.filter(c => selectedBulkCandidateKeys.includes(c.key));
     if (!selected.length) { Alert.alert("Hesap Arşivi", "Önce dışa aktarılacak hesap/DNS satırlarını seçin."); return; }
@@ -2102,6 +2102,30 @@ export default function AddPlaylist() {
     try {
       // Uygulama önbelleğindeki kopya paylaşım/fallback için her platformda korunur.
       await FileSystem.writeAsStringAsync(uri,text,{encoding:FileSystem.EncodingType.UTF8});
+      /**
+       * v18.6.0 — VARSAYILAN: klasör SORMADAN dosya yöneticisinde görünen
+       * "İndirilenler/KIZILKAN PLAYER ELITE/Hesap Arşivi/" klasörüne yaz (MediaStore;
+       * Android 10+ izin gerekmez). Cihaz kanıtı: SAF ile İndirilenler seçilince
+       * "Bu klasöre yazılamıyor" çıkıyordu. Başka klasör isteyen "Başka klasöre kaydet" der.
+       */
+      if (Platform.OS === "android" && !pickFolder && KizilkanNativeCore.available) {
+        const pub = await KizilkanNativeCore.writePublicTextFile("Hesap Arşivi", fileName, "text/plain", text);
+        if (pub.ok) {
+          void recordDiagnostic("scan", "BULK_TXT_EXPORT_VERIFIED", {
+            safe, records: records.length, contentChars: text.length, verified: true, storage: "public_downloads",
+          }, { stage: "bulk-export", outcome: "success" });
+          Alert.alert("Hesap Arşivi Kaydedildi", `${records.length} abonelik kaydedildi.
+
+Dosya yöneticisinde:
+${pub.path}`, [
+            { text: "Tamam" },
+            { text: "Paylaş", onPress: () => { void (async () => { try { if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri,{mimeType:"text/plain",dialogTitle:"KIZILKAN Hesap Arşivi"}); } catch {} })(); } },
+            { text: "Başka klasöre kaydet", onPress: () => { void exportBulkCandidatesTxt(safe, requestedFileName, true); } },
+          ]);
+          return;
+        }
+        void recordDiagnostic("scan", "BULK_TXT_EXPORT_PUBLIC_FAILED", { errorMessage: String(pub.error || "").slice(0, 300) }, { stage: "bulk-export", outcome: "fallback" });
+      }
       if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
         const perm=await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
         /**
@@ -2143,7 +2167,7 @@ export default function AddPlaylist() {
             "Alternatif: Belgeler (Documents) klasörünü seçin ya da " +
             "\"Paylaş / Farklı Kaydet\" ile kaydedin.",
             [
-              { text: "Başka Klasör Seç", onPress: () => { void exportBulkCandidatesTxt(safe, requestedFileName); } },
+              { text: "Başka Klasör Seç", onPress: () => { void exportBulkCandidatesTxt(safe, requestedFileName, true); } },
               { text: "Paylaş / Farklı Kaydet", onPress: () => { void (async () => {
                   try { if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri,{mimeType:"text/plain",dialogTitle:"KIZILKAN Hesap Arşivi"}); } catch {}
                 })(); } },
@@ -3240,6 +3264,8 @@ export default function AddPlaylist() {
               <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: SPACING.sm, lineHeight: 18 }}>
                 Aynı profil tüm hesapların panel/DNS worker sayısını ve timeout değerini birlikte yönetir.
               </Text>
+              {/* v18.6.0: Proxy'li / Normal tarama anahtarı çoklu hesap taramasında da (cihaz gözlemi: burada yoktu). */}
+              <ScanProxyToggleRow onOpenCenter={() => router.push("/scan-proxy")} />
               <FocusButton
                 testID="bulk-custom-concurrency-toggle"
                 focusable

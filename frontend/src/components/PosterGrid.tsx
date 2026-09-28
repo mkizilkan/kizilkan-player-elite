@@ -11,6 +11,7 @@ import { useTvFocusMemory } from "@/src/store/TvFocusMemoryContext";
 import { useFocusScroll } from "@/src/hooks/useFocusScroll";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
 import { isNewItem } from "@/src/utils/newBadge";
+import { useLibrary } from "@/src/store/LibraryContext";
 
 const H_PAD = SPACING.lg;
 const GAP = SPACING.sm;
@@ -152,6 +153,13 @@ function PosterCard({ item, width, height, testIDPrefix, onPress, onLongPress, f
   const { isFocused, onFocus, onBlur } = useTVFocus();
   const focusMemory = useTvFocusMemory(focusScope);
   const focusBinding = focusMemory.bind(focusKey || `${testIDPrefix}-${item.id}`);
+  // v18.6.0: izlendi / yarım kaldı / dizide kalınan bölüm işaretleri.
+  const { watchProgress, isWatched, seriesLast } = useLibrary();
+  const id = String(item.id);
+  const seen = isWatched(id);
+  const wp = watchProgress[id];
+  const pct = !seen && wp && wp.duration > 0 ? Math.min(1, wp.current / wp.duration) : 0;
+  const last = seriesLast[id];
   // v18.0.0: geri yükleme hedefi ZATEN odaktaysa onFocus tekrar gelmez; isteği
   // burada tamamla (aksi hâlde tercihli odak 4 sn açık kalır, log "timeout" der).
   const restoreTargetAlreadyFocused = focusBinding.hasTVPreferredFocus && isFocused;
@@ -186,6 +194,19 @@ function PosterCard({ item, width, height, testIDPrefix, onPress, onLongPress, f
           <View style={[styles.newTag, { backgroundColor: colors.brandPrimary }]}>
             <Text style={[styles.newTagText, { color: colors.onBrandPrimary }]}>YENİ</Text>
           </View>
+        ) : null}
+        {seen ? (
+          <View style={[styles.watchedTag, { backgroundColor: colors.success }]}>
+            <Ionicons name="checkmark" size={12} color="#fff" />
+          </View>
+        ) : null}
+        {last ? (
+          <View style={[styles.lastTag, { backgroundColor: "rgba(0,0,0,0.78)" }]}>
+            <Text style={styles.lastTagText} numberOfLines={1}>{`S${last.season}·B${last.episode}`}</Text>
+          </View>
+        ) : null}
+        {pct > 0 ? (
+          <View style={styles.progTrack}><View style={[styles.progFill, { width: `${pct * 100}%`, backgroundColor: colors.brandPrimary }]} /></View>
         ) : null}
         {"rating_5based" in item && item.rating_5based ? (
           <View style={styles.ratingTag}>
@@ -222,6 +243,11 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS.sm,
   },
   newTagText: { fontSize: FONT.size.xs, fontWeight: FONT.weight.black, letterSpacing: 0.5 },
+  watchedTag: { position: "absolute", bottom: 8, right: 6, width: 22, height: 22, borderRadius: 11, alignItems: "center", justifyContent: "center" },
+  lastTag: { position: "absolute", left: 6, bottom: 8, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 },
+  lastTagText: { color: "#fff", fontSize: 10, fontWeight: "800" },
+  progTrack: { position: "absolute", left: 0, right: 0, bottom: 0, height: 3, backgroundColor: "rgba(255,255,255,0.25)" },
+  progFill: { height: 3 },
   ratingText: { color: "#fff", fontSize: FONT.size.xs, fontWeight: FONT.weight.bold },
   name: {
     marginTop: 6, fontSize: FONT.size.sm, fontWeight: FONT.weight.semibold, minHeight: 34,

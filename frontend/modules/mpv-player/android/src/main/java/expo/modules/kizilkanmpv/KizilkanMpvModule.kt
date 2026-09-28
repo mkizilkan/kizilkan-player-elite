@@ -125,6 +125,9 @@ class KizilkanMpvModule : Module() {
       AsyncFunction("setSubtitleTrack") { view: KizilkanMpvView, id: Int -> view.setSubtitleTrack(id) }
       AsyncFunction("getTracks") { view: KizilkanMpvView -> view.getTracks() }
       AsyncFunction("reload") { view: KizilkanMpvView -> view.reload() }
+      // v18.6.0: kayıt (stream-record)
+      AsyncFunction("startRecord") { view: KizilkanMpvView, path: String -> view.startRecord(path) }
+      AsyncFunction("stopRecord") { view: KizilkanMpvView -> view.stopRecord() }
 
       OnViewDestroys { view: KizilkanMpvView ->
         view.destroyPlayer()

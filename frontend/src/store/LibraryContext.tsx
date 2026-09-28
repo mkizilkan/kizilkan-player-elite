@@ -22,6 +22,18 @@ const SH_KEY = "kizilkan.searchHistory.";
 const HID_ITEM_KEY = "kizilkan.hiddenItems.";
 const HID_GROUP_KEY = "kizilkan.hiddenGroups.";
 const MAX_SEARCH = 20;
+/**
+ * v18.6.0 — İZLENENLER. Eskiden %95'i geçen içeriğin ilerleme kaydı SİLİNİYORDU ve
+ * "izlendi" bilgisi hiç tutulmuyordu; kullanıcı hangi bölümü/filmi bitirdiğini göremiyordu.
+ * Artık %90'ı geçen film/bölüm kalıcı olarak "izlendi" işaretlenir (profil başına);
+ * elle işaretleme/kaldırma da yapılabilir. İlerleme silme davranışı AYNEN korunur.
+ */
+const WATCHED_KEY = "kizilkan.watched.";
+const WATCHED_RATIO = 0.9;
+const WATCHED_MAX = 20000;
+/** v18.6.0: dizi başına son açılan bölüm (afişte "S2·B5" — hangi bölümde kaldın). */
+const SERIES_LAST_KEY = "kizilkan.seriesLast.";
+export type SeriesLast = { season: string | number; episode: string | number; title?: string; episodeId: string; at: number };
 
 export interface WatchProgress {
   current: number;
@@ -34,6 +46,12 @@ export interface WatchProgress {
 
 interface LibraryContextValue {
   watchProgress: Record<string, WatchProgress>;
+  /** v18.6.0: id → izlenme zamanı (ms). */
+  watched: Record<string, number>;
+  isWatched: (id: string) => boolean;
+  setWatched: (id: string, on: boolean) => Promise<void>;
+  seriesLast: Record<string, SeriesLast>;
+  setSeriesLast: (seriesId: string, v: Omit<SeriesLast, "at">) => void;
   watchlist: string[];
   searchHistory: string[];
   hiddenItems: string[];
@@ -61,6 +79,8 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
   const profileId = activeProfile?.id || "default";
 
   const [watchProgress, setWatchProgress] = useState<Record<string, WatchProgress>>({});
+  const [watched, setWatchedMap] = useState<Record<string, number>>({});
+  const [seriesLast, setSeriesLastMap] = useState<Record<string, SeriesLast>>({});
   const [watchlist, setWatchlist] = useState<string[]>([]);
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const [hiddenItems, setHiddenItems] = useState<string[]>([]);
@@ -69,12 +89,14 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     (async () => {
-      const [p, wl, sh, hi, hg] = await Promise.all([
+      const [p, wl, sh, hi, hg, wd, sl] = await Promise.all([
         storage.getItem<string>(PROG_KEY + profileId, ""),
         storage.getItem<string>(WL_KEY + profileId, ""),
         storage.getItem<string>(SH_KEY + profileId, ""),
         storage.getItem<string>(HID_ITEM_KEY + profileId, ""),
         storage.getItem<string>(HID_GROUP_KEY + profileId, ""),
+        storage.getItem<string>(WATCHED_KEY + profileId, ""),
+        storage.getItem<string>(SERIES_LAST_KEY + profileId, ""),
       ]);
       let progressMap: Record<string, WatchProgress> = {};
       try { progressMap = p ? JSON.parse(p) : {}; } catch { progressMap = {}; }
@@ -99,11 +121,55 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
       try { setSearchHistory(sh ? JSON.parse(sh) : []); } catch { setSearchHistory([]); }
       try { setHiddenItems(hi ? JSON.parse(hi) : []); } catch { setHiddenItems([]); }
       try { setHiddenGroups(hg ? JSON.parse(hg) : []); } catch { setHiddenGroups([]); }
+      try { const w = wd ? JSON.parse(wd) : {}; setWatchedMap(w && typeof w === "object" ? w : {}); } catch { setWatchedMap({}); }
+      try { const x = sl ? JSON.parse(sl) : {}; setSeriesLastMap(x && typeof x === "object" ? x : {}); } catch { setSeriesLastMap({}); }
       setHiddenModeUnlocked(false);
     })();
   }, [profileId]);
 
+  const markWatched = useCallback((id: string, on: boolean) => {
+    setWatchedMap(prev => {
+      if (on ? !!prev[id] : !prev[id]) return prev;
+      const next = { ...prev };
+      if (on) next[id] = Date.now(); else delete next[id];
+      const keys = Object.keys(next);
+      if (keys.length > WATCHED_MAX) {
+        keys.sort((a, b) => next[a] - next[b]).slice(0, keys.length - WATCHED_MAX).forEach(k => { delete next[k]; });
+      }
+      storage.setItem(WATCHED_KEY + profileId, JSON.stringify(next));
+      return next;
+    });
+  }, [profileId]);
+
+  const setWatched = useCallback(async (id: string, on: boolean) => {
+    markWatched(id, on);
+    if (on) {
+      // Elle "izlendi" → yarım ilerleme de temizlenir (Devam Et listesinden düşer).
+      setWatchProgress(prev => {
+        if (!prev[id]) return prev;
+        const next = { ...prev }; delete next[id];
+        storage.setItem(PROG_KEY + profileId, JSON.stringify(next));
+        return next;
+      });
+    }
+  }, [markWatched, profileId]);
+
+  const isWatched = useCallback((id: string) => !!watched[id], [watched]);
+
+  const setSeriesLast = useCallback((seriesId: string, v: Omit<SeriesLast, "at">) => {
+    if (!seriesId) return;
+    setSeriesLastMap(prev => {
+      const next = { ...prev, [seriesId]: { ...v, at: Date.now() } };
+      const keys = Object.keys(next);
+      if (keys.length > 3000) keys.sort((a, b) => next[a].at - next[b].at).slice(0, keys.length - 3000).forEach(k => { delete next[k]; });
+      storage.setItem(SERIES_LAST_KEY + profileId, JSON.stringify(next));
+      return next;
+    });
+  }, [profileId]);
+
   const setProgress = useCallback(async (id: string, data: Omit<WatchProgress, "updatedAt">) => {
+    // v18.6.0: %90 → izlendi (kalıcı). Canlı yayın hariç.
+    if (data.kind !== "live" && data.duration > 0 && data.current / data.duration >= WATCHED_RATIO) markWatched(id, true);
     // Skip storing meaningless progress
     if (data.duration > 0 && data.current > 0 && data.current / data.duration > 0.95) {
       // finished — remove
@@ -195,7 +261,7 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <LibraryContext.Provider value={{
-      watchProgress, watchlist, searchHistory, hiddenItems, hiddenGroups, hiddenModeUnlocked,
+      watchProgress, watched, isWatched, setWatched, seriesLast, setSeriesLast, watchlist, searchHistory, hiddenItems, hiddenGroups, hiddenModeUnlocked,
       setProgress, clearProgress, clearAllProgress,
       toggleWatchlist, inWatchlist,
       pushSearch, clearSearchHistory,

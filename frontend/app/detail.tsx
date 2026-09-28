@@ -18,7 +18,8 @@ import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
 import { useLibrary } from "@/src/store/LibraryContext";
 import { useDownloads } from "@/src/store/DownloadContext";
-import { DownloadDialog, type SaveTarget } from "@/src/components/DownloadDialog";
+import { DownloadDialog, type SaveTarget, type DownloadOptions } from "@/src/components/DownloadDialog";
+import { startNativeDownload } from "@/src/utils/nativeDownloads";
 import { api } from "@/src/utils/api";
 import { xtreamSeriesInfo as xtSeriesInfoLocal, xtreamVodInfo as xtVodInfoLocal } from "@/src/utils/iptv";
 import { storage } from "@/src/utils/storage";
@@ -41,7 +42,7 @@ export default function DetailScreen() {
   useEffect(() => {
     if (!KizilkanNativeCore.available && activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
   }, [activePlaylist?.id, ensureHeavyLoaded]);
-  const { toggleWatchlist, inWatchlist, watchProgress, toggleHiddenItem, isItemHidden } = useLibrary();
+  const { toggleWatchlist, inWatchlist, watchProgress, toggleHiddenItem, isItemHidden, isWatched, setWatched, setSeriesLast } = useLibrary();
   const { add: addDownload, isDownloaded, getLocalUri } = useDownloads();
 
   const [info, setInfo] = useState<any>(null);
@@ -50,13 +51,15 @@ export default function DetailScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dlDialog, setDlDialog] = useState(false);
-  const [dlDefaultTarget, setDlDefaultTarget] = useState<SaveTarget>("app");
+  const [dlDefaultTarget, setDlDefaultTarget] = useState<SaveTarget>(KizilkanNativeCore.available ? "public" : "app");
+  /** v18.6.0: indirilecek öğe (film VEYA bölüm). */
+  const [dlItem, setDlItem] = useState<{ id: string; name: string; url: string; ext: string; subdir: string; poster?: string; kind: "vod" | "episode" } | null>(null);
   const [nativeItem, setNativeItem] = useState<any>(null);
 
   // Kayıtlı varsayılan indirme hedefini oku.
   useEffect(() => {
-    storage.getItem<string>("kizilkan.download.target", "app").then((t) => {
-      if (t === "app" || t === "downloads") setDlDefaultTarget(t);
+    storage.getItem<string>("kizilkan.download.target", "").then((t) => {
+      if (t === "app" || t === "downloads" || t === "public" || t === "custom") setDlDefaultTarget(t);
     });
   }, []);
 
@@ -186,6 +189,11 @@ export default function DetailScreen() {
     await storage.setItem(PLAYER_SERIES_NAV_KEY + seriesNavKey, JSON.stringify({ items: navItems }));
 
     const syntheticId = `epplay-${ep.id}`;
+    // v18.6.0: afişte "hangi bölümde kaldın" için dizinin son açılan bölümü.
+    setSeriesLast(String(item.id), {
+      season: seasons.find((sz: any) => Array.isArray(sz?.episodes) && sz.episodes.some((e: any) => String(e.id) === String(ep.id)))?.season ?? "",
+      episode: ep.episode_num ?? "", title: ep.title, episodeId: String(ep.id),
+    });
     const idx = navItems.findIndex((candidate: any) => candidate.id === syntheticId);
     const currentPayload = idx >= 0 ? navItems[idx] : {
       id: syntheticId, realId: String(ep.id), url: ep.url, name: `${item.name} • ${ep.title}`,
@@ -305,8 +313,18 @@ export default function DetailScreen() {
                 >
                   <Ionicons name={watchProgress[item.id] ? "play-circle" : "play"} size={22} color={colors.onBrandPrimary} />
                   <Text style={[styles.playBtnText, { color: colors.onBrandPrimary }]}>
-                    {watchProgress[item.id] ? "Devam Et" : "Oynat"}
+                    {watchProgress[item.id] ? "Devam Et" : isWatched(item.id) ? "Tekrar İzle" : "Oynat"}
                   </Text>
+                </FocusButton>
+                {/* v18.6.0: izlendi işareti (dokun → işaretle/kaldır) */}
+                <FocusButton
+                  testID="watched-toggle-btn"
+                  onPress={() => { haptic.light(); void setWatched(item.id, !isWatched(item.id)); }}
+                  activeOpacity={0.75}
+                  focusable
+                  style={[styles.iconAction, { backgroundColor: isWatched(item.id) ? colors.success + "33" : colors.surfaceSecondary, borderColor: isWatched(item.id) ? colors.success : colors.border }]}
+                >
+                  <Ionicons name={isWatched(item.id) ? "checkmark-done-circle" : "checkmark-circle-outline"} size={22} color={isWatched(item.id) ? colors.success : colors.onSurface} />
                 </FocusButton>
                 {/* FRAGMAN (v7.3.0)
                     Sunucudan youtube_trailer geliyordu ama hiç kullanılmıyordu.
@@ -426,6 +444,7 @@ export default function DetailScreen() {
                     }
                   } else {
                     haptic.medium();
+                    setDlItem({ id: item.id, name: item.name, url: (item as any).url, ext: (item as any).container_ext || "mp4", subdir: "Filmler", poster: item.poster, kind: "vod" });
                     setDlDialog(true);
                   }
                 }}
@@ -484,6 +503,11 @@ export default function DetailScreen() {
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: SPACING.sm, marginBottom: SPACING.md }}>
                   {seasons.map((s, idx) => {
                     const active = selectedSeasonIdx === idx;
+                    // v18.6.0: sezonda izlenen bölüm sayısı; hepsi izlendiyse ✓
+                    const eps: any[] = Array.isArray(s?.episodes) ? s.episodes : [];
+                    const seen = eps.filter((e: any) => isWatched(String(e.id))).length;
+                    const started = eps.some((e: any) => !!watchProgress[String(e.id)]);
+                    const allSeen = eps.length > 0 && seen === eps.length;
                     return (
                       <FocusButton
                         key={s.season}
@@ -499,19 +523,21 @@ export default function DetailScreen() {
                         <Text style={[
                           styles.seasonChipText,
                           { color: active ? colors.onBrandPrimary : colors.onSurface }
-                        ]}>Sezon {s.season}</Text>
+                        ]}>Sezon {s.season}{allSeen ? " ✓" : seen > 0 ? ` · ${seen}/${eps.length}` : started ? " ●" : ""}</Text>
                       </FocusButton>
                     );
                   })}
                 </ScrollView>
                 {seasons[selectedSeasonIdx]?.episodes.map((ep: any) => (
+                  <View key={ep.id} style={{ flexDirection: "row", alignItems: "stretch", gap: SPACING.xs }}>
                   <FocusButton
-                    key={ep.id}
                     testID={`episode-${ep.id}-btn`}
                     onPress={() => handlePlayEpisode(ep)}
+                    onLongPress={() => { haptic.medium(); void setWatched(String(ep.id), !isWatched(String(ep.id))); }}
+                    delayLongPress={450}
                     activeOpacity={0.75}
                     focusable
-                    style={[styles.epRow, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+                    style={[styles.epRow, { flex: 1, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
                   >
                     <View style={[styles.epNum, { backgroundColor: colors.surfaceTertiary }]}>
                       <Text style={[styles.epNumText, { color: colors.onSurface }]}>{ep.episode_num}</Text>
@@ -519,9 +545,43 @@ export default function DetailScreen() {
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.epTitle, { color: colors.onSurface }]} numberOfLines={1}>{ep.title}</Text>
                       {ep.plot ? <Text style={[styles.epPlot, { color: colors.onSurfaceSecondary }]} numberOfLines={2}>{ep.plot}</Text> : null}
+                      {/* v18.6.0: kaldığın yer — ilerleme çubuğu + kalan dakika */}
+                      {!isWatched(String(ep.id)) && watchProgress[String(ep.id)]?.duration > 0 ? (() => {
+                        const wp = watchProgress[String(ep.id)];
+                        const pct = Math.min(1, wp.current / wp.duration);
+                        const left = Math.max(1, Math.round((wp.duration - wp.current) / 60));
+                        return (
+                          <View style={{ marginTop: 4, gap: 2 }}>
+                            <View style={{ height: 3, borderRadius: 2, backgroundColor: colors.surfaceTertiary, overflow: "hidden" }}>
+                              <View style={{ height: 3, width: `${pct * 100}%`, backgroundColor: colors.brandPrimary }} />
+                            </View>
+                            <Text style={{ color: colors.brandPrimary, fontSize: FONT.size.xs }}>Kaldığın yer · {left} dk kaldı</Text>
+                          </View>
+                        );
+                      })() : null}
                     </View>
-                    <Ionicons name="play-circle" size={26} color={colors.brandPrimary} />
+                    {isWatched(String(ep.id))
+                      ? <Ionicons name="checkmark-circle" size={26} color={colors.success} />
+                      : <Ionicons name="play-circle" size={26} color={colors.brandPrimary} />}
                   </FocusButton>
+                  {/* v18.6.0: bölüm indirme (görünür klasör: İndirilenler/KIZILKAN PLAYER ELITE/Diziler/<dizi>) */}
+                  {!!ep.url && (
+                    <FocusButton
+                      testID={`episode-${ep.id}-dl`}
+                      focusable
+                      onPress={() => {
+                        haptic.medium();
+                        const sNum = seasons[selectedSeasonIdx]?.season_number ?? seasons[selectedSeasonIdx]?.season ?? "";
+                        const label = `${item.name} S${String(sNum).padStart(2, "0")}E${String(ep.episode_num || "").padStart(2, "0")}${ep.title ? ` ${ep.title}` : ""}`;
+                        setDlItem({ id: `ep-${ep.id}`, name: label, url: ep.url, ext: ep.container_ext || "mp4", subdir: `Diziler/${item.name}`, poster: item.poster, kind: "episode" });
+                        setDlDialog(true);
+                      }}
+                      style={[styles.epRow, { width: 52, justifyContent: "center", alignItems: "center", paddingHorizontal: 0, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+                    >
+                      <Ionicons name="cloud-download-outline" size={22} color={colors.brandPrimary} />
+                    </FocusButton>
+                  )}
+                  </View>
                 ))}
               </View>
             )}
@@ -532,22 +592,36 @@ export default function DetailScreen() {
       </ScrollView>
 
       <DownloadDialog
-        visible={dlDialog}
-        fileName={`${item?.name || "video"}.${(item as any)?.container_ext || "mp4"}`}
-        sourceUrl={(item as any)?.url || ""}
+        visible={dlDialog && !!dlItem}
+        fileName={`${dlItem?.name || "video"}.${dlItem?.ext || "mp4"}`}
+        sourceUrl={dlItem?.url || ""}
         defaultTarget={dlDefaultTarget}
-        onConfirm={async (target: SaveTarget, remember: boolean) => {
+        maxConnections={Number((activePlaylist as any)?.accountInfo?.max_connections || 0) || undefined}
+        subdirLabel={dlItem?.subdir || "Filmler"}
+        onConfirm={async (target: SaveTarget, remember: boolean, opts: DownloadOptions) => {
+          if (!dlItem) return;
           if (remember) {
             await storage.setItem("kizilkan.download.target", target);
+            setDlDefaultTarget(target);
           }
+          // v18.6.0: görünür klasör / seçilen klasör → native parçalı motor.
+          if (target === "public" || target === "custom") {
+            await startNativeDownload({
+              id: `ndl-${dlItem.id}`, name: dlItem.name, url: dlItem.url, ext: dlItem.ext,
+              subdir: dlItem.subdir, parts: opts.parts, treeUri: opts.treeUri, size: opts.size,
+            });
+            router.push("/downloads");
+            return;
+          }
+          // Eski yol (uygulama içi / cihaza aktar) — aynen korunur.
           await addDownload({
-            id: item.id,
-            name: item.name,
-            poster: item.poster,
-            sourceUrl: (item as any).url,
-            ext: (item as any).container_ext || "mp4",
+            id: dlItem.id,
+            name: dlItem.name,
+            poster: dlItem.poster,
+            sourceUrl: dlItem.url,
+            ext: dlItem.ext,
             kind: "vod",
-            saveTarget: target,
+            saveTarget: target === "downloads" ? "downloads" : "app",
           });
           router.push("/downloads");
         }}

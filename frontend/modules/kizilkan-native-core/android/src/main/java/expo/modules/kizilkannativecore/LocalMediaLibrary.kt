@@ -205,8 +205,31 @@ internal class LocalMediaLibrary(private val context: Context) {
    * Dönen alanlar: id, uri(content://), name, size, dateAdded(sn), dateModified(sn),
    * mime, folder(bucket), duration(ms), width, height, artist, album.
    */
+  /**
+   * v18.6.0 — SAYFA ÖNBELLEĞİ. Cihaz kanıtı: 19.521 fotoğrafta tarama 25–77 sn sürüyordu;
+   * her 2.000'lik sayfa için MediaStore sorgusu BAŞTAN çalışıyordu (10 kez). Artık tam liste
+   * bir kez okunur, sayfalar bellekten verilir. MediaStore sürümü veya toplam değişirse yenilenir.
+   */
+  private val pageCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, List<JSONObject>>>()
+
+  private fun storeVersion(kind: String): String = try {
+    val v = if (Build.VERSION.SDK_INT >= 30) android.provider.MediaStore.getGeneration(context, android.provider.MediaStore.VOLUME_EXTERNAL).toString()
+            else if (Build.VERSION.SDK_INT >= 29) android.provider.MediaStore.getVersion(context) else ""
+    "$kind|$v"
+  } catch (_: Throwable) { "$kind|" }
+
   fun queryDeviceMediaJson(kind: String, offset: Int, limit: Int): String {
     val started = SystemClock.elapsedRealtime()
+    val version = storeVersion(kind)
+    val cached = pageCache[kind]
+    if (offset > 0 && cached != null && cached.first == version) {
+      val list = cached.second
+      val from = offset.coerceIn(0, list.size)
+      val to = (from + limit.coerceIn(1, 5000)).coerceAtMost(list.size)
+      val arr = JSONArray(); for (i in from until to) arr.put(list[i])
+      return JSONObject().put("ok", true).put("kind", kind).put("total", list.size).put("offset", offset)
+        .put("items", arr).put("cached", true).put("elapsedMs", SystemClock.elapsedRealtime() - started).toString()
+    }
     val out = JSONArray()
     val collection: Uri = when (kind) {
       "audio" -> android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
@@ -227,11 +250,10 @@ internal class LocalMediaLibrary(private val context: Context) {
     if (kind == "audio") { cols.add(android.provider.MediaStore.Audio.Media.ARTIST); cols.add(android.provider.MediaStore.Audio.Media.ALBUM) }
     val sort = "${android.provider.MediaStore.MediaColumns.DATE_ADDED} DESC"
     var total = 0
+    val all = ArrayList<JSONObject>()
     try {
       context.contentResolver.query(collection, cols.toTypedArray(), null, null, sort)?.use { c ->
         total = c.count
-        val safeOffset = offset.coerceAtLeast(0)
-        if (safeOffset > 0 && !c.moveToPosition(safeOffset - 1)) return@use
         fun idx(name: String) = c.getColumnIndex(name)
         val iId = idx(android.provider.MediaStore.MediaColumns._ID)
         val iName = idx(android.provider.MediaStore.MediaColumns.DISPLAY_NAME)
@@ -245,8 +267,8 @@ internal class LocalMediaLibrary(private val context: Context) {
         val iH = if (Build.VERSION.SDK_INT >= 29) idx(android.provider.MediaStore.MediaColumns.HEIGHT) else -1
         val iArtist = if (kind == "audio") idx(android.provider.MediaStore.Audio.Media.ARTIST) else -1
         val iAlbum = if (kind == "audio") idx(android.provider.MediaStore.Audio.Media.ALBUM) else -1
-        var n = 0
-        while (c.moveToNext() && n < limit.coerceIn(1, 5000)) {
+        all.ensureCapacity(total)
+        while (c.moveToNext()) {
           val id = c.getLong(iId)
           val o = JSONObject()
             .put("id", id)
@@ -262,9 +284,13 @@ internal class LocalMediaLibrary(private val context: Context) {
           if (iH >= 0) o.put("height", c.getInt(iH))
           if (iArtist >= 0) o.put("artist", c.getString(iArtist) ?: "")
           if (iAlbum >= 0) o.put("album", c.getString(iAlbum) ?: "")
-          out.put(o); n++
+          all.add(o)
         }
       }
+      pageCache[kind] = Pair(version, all)
+      val from = offset.coerceIn(0, all.size)
+      val to = (from + limit.coerceIn(1, 5000)).coerceAtMost(all.size)
+      for (i in from until to) out.put(all[i])
     } catch (t: Throwable) {
       return JSONObject().put("ok", false).put("error", t.message ?: "query").put("items", JSONArray()).toString()
     }

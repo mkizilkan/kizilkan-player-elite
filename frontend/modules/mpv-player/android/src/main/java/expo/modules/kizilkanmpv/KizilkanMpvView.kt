@@ -362,6 +362,16 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
       }
     } catch (_: Throwable) {}
   }
+  /**
+   * v18.6.0 — MPV KAYDI. mpv'nin `stream-record` özelliği oynatılan akışı AYNI bağlantıdan
+   * dosyaya da yazar (ikinci upstream bağlantı YOK — tek bağlantı kuralı korunur). Kap biçimi
+   * uzantıdan seçilir (.ts canlı MPEG-TS, .mkv diğerleri). Boş değer kaydı bitirir.
+   */
+  fun startRecord(path: String): Boolean = try {
+    if (initialized && path.isNotBlank()) { mpv?.setPropertyString("stream-record", path); true } else false
+  } catch (e: Throwable) { emitError(e.message ?: "MPV kayıt hatası"); false }
+  fun stopRecord(): Boolean = try { if (initialized) mpv?.setPropertyString("stream-record", ""); true } catch (_: Throwable) { false }
+
   fun seekBy(seconds: Double) { try { if (initialized) mpv?.command(arrayOf("seek", seconds.toString(), "relative+exact")) } catch (_: Throwable) {} }
   fun setVolume(value: Double) { try { if (initialized && ownsAudio) mpv?.setPropertyDouble("volume", value.coerceIn(0.0, 100.0)) } catch (_: Throwable) {} }
   fun setRate(value: Double) { try { if (initialized) mpv?.setPropertyDouble("speed", value.coerceIn(0.25, 4.0)) } catch (_: Throwable) {} }

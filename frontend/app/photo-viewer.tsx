@@ -25,6 +25,7 @@ import { recordDiagnostic } from "@/src/utils/diagnostics";
 import { fmtSize } from "@/src/utils/localMedia";
 import { getPhotoViewerList, shareMediaItem } from "@/src/utils/deviceMedia";
 import { extOf, qualityBadge, type MediaItem } from "@/src/utils/deviceMediaModel";
+import { CastButton, type ResolvedCastMedia } from "@/src/components/CastButton";
 
 const SLIDE_STEPS = [3, 5, 10];
 
@@ -97,6 +98,8 @@ export default function PhotoViewerScreen() {
   const [zoomed, setZoomed] = useState(false);
   const [rotations, setRotations] = useState<Record<number, number>>({});
   const [slideSec, setSlideSec] = useState<number>(params.slideshow === "1" ? 5 : 0);
+  // v18.6.0: slayt "Sürekli" (sonda başa döner) / "Sonda dur".
+  const [slideLoop, setSlideLoop] = useState(true);
   const listRef = useRef<FlatList<MediaItem>>(null);
   const indexRef = useRef(index);
   indexRef.current = index;
@@ -114,9 +117,13 @@ export default function PhotoViewerScreen() {
   useEffect(() => {
     if (!slideSec) { KizilkanNativeCore.setKeepScreenOn(false); return; }
     KizilkanNativeCore.setKeepScreenOn(true);
-    const t = setInterval(() => { if (!zoomed) next(); }, slideSec * 1000);
+    const t = setInterval(() => {
+      if (zoomed) return;
+      if (!slideLoop && indexRef.current >= items.length - 1) { setSlideSec(0); return; }
+      next();
+    }, slideSec * 1000);
     return () => { clearInterval(t); };
-  }, [slideSec, zoomed, next]);
+  }, [slideSec, zoomed, next, slideLoop, items.length]);
   useEffect(() => () => { KizilkanNativeCore.setKeepScreenOn(false); }, []);
   useEffect(() => {
     void recordDiagnostic("player", "PHOTO_VIEWER_OPEN", { count: items.length, index: initial.index, slideshow: params.slideshow === "1" }, { stage: "media-center", outcome: "started" });
@@ -142,6 +149,22 @@ export default function PhotoViewerScreen() {
   }, [isTv, overlay]);
 
   const cur = items[index];
+  /**
+   * v18.6.0 — CHROMECAST: fotoğraf ve slayt. Fotoğraf telefondaki yayın köprüsünden (LAN)
+   * sunulur; bağlıyken fotoğraf değişince (kaydırma / slayt) alıcıya yenisi yüklenir.
+   */
+  const castSource = useMemo(() => {
+    if (!cur) return undefined;
+    const mime = cur.mime && cur.mime.startsWith("image/") ? cur.mime : "image/jpeg";
+    return {
+      url: cur.uri, name: cur.name, contentType: mime, isLive: false,
+      resolveCastMedia: async (): Promise<ResolvedCastMedia | null> => {
+        const r = await KizilkanNativeCore.castBridgeRegisterFile(cur.uri, mime);
+        if (!r.ok || !r.url) throw new Error(r.error || "Fotoğraf köprüsü açılamadı");
+        return { url: r.url, contentType: mime, bridged: true, mode: "file" };
+      },
+    };
+  }, [cur]);
   const rotate = () => { if (cur) setRotations(r => ({ ...r, [cur.id]: ((r[cur.id] || 0) + 90) % 360 })); };
   const cycleSlide = () => setSlideSec(s => { const i = SLIDE_STEPS.indexOf(s); return s === 0 ? SLIDE_STEPS[0] : i === SLIDE_STEPS.length - 1 ? 0 : SLIDE_STEPS[i + 1]; });
   const info = () => {
@@ -200,6 +223,9 @@ export default function PhotoViewerScreen() {
                 <Text style={styles.name} numberOfLines={1}>{cur?.name}</Text>
                 <Text style={styles.sub}>{index + 1} / {items.length}{cur?.folder ? ` · ${cur.folder}` : ""}{slideSec ? ` · Slayt ${slideSec} sn` : ""}</Text>
               </View>
+              <View style={styles.iconBtn}>
+                <CastButton testID="pv-cast" source={castSource} color="#fff" />
+              </View>
             </View>
           </SafeAreaView>
           <SafeAreaView edges={["bottom"]} style={styles.bottom} pointerEvents="box-none">
@@ -208,6 +234,10 @@ export default function PhotoViewerScreen() {
               <FocusButton focusKey="pv-slide" autoFocus={isTv} onPress={cycleSlide} style={[styles.pill, slideSec ? { backgroundColor: "rgba(229,9,20,0.85)" } : null]}>
                 <Ionicons name={slideSec ? "pause" : "play"} size={18} color="#fff" />
                 <Text style={styles.pillText}>{slideSec ? `${slideSec} sn` : "Slayt"}</Text>
+              </FocusButton>
+              <FocusButton focusKey="pv-loop" onPress={() => setSlideLoop(v => !v)} style={[styles.pill, slideLoop ? { backgroundColor: "rgba(229,9,20,0.55)" } : null]}>
+                <Ionicons name={slideLoop ? "repeat" : "arrow-forward"} size={16} color="#fff" />
+                <Text style={styles.pillText}>{slideLoop ? "Sürekli" : "Sonda dur"}</Text>
               </FocusButton>
               <FocusButton focusKey="pv-rotate" onPress={rotate} style={styles.iconBtn}><Ionicons name="refresh" size={22} color="#fff" /></FocusButton>
               <FocusButton focusKey="pv-info" onPress={info} style={styles.iconBtn}><Ionicons name="information-circle-outline" size={24} color="#fff" /></FocusButton>

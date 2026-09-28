@@ -109,6 +109,9 @@ node tools/denetle.js        # sonunda başarısız kapı olmamalı
 | Taramaya özel proxy (havuz, test motoru, rotasyon) | `frontend/modules/panel-scan/android/.../ScanProxyPool.kt`, `src/utils/scanProxy.ts`, `scanProxyParse.ts`, `app/scan-proxy.tsx` |
 | Medya Merkezi (MediaStore, fotoğraf görüntüleyici) | `frontend/app/media-center.tsx`, `app/photo-viewer.tsx`, `src/utils/deviceMedia.ts`, `deviceMediaModel.ts` |
 | Arka planda oynatma (Media3) tercihi | `frontend/src/player/backgroundPlayback.ts` |
+| İndirme motoru (parçalı) / görünür klasör | `.../kizilkannativecore/DownloadEngine.kt`, `PublicStorage.kt`, `src/components/DownloadDialog.tsx`, `NativeDownloadsSection.tsx` |
+| İzlendi / dizide son bölüm | `frontend/src/store/LibraryContext.tsx` (`watched`, `seriesLast`) |
+| Simge üretimi (Türk Bayrağı oranı) | `tools/make-icons.py`; kısayol simgeleri `plugins/withShortcutIcons.js` |
 | Hangi anahtar güncel | `tools/imza-bul.ps1` |
 | Denetim koşucusu (Windows uyumlu) | `tools/denetle.js` |
 
@@ -151,6 +154,10 @@ node tools/denetle.js        # sonunda başarısız kapı olmamalı
   ile dosyadaki olay sayısı farklıysa bu sebeptir. v18.5.0+ raporlarda `exportScope.exported` gerçek yazılan sayıdır.
 - **Proxy açık + havuz boş:** v18.4.0'da tarama istek göndermeden "bulunamadı" sayıyordu. Proxy kodunda `select()==null`
   durumunu asla "sunucu yok" diye yorumlama.
+- **ANR_WATCHDOG_STALL'ı ön/arka plan ayırmadan yorumlama:** v18.5.0 logunda 47 kaydın hepsi uygulama arka
+  plandayken (zamanlayıcılar yavaşlar). APP_BACKGROUND/FOREGROUND aralıklarıyla eşleştir.
+- **Android kısayol isteği:** ek veri (extra) Intent eşleştirmesine girmez; kısayol normal açılışla aynı eylemi kullanırsa
+  açık uygulamaya iletilmez. Her kısayola ayrı eylem ver.
 - **Sessiz çıkış bırakma:** her `return` noktası bir sebep ile telemetri yazmalı; yoksa sorun
   logdan teşhis edilemiyor.
 
@@ -167,9 +174,9 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.5.0 RC1 — dal `v18.5.0-rc1-proxy-speed-media`)
+## 9. Mevcut durum (v18.6.0 RC1 — dal `v18.6.0-rc1-record-download-cast`)
 
-v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md` … `AI-DEVIR-v18.5.0.md`.
+v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md` … `AI-DEVIR-v18.6.0.md`.
 
 Cihazda doğrulananlar (v17.10.4'e kadar): timeshift (duraklat/geri-ileri/canlıya dön), açılışta son kanal
 (profil + liste başına), OOM düzeltmesi, boş kabuk onarımı, combo + doğrudan DNS.
@@ -193,6 +200,14 @@ Ayrıntı `AI-DEVIR-v18.4.0.md`. Actions: v18.0.0 = build-112, v18.1.0 = build-1
 **v18.5.0 (bu sürüm):** Medya Merkezi performansı; proxy açık + havuz boşken sessiz yanlış negatif hatası (artık sorulur/bekler);
 iki aşamalı proxy testi (TCP → httpbin yargıç) + Elite/Anonim/Şeffaf; tarama ekranında proxy'li/normal anahtarı ve canlı proxy satırı;
 tarama öncesi havuz tazeleme; kalıcı "iyi proxy" listesi; tanı raporunun 80 olaya kesilmesi düzeltildi. Ayrıntı `AI-DEVIR-v18.5.0.md`.
+
+**v18.5.0 cihaz:** proxy anahtarı çoklu hesapta yoktu; combo "etkin 1"; TXT kaydı hata; Medya Merkezi yavaş (19.521 fotoğraf);
+kısayollar boş simge + yönlendirme yok. Logdaki 47 ANR'nin hepsi uygulama ARKA PLANDAYKEN (sahte donma).
+
+**v18.6.0 (bu sürüm):** kayıt 3 motorda (MPV stream-record, Media3 canlı "tee" — ikinci bağlantı yok); parçalı indirme motoru
+(`DownloadEngine.kt`, görünür klasör `PublicStorage.kt`); kısayol kendi eylemi + kendi simgeleri; combo parti işçi doyurma;
+TXT görünür klasöre; Medya Merkezi native sayfa önbelleği + aşamalı yükleme; Cast fotoğraf/slayt; sürekli çal; izlendi işaretleri;
+Türk Bayrağı oranlı ay-yıldız simgesi. Ayrıntı `AI-DEVIR-v18.6.0.md`.
 
 **Tuzak (v18.4.0):** PlayerHost'ta oynatma kararında `activePlaylist?.source` DOĞRUDAN kullanma → `playlistSource`.
 MAG film/catch-up da `ext=true` ile açılır; "external = yerel" sanma.

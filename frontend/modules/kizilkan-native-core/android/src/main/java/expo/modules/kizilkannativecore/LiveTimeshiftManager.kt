@@ -107,6 +107,23 @@ internal class LiveTimeshiftManager(private val context: Context) {
 
     @Volatile var running = true
     @Volatile var ready = false
+    // v18.6.0 — KAYIT ÇIKIŞI (tee): kaydedicinin upstream'den aldığı baytlar dosyaya da yazılır.
+    // İkinci upstream bağlantı açılmaz (tek bağlantı kuralı). Media3 canlı kaydı bunu kullanır.
+    @Volatile var teeOut: java.io.OutputStream? = null
+    @Volatile var teePath: String = ""
+    @Volatile var teeBytes = 0L
+    @Volatile var teeNeedsHeaders = false
+    @Volatile var teeError = ""
+    val teeLock = Any()
+    fun teeWrite(b: ByteArray) {
+      val o = teeOut ?: return
+      try { synchronized(teeLock) { o.write(b); teeBytes += b.size } }
+      catch (t: Throwable) { teeError = t.message ?: "yazma hatası"; closeTee() }
+    }
+    fun closeTee(): Map<String, Any> {
+      synchronized(teeLock) { runCatching { teeOut?.flush(); teeOut?.close() }; teeOut = null }
+      return mapOf("ok" to teeError.isEmpty(), "path" to teePath, "bytes" to teeBytes, "error" to teeError)
+    }
     @Volatile var mode = "probing"
     @Volatile var error = ""
     @Volatile var targetDuration = 2
@@ -184,6 +201,7 @@ internal class LiveTimeshiftManager(private val context: Context) {
 
 
     fun stop(deleteFiles: Boolean = true) {
+      runCatching { closeTee() }
       running = false
       try { workerCall?.cancel() } catch (_: Throwable) {}
       try { server?.close() } catch (_: Throwable) {}
@@ -439,6 +457,11 @@ internal class LiveTimeshiftManager(private val context: Context) {
               if (dlMs > hlsDownloadMaxMs) hlsDownloadMaxMs = dlMs
               if (spec.duration > 0.0 && dlMs > (spec.duration * 1000.0).toLong()) hlsSlowDownloads += 1
               addSegment(Segment(seq, file, spec.duration, System.currentTimeMillis(), spec.discontinuity, localKey, localMap))
+              if (teeOut != null) {
+                // Şifresiz MPEG-TS parçaları ardışık eklenince oynatılabilir tek dosya olur.
+                if (spec.keyLine == null && spec.mapLine == null && ext.equals("ts", true)) teeWrite(file.readBytes())
+                else if (teeError.isEmpty()) { teeError = "HLS_ENCRYPTED_OR_FMP4_NOT_RECORDABLE"; closeTee() }
+              }
               highestUpstreamSeq = max(highestUpstreamSeq, spec.upstreamSeq)
             } catch (t: Throwable) {
               seenUpstream.remove(identity)
@@ -553,6 +576,10 @@ internal class LiveTimeshiftManager(private val context: Context) {
             }
           }
           out?.write(packet)
+          if (teeOut != null) {
+            if (teeNeedsHeaders) { patPacket?.let { teeWrite(it) }; pmtPacket?.let { teeWrite(it) }; teeNeedsHeaders = false }
+            teeWrite(packet)
+          }
           payloadBytes += packet.size
           val packetNow = SystemClock.elapsedRealtime()
           val minSegmentMs = if (producedSegments == 0) FIRST_TS_SEGMENT_MS else TS_SEGMENT_MS
@@ -785,6 +812,21 @@ internal class LiveTimeshiftManager(private val context: Context) {
     synchronized(finishedStats) { finishedStats[id] = finalStats }
     return true
   }
+
+  /** v18.6.0 — Oturumun akışını ayrıca dosyaya yaz (aynı bağlantı). */
+  fun startRecord(id: String, path: String): Map<String, Any> {
+    val s = sessions[id] ?: return mapOf("ok" to false, "error" to "SESSION_NOT_FOUND")
+    return try {
+      val f = File(path); f.parentFile?.mkdirs()
+      synchronized(s.teeLock) {
+        runCatching { s.teeOut?.close() }
+        s.teeOut = java.io.BufferedOutputStream(FileOutputStream(f, false), 256 * 1024)
+        s.teePath = f.absolutePath; s.teeBytes = 0L; s.teeError = ""; s.teeNeedsHeaders = true
+      }
+      mapOf("ok" to true, "path" to f.absolutePath, "mode" to s.mode)
+    } catch (t: Throwable) { mapOf("ok" to false, "error" to (t.message ?: "kayıt açılamadı")) }
+  }
+  fun stopRecord(id: String): Map<String, Any> = sessions[id]?.closeTee() ?: mapOf("ok" to false, "error" to "SESSION_NOT_FOUND")
 
   fun stopAll(): Int {
     val copy = sessions.values.toList()

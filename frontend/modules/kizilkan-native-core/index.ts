@@ -66,6 +66,15 @@ export type LocalMediaEntry = {
   modified: number;
 };
 export type LocalMediaListing = { ok: boolean; entries: LocalMediaEntry[]; total?: number; skipped?: number; elapsedMs: number; error?: string };
+/** v18.6.0 — İndirme motoru. */
+export type NativeDownloadConfig = {
+  id: string; url: string; headers?: Record<string, string>;
+  subdir: string; fileName: string; treeUri?: string; size?: number; parts: number;
+};
+export type NativeDownloadStatus = {
+  id: string; fileName: string; state: "queued" | "running" | "paused" | "completed" | "failed" | "cancelled"; error?: string;
+  total: number; received: number; parts: number; acceptRanges: boolean; speed: number; etaSec: number; path: string; uri: string; subdir: string;
+};
 /** v18.4.0 — Medya Merkezi (MediaStore). */
 export type DeviceMediaKind = "video" | "audio" | "image";
 export type DeviceMediaItem = {
@@ -221,6 +230,11 @@ export const KizilkanNativeCore = {
   getLiveTimeshiftStatus: async (sessionId: string): Promise<Record<string, any> | null> => native ? native.getLiveTimeshiftStatus(sessionId) : null,
   stopLiveTimeshift: async (sessionId: string): Promise<boolean> => native ? !!(await native.stopLiveTimeshift(sessionId)) : false,
   stopAllLiveTimeshift: async (): Promise<number> => native ? Number(await native.stopAllLiveTimeshift()) : 0,
+  /** v18.6.0 — Canlı kayıt: zaman kaydırma kaydedicisinin akışını dosyaya da yaz (aynı bağlantı). */
+  liveTimeshiftStartRecord: async (sessionId: string, path: string): Promise<{ ok: boolean; path?: string; mode?: string; error?: string }> =>
+    native?.liveTimeshiftStartRecord ? (await native.liveTimeshiftStartRecord(sessionId, path)) as any : { ok: false, error: "NATIVE_UNAVAILABLE" },
+  liveTimeshiftStopRecord: async (sessionId: string): Promise<{ ok: boolean; path?: string; bytes?: number; error?: string }> =>
+    native?.liveTimeshiftStopRecord ? (await native.liveTimeshiftStopRecord(sessionId)) as any : { ok: false, error: "NATIVE_UNAVAILABLE" },
   /** v18.1.0: SAF klasörünün çocukları (yalnız klasör + ses/video) tek native sorguda. */
   listLocalMediaChildren: async (uri: string): Promise<LocalMediaListing | null> => {
     if (!native?.listLocalMediaChildrenJson) return null;
@@ -242,6 +256,27 @@ export const KizilkanNativeCore = {
     native?.installAppShortcuts ? Number(await native.installAppShortcuts(JSON.stringify(list))) : 0,
   /** v18.4.0 — Kısayolla açıldıysa hedef kimliği (bir kez) döner, yoksa "". */
   consumePendingShortcut: (): string => native?.consumePendingShortcut ? String(native.consumePendingShortcut() || "") : "",
+  /** v18.6.0 — İndirme motoru: boyut + Range desteği ön sorgusu. */
+  downloadProbe: async (url: string, headers: Record<string, string> = {}): Promise<{ ok: boolean; size: number; acceptRanges: boolean; mime?: string; httpCode?: number; error?: string }> => {
+    if (!native?.downloadProbe) return { ok: false, size: -1, acceptRanges: false, error: "NATIVE_UNAVAILABLE" };
+    try { return JSON.parse(await native.downloadProbe(url, JSON.stringify(headers || {}))); } catch (e: any) { return { ok: false, size: -1, acceptRanges: false, error: String(e?.message || e) }; }
+  },
+  downloadStart: async (cfg: NativeDownloadConfig): Promise<NativeDownloadStatus[]> => {
+    if (!native?.downloadStart) return [];
+    try { return JSON.parse(await native.downloadStart(JSON.stringify(cfg))).downloads || []; } catch { return []; }
+  },
+  downloadPause: async (id: string): Promise<NativeDownloadStatus[]> => { try { return JSON.parse(await native.downloadPause(id)).downloads || []; } catch { return []; } },
+  downloadResume: async (id: string): Promise<NativeDownloadStatus[]> => { try { return JSON.parse(await native.downloadResume(id)).downloads || []; } catch { return []; } },
+  downloadCancel: async (id: string): Promise<NativeDownloadStatus[]> => { try { return JSON.parse(await native.downloadCancel(id)).downloads || []; } catch { return []; } },
+  downloadStatus: (): NativeDownloadStatus[] => { try { return native?.downloadStatus ? (JSON.parse(native.downloadStatus()).downloads || []) : []; } catch { return []; } },
+  /** v18.6.0 — Dosya yöneticisinde görünür klasöre metin dosyası yaz (Download/KIZILKAN PLAYER ELITE/<alt>). */
+  writePublicTextFile: async (subdir: string, fileName: string, mime: string, text: string, treeUri = ""): Promise<{ ok: boolean; uri?: string; path?: string; error?: string }> => {
+    if (!native?.writePublicTextFile) return { ok: false, error: "NATIVE_UNAVAILABLE" };
+    try { return await native.writePublicTextFile(subdir, fileName, mime, text, treeUri) as any; }
+    catch (e: any) { return { ok: false, error: String(e?.message || e) }; }
+  },
+  /** v18.6.0 — Tüketmeden bekleyen kısayolu oku (telemetri). */
+  peekPendingShortcut: (): string => native?.peekPendingShortcut ? String(native.peekPendingShortcut() || "") : "",
   /** v18.4.0 — Ekranı açık tut (slayt gösterisi). */
   setKeepScreenOn: (on: boolean): boolean => native?.setKeepScreenOn ? !!native.setKeepScreenOn(on) : false,
   /** v18.4.0 — MediaStore küçük resmi (file:// JPEG, önbellekli) veya "". */

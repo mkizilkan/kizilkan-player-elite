@@ -238,10 +238,16 @@ export default function RootLayout() {
     const onMain = segments[0] === "(tabs)" || segments[0] === "tv-home";
     const target: Record<string, string> = { search: "/search", favorites: "/favorites", guide: "/epg-timeline", multiview: "/multi-view" };
     const tryConsume = () => {
-      if (!onMain) return;
+      if (!onMain) {
+        // v18.6.0: kısayol geldi ama kullanıcı henüz profil/PIN/oynatıcıda → bekliyor (telemetri).
+        const waiting = KizilkanNativeCore.peekPendingShortcut();
+        if (waiting) void recordDiagnostic("navigation", "APP_SHORTCUT_WAITING", { id: waiting, at: String(segments[0] || "") });
+        return;
+      }
       const id = KizilkanNativeCore.consumePendingShortcut();
-      if (!id || !target[id]) return;
-      void recordDiagnostic("navigation", "APP_SHORTCUT_OPEN", { id });
+      if (!id) return;
+      if (!target[id]) { void recordDiagnostic("navigation", "APP_SHORTCUT_UNKNOWN", { id }); return; }
+      void recordDiagnostic("navigation", "APP_SHORTCUT_OPEN", { id, route: target[id] });
       router.push(target[id] as any);
     };
     tryConsume();

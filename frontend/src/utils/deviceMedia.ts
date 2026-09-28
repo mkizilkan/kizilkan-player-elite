@@ -51,27 +51,40 @@ export async function requestMediaPermission(kind: DeviceMediaKind): Promise<Per
 /** Bellek önbelleği (oturum boyu). MediaStore hızlıdır; büyük listeyi diske yazmıyoruz. */
 const cache = new Map<DeviceMediaKind, { at: number; items: MediaItem[] }>();
 
-export async function loadDeviceMedia(kind: DeviceMediaKind, force = false): Promise<{ items: MediaItem[]; error?: string; elapsedMs: number }> {
+/**
+ * v18.6.0 — AŞAMALI YÜKLEME. İlk sayfa (1.500) hemen döner ve onPage ile ekrana verilir;
+ * kalan sayfalar native önbellekten (sorgu tekrarlanmaz) 4.000'lik parçalarla eklenir,
+ * aralarda JS iş parçacığına nefes aldırılır. 19.521 fotoğrafta eskiden 25–77 sn beklenirdi.
+ */
+export async function loadDeviceMedia(
+  kind: DeviceMediaKind,
+  force = false,
+  onPage?: (itemsSoFar: MediaItem[], total: number) => void,
+): Promise<{ items: MediaItem[]; error?: string; elapsedMs: number; firstPageMs?: number }> {
   const t0 = Date.now();
   const hit = cache.get(kind);
-  if (!force && hit && Date.now() - hit.at < 5 * 60_000) return { items: hit.items, elapsedMs: 0 };
+  if (!force && hit && Date.now() - hit.at < 5 * 60_000) { onPage?.(hit.items, hit.items.length); return { items: hit.items, elapsedMs: 0 }; }
   const all: MediaItem[] = [];
   let offset = 0;
-  const PAGE = 2000;
-  for (let guard = 0; guard < 100; guard++) {
-    const page = await KizilkanNativeCore.queryDeviceMedia(kind, offset, PAGE);
+  let firstPageMs: number | undefined;
+  for (let guard = 0; guard < 200; guard++) {
+    const size = offset === 0 ? 1500 : 4000;
+    const page = await KizilkanNativeCore.queryDeviceMedia(kind, offset, size);
     if (!page.ok) {
       void recordDiagnostic("player", "MEDIA_CENTER_SCAN", { kind, ok: false, error: String(page.error || "").slice(0, 120) }, { stage: "media-center", outcome: "failed" });
       return { items: all, error: page.error, elapsedMs: Date.now() - t0 };
     }
-    all.push(...(page.items as DeviceMediaItem[]));
-    offset += page.items.length;
-    if (page.items.length < PAGE || offset >= page.total) break;
+    const chunk = withSearchKeys(page.items as DeviceMediaItem[] as MediaItem[]);
+    for (const it of chunk) all.push(it);
+    offset += chunk.length;
+    if (firstPageMs === undefined) firstPageMs = Date.now() - t0;
+    onPage?.(all.slice(), page.total);
+    if (chunk.length < size || offset >= page.total) break;
+    await new Promise(r => setTimeout(r, 16));   // arayüze nefes
   }
-  withSearchKeys(all);
   cache.set(kind, { at: Date.now(), items: all });
-  void recordDiagnostic("player", "MEDIA_CENTER_SCAN", { kind, ok: true, count: all.length, elapsedMs: Date.now() - t0 }, { stage: "media-center", outcome: "success" });
-  return { items: all, elapsedMs: Date.now() - t0 };
+  void recordDiagnostic("player", "MEDIA_CENTER_SCAN", { kind, ok: true, count: all.length, elapsedMs: Date.now() - t0, firstPageMs }, { stage: "media-center", outcome: "success" });
+  return { items: all, elapsedMs: Date.now() - t0, firstPageMs };
 }
 
 export function invalidateDeviceMedia(kind?: DeviceMediaKind) {

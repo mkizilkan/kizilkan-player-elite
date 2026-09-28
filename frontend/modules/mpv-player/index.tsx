@@ -18,6 +18,9 @@ export type KizilkanMpvHandle = {
   setAudioTrack: (id: number) => Promise<void>;
   setSubtitleTrack: (id: number) => Promise<void>;
   getTracks: () => Promise<{ audio: any[]; subtitle: any[] }>;
+  /** v18.6.0: stream-record ile kayıt (aynı bağlantı). path = dosya sistemi yolu (uzantı kabı belirler). */
+  startRecord: (path: string) => Promise<boolean>;
+  stopRecord: () => Promise<boolean>;
 };
 
 export type KizilkanMpvProps = ViewProps & {
@@ -80,6 +83,8 @@ export const KizilkanMpvView = forwardRef<KizilkanMpvHandle, KizilkanMpvProps>(
       setSubtitleTrack: async (id: number) => { await nativeRef.current?.setSubtitleTrack?.(id); },
       getTracks: async () =>
         (await nativeRef.current?.getTracks?.()) ?? { audio: [], subtitle: [] },
+      startRecord: async (path: string) => !!(await nativeRef.current?.startRecord?.(path)),
+      stopRecord: async () => !!(await nativeRef.current?.stopRecord?.()),
     }), []);
 
     if (!NativeMpvView) return null;

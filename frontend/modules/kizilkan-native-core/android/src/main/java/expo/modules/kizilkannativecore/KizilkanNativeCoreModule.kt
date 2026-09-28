@@ -65,25 +65,39 @@ class KizilkanNativeCoreModule : Module() {
     val ctx = context()
     val sm = ctx.getSystemService(android.content.pm.ShortcutManager::class.java) ?: return 0
     val launch = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName) ?: return 0
+    val component = launch.component ?: return 0
     val arr = org.json.JSONArray(json)
     val list = ArrayList<android.content.pm.ShortcutInfo>()
     for (i in 0 until minOf(arr.length(), sm.maxShortcutCountPerActivity)) {
       val o = arr.getJSONObject(i)
       val id = o.getString("id")
-      val intent = android.content.Intent(launch).apply {
+      /**
+       * v18.6.0 — KÖK NEDEN (cihaz: kısayol uygulamayı açıyor ama ekrana götürmüyor; log'da
+       * APP_SHORTCUT_OPEN 0 kez): kısayol isteği, uygulamanın normal açılış isteğiyle AYNIYDI
+       * (MAIN/LAUNCHER; yalnız ek veri farklı). Android istekleri karşılaştırırken ek veriye
+       * bakmaz → açık uygulamayı öne getirir, isteği İLETMEZ (onNewIntent yok) → hedef kaybolur.
+       * Artık her kısayolun KENDİ eylemi var (URL yok: yönlendirici/"Şununla aç" etkilenmez).
+       */
+      val intent = android.content.Intent("${ctx.packageName}.SHORTCUT_${id.uppercase()}").apply {
+        setComponent(component)
         addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP)
         putExtra(shortcutExtra, id)
       }
-      val iconRes = when (o.optString("icon")) {
-        "search" -> android.R.drawable.ic_menu_search
-        "star" -> android.R.drawable.btn_star_big_on
-        "guide" -> android.R.drawable.ic_menu_agenda
-        else -> android.R.drawable.ic_menu_view
+      // v18.6.0: uygulamanın kendi simgeleri (withShortcutIcons). Sistem simgeleri birçok
+      // başlatıcıda çizilmiyordu (boş kutu).
+      val iconName = when (o.optString("icon")) { "search" -> "search"; "star" -> "star"; "guide" -> "guide"; else -> "multiview" }
+      val res = ctx.resources
+      val adaptiveId = if (android.os.Build.VERSION.SDK_INT >= 26) res.getIdentifier("ksc_$iconName", "mipmap", ctx.packageName) else 0
+      val legacyId = res.getIdentifier("ksc_${iconName}_legacy", "drawable", ctx.packageName)
+      val icon = when {
+        adaptiveId != 0 -> android.graphics.drawable.Icon.createWithResource(ctx, adaptiveId)
+        legacyId != 0 -> android.graphics.drawable.Icon.createWithResource(ctx, legacyId)
+        else -> android.graphics.drawable.Icon.createWithResource(ctx, ctx.applicationInfo.icon)
       }
       list.add(android.content.pm.ShortcutInfo.Builder(ctx, id)
         .setShortLabel(o.getString("short"))
         .setLongLabel(o.optString("long", o.getString("short")))
-        .setIcon(android.graphics.drawable.Icon.createWithResource("android", iconRes))
+        .setIcon(icon)
         .setIntent(intent)
         .build())
     }
@@ -773,6 +787,9 @@ class KizilkanNativeCoreModule : Module() {
       liveTimeshiftManager.stop(sessionId)
     }
 
+    // v18.6.0: canlı kayıt (kaydedicinin akışını dosyaya da yaz; ikinci bağlantı yok).
+    AsyncFunction("liveTimeshiftStartRecord") { sessionId: String, path: String -> liveTimeshiftManager.startRecord(sessionId, path) }
+    AsyncFunction("liveTimeshiftStopRecord") { sessionId: String -> liveTimeshiftManager.stopRecord(sessionId) }
     AsyncFunction("stopAllLiveTimeshift") {
       liveTimeshiftManager.stopAll()
     }
@@ -790,6 +807,22 @@ class KizilkanNativeCoreModule : Module() {
     // (profil/PIN) geçip ana ekrana ulaşınca gider.
     OnNewIntent { intent ->
       intent.getStringExtra(shortcutExtra)?.let { if (it.isNotEmpty()) pendingShortcut = it }
+    }
+    // v18.6.0: film/dizi indirme motoru (tek/çok parçalı, görünür klasör, duraklat/devam).
+    AsyncFunction("downloadProbe") { url: String, headersJson: String -> DownloadEngine.probe(url, headersJson, 15000).toString() }
+    AsyncFunction("downloadStart") { cfgJson: String -> DownloadEngine.start(context(), cfgJson).toString() }
+    AsyncFunction("downloadPause") { id: String -> DownloadEngine.pause(context(), id).toString() }
+    AsyncFunction("downloadResume") { id: String -> DownloadEngine.resume(context(), id).toString() }
+    AsyncFunction("downloadCancel") { id: String -> DownloadEngine.cancel(context(), id).toString() }
+    Function("downloadStatus") { DownloadEngine.status(context()).toString() }
+    // v18.6.0: görünür klasöre metin dosyası (TXT arşivi). treeUri boş → Download/KIZILKAN PLAYER ELITE/<subdir>.
+    AsyncFunction("writePublicTextFile") { subdir: String, fileName: String, mime: String, text: String, treeUri: String ->
+      val t = PublicStorage.writeText(context(), subdir, fileName, mime, text, treeUri.ifBlank { null })
+      mapOf("ok" to true, "uri" to t.uri.toString(), "path" to t.displayPath)
+    }
+    // v18.6.0: tüketmeden bak (telemetri: kısayol geldi ama kullanıcı henüz profil/PIN'de).
+    Function("peekPendingShortcut") {
+      pendingShortcut ?: (appContext.currentActivity?.intent?.getStringExtra(shortcutExtra) ?: "")
     }
     Function("consumePendingShortcut") {
       var s = pendingShortcut

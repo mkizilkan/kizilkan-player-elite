@@ -186,6 +186,7 @@ function MediaCenterInner() {
   const [progress, setProgress] = useState<Record<string, LocalProgress>>({});
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const [headerH, setHeaderH] = useState(0);
+  const [loadInfo, setLoadInfo] = useState<Record<string, { loaded: number; total: number }>>({});
   const thumbsRef = useRef<Record<string, string>>({});
   const pendingThumbsRef = useRef<Record<string, string>>({});
   const flushTimerRef = useRef<any>(null);
@@ -220,8 +221,13 @@ function MediaCenterInner() {
     setLoading(true);
     try {
       if (force) invalidateDeviceMedia(kind);
-      const res = await loadDeviceMedia(kind, force);
+      // v18.6.0: ilk sayfa hemen ekrana; kalanı geldikçe eklenir (yükleme sayacı).
+      const res = await loadDeviceMedia(kind, force, (soFar, total) => {
+        setData(prev => ({ ...prev, [kind]: soFar }));
+        setLoadInfo(prev => ({ ...prev, [kind]: { loaded: soFar.length, total } }));
+      });
       setData(prev => ({ ...prev, [kind]: res.items }));
+      setLoadInfo(prev => ({ ...prev, [kind]: { loaded: res.items.length, total: res.items.length } }));
       if (res.error) Alert.alert("Medya okunamadı", res.error);
     } finally { setLoading(false); }
   }, []);
@@ -242,7 +248,11 @@ function MediaCenterInner() {
   };
 
   // Görünür liste
+  // v18.6.0: süzme+sıralama+satır üretim süresi (sekme geçişi: hesap mı, çizim mi?).
+  const computeStartRef = useRef(0);
+  const computeMsRef = useRef(0);
   const items = useMemo(() => {
+    computeStartRef.current = Date.now();
     if (!mediaTab || !tp) return [] as MediaItem[];
     const base = data[mediaTab] || [];
     const filtered = applySmartFilter(base, tp.filter);
@@ -264,6 +274,7 @@ function MediaCenterInner() {
         for (const it of s.items) out.push({ t: "item", key: `i:${it.id}`, item: it });
       }
     }
+    computeMsRef.current = Date.now() - (computeStartRef.current || Date.now());
     return out;
   }, [items, mediaTab, tp, cols]);
 
@@ -272,7 +283,7 @@ function MediaCenterInner() {
     const sw = tabSwitchRef.current;
     if (!sw || sw.tab !== tab) return;
     tabSwitchRef.current = null;
-    void recordDiagnostic("player", "MEDIA_CENTER_TAB_SWITCH", { tab, items: items.length, rows: rows.length, ms: Date.now() - sw.at }, { stage: "media-center", outcome: "success" });
+    void recordDiagnostic("player", "MEDIA_CENTER_TAB_SWITCH", { tab, items: items.length, rows: rows.length, ms: Date.now() - sw.at, computeMs: computeMsRef.current }, { stage: "media-center", outcome: "success" });
   }, [rows, tab, items.length]);
 
   // Sabit yükseklik düzeni
@@ -535,7 +546,10 @@ function MediaCenterInner() {
             }} />
         </View>
       )}
-      <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs }}>{items.length} öğe{query ? ` · "${query}"` : ""}</Text>
+      <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs }}>
+        {items.length} öğe{query ? ` · "${query}"` : ""}
+        {mediaTab && loadInfo[mediaTab] && loadInfo[mediaTab].loaded < loadInfo[mediaTab].total ? `  ·  yükleniyor ${loadInfo[mediaTab].loaded.toLocaleString("tr-TR")} / ${loadInfo[mediaTab].total.toLocaleString("tr-TR")}` : ""}
+      </Text>
     </View>
   ) : null;
 

@@ -75,6 +75,7 @@ import { alternateHostUrls, isSourceRetryKind, loadPreferredHost, rememberWorkin
 import { LIVE_TIMESHIFT_MODE_DEFAULT, loadLiveTimeshiftMode, type LiveTimeshiftMode } from "@/src/player/timeshiftMode";
 import { isLocalMediaId, loadLocalQueue, saveLocalProgress, writeLocalPayload, type LocalQueueItem } from "@/src/utils/localMedia";
 import { loadBackgroundPlayback } from "@/src/player/backgroundPlayback";
+import { startNativeDownload } from "@/src/utils/nativeDownloads";
 import { cueAt, cuesToVtt, loadSubtitleCues, type SubtitleCue } from "@/src/utils/subtitles";
 import type { ResolvedCastMedia } from "@/src/components/CastButton";
 import { GoogleCast } from "@/src/native/cast";
@@ -562,6 +563,33 @@ export default function PlayerHost() {
   const [recordStart, setRecordStart] = useState<number | null>(null);
   const [recordDirLabel, setRecordDirLabel] = useState("Uygulama klasörü");
   const [recordPath, setRecordPath] = useState<string | null>(null);   // onRecordChanged'dan
+  /**
+   * v18.6.0 — KAYIT ÜÇ MOTORDA. vlc: VLC record(dir) · mpv: stream-record (aynı bağlantı) ·
+   * tee: Media3 canlı — zaman kaydırma kaydedicisinin akışı dosyaya da yazılır (aynı bağlantı).
+   * Film/dizi (Media3/MPV): dosyanın TAMAMI indirme motoruyla alınır (İndirilenler'de izlenir).
+   */
+  const [recordEngine, setRecordEngine] = useState<"" | "vlc" | "mpv" | "tee">("");
+  /** Media3 canlı kayıt: kayıt süresince zaman kaydırma zorunlu açık (kaydedici tek bağlantıyı üstlenir). */
+  const [recordForcesTimeshift, setRecordForcesTimeshift] = useState(false);
+  const pendingTeePathRef = useRef<string | null>(null);
+  /**
+   * v18.6.0 — SÜREKLİ ÇAL / OYNAT (yerel müzik + video kuyruğu, Medya Merkezi).
+   * off: kuyruk sonunda durur · all: başa döner (sürekli) · one: aynı parça tekrar.
+   * shuffle: sıradaki rastgele. Tercih kalıcı.
+   */
+  const [localRepeat, setLocalRepeat] = useState<"off" | "all" | "one">("off");
+  const [localShuffle, setLocalShuffle] = useState(false);
+  const localRepeatRef = useRef<"off" | "all" | "one">("off");
+  localRepeatRef.current = localRepeat;
+  useEffect(() => {
+    void storage.getItem<string>("kizilkan.local.repeat.v1", "").then(raw => {
+      try { const v = raw ? JSON.parse(String(raw)) : null; if (v?.repeat) setLocalRepeat(v.repeat); if (typeof v?.shuffle === "boolean") setLocalShuffle(v.shuffle); } catch {}
+    });
+  }, []);
+  const saveLocalRepeat = (repeat: "off" | "all" | "one", shuffle: boolean) => {
+    setLocalRepeat(repeat); setLocalShuffle(shuffle);
+    void storage.setItem("kizilkan.local.repeat.v1", JSON.stringify({ repeat, shuffle }));
+  };
   const [customRecordDir, setCustomRecordDir] = useState<string | null>(null);
   const [recBlink, setRecBlink] = useState(true);  // kayıt başlangıcı (v7.5.0)
   /**
@@ -961,7 +989,7 @@ export default function PlayerHost() {
   const liveTimeshiftEligible = !!(
     visible && sessionKind === "live" && !castSession && !castDetachLocal && Platform.OS === "android" && KizilkanNativeCore.available &&
     playbackRequest?.url && /^https?:\/\//i.test(String(playbackRequest.url)) &&
-    (liveTimeshiftMode === "always" || liveTimeshiftArmedByPause)
+    (liveTimeshiftMode === "always" || liveTimeshiftArmedByPause || recordForcesTimeshift)
   );
   /**
    * v17.10.3 — ÇİFT BAĞLANTI DÜZELTMESİ. Effect eskiden playbackRequest?.headers
@@ -2105,16 +2133,20 @@ export default function PlayerHost() {
         if (cancelled) return;
         const items = queue?.items || [];
         const idx = items.findIndex(it => it.id === String(params.id));
-        if (idx < 0 || items.length < 2) {
+        if (idx < 0 || (items.length < 2 && localRepeat !== "one")) {
           setPlaybackNeighbors(null);
           void recordDiagnostic("player", "LOCAL_MEDIA_QUEUE_MISS", { queueSize: items.length, found: idx >= 0 }, { sessionId: playerDiagnosticSessionRef.current, stage: "local-media", outcome: "skipped" });
           return;
         }
-        setPlaybackNeighbors({
-          previous: idx > 0 ? items[idx - 1] : null,
-          next: idx + 1 < items.length ? items[idx + 1] : null,
-          position: idx + 1, total: items.length, source: "synthetic",
-        });
+        // v18.6.0: karıştır → rastgele sıradaki (kendisi hariç); tümünü tekrarla → uçlarda sar.
+        const wrap = localRepeat === "all";
+        let next: any = idx + 1 < items.length ? items[idx + 1] : (wrap ? items[0] : null);
+        const previous: any = idx > 0 ? items[idx - 1] : (wrap ? items[items.length - 1] : null);
+        if (localShuffle && items.length > 1) {
+          let r = Math.floor(Math.random() * (items.length - 1)); if (r >= idx) r += 1;
+          next = items[r];
+        }
+        setPlaybackNeighbors({ previous, next, position: idx + 1, total: items.length, source: "synthetic" });
       }).catch(() => { if (!cancelled) setPlaybackNeighbors(null); });
       return () => { cancelled = true; };
     }
@@ -2219,7 +2251,7 @@ export default function PlayerHost() {
       setPlaybackNeighbors({ previous, next, position: idx + 1, total: list.length, source: "legacy" });
     }
     return () => { cancelled = true; };
-  }, [visible, activePlaylist?.id, params.id, sessionKind, source?.nav?.group, source?.nav?.search, source?.nav?.scopeKey, orderedNavigationScopeIds, syntheticNav?.previousId, syntheticNav?.nextId, seriesNavigationItems]);
+  }, [visible, activePlaylist?.id, params.id, sessionKind, source?.nav?.group, source?.nav?.search, source?.nav?.scopeKey, orderedNavigationScopeIds, syntheticNav?.previousId, syntheticNav?.nextId, seriesNavigationItems, localRepeat, localShuffle]);
 
   const canPrevious = !!playbackNeighbors?.previous;
   const canNext = !!playbackNeighbors?.next;
@@ -2311,6 +2343,13 @@ export default function PlayerHost() {
 
   naturalEndRef.current = (sid, playbackEngine, position=0, duration=0) => {
     const localQueueSession = sessionKind === "external" && isLocalMediaId(params.id);
+    // v18.6.0: tek parçayı tekrarla → sona gelince baştan.
+    if (localQueueSession && localRepeatRef.current === "one" && visible && endHandledSessionRef.current !== sid) {
+      endHandledSessionRef.current = sid;
+      void recordDiagnostic("player", "LOCAL_REPEAT_ONE", { engine: playbackEngine }, { sessionId: playerDiagnosticSessionRef.current, stage: "local-media" });
+      setTimeout(() => { endHandledSessionRef.current = 0; seekTo(0); if (!isPlayingRef.current) togglePlay(); }, 150);
+      return;
+    }
     const localAudioSession = localQueueSession && playbackRequest?.expectsVideo === false;
     // v18.1.0: yerel müzik, müzik çalar gibi her zaman sıradakine geçer; yerel
     // video "Sonrakini otomatik" ayarına uyar.
@@ -3336,30 +3375,118 @@ export default function PlayerHost() {
     }
   };
 
+  /** v18.6.0: kayıt dosya adı (kanal/film adı + tarih-saat). */
+  const recordFileName = (ext: string) => {
+    const d = new Date(); const pad = (n: number) => String(n).padStart(2, "0");
+    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    const base = String(channel?.name || "kayit").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "kayit";
+    return `${base}_${stamp}.${ext}`;
+  };
+
   const startRecording = async (target: "app" | "download" | "custom") => {
+    const engine = v2Profile.engine;
+    const label = target === "download" ? "İndirilenler / KIZILKAN PLAYER ELITE / Record" : target === "custom" ? "Seçilen klasör" : "Uygulama klasörü";
+    const isLive = sessionKind === "live";
+    // ── Film / dizi (Media3 · MPV): dosyanın TAMAMI indirilir. ──
+    if (!isLive && engine !== "vlc") {
+      const url = String(playbackRequest?.url || channel?.url || "");
+      if (!/^https?:\/\//i.test(url)) { Alert.alert("Kayıt yapılamıyor", "Bu içerik ağ adresi değil (yerel dosya zaten cihazda)."); return; }
+      const maxCons = Number((activePlaylist as any)?.accountInfo?.max_connections || 0);
+      const go = async () => {
+        const ext = String(channel?.container_ext || "mp4").replace(/^\./, "") || "mp4";
+        await startNativeDownload({
+          id: `rec-${String(channel?.id || Date.now())}`, name: String(channel?.name || "Kayıt"), url, ext,
+          subdir: sessionKind === "series" ? "Diziler" : "Filmler", parts: 1,
+          headers: (playbackRequest?.headers as any) || undefined, reason: "record-vod",
+        });
+        setSheet(null);
+        flashMessage("● KAYIT (İNDİRME) BAŞLADI — İndirilenler");
+        void recordDiagnostic("player", "RECORD_START", { engine, kind: sessionKind, mode: "download" }, { sessionId: playerDiagnosticSessionRef.current, stage: "record", outcome: "started" });
+      };
+      if (maxCons > 0 && maxCons <= 1) {
+        Alert.alert("İkinci bağlantı", "Hesabınız aynı anda 1 bağlantıya izin veriyor. İzlerken kaydetmek ikinci bağlantı açar; oynatma kesilebilir veya kayıt reddedilebilir.", [
+          { text: "Vazgeç", style: "cancel" },
+          { text: "Yine de kaydet", onPress: () => { void go(); } },
+        ]);
+      } else await go();
+      return;
+    }
     const dir = await prepareRecordDir(target);
     if (!dir) return;
+    const joinPath = (name: string) => `${dir.replace(/\/+$/, "")}/${name}`;
     try {
-      await vlcRef.current?.record(dir);
+      if (engine === "vlc") {
+        await vlcRef.current?.record(dir);
+        setRecordEngine("vlc");
+      } else if (engine === "mpv") {
+        const lower = String(playbackRequest?.url || "").toLowerCase();
+        const path = joinPath(recordFileName(lower.includes(".m3u8") || !lower.includes(".ts") ? "mkv" : "ts"));
+        const ok = await mpvRef.current?.startRecord(path);
+        if (!ok) throw new Error("MPV kaydı başlatamadı");
+        setRecordPath(path);
+        setRecordEngine("mpv");
+      } else {
+        // Media3 canlı: kaydedici akışı (tee). Kaydedici hazır değilse kayıt süresince zaman kaydırmayı aç.
+        const path = joinPath(recordFileName("ts"));
+        if (liveTimeshiftReady && liveTimeshift.sessionId) {
+          const r = await KizilkanNativeCore.liveTimeshiftStartRecord(liveTimeshift.sessionId, path);
+          if (!r.ok) throw new Error(r.error || "Kaydedici kaydı başlatamadı");
+          setRecordPath(r.path || path);
+        } else {
+          pendingTeePathRef.current = path;
+          setRecordForcesTimeshift(true);
+          flashMessage("Kayıt hazırlanıyor… yayın uygulamanın kaydedicisine alınıyor");
+        }
+        setRecordEngine("tee");
+      }
       setIsRecording(true);
       setRecordStart(Date.now());
-      setRecordDirLabel(
-        target === "download" ? "İndirilenler / KIZILKAN PLAYER ELITE / Record" : "Uygulama klasörü"
-      );
+      setRecordDirLabel(label);
       setSheet(null);
       flashMessage("● KAYIT BAŞLADI");
+      void recordDiagnostic("player", "RECORD_START", { engine, kind: sessionKind, target }, { sessionId: playerDiagnosticSessionRef.current, stage: "record", outcome: "started" });
     } catch (e: any) {
       setIsRecording(false);
+      setRecordEngine("");
+      setRecordForcesTimeshift(false);
+      pendingTeePathRef.current = null;
+      void recordDiagnostic("player", "RECORD_START_FAILED", { engine, kind: sessionKind, message: String(e?.message || e).slice(0, 200) }, { sessionId: playerDiagnosticSessionRef.current, stage: "record", outcome: "failed" });
       Alert.alert("Kayıt başlatılamadı", String(e?.message || e));
     }
   };
 
+  // v18.6.0: Media3 canlı — kaydedici hazır olunca bekleyen "tee" kaydını başlat.
+  useEffect(() => {
+    const path = pendingTeePathRef.current;
+    if (!path || !liveTimeshiftReady || !liveTimeshift.sessionId) return;
+    pendingTeePathRef.current = null;
+    void KizilkanNativeCore.liveTimeshiftStartRecord(liveTimeshift.sessionId, path).then(r => {
+      if (r.ok) setRecordPath(r.path || path);
+      else {
+        setIsRecording(false); setRecordEngine(""); setRecordForcesTimeshift(false);
+        Alert.alert("Kayıt başlatılamadı", r.error === "SESSION_NOT_FOUND" ? "Kaydedici oturumu bulunamadı." : String(r.error || "bilinmeyen hata"));
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveTimeshiftReady, liveTimeshift.sessionId]);
+  // Kanal değişince zorunlu zaman kaydırma bayrağı düşer (kayıt da durdurulur).
+  useEffect(() => { if (recordForcesTimeshift && !isRecording) setRecordForcesTimeshift(false); }, [recordForcesTimeshift, isRecording]);
+
   const stopRecording = async () => {
+    let teeResult: { ok: boolean; path?: string; bytes?: number; error?: string } | null = null;
     try {
-      await vlcRef.current?.record();   // parametresiz = durdur
+      if (recordEngine === "mpv") await mpvRef.current?.stopRecord();
+      else if (recordEngine === "tee") {
+        pendingTeePathRef.current = null;
+        if (liveTimeshift.sessionId) teeResult = await KizilkanNativeCore.liveTimeshiftStopRecord(liveTimeshift.sessionId);
+      } else await vlcRef.current?.record();   // parametresiz = durdur
     } catch { /* yine de durumu temizle */ }
+    void recordDiagnostic("player", "RECORD_STOP", { engine: recordEngine || "vlc", bytes: teeResult?.bytes ?? -1, error: teeResult?.error || "" }, { sessionId: playerDiagnosticSessionRef.current, stage: "record", outcome: "stopped" });
     setIsRecording(false);
     setRecordStart(null);
+    setRecordEngine("");
+    setRecordForcesTimeshift(false);
+    if (teeResult?.path && !recordPath) setRecordPath(teeResult.path);
 
     /**
      * KAYIT DOĞRULAMASI (v8.3.0) — "kaydetti" deyip dosya olmaması bitti
@@ -5106,6 +5233,16 @@ export default function PlayerHost() {
                 {sessionKind === "live" && <GridBtn testID="player-last-channel-btn" icon="swap-horizontal" label="Son kanala dön" onPress={() => { setShowControls(false); zapToLastChannel(); }} />}
                 {sessionKind === "live" && (liveTimeshiftReady || isSeekable) && <GridBtn testID="player-go-live-btn" icon="radio" label="Canlıya dön" onPress={goToLiveEdge} />}
                 {!!extSubCues?.length && <GridBtn testID="player-ext-sub-btn" icon="chatbox-ellipses" label={`Dış altyazı: ${extSubOn ? "Açık" : "Kapalı"}`} highlighted={extSubOn} onPress={() => setExtSubOn(v => !v)} />}
+                {sessionKind === "external" && isLocalMediaId(params.id) && (
+                  <GridBtn testID="player-repeat-btn" icon={localRepeat === "one" ? "repeat" : "repeat"}
+                    label={`Tekrar: ${localRepeat === "off" ? "Kapalı" : localRepeat === "all" ? "Tümü (sürekli)" : "Tek parça"}`}
+                    highlighted={localRepeat !== "off"}
+                    onPress={() => { const n = localRepeat === "off" ? "all" : localRepeat === "all" ? "one" : "off"; saveLocalRepeat(n, localShuffle); if (n !== "off" && !autoPlayNext) { setAutoPlayNext(true); autoNextRef.current = true; } }} />
+                )}
+                {sessionKind === "external" && isLocalMediaId(params.id) && (
+                  <GridBtn testID="player-shuffle-btn" icon="shuffle" label={`Karıştır: ${localShuffle ? "Açık" : "Kapalı"}`} highlighted={localShuffle}
+                    onPress={() => saveLocalRepeat(localRepeat, !localShuffle)} />
+                )}
                 {(sessionKind === "vod" || sessionKind === "series" || (sessionKind === "external" && isLocalMediaId(params.id))) && <GridBtn testID="player-auto-next-btn" icon="play-skip-forward" label={`Sonrakini otomatik: ${autoPlayNext?'Açık':'Kapalı'}`} highlighted={autoPlayNext} onPress={() => {const next=!autoPlayNext;setAutoPlayNext(next);autoNextRef.current=next;void storage.setItem(AUTO_NEXT_KEY+activeProfile.id,next);}} />}
 
                 <GridBtn testID="player-audiodelay-btn" icon="git-compare" label="Senkron" onPress={() => setSheet("audiodelay")} />
@@ -5133,15 +5270,10 @@ export default function PlayerHost() {
                   label={isRecording ? "Kaydı Bitir" : "Kaydet"}
                   highlighted={isRecording}
                   onPress={() => {
-                    if (v2Profile.engine !== "vlc") {
-                      Alert.alert(
-                        "Kayıt için VLC gerekiyor",
-                        `Şu an ${activeEngineLabel} motoru kullanılıyor ve mevcut kayıt altyapısı VLC'ye bağlı.\n\n` +
-                          "Izgaradaki ilk düğmeden motoru VLC'ye alıp tekrar deneyin."
-                      );
-                      return;
-                    }
-                    if (isRecording) { stopRecording(); } else { setSheet("recordTarget"); }
+                    // v18.6.0: kayıt üç motorda (VLC · MPV · Media3). Film/dizi Media3/MPV'de dosyanın tamamı indirilir.
+                    if (isRecording) { stopRecording(); }
+                    else if (sessionKind !== "live" && v2Profile.engine !== "vlc") { void startRecording("download"); }
+                    else { setSheet("recordTarget"); }
                   }}
                 />
 
