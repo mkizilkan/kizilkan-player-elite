@@ -72,4 +72,15 @@ assert.equal(M.fmtMs(3723000), '1:02:03');
 assert.equal(M.fmtMs(0), '');
 pass++;
 
+// 8) v18.5.0: önceden hesaplanan anahtarlar (arama/sıralama sonucu değişmemeli)
+{
+  const a = [it(1, 'Çiçek.mp3', { artist: 'Barış' }), it(2, 'arı.mp3'), it(3, 'Bal.mp3')];
+  M.withSearchKeys(a);
+  assert.equal(a[0]._k, 'cicek mp3 baris');
+  assert.equal(a[0]._n, 'cicek mp3');
+  assert.equal(M.matchesQuery(a[0], 'BARIS'), true);
+  assert.deepEqual(norm(M.sortItems(a, 'name', false).map(x => x.id)), [2, 3, 1]);
+  pass++;
+}
+
 console.log(`PASS: Medya Merkezi modeli — ${pass} test grubu TEMİZ`);

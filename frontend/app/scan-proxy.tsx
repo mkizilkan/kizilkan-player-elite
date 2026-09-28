@@ -17,11 +17,11 @@ import { haptic } from "@/src/utils/haptic";
 import {
   loadScanProxyConfig, applyScanProxyConfig, saveScanProxyConfig,
   startLivenessTest, pauseLivenessTest, resumeLivenessTest, stopLivenessTest, livenessProgress,
-  testSingleProxy, useWithoutTest, human,
+  testSingleProxy, useWithoutTest, human, setScanProxyUse, clearScanProxyLists, scanProxyStatus,
   PROXY_SOURCE_CATALOG, DEFAULT_SCAN_PROXY_CONFIG,
   type ScanProxyConfig, type ProxyProtocol,
 } from "@/src/utils/scanProxy";
-import type { ScanProxyTestProgress } from "@/modules/panel-scan";
+import type { NativeScanProxyStatus, ScanProxyTestProgress } from "@/modules/panel-scan";
 
 const PROTOS: ProxyProtocol[] = ["http", "socks4", "socks5"];
 
@@ -37,6 +37,10 @@ export default function ScanProxyScreen() {
   const [customUrl, setCustomUrl] = useState("");
   const [customScheme, setCustomScheme] = useState<ProxyProtocol>("http");
   const pollRef = useRef<any>(null);
+  // v18.5.0: native havuz özeti (proxy kapalıyken de görünür).
+  const [pst, setPst] = useState<NativeScanProxyStatus | null>(null);
+  const refreshStatus = useCallback(() => { try { setPst(scanProxyStatus()); } catch {} }, []);
+  useEffect(() => { refreshStatus(); }, [refreshStatus]);
 
   useEffect(() => {
     let alive = true;
@@ -63,16 +67,15 @@ export default function ScanProxyScreen() {
     pollRef.current = setInterval(() => {
       const p = livenessProgress();
       setProg(p);
-      if (p.phase !== "running" && p.phase !== "paused") { clearInterval(pollRef.current); pollRef.current = null; }
+      if (p.phase !== "running" && p.phase !== "paused") { clearInterval(pollRef.current); pollRef.current = null; refreshStatus(); }
     }, 500);
-  }, []);
+  }, [refreshStatus]);
 
   const onSave = async () => {
     setBusy(true); setStatus(""); setDl(null);
     try {
       const res = await applyScanProxyConfig(cfg, (done, total, last) => setDl({ done, total, label: last.label }));
-      setDl(null);
-      if (!cfg.enabled) { setStatus("Proxy kapalı. Tarama doğrudan bağlanır."); return; }
+      setDl(null); refreshStatus();
       const bs = res.byScheme;
       const lines = res.sources.slice(0, 12).map(s => `• ${s.label}: ${s.error ? "HATA" : human(s.count)}`).join("\n");
       setStatus(`${human(res.entryCount)} aday yüklendi  (HTTP ${human(bs.http)} · SOCKS4 ${human(bs.socks4)} · SOCKS5 ${human(bs.socks5)}).\n${lines}\n\nCanlılık testini başlatın veya "Test etmeden kullan".`);
@@ -86,13 +89,13 @@ export default function ScanProxyScreen() {
     if (!r.started) { Alert.alert("Test başlamadı", r.error || "Bilinmeyen hata"); return; }
     startPolling();
   };
-  const onStopUseTested = async () => { await stopLivenessTest(true); setProg(livenessProgress()); setStatus("Test durduruldu; çalışan proxy'ler havuz olarak kullanılıyor."); };
+  const onStopUseTested = async () => { await stopLivenessTest(true); setProg(livenessProgress()); refreshStatus(); setStatus("Test durduruldu; çalışan proxy'ler havuz olarak kullanılıyor."); };
   const onSingleTest = async () => {
     setBusy(true);
     try { const r = await testSingleProxy(); setStatus(r.ok ? `✔ Proxy çalışıyor.\nDış IP: ${r.ip}\nProxy: ${r.proxy}` : `✖ ${r.error || "başarısız"}`); }
     finally { setBusy(false); }
   };
-  const onUseWithout = async () => { const s = await useWithoutTest(); setStatus(`Test edilmeden ${human(s.pool)} proxy havuz yapıldı.`); };
+  const onUseWithout = async () => { const s = await useWithoutTest(); setPst(s); setStatus(`Test edilmeden ${human(s.pool)} proxy havuz yapıldı.`); };
 
   const card = { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, borderWidth: 1, borderRadius: RADIUS.md, padding: SPACING.md } as const;
   const label = { color: colors.onSurface, fontSize: FONT.size.base, fontWeight: FONT.weight.semibold } as const;
@@ -120,7 +123,7 @@ export default function ScanProxyScreen() {
               <Text style={label}>Taramada proxy kullan</Text>
               <Text style={muted}>Kapalıyken tarama doğrudan sizin bağlantınızdan yapılır.</Text>
             </View>
-            <Switch testID="scan-proxy-enabled" value={cfg.enabled} onValueChange={v => { haptic.light(); patch({ enabled: v }); }}
+            <Switch testID="scan-proxy-enabled" value={cfg.enabled} onValueChange={v => { haptic.light(); patch({ enabled: v }); void setScanProxyUse(v).then(setPst); }}
               trackColor={{ true: colors.brandPrimary, false: colors.surfaceTertiary }} />
           </View>
 
@@ -215,7 +218,7 @@ export default function ScanProxyScreen() {
           {/* Kaydet + indirme ilerlemesi */}
           <FocusButton focusKey="sp-save" disabled={busy} onPress={() => { haptic.medium(); void onSave(); }}
             style={{ paddingVertical: SPACING.md, borderRadius: RADIUS.md, alignItems: "center", backgroundColor: colors.brandPrimary, opacity: busy ? 0.6 : 1 }}>
-            <Text style={{ color: colors.onBrandPrimary, fontWeight: FONT.weight.bold }}>{cfg.enabled ? "Kaydet & Listeleri İndir" : "Kaydet"}</Text>
+            <Text style={{ color: colors.onBrandPrimary, fontWeight: FONT.weight.bold }}>{cfg.source === "auto" ? "Listeleri İndir" : "Listeyi Yükle"}</Text>
           </FocusButton>
           {dl && (
             <View style={card}>
@@ -225,7 +228,7 @@ export default function ScanProxyScreen() {
           )}
 
           {/* Canlılık testi */}
-          {cfg.enabled && (
+          {(
             <View style={card}>
               <Text style={label}>Canlılık testi</Text>
               <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.sm }}>
@@ -250,15 +253,49 @@ export default function ScanProxyScreen() {
                 </>
               )}
 
+              {/* v18.5.0: test seçenekleri */}
+              <View style={{ marginTop: SPACING.sm, gap: SPACING.xs }}>
+                <View style={styles.optRow}>
+                  <Text style={[muted, { flex: 1 }]}>Şeffafları ele (IP adresinizi gösterenler)</Text>
+                  <Switch value={cfg.test.rejectTransparent} onValueChange={v => patch({ test: { ...cfg.test, rejectTransparent: v } })} trackColor={{ true: colors.brandPrimary, false: colors.surfaceTertiary }} />
+                </View>
+                <View style={styles.optRow}>
+                  <Text style={[muted, { flex: 1 }]}>Yalnız elite kullan (IP gizli + proxy izi yok)</Text>
+                  <Switch value={cfg.test.eliteOnly} onValueChange={v => patch({ test: { ...cfg.test, eliteOnly: v } })} trackColor={{ true: colors.brandPrimary, false: colors.surfaceTertiary }} />
+                </View>
+                <View style={[styles.optRow, { gap: SPACING.xs }]}>
+                  <Text style={[muted, { flex: 1 }]}>Paralellik</Text>
+                  {[32, 64, 128].map(n => (
+                    <TouchableOpacity key={n} onPress={() => patch({ test: { ...cfg.test, concurrency: n } })}
+                      style={[styles.miniChip, { borderColor: cfg.test.concurrency === n ? colors.brandPrimary : colors.border }]}>
+                      <Text style={{ color: cfg.test.concurrency === n ? colors.brandPrimary : colors.onSurfaceSecondary, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>{n}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <View style={[styles.optRow, { gap: SPACING.xs }]}>
+                  <Text style={[muted, { flex: 1 }]}>Zaman aşımı</Text>
+                  {[3000, 6000, 10000].map(n => (
+                    <TouchableOpacity key={n} onPress={() => patch({ test: { ...cfg.test, timeoutMs: n } })}
+                      style={[styles.miniChip, { borderColor: cfg.test.timeoutMs === n ? colors.brandPrimary : colors.border }]}>
+                      <Text style={{ color: cfg.test.timeoutMs === n ? colors.brandPrimary : colors.onSurfaceSecondary, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>{n / 1000} sn</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
               {prog && (prog.phase !== "idle") && (
-                <View style={{ marginTop: SPACING.md }}>
+                <View style={{ marginTop: SPACING.md, gap: SPACING.xs }}>
                   <Text style={{ color: colors.onSurface, fontSize: FONT.size.sm, fontWeight: FONT.weight.semibold }}>
-                    {prog.phase === "running" ? "Test ediliyor…" : prog.phase === "paused" ? "Duraklatıldı" : prog.phase === "stopped" ? "Durduruldu" : "Bitti"} · {prog.tested}/{prog.total}
+                    {prog.phase === "running" ? "Test ediliyor…" : prog.phase === "paused" ? "Duraklatıldı" : prog.phase === "stopped" ? "Durduruldu" : "Bitti"}
                   </Text>
-                  <Bar colors={colors} ratio={prog.total ? prog.tested / prog.total : 0} />
+                  <Text style={muted}>1/2 Hızlı bağlantı elemesi · {human(prog.tcpTested || 0)}/{human(prog.tcpTotal || 0)} · açık port {human(prog.tcpAlive || 0)}</Text>
+                  <Bar colors={colors} ratio={prog.tcpTotal ? (prog.tcpTested || 0) / prog.tcpTotal : 0} />
+                  <Text style={[muted, { marginTop: SPACING.xs }]}>2/2 Doğrulama + anonimlik · {human(prog.tested)}/{human(prog.total)}</Text>
+                  <Bar colors={colors} ratio={prog.stage === "verify" && prog.total ? prog.tested / prog.total : 0} />
                   <Text style={[muted, { marginTop: SPACING.xs }]}>
-                    ✔ Çalışan {prog.working}  ·  ✖ Ölü {prog.dead}{prog.transparent ? `  ·  Şeffaf ${prog.transparent}` : ""}{"\n"}
-                    HTTP {prog.http} · SOCKS4 {prog.socks4} · SOCKS5 {prog.socks5}  ·  {prog.ratePerSec}/sn{prog.etaMs > 0 ? `  ·  ~${Math.ceil(prog.etaMs / 1000)} sn` : ""}
+                    {`✔ Kullanılabilir ${prog.working}  ·  ✖ Ölü ${prog.dead}\n`}
+                    {`🛡 Elite ${prog.elite || 0} · Anonim ${prog.anonymous || 0} · Şeffaf ${prog.transparent} · Bilinmiyor ${prog.unknownAnon || 0}\n`}
+                    {`HTTP ${prog.http} · SOCKS4 ${prog.socks4} · SOCKS5 ${prog.socks5}  ·  ${prog.ratePerSec}/sn${prog.etaMs > 0 ? `  ·  ~${Math.ceil(prog.etaMs / 1000)} sn` : ""}`}
                   </Text>
                 </View>
               )}
@@ -287,6 +324,28 @@ export default function ScanProxyScreen() {
           )}
 
           {!!status && <View style={card}><Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm }}>{status}</Text></View>}
+
+          {/* v18.5.0: havuz özeti + temizle */}
+          {pst && (
+            <View style={card}>
+              <Text style={label}>Havuz</Text>
+              <Text style={[muted, { marginTop: SPACING.xs }]}>
+                {`Taramada kullanım: ${pst.enabled ? "AÇIK" : "kapalı"}\n`}
+                {`Aday ${human(pst.candidates)} · Havuz ${human(pst.pool)}${pst.poolTested ? " (test edildi)" : pst.pool ? " (test edilmedi)" : ""} · Canlı ${human(pst.alive)}\n`}
+                {pst.poolByAnon ? `Elite ${pst.poolByAnon.elite} · Anonim ${pst.poolByAnon.anonymous} · Şeffaf ${pst.poolByAnon.transparent} · Bilinmiyor ${pst.poolByAnon.unknown}\n` : ""}
+                {`İyi (panelden yanıt almış, kalıcı): ${pst.good || 0}`}
+                {pst.lastTestAt ? `\nSon test: ${Math.max(0, Math.round((Date.now() - pst.lastTestAt) / 60000))} dk önce` : ""}
+              </Text>
+              <TouchableOpacity onPress={() => {
+                Alert.alert("Listeleri temizle", "Aday liste, havuz ve iyi proxy listesi silinecek.", [
+                  { text: "Vazgeç", style: "cancel" },
+                  { text: "Temizle", style: "destructive", onPress: () => { void clearScanProxyLists().then(setPst); setProg(null); } },
+                ]);
+              }} style={{ marginTop: SPACING.sm, alignSelf: "flex-start" }}>
+                <Text style={{ color: colors.error, fontSize: FONT.size.sm, fontWeight: FONT.weight.bold }}>Listeleri temizle</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           {busy && <ActivityIndicator color={colors.brandPrimary} />}
         </ScrollView>
       )}
@@ -306,4 +365,6 @@ const styles = StyleSheet.create({
   safe: { flex: 1 },
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: SPACING.lg, paddingVertical: SPACING.md },
   title: { fontSize: FONT.size.xl, fontWeight: "700" },
+  optRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  miniChip: { paddingHorizontal: SPACING.sm, paddingVertical: 4, borderRadius: RADIUS.pill, borderWidth: 1 },
 });

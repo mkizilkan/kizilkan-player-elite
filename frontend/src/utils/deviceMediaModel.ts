@@ -21,7 +21,19 @@ export type MediaItem = {
   height?: number;
   artist?: string;
   album?: string;
+  /** v18.5.0: yüklemede BİR KEZ hesaplanan arama anahtarı ve normalleştirilmiş ad (performans). */
+  _k?: string;
+  _n?: string;
 };
+
+/** v18.5.0: arama/sıralama anahtarlarını bir kez hesapla (1000+ öğede her tuşta yeniden hesaplanmasın). */
+export function withSearchKeys(items: MediaItem[]): MediaItem[] {
+  for (const it of items) {
+    if (it._k === undefined) it._k = normalizeTr(`${it.name} ${it.artist || ""} ${it.album || ""} ${it.folder || ""}`);
+    if (it._n === undefined) it._n = normalizeTr(it.name);
+  }
+  return items;
+}
 
 export type MediaSortKey = "date" | "name" | "size" | "duration" | "type";
 export type MediaGroupMode = "none" | "folder" | "album" | "artist" | "month";
@@ -48,24 +60,25 @@ export function extOf(name: string): string {
 export function matchesQuery(item: MediaItem, query: string): boolean {
   const q = normalizeTr(query);
   if (!q) return true;
-  const hay = normalizeTr(`${item.name} ${item.artist || ""} ${item.album || ""} ${item.folder || ""}`);
+  const hay = item._k ?? normalizeTr(`${item.name} ${item.artist || ""} ${item.album || ""} ${item.folder || ""}`);
   return q.split(" ").every(w => hay.includes(w));
 }
 
 export function sortItems(items: MediaItem[], key: MediaSortKey, desc: boolean): MediaItem[] {
   const dir = desc ? -1 : 1;
   const collator = (a: string, b: string) => normalizeTr(a).localeCompare(normalizeTr(b), "tr", { numeric: true });
+  const byName = (a: MediaItem, b: MediaItem) => (a._n ?? normalizeTr(a.name)).localeCompare(b._n ?? normalizeTr(b.name), "tr", { numeric: true });
   const out = items.slice();
   out.sort((a, b) => {
     let c = 0;
     switch (key) {
-      case "name": c = collator(a.name, b.name); break;
+      case "name": c = byName(a, b); break;
       case "size": c = (a.size || 0) - (b.size || 0); break;
       case "duration": c = (a.duration || 0) - (b.duration || 0); break;
-      case "type": c = collator(extOf(a.name), extOf(b.name)) || collator(a.name, b.name); break;
+      case "type": c = collator(extOf(a.name), extOf(b.name)) || byName(a, b); break;
       default: c = (a.dateAdded || 0) - (b.dateAdded || 0);
     }
-    if (c === 0) c = collator(a.name, b.name);
+    if (c === 0) c = byName(a, b);
     return c * dir;
   });
   return out;

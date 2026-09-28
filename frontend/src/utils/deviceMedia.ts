@@ -6,7 +6,7 @@ import { Alert, PermissionsAndroid, Platform } from "react-native";
 import { KizilkanNativeCore, type DeviceMediaItem, type DeviceMediaKind } from "@/modules/kizilkan-native-core";
 import { recordDiagnostic } from "./diagnostics";
 import { localIdForUri, type LocalQueueItem } from "./localMedia";
-import { extOf, type MediaItem } from "./deviceMediaModel";
+import { extOf, withSearchKeys, type MediaItem } from "./deviceMediaModel";
 
 export type PermissionState = "granted" | "partial" | "denied" | "unavailable";
 
@@ -68,6 +68,7 @@ export async function loadDeviceMedia(kind: DeviceMediaKind, force = false): Pro
     offset += page.items.length;
     if (page.items.length < PAGE || offset >= page.total) break;
   }
+  withSearchKeys(all);
   cache.set(kind, { at: Date.now(), items: all });
   void recordDiagnostic("player", "MEDIA_CENTER_SCAN", { kind, ok: true, count: all.length, elapsedMs: Date.now() - t0 }, { stage: "media-center", outcome: "success" });
   return { items: all, elapsedMs: Date.now() - t0 };

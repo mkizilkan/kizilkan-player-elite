@@ -547,6 +547,8 @@ class PanelScanService : Service() {
     synchronized(proxyReadyLock) {
       if (proxyReadyRunId == currentRunId) return
       runCatching { ScanProxyPool.restoreIfNeeded(applicationContext) }
+      // v18.5.0: havuz 15 dk'dan eskiyse ölüleri hızlı TCP kontrolüyle ayıkla (≤15 sn).
+      runCatching { ScanProxyPool.refreshPoolIfStale(applicationContext) }
       proxyReadyRunId = currentRunId
     }
   }
@@ -567,6 +569,19 @@ class PanelScanService : Service() {
     }
   }
 
+  /** v18.5.0: proxy yüzünden duraklatma (tek sefer bildirim + telemetri). */
+  private val proxyPauseLock = Any()
+  private fun pauseForProxy(reason: String, hostKey: String) {
+    synchronized(proxyPauseLock) {
+      if (paused.get()) return
+      paused.set(true)
+      patchSnapshot { it.put("paused", true).put("running", true).put("state", "PAUSED").put("pauseReason", reason) }
+      val msg = if (reason == "SCAN_PROXY_EMPTY") "Proxy açık ama havuz boş — tarama duraklatıldı" else "Proxy havuzu tükendi — tarama duraklatıldı"
+      getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification(msg, 0, 0))
+      recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("state", reason + "_PAUSE").put("host", hostKey))
+    }
+  }
+
   private fun probePhysical(server: String, username: String, password: String, timeoutMs: Int): JSONObject? {
     val base = server.trim().trimEnd('/')
     val hostKey = runCatching { URL(base).host.lowercase() }.getOrDefault(base.lowercase())
@@ -580,16 +595,17 @@ class PanelScanService : Service() {
       val maxAttempts = if (ScanProxyPool.enabled) 3 else 1
       for (attempt in 0 until maxAttempts) {
         if (cancelled.get() || Thread.currentThread().isInterrupted) return null
-        val sel = ScanProxyPool.select()
-        if (ScanProxyPool.enabled && sel == null) {
-          // Havuz tükendi: kullanıcının kendi IP'sine SESSİZCE düşme; taramayı duraklat.
-          if (ScanProxyPool.isExhausted() && !paused.get()) {
-            paused.set(true)
-            patchSnapshot { it.put("paused", true).put("running", true).put("state", "PAUSED").put("pauseReason", "SCAN_PROXY_EXHAUSTED") }
-            getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("Proxy havuzu tükendi — tarama duraklatıldı", 0, 0))
-            recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("state", "SCAN_PROXY_EXHAUSTED_PAUSE").put("host", hostKey))
-          }
-          return null
+        var sel = ScanProxyPool.select()
+        // v18.5.0: Proxy açık ama kullanılabilir proxy YOK (havuz boş veya hepsi ölü).
+        // Kullanıcının IP'sine sessizce düşülmez VE bu deneme "bulunamadı" sayılmaz:
+        // tarama duraklar, kullanıcı karar verene (yeniden test / kendi bağlantısıyla devam) kadar
+        // bu işçi bekler, sonra aynı denemeyi yeniden dener.
+        while (ScanProxyPool.enabled && sel == null) {
+          if (cancelled.get() || Thread.currentThread().isInterrupted) return null
+          pauseForProxy(if (ScanProxyPool.isEmptyPool()) "SCAN_PROXY_EMPTY" else "SCAN_PROXY_EXHAUSTED", hostKey)
+          while (paused.get() && !cancelled.get()) Thread.sleep(200)
+          if (cancelled.get()) return null
+          sel = ScanProxyPool.select()
         }
         var conn: HttpURLConnection? = null
         try {
@@ -630,6 +646,7 @@ class PanelScanService : Service() {
           // PROXY hatası: döngü sıradaki proxy ile devam eder.
         } finally {
           conn?.let { activeConnections.remove(it) }; conn?.disconnect()
+          ScanProxyPool.release(sel)
         }
       }
       return null

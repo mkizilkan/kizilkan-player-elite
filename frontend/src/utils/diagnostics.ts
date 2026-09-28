@@ -29,6 +29,36 @@ const V3_KEY = 'kizilkan.diagnostics.flightRecorder.v2';
 const LEGACY_KEY = 'kizilkan.diagnostics.flightRecorder.v1';
 const MAX_EVENTS = 50000;
 const MAX_EXPORT_EVENTS = 50000;
+/**
+ * v18.5.0 — DIŞA AKTARIMDA KIRPMA DÜZELTMESİ.
+ * Kanıt (28.09 raporu): exportScope.returned = 3473 ama dosyada events = 80, critical = 80,
+ * anomalies = 80. Sebep: tüm rapor sanitizeValue'dan geçiyordu ve o fonksiyon HER diziyi 80
+ * öğeye kesiyordu (v17.6.0'da "neden 80 olay" fark edilmiş, kök neden bulunamamıştı).
+ * Artık olay dizileri ayrı temizlenir; en çok EXPORT_EVENT_LIMIT olay yazılır ve her alandan
+ * (player, scan, navigation…) en az EXPORT_PER_DOMAIN_MIN olay korunur (tek bir gürültülü alan
+ * diğerlerini dosyadan itmesin).
+ */
+const EXPORT_EVENT_LIMIT = 6000;
+const EXPORT_PER_DOMAIN_MIN = 300;
+const EXPORT_NATIVE_ARRAY_CAP = 2000;
+
+function selectExportEvents(all: DiagnosticEvent[]): DiagnosticEvent[] {
+  if (all.length <= EXPORT_EVENT_LIMIT) return all;
+  const newestFirst = [...all].sort((a, b) => Number(b?.at || 0) - Number(a?.at || 0));
+  const picked = new Set<DiagnosticEvent>();
+  const perDomain = new Map<string, number>();
+  for (const e of newestFirst) {
+    const d = String(e?.domain || 'system');
+    const c = perDomain.get(d) || 0;
+    if (c < EXPORT_PER_DOMAIN_MIN) { picked.add(e); perDomain.set(d, c + 1); }
+  }
+  for (const e of newestFirst) {
+    if (picked.size >= EXPORT_EVENT_LIMIT) break;
+    picked.add(e);
+  }
+  const order = new Map(all.map((e, i) => [e, i] as const));
+  return Array.from(picked).sort((a, b) => (order.get(a) || 0) - (order.get(b) || 0));
+}
 // v15.2.23-RC2: AsyncStorage is only a recent fallback cache. The durable full
 // flight recorder is Native Room/WAL (100k) + critical/native journals. Serializing
 // 50k JS events on every event was O(n) main-thread work and could itself create stalls.
@@ -210,15 +240,16 @@ function redactString(input: string): string {
   return value.slice(0, 2000);
 }
 
-function sanitizeValue(value: any, key = '', depth = 0): any {
+function sanitizeValue(value: any, key = '', depth = 0, arrayCap = 80): any {
   if (depth > 8) return '[TRUNCATED]';
   if (SENSITIVE_KEY.test(key) && !SAFE_SENSITIVE_METADATA_KEY.test(key)) return '[REDACTED]';
   if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value === 'string') return redactString(value);
-  if (Array.isArray(value)) return value.slice(0, 80).map((v) => sanitizeValue(v, '', depth + 1));
+  // arrayCap yalnız bu seviyedeki diziye uygulanır; iç içe dizilerde varsayılan 80 korunur.
+  if (Array.isArray(value)) return value.slice(0, arrayCap).map((v) => sanitizeValue(v, '', depth + 1));
   if (typeof value === 'object') {
     const out: Record<string, any> = {};
-    for (const [k, v] of Object.entries(value).slice(0, 80)) out[k] = sanitizeValue(v, k, depth + 1);
+    for (const [k, v] of Object.entries(value).slice(0, 80)) out[k] = sanitizeValue(v, k, depth + 1, arrayCap === 80 ? 80 : arrayCap);
     return out;
   }
   return String(value);
@@ -845,6 +876,17 @@ async function exportDiagnosticReportInternal(extra: Record<string, any> = {}): 
     anomalies: deriveAnomalies(events),
     events,
   });
+  // v18.5.0: olay dizileri 80'e KESİLMEDEN (öğe öğe) temizlenir; bkz. selectExportEvents.
+  const exportEvents = selectExportEvents(events);
+  (payload as any).events = exportEvents.map((e) => sanitizeValue(e, '', 1));
+  (payload as any).critical = critical.map((e) => sanitizeValue(e, '', 1));
+  (payload as any).anomalies = (deriveAnomalies(events) as any[]).slice(0, 500).map((a) => sanitizeValue(a, '', 1));
+  (payload as any).nativeFlightRecorder = sanitizeValue(nativeFlightRecorder, 'nativeFlightRecorder', 1, EXPORT_NATIVE_ARRAY_CAP);
+  if ((payload as any).exportScope) {
+    (payload as any).exportScope.exported = exportEvents.length;
+    (payload as any).exportScope.exportLimit = EXPORT_EVENT_LIMIT;
+    (payload as any).exportScope.perDomainMin = EXPORT_PER_DOMAIN_MIN;
+  }
   const sanitizeMs = Date.now() - sanitizeStartedAt;
   const name = `kizilkan-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
   const file = new File(Paths.cache, name);

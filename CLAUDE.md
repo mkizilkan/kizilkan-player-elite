@@ -147,6 +147,10 @@ node tools/denetle.js        # sonunda başarısız kapı olmamalı
   tam `assembleDebug` BUILD SUCCESSFUL (~31 dk ilk derleme). SDK yolu değişirse eski yolu hatırlayan
   `node_modules/*/android/.cxx` klasörleri silinmeli. "object file directory ... 250 characters" CMake
   uyarısı zararsız (derlemeyi durdurmaz).
+- **Tanı raporu 80 olay (v18.5.0'a kadar):** `sanitizeValue` her diziyi 80'e kesiyordu; `exportScope.returned`
+  ile dosyadaki olay sayısı farklıysa bu sebeptir. v18.5.0+ raporlarda `exportScope.exported` gerçek yazılan sayıdır.
+- **Proxy açık + havuz boş:** v18.4.0'da tarama istek göndermeden "bulunamadı" sayıyordu. Proxy kodunda `select()==null`
+  durumunu asla "sunucu yok" diye yorumlama.
 - **Sessiz çıkış bırakma:** her `return` noktası bir sebep ile telemetri yazmalı; yoksa sorun
   logdan teşhis edilemiyor.
 
@@ -163,9 +167,9 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.4.0 RC1 — dal `v18.4.0-rc1-media-proxy-fix`)
+## 9. Mevcut durum (v18.5.0 RC1 — dal `v18.5.0-rc1-proxy-speed-media`)
 
-v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md` … `AI-DEVIR-v18.4.0.md`.
+v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md` … `AI-DEVIR-v18.5.0.md`.
 
 Cihazda doğrulananlar (v17.10.4'e kadar): timeshift (duraklat/geri-ileri/canlıya dön), açılışta son kanal
 (profil + liste başına), OOM düzeltmesi, boş kabuk onarımı, combo + doğrudan DNS.
@@ -183,6 +187,12 @@ doğrulanmış katalog, duraklat/devam/yeter, rotasyonlu tekrar, havuz tükeninc
 müzik/video/fotoğraf, arama/sıralama/gruplama, fotoğraf görüntüleyici). (4) Ayarlar'daki yanlış "yakında/Publish" iddiaları
 düzeltildi; kısayollar ve arka planda oynatma (Media3) eklendi. (5) EPG düğmesi seçili kategorinin rehberini açar.
 Ayrıntı `AI-DEVIR-v18.4.0.md`. Actions: v18.0.0 = build-112, v18.1.0 = build-113, v18.2.0 = build-114.
+
+**v18.4.0 cihaz:** yerel medya MAG'de açıldı, EPG kategori çalıştı; Medya Merkezi yavaş, proxy taraması yavaş/bilgisiz.
+
+**v18.5.0 (bu sürüm):** Medya Merkezi performansı; proxy açık + havuz boşken sessiz yanlış negatif hatası (artık sorulur/bekler);
+iki aşamalı proxy testi (TCP → httpbin yargıç) + Elite/Anonim/Şeffaf; tarama ekranında proxy'li/normal anahtarı ve canlı proxy satırı;
+tarama öncesi havuz tazeleme; kalıcı "iyi proxy" listesi; tanı raporunun 80 olaya kesilmesi düzeltildi. Ayrıntı `AI-DEVIR-v18.5.0.md`.
 
 **Tuzak (v18.4.0):** PlayerHost'ta oynatma kararında `activePlaylist?.source` DOĞRUDAN kullanma → `playlistSource`.
 MAG film/catch-up da `ext=true` ile açılır; "external = yerel" sanma.

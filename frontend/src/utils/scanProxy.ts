@@ -81,6 +81,8 @@ export type ScanProxyTestPrefs = {
   concurrency: number;
   timeoutMs: number;
   rejectTransparent: boolean;
+  /** v18.5.0: yalnız elite proxy'ler havuza girsin. */
+  eliteOnly: boolean;
 };
 
 export type ScanProxyConfig = {
@@ -102,7 +104,7 @@ export const DEFAULT_SCAN_PROXY_CONFIG: ScanProxyConfig = {
   manualText: "",
   autoSelections: {},
   customSources: [],
-  test: { mode: "system", url: "", expectText: "", concurrency: 64, timeoutMs: 6000, rejectTransparent: true },
+  test: { mode: "system", url: "", expectText: "", concurrency: 64, timeoutMs: 6000, rejectTransparent: true, eliteOnly: false },
 };
 
 export async function loadScanProxyConfig(): Promise<ScanProxyConfig> {
@@ -194,19 +196,24 @@ export function parseManual(text: string): NativeScanProxyEntry[] {
 export type ApplyResult = { status: NativeScanProxyStatus; entryCount: number; sources: SourceResult[]; byScheme: { http: number; socks4: number; socks5: number } };
 
 /**
- * Yapılandırmayı kaydet ve native aday listesini kur (test AYRI adım).
- * onProgress otomatik indirmede iş iş bildirir.
+ * v18.5.0 — Proxy'yi taramada kullan/kullanma (yalnız tercih). Listeler ve havuz SİLİNMEZ;
+ * proxy kapalıyken de indirme ve test yapılabilir (proxy merkezi her durumda çalışır).
+ */
+export async function setScanProxyUse(on: boolean): Promise<NativeScanProxyStatus> {
+  const cfg = await loadScanProxyConfig();
+  await saveScanProxyConfig({ ...cfg, enabled: on });
+  return PanelScan.setScanProxyEnabled(on);
+}
+
+/**
+ * Aday listeyi kur (elle metin veya seçili kaynakları indir). Açık/kapalı durumundan BAĞIMSIZ.
+ * onProgress otomatik indirmede iş iş bildirir. Test AYRI adımdır.
  */
 export async function applyScanProxyConfig(
   cfg: ScanProxyConfig,
   onProgress?: (done: number, total: number, last: SourceResult) => void,
 ): Promise<ApplyResult> {
   await saveScanProxyConfig(cfg);
-  await PanelScan.setScanProxyEnabled(cfg.enabled);
-  if (!cfg.enabled) {
-    const status = await PanelScan.clearScanProxy();
-    return { status, entryCount: 0, sources: [], byScheme: { http: 0, socks4: 0, socks5: 0 } };
-  }
   let entries: NativeScanProxyEntry[] = [];
   let sources: SourceResult[] = [];
   let byScheme = { http: 0, socks4: 0, socks5: 0 };
@@ -219,8 +226,13 @@ export async function applyScanProxyConfig(
     entries = out.entries; sources = out.sources; byScheme = out.byScheme;
   }
   const status = await PanelScan.loadScanProxyCandidates(entries, true);
-  void recordDiagnostic("scan", "SCAN_PROXY_CANDIDATES_LOADED", { source: cfg.source, entryCount: entries.length, byScheme });
+  void recordDiagnostic("scan", "SCAN_PROXY_CANDIDATES_LOADED", { source: cfg.source, entryCount: entries.length, byScheme, enabled: cfg.enabled });
   return { status, entryCount: entries.length, sources, byScheme };
+}
+
+/** Aday listeyi, havuzu ve iyi proxy listesini temizle. */
+export async function clearScanProxyLists(): Promise<NativeScanProxyStatus> {
+  return PanelScan.clearScanProxy();
 }
 
 /** Test etmeden doğrudan kullan (ödemeli rotating gateway / güvenilir elle proxy). */
@@ -237,6 +249,7 @@ export async function startLivenessTest(prefs: ScanProxyTestPrefs): Promise<{ st
     concurrency: prefs.concurrency,
     timeoutMs: prefs.timeoutMs,
     rejectTransparent: prefs.rejectTransparent,
+    eliteOnly: prefs.eliteOnly,
   };
   return PanelScan.startScanProxyTest(cfg);
 }

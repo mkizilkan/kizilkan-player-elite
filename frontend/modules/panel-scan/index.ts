@@ -208,16 +208,22 @@ export type ScanProxyTestConfig = {
   concurrency?: number;
   timeoutMs?: number;
   rejectTransparent?: boolean;
+  /** v18.5.0: yalnız elite (IP gizli + proxy izi yok) proxy'ler havuza girer. */
+  eliteOnly?: boolean;
 };
 
 export type ScanProxyTestProgress = {
   phase: "idle" | "running" | "paused" | "done" | "stopped" | "cancelled" | "failed";
   mode?: string;
+  /** v18.5.0: "tcp" hızlı bağlantı elemesi → "verify" doğrulama + anonimlik. */
+  stage?: "" | "tcp" | "verify";
+  tcpTotal?: number; tcpTested?: number; tcpAlive?: number;
+  elite?: number; anonymous?: number; unknownAnon?: number;
   total: number; tested: number; working: number; dead: number; transparent: number;
   http: number; socks4: number; socks5: number;
   elapsedMs: number; etaMs: number; ratePerSec: number;
   ownIp: string; error?: string;
-  fastest: Array<{ proxy: string; ms: number }>;
+  fastest: Array<{ proxy: string; ms: number; anon?: string }>;
 };
 
 export type NativeScanProxyStatus = {
@@ -226,9 +232,16 @@ export type NativeScanProxyStatus = {
   candidatesByScheme?: { http: number; socks4: number; socks5: number };
   pool: number;
   poolByScheme?: { http: number; socks4: number; socks5: number };
+  poolByAnon?: { elite: number; anonymous: number; transparent: number; unknown: number };
   poolTested: boolean;
   dead: number;
   alive: number;
+  /** v18.5.0: panel yanıtı almış kalıcı iyi proxy sayısı, şu an kullanımdaki istek, toplam başarı, son proxy. */
+  good?: number;
+  inUse?: number;
+  panelSuccess?: number;
+  lastProxy?: string;
+  lastRefreshAt?: number;
   lastTestAt?: number;
   testPhase: string;
   exhausted: boolean;

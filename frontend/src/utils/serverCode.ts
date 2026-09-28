@@ -282,6 +282,13 @@ async function probeXtreamHost(
   if (!base) return null;
   const { signal, cancel } = makeTimeoutSignal(timeoutMs, externalSignal);
   const url = `${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
+  // v18.5.0: proxy açık ama çalışan proxy yok → sessiz "bulunamadı" yerine açık hata
+  // (v18.4.0'da bu durumda her deneme istek gönderilmeden başarısız sayılıyordu).
+  const proxyState = PanelScan.getScanProxyStatus();
+  if (proxyState.enabled && (proxyState.alive || 0) === 0) {
+    cancel();
+    throw new Error("Taramada proxy açık ama çalışan proxy yok. Proxy merkezinden test edin veya proxy'li taramayı kapatın.");
+  }
   try {
     // v18.3.0: Taramaya özel proxy AÇIKSA JS keşfi de proxy'den geçsin (fetch
     // proxy tanımaz → native köprü). Kapalıysa doğrudan fetch (davranış değişmez).
