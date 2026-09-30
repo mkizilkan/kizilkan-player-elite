@@ -11,7 +11,9 @@
  * YASAL: yalnız kullanıcının KENDİ MAC adresleri (UI uyarısı). Bu modül kısıt getirmez.
  * ===========================================================================
  */
-import { discoverMagPortal, normalizeStalkerAccountInfo, setMagProxyRouting, stalkerLogin, type StalkerCreds } from "@/src/utils/stalker";
+// v18.7.1: stalker.ts projenin her yerinde TEMBEL yüklenir (açılış yükü); bu dosya da mag-bulk
+// ekranı üzerinden açılışta yüklendiği için aynı kurala uyar (yalnız tip içe aktarımı statik).
+import type { StalkerCreds } from "@/src/utils/stalker";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
 import { portalDiscoveryCandidates, type MagBulkJob, type MagHostEntry } from "@/src/utils/magBulk";
 
@@ -65,6 +67,7 @@ async function scanOne(
 ): Promise<MagScanResult> {
   const base: MagScanResult = { hostRaw: job.hostRaw, portal: job.portal, mac: job.mac, category: "error" };
   const signal = opts.control?.signal;
+  const { discoverMagPortal, normalizeStalkerAccountInfo, stalkerLogin } = await import("@/src/utils/stalker");
   try {
     // 1) Portal adresi: kullanıcı port verdiyse doğrudan; yoksa host başına bir kez keşif.
     let portal = job.portal;
@@ -119,6 +122,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
   let cursor = 0;
 
   const uniqueHosts = Array.from(new Set(jobs.map(j => j.portal)));
+  const { setMagProxyRouting } = await import("@/src/utils/stalker");
   if (opts.useProxy) setMagProxyRouting(uniqueHosts, true);
   void recordDiagnostic("scan", "MAG_BULK_SCAN_START", { jobs: total, hosts: uniqueHosts.length, concurrency, proxy: !!opts.useProxy });
 

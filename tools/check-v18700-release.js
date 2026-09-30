@@ -30,13 +30,17 @@ const magUi = rd('frontend/app/mag-bulk.tsx');
 const app = rd('frontend/app.json');
 const pkgJson = rd('frontend/package.json');
 
-// Sürüm alanları (ileri uyumlu: >= 180700)
+// Sürüm alanları — İLERİ UYUMLU (CLAUDE.md §4: sabit sürüm yazılmaz). v18.7.1: eski sabit
+// `=== '18.7.0'` kontrolleri 18.7.1'de kapıyı kıracaktı; artık beş alanın TUTARLILIĞI ve >= 18.7.0.
 const appObj = JSON.parse(app);
-need(appObj.expo.version === '18.7.0', 'app.json expo.version 18.7.0 değil');
-need(appObj.expo.ios.buildNumber === '18.7.0', 'ios.buildNumber 18.7.0 değil');
-need(Number(appObj.expo.android.versionCode) >= 180700, 'android.versionCode >= 180700 değil');
-need(/^GPT ELITE v\d+\.\d+\.\d+ RC1$/.test(appObj.expo.extra.kizilkanReleaseLabel) && appObj.expo.extra.kizilkanReleaseLabel.includes('18.7.0'), 'releaseLabel v18.7.0 RC1 değil');
-need(JSON.parse(pkgJson).version === '18.7.0', 'package.json version 18.7.0 değil');
+const ver = String(appObj.expo.version || '');
+const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(ver);
+const code = m ? Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]) : 0;
+need(!!m && code >= 180700, `app.json expo.version (${ver}) >= 18.7.0 değil`);
+need(appObj.expo.ios.buildNumber === ver, 'ios.buildNumber expo.version ile aynı değil');
+need(Number(appObj.expo.android.versionCode) === code, `android.versionCode (${appObj.expo.android.versionCode}) formülle (${code}) uyuşmuyor`);
+need(appObj.expo.extra.kizilkanReleaseLabel === `GPT ELITE v${ver} RC1`, 'releaseLabel "GPT ELITE v<sürüm> RC1" değil');
+need(JSON.parse(pkgJson).version === ver, 'package.json version expo.version ile aynı değil');
 
 // P1/P2 — tekrar motor-farkında + tek öğe/tümü
 need(/restartCurrentPlayback/.test(player) && /mpvRef\.current\?\.reload\?\.\(\)/.test(player), 'P1: MPV tekrar yeniden yükleme yok');
@@ -48,6 +52,17 @@ need(/object ShortcutInbox/.test(inbox) && /SHORTCUT_INTENT_RECEIVED/.test(inbox
 need(/class KizilkanShortcutPackage : Package/.test(pkg) && /ReactActivityLifecycleListener/.test(pkg), 'P3: yaşam döngüsü paketi yok');
 need(/ShortcutInbox\.capture/.test(pkg) && /"cold"/.test(pkg), 'P3: soğuk açılışta yakalama yok');
 need(/SHORTCUTS_INSTALLED/.test(layout) && /lastShortcutVia/.test(layout), 'P3: kurulum/telemetri yol bilgisi yok');
+// v18.7.1 — AÇILIŞ ÇÖKÜŞÜ SINIFI: dinleyiciler Activity YAPICISINDA oluşturulur; bağlama dokunmak
+// NullPointerException → uygulama hiç açılmaz. Paket/dinleyici oluşturulurken applicationContext YASAK.
+{
+  const createBody = (/createReactActivityLifecycleListeners\([^)]*\)[^=]*=\s*([\s\S]*?)\n\}/.exec(pkg) || [])[1] || '';
+  need(createBody.length > 0 && !/applicationContext|baseContext|getSystemService|resources/.test(createBody), 'v18.7.1: createReactActivityLifecycleListeners içinde bağlam kullanılıyor (açılış çöküşü)');
+  const ctorArgs = (/class ShortcutLifecycleListener\(([^)]*)\)/.exec(pkg) || [])[1] || '';
+  need(!/applicationContext/.test(ctorArgs), 'v18.7.1: dinleyici yapıcısında applicationContext (açılış çöküşü)');
+  need(/try \{ ShortcutInbox\.capture\(activity\.applicationContext/.test(pkg) && /try \{ ShortcutInbox\.capture\(activityContext\.applicationContext/.test(pkg), 'v18.7.1: kısayol yakalama try/catch içinde değil');
+}
+// v18.7.1: stalker.ts açılışta statik yüklenmez (mag-bulk açılışta yüklenen bir rota).
+need(!/^import \{[^}]*\} from "@\/src\/utils\/stalker"/m.test(magScan), 'v18.7.1: magBulkScan stalker.ts\'i statik içe aktarıyor');
 
 // P4 — bitmap simge
 need(/createWithAdaptiveBitmap/.test(mod) && /createWithBitmap/.test(mod), 'P4: kısayol bitmap simgesi yok');

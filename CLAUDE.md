@@ -160,6 +160,12 @@ node tools/denetle.js        # sonunda başarısız kapı olmamalı
   açık uygulamaya iletilmez. Her kısayola ayrı eylem ver.
 - **Sessiz çıkış bırakma:** her `return` noktası bir sebep ile telemetri yazmalı; yoksa sorun
   logdan teşhis edilemiyor.
+- **Expo `Package.createReactActivityLifecycleListeners` Activity YAPICISINDA çalışır** (v18.7.0 açılış çöküşü,
+  release + DEV her açılışta kapandı). Orada ve dinleyici yapıcısında `applicationContext`/kaynak/sistem servisi
+  KULLANMA (bağlam henüz yok → NullPointerException). Bağlamı yalnız `onCreate`/`onNewIntent` geri çağrılarında al,
+  try/catch ile sar. Kapı: `check-v18700-release.js`.
+- **Derleme geçti ≠ çalışıyor.** `tsc` + denetim + `assembleDebug` açılış çöküşünü YAKALAMAZ. Native yaşam döngüsü/
+  başlangıç koduna dokunan sürümü, kullanıcıya vermeden önce cihazda/emülatörde AÇ (adb install + logcat).
 
 ## 8. Log (tanı dosyası) analizi
 
@@ -174,7 +180,15 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.0 RC1 — dal `v18.7.0-rc1-repeat-shortcut-multimac`)
+## 9. Mevcut durum (v18.7.1 RC1 — dal `v18.7.1-rc1-startup-crash`)
+
+**v18.7.1 (bu sürüm):** v18.7.0 her açılışta çöküyordu (kısayol dinleyicisi Activity yapıcısında `applicationContext`
+istiyordu). Düzeltme + kalıcı kapı + stalker.ts'in açılışta statik yüklenmesi kaldırıldı. Ayrıntı `AI-DEVIR-v18.7.1.md`.
+**Veri uyarısı:** v18.7.0 kurulu cihazda uygulamayı KALDIRMA (veri silinir); v18.7.1 üstüne kurulur.
+Cihazda doğrulandı (OnePlus 7 Pro, adb): açılış ve kısayolla soğuk açılış çalışıyor.
+**SIRADAKİ İŞ (onaylı, v18.7.2): kısayolların asıl sorunu** — kodda İKİ kısayol sistemi var; eski `src/utils/quickActions.ts`
+(`expo-quick-actions`, `icon=null`, `act=expo.modules.quickactions.SHORTCUT`) her açılışta bizimkinin üstüne yazıyor.
+Plan ve kanıt: `AI-DEVIR-v18.7.1.md` "AÇIK — v18.7.2". Kısayol durumunu cihazda `adb shell dumpsys shortcut` ile doğrula.
 
 v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md` … `AI-DEVIR-v18.6.0.md`.
 
