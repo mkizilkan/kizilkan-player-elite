@@ -17,7 +17,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/src/theme/ThemeContext";
-import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
+import { SPACING, RADIUS, FONT, type ThemePalette } from "@/src/theme/themes";
 import { FocusButton } from "@/src/components/FocusButton";
 import { ScanProxyToggleRow, ScanProxyLiveLine } from "@/src/components/ScanProxyControls";
 import { usePlaylists } from "@/src/store/PlaylistContext";
@@ -39,6 +39,16 @@ const CATEGORY_META: Record<MagScanResult["category"], { label: string; color: (
   blocked: { label: "Yetkisiz/bloke", color: c => c.error, icon: "close-circle" },
   "no-portal": { label: "Portal yok", color: c => c.onSurfaceTertiary, icon: "help-circle" },
   error: { label: "Hata", color: c => c.onSurfaceTertiary, icon: "alert-circle" },
+};
+
+// v18.7.2: analiz modları. Turbo hızlı ama portala baskı; Güvenli yavaş ama ban-dostu.
+type ScanModeKey = "safe" | "balanced" | "turbo";
+// v18.7.2: maxCandidates geniş port listesini kapsar (kapalı port hızlı reddedilir). Yol-öncelikli
+// süpürmede /c/ + /portal.php'yi ~50 portta denemek için ~110 aday yeterli.
+const SCAN_MODES: Record<ScanModeKey, { label: string; concurrency: number; timeoutMs: number; maxCandidates: number }> = {
+  safe: { label: "Güvenli", concurrency: 2, timeoutMs: 8000, maxCandidates: 120 },
+  balanced: { label: "Dengeli", concurrency: 4, timeoutMs: 6000, maxCandidates: 200 },
+  turbo: { label: "Turbo", concurrency: 8, timeoutMs: 4000, maxCandidates: 320 },
 };
 
 function stableId(prefix: string, identity: string): string {
@@ -66,12 +76,17 @@ export default function MagBulkScreen() {
   const [rangeCount, setRangeCount] = useState("");
   const [useRange, setUseRange] = useState(false);
   const [useProxy, setUseProxy] = useState(false);
+  // v18.7.2: analiz modu (eşzamanlılık + zaman aşımı + aday sınırı profili) + elle paralel sayı.
+  const [scanMode, setScanMode] = useState<ScanModeKey>("balanced");
+  const [parallelText, setParallelText] = useState("");   // boş → mod varsayılanı
 
   const [scanning, setScanning] = useState(false);
   const [paused, setPaused] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0, current: "" });
+  const [stageMsg, setStageMsg] = useState("");
   const [results, setResults] = useState<MagScanResult[]>([]);
   const [adding, setAdding] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const cancelRef = useRef(false);
   const pauseRef = useRef(false);
@@ -118,14 +133,19 @@ export default function MagBulkScreen() {
 
     haptic.medium();
     cancelRef.current = false; pauseRef.current = false;
-    setPaused(false); setScanning(true); setResults([]); setProgress({ done: 0, total: jobs.length, current: "" });
-    void recordDiagnostic("scan", "MAG_BULK_UI_START", { jobs: jobs.length, hosts: hosts.length, macs: parsed.macs.length, proxy: useProxy, hostMode });
+    const mode = SCAN_MODES[scanMode];
+    const parallel = parallelText.trim() ? Math.max(1, Math.min(16, Number(parallelText) || mode.concurrency)) : mode.concurrency;
+    setPaused(false); setScanning(true); setResults([]); setStageMsg(""); setProgress({ done: 0, total: jobs.length, current: "" });
+    void recordDiagnostic("scan", "MAG_BULK_UI_START", { jobs: jobs.length, hosts: hosts.length, macs: parsed.macs.length, proxy: useProxy, hostMode, mode: scanMode, parallel });
     try {
       await runMagBulkScan(jobs, {
-        concurrency: 3,
+        concurrency: parallel,
+        timeoutMs: mode.timeoutMs,
+        maxCandidatesPerHost: mode.maxCandidates,
         useProxy,
         onResult: r => setResults(prev => [...prev, r]),
         onProgress: (done, total, current) => setProgress({ done, total, current: current || "" }),
+        onStage: msg => setStageMsg(msg),
         control: {
           isCancelled: () => cancelRef.current,
           waitIfPaused: async () => { while (pauseRef.current && !cancelRef.current) await new Promise(r => setTimeout(r, 200)); },
@@ -134,9 +154,24 @@ export default function MagBulkScreen() {
     } catch (e: any) {
       Alert.alert("Tarama hatası", String(e?.message || e));
     } finally {
-      setScanning(false); setPaused(false);
+      setScanning(false); setPaused(false); setStageMsg("");
     }
-  }, [parsed.macs, resolveHosts, hostMode, useProxy]);
+  }, [parsed.macs, resolveHosts, hostMode, useProxy, scanMode, parallelText]);
+
+  // v18.7.2: dosyadan MAC seç (.txt/.csv) — combo mantığının MAG karşılığı.
+  const pickMacFile = useCallback(async () => {
+    try {
+      const DocumentPicker = await import("expo-document-picker");
+      const res = await DocumentPicker.getDocumentAsync({ type: ["text/plain", "text/comma-separated-values", "text/csv", "*/*"], copyToCacheDirectory: true });
+      if (res.canceled || !res.assets?.[0]?.uri) return;
+      const FileSystem = await import("expo-file-system/legacy");
+      const text = await FileSystem.readAsStringAsync(res.assets[0].uri);
+      const { macs, invalid } = parseMacList(text);
+      if (macs.length === 0) { Alert.alert("MAC bulunamadı", "Dosyada geçerli MAC adresi yok."); return; }
+      setMacListText(prev => (prev.trim() ? prev.trim() + "\n" : "") + macs.join("\n"));
+      Alert.alert("Eklendi", `${macs.length} MAC dosyadan alındı${invalid.length ? ` · ${invalid.length} geçersiz atlandı` : ""}.`);
+    } catch (e: any) { Alert.alert("Dosya okunamadı", String(e?.message || e)); }
+  }, []);
 
   const validResults = results.filter(r => r.category === "valid");
 
@@ -184,6 +219,41 @@ export default function MagBulkScreen() {
     void recordDiagnostic("scan", "MAG_BULK_ADDED", { requested: toAdd.length, added });
     Alert.alert("Eklendi", `${added} MAG hesabı eklendi. Canlı kanallar arka planda yükleniyor.`, [{ text: "Listeye Git", onPress: () => router.replace("/(tabs)") }]);
   }, [validResults, playlists, addPlaylist, updatePlaylist, router]);
+
+  /**
+   * v18.7.2 — Bulunan geçerli hesapları görünür klasöre kaydet:
+   *  • TXT arşivi: portal | mac | durum | bitiş (combo TXT'siyle aynı klasör mantığı).
+   *  • Katalog özeti (JSON): her hesabın canlı/VOD/dizi kategori adları + sayıları; kullanıcı
+   *    dosya yöneticisinde görüp saklayabilir, sonra hesabı ekleyince tam katalog senkronlanır.
+   */
+  const saveFound = useCallback(async () => {
+    if (validResults.length === 0) { Alert.alert("Kayıt yok", "Kaydedilecek geçerli hesap yok."); return; }
+    setSaving(true);
+    try {
+      const { KizilkanNativeCore } = await import("@/modules/kizilkan-native-core");
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const lines = validResults.map(r => `${r.portal}\tMAC=${r.mac}\tDURUM=${r.status || "?"}\tBITIS=${r.expiry || "?"}`);
+      const txt = `# KIZILKAN MAG çoklu tarama · ${stamp}\n# ${validResults.length} geçerli hesap\n\n${lines.join("\n")}\n`;
+      const t = await KizilkanNativeCore.writePublicTextFile("MAG Hesap Arşivi", `mag-gecerli-${stamp}.txt`, "text/plain", txt, "");
+
+      // Katalog özeti (kategori adları) — hafif; her hesap için canlı önizleme.
+      const { stalkerLogin, stalkerCategoryPreview } = await import("@/src/utils/stalker");
+      const summary: any[] = [];
+      for (const r of validResults) {
+        try {
+          const cred = { portal: r.portal, mac: r.mac, deviceModel: "MAG320" as const };
+          const { session } = await stalkerLogin(cred, { forceFresh: false });
+          const prev = await stalkerCategoryPreview(cred, session);
+          summary.push({ portal: r.portal, mac: r.mac, expiry: r.expiry || null, status: r.status || null, vodCategories: prev.vod, seriesCategories: prev.series });
+        } catch (e: any) { summary.push({ portal: r.portal, mac: r.mac, error: String(e?.message || e).slice(0, 120) }); }
+      }
+      await KizilkanNativeCore.writePublicTextFile("MAG Hesap Arşivi", `mag-katalog-${stamp}.json`, "application/json", JSON.stringify(summary, null, 2), "");
+      void recordDiagnostic("scan", "MAG_BULK_SAVED", { accounts: validResults.length, path: t.path || "" });
+      Alert.alert("Kaydedildi", `${validResults.length} geçerli hesap ve katalog özeti kaydedildi:\n${t.path || "İndirilenler/KIZILKAN PLAYER ELITE/MAG Hesap Arşivi"}`);
+    } catch (e: any) {
+      Alert.alert("Kaydedilemedi", String(e?.message || e));
+    } finally { setSaving(false); }
+  }, [validResults]);
 
   const S = makeStyles(colors);
   const catCounts = useMemo(() => {
@@ -237,8 +307,14 @@ export default function MagBulkScreen() {
         )}
 
         {/* MAC girişi */}
-        <Text style={[S.label, { marginTop: SPACING.md }]}>MAC ADRESLERİ</Text>
-        <Text style={S.hint}>Liste: virgül/boşluk/alt alta. Biçim serbest (00:1A:79:.. veya 001A79..).</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: SPACING.md }}>
+          <Text style={S.label}>MAC ADRESLERİ</Text>
+          <FocusButton testID="mag-pick-file" onPress={pickMacFile} style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 4, paddingHorizontal: SPACING.sm, borderRadius: RADIUS.pill, borderWidth: 1, borderColor: colors.brandPrimary }}>
+            <Ionicons name="document-attach" size={14} color={colors.brandPrimary} />
+            <Text style={{ color: colors.brandPrimary, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>Dosyadan seç</Text>
+          </FocusButton>
+        </View>
+        <Text style={S.hint}>Liste: virgül/boşluk/alt alta. Biçim serbest (00:1A:79:.. veya 001A79..). Dosyadan (.txt/.csv) de alınabilir.</Text>
         <TextInput testID="mag-maclist-input" value={macListText} onChangeText={t => setMacListText(t.toUpperCase())} multiline
           placeholder={"00:1A:79:AA:BB:01\n00:1A:79:AA:BB:02"} placeholderTextColor={colors.onSurfaceTertiary}
           autoCapitalize="characters" autoCorrect={false} style={[S.input, { minHeight: 70 }]} />
@@ -263,6 +339,26 @@ export default function MagBulkScreen() {
           Toplam {parsed.macs.length} MAC{parsed.invalidMacs.length ? ` · ${parsed.invalidMacs.length} geçersiz` : ""}{parsed.rangeCapped ? ` · ${MAG_MAX_MACS}'e kırpıldı` : ""}
         </Text>
 
+        {/* Analiz modu */}
+        <Text style={[S.label, { marginTop: SPACING.md }]}>ANALİZ MODU</Text>
+        <Text style={S.hint}>Turbo hızlı (daha çok paralel, kısa bekleme) · Güvenli yavaş ama ban-dostu.</Text>
+        <View style={S.chipRow}>
+          {(Object.keys(SCAN_MODES) as ScanModeKey[]).map(m => (
+            <FocusButton key={m} testID={`mag-mode-${m}`} onPress={() => setScanMode(m)} style={[S.chip, scanMode === m && S.chipOn]}>
+              <Text style={[S.chipText, scanMode === m && S.chipTextOn]}>{SCAN_MODES[m].label} · {SCAN_MODES[m].concurrency}x</Text>
+            </FocusButton>
+          ))}
+        </View>
+        <View style={[S.switchRow, { alignItems: "center" }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={S.switchLabel}>Paralel analiz sayısı</Text>
+            <Text style={S.hint}>Boş → mod varsayılanı ({SCAN_MODES[scanMode].concurrency}). 1–16 arası.</Text>
+          </View>
+          <TextInput testID="mag-parallel-input" value={parallelText} onChangeText={t => setParallelText(t.replace(/[^0-9]/g, "").slice(0, 2))}
+            placeholder={String(SCAN_MODES[scanMode].concurrency)} placeholderTextColor={colors.onSurfaceTertiary}
+            keyboardType="number-pad" style={[S.input, { width: 70, textAlign: "center" }]} />
+        </View>
+
         {/* Proxy */}
         <ScanProxyToggleRow onOpenCenter={() => router.push("/scan-proxy")} />
         <View style={S.switchRow}>
@@ -285,6 +381,7 @@ export default function MagBulkScreen() {
                 {progress.done}/{progress.total} · {progress.current}
               </Text>
             </View>
+            {stageMsg ? <Text style={[S.hint, { color: colors.brandPrimary }]} numberOfLines={1}>{stageMsg}</Text> : null}
             <ScanProxyLiveLine active={useProxy} />
             <View style={{ flexDirection: "row", gap: SPACING.sm }}>
               <FocusButton testID="mag-pause-btn" onPress={() => { pauseRef.current = !pauseRef.current; setPaused(pauseRef.current); }} style={[S.secondaryBtn, { flex: 1 }]}>
@@ -309,10 +406,16 @@ export default function MagBulkScreen() {
               ))}
             </View>
             {validResults.length > 0 && !scanning && (
-              <FocusButton testID="mag-add-valid-btn" onPress={addValid} disabled={adding} style={[S.primaryBtn, { backgroundColor: colors.success || "#2ecc71" }]}>
-                {adding ? <ActivityIndicator color="#fff" /> : <Ionicons name="add-circle" size={18} color="#fff" />}
-                <Text style={S.primaryBtnText}>{adding ? "Ekleniyor…" : `Geçerli ${validResults.length} hesabı ekle`}</Text>
-              </FocusButton>
+              <>
+                <FocusButton testID="mag-add-valid-btn" onPress={addValid} disabled={adding || saving} style={[S.primaryBtn, { backgroundColor: colors.success || "#2ecc71" }]}>
+                  {adding ? <ActivityIndicator color="#fff" /> : <Ionicons name="add-circle" size={18} color="#fff" />}
+                  <Text style={S.primaryBtnText}>{adding ? "Ekleniyor…" : `Geçerli ${validResults.length} hesabı ekle`}</Text>
+                </FocusButton>
+                <FocusButton testID="mag-save-valid-btn" onPress={saveFound} disabled={adding || saving} style={[S.secondaryBtn, { marginTop: SPACING.xs }]}>
+                  {saving ? <ActivityIndicator color={colors.onSurface} /> : <Ionicons name="save" size={16} color={colors.onSurface} />}
+                  <Text style={[S.secondaryBtnText, { marginLeft: 6 }]}>{saving ? "Kaydediliyor…" : "TXT + katalog olarak kaydet"}</Text>
+                </FocusButton>
+              </>
             )}
           </View>
         )}
@@ -337,9 +440,11 @@ export default function MagBulkScreen() {
   );
 }
 
-function makeStyles(c: any) {
+function makeStyles(c: ThemePalette) {
   return StyleSheet.create({
-    root: { flex: 1, backgroundColor: c.background },
+    // v18.7.2: palette'te `background` YOK (`surface` var). Eskiden c.background undefined'dı →
+    // ekran açık/ters renkti. makeStyles artık ThemePalette tipli (any değil) → tsc yakalar.
+    root: { flex: 1, backgroundColor: c.surface },
     header: { flexDirection: "row", alignItems: "center", gap: SPACING.sm, padding: SPACING.md, borderBottomWidth: 1, borderBottomColor: c.border },
     iconBtn: { padding: SPACING.xs, borderRadius: RADIUS.pill },
     title: { color: c.onSurface, fontSize: FONT.size.lg, fontWeight: FONT.weight.bold },

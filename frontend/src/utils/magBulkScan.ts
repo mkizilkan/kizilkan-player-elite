@@ -41,8 +41,12 @@ export type MagScanOptions = {
   useProxy?: boolean;
   /** Host başına keşif aday sınırı (ban-güvenli). */
   maxCandidatesPerHost?: number;
+  /** Her denemenin zaman aşımı (mod profili: Turbo kısa, Güvenli uzun). */
+  timeoutMs?: number;
   onResult?: (r: MagScanResult) => void;
   onProgress?: (done: number, total: number, current?: string) => void;
+  /** v18.7.2: canlı bilgilendirme — keşifte denenen aday (port/yol). */
+  onStage?: (msg: string) => void;
   control?: MagScanControl;
 };
 
@@ -76,8 +80,14 @@ async function scanOne(
       if (!portalCache.has(cacheKey)) {
         const entry: MagHostEntry = { raw: job.hostRaw, host: job.portal, hasPort: false };
         const cands = portalDiscoveryCandidates(entry);
-        const found = await discoverMagPortal({ portal: job.portal, mac: job.mac }, cands, { signal, maxCandidates: opts.maxCandidatesPerHost });
+        const found = await discoverMagPortal({ portal: job.portal, mac: job.mac }, cands, {
+          signal, maxCandidates: opts.maxCandidatesPerHost, timeoutMs: opts.timeoutMs,
+          onProbe: (endpoint, idx, total) => {
+            try { const u = new URL(endpoint); opts.onStage?.(`Portal aranıyor · ${u.host}${u.pathname} (${idx + 1}/${total})`); } catch {}
+          },
+        });
         portalCache.set(cacheKey, found?.endpoint || null);
+        if (found?.endpoint) { try { const u = new URL(found.endpoint); opts.onStage?.(`Portal bulundu: ${u.host}${u.pathname}`); } catch {} }
       }
       const discovered = portalCache.get(cacheKey);
       if (!discovered) return { ...base, category: "no-portal", message: "MAG/stalker destekli portal bulunamadı." };
@@ -122,9 +132,11 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
   let cursor = 0;
 
   const uniqueHosts = Array.from(new Set(jobs.map(j => j.portal)));
-  const { setMagProxyRouting } = await import("@/src/utils/stalker");
+  const { setMagProxyRouting, setMagBulkRouting } = await import("@/src/utils/stalker");
+  // v18.7.2: toplu taramada tüm bu hostlar düz fetch kullansın (native exact reddi → 20-40 sn kayıp).
+  setMagBulkRouting(uniqueHosts, true);
   if (opts.useProxy) setMagProxyRouting(uniqueHosts, true);
-  void recordDiagnostic("scan", "MAG_BULK_SCAN_START", { jobs: total, hosts: uniqueHosts.length, concurrency, proxy: !!opts.useProxy });
+  void recordDiagnostic("scan", "MAG_BULK_SCAN_START", { jobs: total, hosts: uniqueHosts.length, concurrency, proxy: !!opts.useProxy, timeoutMs: opts.timeoutMs });
 
   const worker = async () => {
     while (true) {
@@ -145,6 +157,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
   try {
     await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, () => worker()));
   } finally {
+    setMagBulkRouting(uniqueHosts, false);
     if (opts.useProxy) setMagProxyRouting(uniqueHosts, false);
   }
   const valid = results.filter(r => r.category === "valid").length;

@@ -55,6 +55,7 @@ const CHECKS = [
   ["check-v18600-release.js", "v18.6.0 record on 3 engines, segmented downloads, shortcuts, scan workers, watched marks", ""],
   ["test-mag-bulk.js", "v18.7.0 multi-MAC model (MAC list/range, multi-DNS parse, portal discovery candidates, jobs)", ""],
   ["check-v18700-release.js", "v18.7.0 repeat fix, shortcut inbox+bitmap, media perf, multi-MAC scan+proxy bridge", ""],
+  ["check-v18702-release.js", "v18.7.2 multi-MAC UX (theme, discovery speed+ports, modes, file MAC, save, portless add)", ""],
   ["check-v16143-regression-contract.js", "v16.14.3+ regression preservation contract", ""],
   ["check-v16143-corrective-hardgate.js", "v16.14.3+ corrective hard-gate", ""],
   ["check-v16144-ci-hardening.js", "v16.14.4 CI/gate/MPV release-chain contract", ""],

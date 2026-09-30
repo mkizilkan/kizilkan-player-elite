@@ -2624,6 +2624,21 @@ ${pub.path}`, [
           deviceModel: "MAG320" as const,
         };
 
+        // v18.7.2: PORTSUZ ADRESTE PORT/PORTAL KEŞFİ. Kullanıcı port yazmadıysa (adres:port yok)
+        // yaygın port×yol adayları denenip çalışan portal bulunur; sonra normal login onunla yapılır.
+        try {
+          const portalHost = /^https?:\/\//i.test(cred.portal) ? cred.portal : `http://${cred.portal}`;
+          const u = new URL(portalHost);
+          if (!u.port) {
+            const { discoverMagPortal } = await import("@/src/utils/stalker");
+            const { portalDiscoveryCandidates } = await import("@/src/utils/magBulk");
+            setProgress("Portal adresi/portu aranıyor…");
+            const cands = portalDiscoveryCandidates({ raw: cred.portal, host: portalHost, hasPort: false });
+            const found = await discoverMagPortal(cred, cands, { timeoutMs: 6000 });
+            if (found?.endpoint) { cred.portal = found.endpoint; setProgress(`Portal bulundu: ${new URL(found.endpoint).host}`); }
+          }
+        } catch { /* keşif başarısızsa normal login kendi aday listesini dener */ }
+
         setProgress("MAG320 Exact profiliyle native portala bağlanılıyor...");
         const { session, profile: prof } = await stLogin(cred);
         const profile = prof || {};
@@ -2632,7 +2647,8 @@ ${pub.path}`, [
         // ağır katalog tamamlanmasını beklemeden atomik olarak kaydedilir.
         const shell: Playlist = {
           id, name: name.trim() || "MAG Portal", source: "stalker",
-          stalkerPortal: stPortal.trim(), stalkerMac: stMac.trim().toUpperCase(),
+          // v18.7.2: keşif portu bulduysa ÇALIŞAN portal kaydedilir (oynatma da onu kullanır).
+          stalkerPortal: cred.portal, stalkerMac: stMac.trim().toUpperCase(),
           stalkerSerial: stSerial.trim() || undefined,
           accountInfo: normalizeStalkerAccountInfo(profile),
           channels: [], vod: [], series: [],

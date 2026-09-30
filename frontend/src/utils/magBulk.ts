@@ -12,18 +12,41 @@
  * ===========================================================================
  */
 
-/** Portal keşfi için yaygın portlar (kullanıcı port vermezse). Verilen port her zaman ilk denenir. */
-export const MAG_DISCOVERY_PORTS = [80, 8080, 8000, 2052, 2082, 2086, 2095, 25461, 8880, 2095, 443];
+/**
+ * Portal keşfi için portlar (kullanıcı port vermezse). Verilen port her zaman ilk denenir.
+ * v18.7.2 — GENİŞLETİLDİ (kullanıcı listesi + yaygın IPTV/stalker portları), EN OLASI ÖNCE sıralı.
+ * Kapalı port anında "bağlantı reddedildi" döner (zaman aşımı beklemez), o yüzden geniş liste yavaş
+ * değildir; kaç adaya gidileceğini analiz modu (maxCandidates) sınırlar.
+ */
+export const MAG_DISCOVERY_PORTS = [
+  8080, 80, 443, 8000, 2082, 2052, 2086, 2095, 25461, 8880, 8888,
+  2083, 2087, 2096, 2053, 8443,
+  8081, 8082, 8083, 8084, 8085, 8086, 8087, 8088, 8089, 8090, 8095, 8096,
+  8001, 8002, 8008, 8010, 8020,
+  25462, 25463, 25464, 25465,
+  3000, 3001, 5000, 5001, 7000, 7001, 9000, 9090,
+  81, 82, 83, 84, 85, 86, 87, 88, 89,
+];
 
-/** Portal keşfi için yaygın yollar (stalker.ts PORTAL_PATHS ile hizalı; /c/ önce). */
+/**
+ * Portal keşfi için yollar (kullanıcı listesi + yaygın Stalker/Ministra yolları), EN OLASI ÖNCE.
+ * v18.7.2: genişletildi. Yol-öncelikli süpürmede /c/, /portal.php, /stalker_portal/c/ öne alınır.
+ */
 export const MAG_DISCOVERY_PATHS = [
   "/c/",
   "/portal.php",
+  "/stalker_portal/c/",
   "/stalker_portal/server/load.php",
-  "/server/load.php",
-  "/c/portal.php",
+  "/stalker_portal/server/",
   "/stalker_portal/",
+  "/server/load.php",
+  "/portal/",
   "/load.php",
+  "/c/portal.php",
+  "/ministra/c/",
+  "/ministra/portal/c/",
+  "/ministra/portal/",
+  "/ministra/",
 ];
 
 /** MAC güvenli üst sınırı (aralık üretiminde donmayı/istismarı önler). */
@@ -131,7 +154,12 @@ export function parsePortalHosts(text: string): { hosts: MagHostEntry[]; invalid
 
 /**
  * Bir host için portal keşif adayları (adres:port/yol). Kullanıcı port verdiyse yalnız o port;
- * yoksa MAG_DISCOVERY_PORTS. Kullanıcı yol verdiyse (…/c/) o yol ilk sırada. Tekilleştirilir.
+ * yoksa MAG_DISCOVERY_PORTS. Kullanıcı yol verdiyse (…/c/) o yol ilk sırada.
+ *
+ * v18.7.2 — AKILLI SIRALAMA (kanıt: portsuz keşif 8080'e ulaşamadan takılıyordu). En olası
+ * kombinasyonlar (yaygın portlar 8080/80 × en yaygın yollar /c/ ve /portal.php) EN ÖNE alınır;
+ * geri kalan port×yol matrisi arkadan gelir. Böylece kısa zaman aşımıyla doğru portal ilk
+ * birkaç denemede bulunur. Tekilleştirilir.
  */
 export function portalDiscoveryCandidates(entry: MagHostEntry): string[] {
   let u: URL;
@@ -139,18 +167,22 @@ export function portalDiscoveryCandidates(entry: MagHostEntry): string[] {
   catch { return []; }
   const scheme = u.protocol.replace(":", "");
   const userPath = u.pathname.replace(/\/+$/, "");
-  const ports = entry.hasPort ? [u.port] : MAG_DISCOVERY_PORTS.map(String);
-  const paths = userPath && userPath !== "" ? [userPath, ...MAG_DISCOVERY_PATHS] : MAG_DISCOVERY_PATHS;
+  const ports = (entry.hasPort ? [u.port] : MAG_DISCOVERY_PORTS.map(String)).filter((p, i, a) => a.indexOf(p) === i);
   const out: string[] = [];
   const seen = new Set<string>();
-  for (const port of Array.from(new Set(ports))) {
+  const add = (port: string, p: string) => {
     const authority = port ? `${u.hostname}:${port}` : u.hostname;
-    for (const p of paths) {
-      const full = `${scheme}://${authority}${p.startsWith("/") ? p : "/" + p}`;
-      const norm = full.replace(/\/+$/, "");
-      if (!seen.has(norm)) { seen.add(norm); out.push(full); }
-    }
-  }
+    const full = `${scheme}://${authority}${p.startsWith("/") ? p : "/" + p}`;
+    const norm = full.replace(/\/+$/, "");
+    if (!seen.has(norm)) { seen.add(norm); out.push(full); }
+  };
+  // v18.7.2 — YOL-ÖNCELİKLİ SÜPÜRME: doğru PORT'u hızlı bulmak için en olası yol (kullanıcı yolu →
+  // /c/ → /portal.php) TÜM portlarda süpürülür, sonra kalan yollar. Böylece maxCandidates sınırı
+  // içinde çok sayıda port en olası yolla denenir (8080//c/, 80//c/, 443//c/, …).
+  const topPaths = [userPath && userPath !== "" ? userPath : "", "/c/", "/portal.php", "/stalker_portal/c/"].filter((p, i, a) => p !== "" && a.indexOf(p) === i);
+  const restPaths = MAG_DISCOVERY_PATHS.filter(p => !topPaths.includes(p));
+  for (const p of topPaths) for (const port of ports) add(port, p);
+  for (const p of restPaths) for (const port of ports) add(port, p);
   return out;
 }
 

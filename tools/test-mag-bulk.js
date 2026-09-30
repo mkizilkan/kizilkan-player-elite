@@ -67,12 +67,22 @@ pass++;
   pass++;
 }
 
-// 6) Portal keşif adayları: port yoksa çok port×yol; port varsa yalnız o port; kullanıcı yolu önce
+// 6) Portal keşif adayları: port yoksa çok port×yol; port varsa yalnız o port; akıllı sıralama
 {
   const noPort = M.portalDiscoveryCandidates({ raw: 'x', host: 'http://p.example.com', hasPort: false });
-  assert.ok(noPort.length > 5);
+  assert.ok(noPort.length > 40, 'geniş port listesi denenmeli');
   assert.ok(noPort.every(u => u.startsWith('http://p.example.com:')));
-  assert.ok(noPort.some(u => /:80\/c\/?$/.test(u)) && noPort.some(u => /:8080\//.test(u)));
+  // v18.7.2: 8080 + /c/ EN ÖNDE; /c/ tüm portlarda süpürülür (yol-öncelikli), sonra /portal.php.
+  assert.equal(noPort[0], 'http://p.example.com:8080/c/');
+  const nPorts = M.MAG_DISCOVERY_PORTS.length;
+  assert.ok(noPort.slice(0, nPorts).every(u => /\/c\/?$/.test(u)), 'ilk süpürme hep /c/ olmalı');
+  assert.ok(noPort.slice(0, nPorts).some(u => /:80\/c\/?$/.test(u)) && noPort.slice(0, nPorts).some(u => /:443\/c\/?$/.test(u)));
+  // /portal.php ilk süpürmeden SONRA gelir.
+  assert.equal(noPort[nPorts], 'http://p.example.com:8080/portal.php');
+  // Kullanıcının sorduğu portlar listede var mı (örnekler).
+  for (const p of [8081, 8443, 25462, 3000, 9090, 88]) assert.ok(M.MAG_DISCOVERY_PORTS.includes(p), `port ${p} eksik`);
+  // Kullanıcının sorduğu portal yolları listede var mı.
+  for (const pth of ['/stalker_portal/c/', '/stalker_portal/server/', '/portal/', '/ministra/', '/ministra/c/', '/ministra/portal/', '/ministra/portal/c/']) assert.ok(M.MAG_DISCOVERY_PATHS.includes(pth), `yol ${pth} eksik`);
 
   const withPort = M.portalDiscoveryCandidates({ raw: 'x', host: 'http://p.example.com:2095/c', hasPort: true });
   assert.ok(withPort.every(u => u.includes(':2095')));

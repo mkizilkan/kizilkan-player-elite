@@ -709,11 +709,30 @@ const magProxyHosts = new Set<string>();
 export function setMagProxyRouting(hosts: string[], on: boolean): void {
   for (const h of hosts) {
     let host = "";
-    try { host = new URL(/^https?:\/\//i.test(h) ? h : `http://${h}`).host.toLowerCase(); } catch {}
+    // v18.7.2: HOSTNAME (portsuz) ile eşle — keşif portu bulunca (host:8080) da aynı kural geçerli olsun.
+    try { host = new URL(/^https?:\/\//i.test(h) ? h : `http://${h}`).hostname.toLowerCase(); } catch {}
     if (!host) continue;
     if (on) magProxyHosts.add(host); else magProxyHosts.delete(host);
   }
 }
+
+/**
+ * v18.7.2 — TOPLU TARAMA HOSTLARI: düz fetch (native exact ATLA).
+ * Kanıt (log 30.09): çoklu-MAC keşfinde `magExactRequest` reddediliyor ("has been rejected")
+ * ve her deneme 20-40 sn kaybettiriyordu; portsuz keşif 8 dk takılıp 8080'e ulaşamadan
+ * güvenli bütçeyi tüketiyordu. Native exact yalnız tekil oynatma/ekleme içindir; toplu taramada
+ * bu host'lara giden istekler doğrudan fetch ile (kısa zaman aşımıyla, aşağıda) gider.
+ */
+const magBulkHosts = new Set<string>();
+export function setMagBulkRouting(hosts: string[], on: boolean): void {
+  for (const h of hosts) {
+    let host = "";
+    try { host = new URL(/^https?:\/\//i.test(h) ? h : `http://${h}`).hostname.toLowerCase(); } catch {}
+    if (!host) continue;
+    if (on) magBulkHosts.add(host); else magBulkHosts.delete(host);
+  }
+}
+const hostnameOf = (hostWithPort: string) => String(hostWithPort || "").split(":")[0].toLowerCase();
 function parseStalkerBody(text:string): { parsed:any|null; bodyKind:"json"|"html"|"empty"|"other" } {
   const trimmed=String(text||"").replace(/^\uFEFF/,"").trim();
   if (!trimmed) return {parsed:null,bodyKind:"empty"};
@@ -776,9 +795,10 @@ async function req(url: string, headers: Record<string, string>, options: number
     // request üzerinde gerçekten var olduğu güvenli fingerprint telemetrisiyle
     // kanıtlanır. Native modül yoksa eski fetch yolu regresyonsuz korunur.
     const useNativeExact = !opts.postForm && KizilkanNativeCore.available
+      && !magBulkHosts.has(hostnameOf(requestMeta.host))   // v18.7.2: toplu taramada düz fetch
       && headers["User-Agent"] === MAG320_UA
       && /timezone=Europe%2FParis/i.test(String(headers.Cookie || ""));
-    const proxyRoute = magProxyHosts.size > 0 && magProxyHosts.has(String(requestMeta.host || "").toLowerCase());
+    const proxyRoute = magProxyHosts.size > 0 && magProxyHosts.has(hostnameOf(requestMeta.host));
     if (proxyRoute) {
       // v18.7.0: çoklu-MAC taraması — istek native proxy havuzundan (bkz. setMagProxyRouting).
       const { PanelScan } = await import("@/modules/panel-scan");
@@ -1076,7 +1096,7 @@ function handshakeRequestFingerprint(targetUrl:string, hdrs:Record<string,string
 }
 
 async function handshakeAttempt(
-  cred:StalkerCreds, endpoint:string, compatProfile:MagCompatProfile, guard:HandshakeAttemptGuard, learnedVariant?:string, signal?: AbortSignal
+  cred:StalkerCreds, endpoint:string, compatProfile:MagCompatProfile, guard:HandshakeAttemptGuard, learnedVariant?:string, signal?: AbortSignal, timeoutMs = 20000
 ):Promise<StalkerSession|null> {
   let lastErr:any=null;
   for (const variant of variantsForProfile(compatProfile, learnedVariant)) {
@@ -1099,7 +1119,7 @@ async function handshakeAttempt(
       const data=await req(
         targetUrl,
         hdrs,
-        {timeoutMs:20000, postForm: !!variant.post, signal} as any,
+        {timeoutMs, postForm: !!variant.post, signal} as any,
       );
       const token=String(data?.js?.token||"").trim();
       if (token) {
@@ -1149,29 +1169,35 @@ async function handshakeAttempt(
 export async function discoverMagPortal(
   cred: StalkerCreds,
   candidates: string[],
-  opts: { signal?: AbortSignal; maxCandidates?: number } = {},
+  opts: { signal?: AbortSignal; maxCandidates?: number; timeoutMs?: number; onProbe?: (endpoint: string, index: number, total: number) => void } = {},
 ): Promise<{ endpoint: string; token: string } | null> {
+  // v18.7.2: keşifte ölü aday hızlı elensin diye AYRI, gevşek bir guard ve KISA zaman aşımı.
+  // Tekil eklemedeki 12'lik güvenli bütçe keşif için fazla dardı (ilk ölü portun yolları bütçeyi
+  // tüketip 8080'e ulaşamıyordu). Keşif kendi aday sınırıyla (maxCandidates) korunur.
   const guard: HandshakeAttemptGuard = { networkAttempts: 0, authRejects: 0, lastAttemptAt: 0, rejectionFingerprints: new Map() };
   const profile = preferredCompatProfiles(cred)[0];
-  const limit = Math.min(candidates.length, opts.maxCandidates ?? 24);
+  const limit = Math.min(candidates.length, opts.maxCandidates ?? 32);
+  const timeoutMs = opts.timeoutMs ?? 6000;
   await primeMagIdentity(cred);
-  void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_START", { candidateCount: limit, profile });
+  void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_START", { candidateCount: limit, profile, timeoutMs });
   for (let i = 0; i < limit; i++) {
     if (opts.signal?.aborted) { const e: any = new Error("Keşif iptal edildi"); e.kind = "CANCELLED"; throw e; }
     const endpoint = candidates[i];
+    opts.onProbe?.(endpoint, i, limit);
     const probeCred: StalkerCreds = { ...cred, portal: endpoint };
+    // Her aday için deneme bütçesini sıfırla: keşif, adayları magBulk'un ürettiği sırayla dener;
+    // güvenli hız için host tempo/timeout korunur ama bütçe adaylar arasında paylaşılmaz.
+    guard.networkAttempts = 0; guard.authRejects = 0;
     try {
-      const session = await handshakeAttempt(probeCred, endpoint, profile, guard, undefined, opts.signal);
+      const session = await handshakeAttempt(probeCred, endpoint, profile, guard, undefined, opts.signal, timeoutMs);
       if (session?.token) {
         void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_OK", { endpoint: endpointPath(endpoint), index: i });
         return { endpoint, token: session.token };
       }
     } catch (e: any) {
-      if (e?.kind === "MAG_SAFE_BUDGET" || e?.kind === "MAG_AUTH_GOVERNOR") {
-        void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_STOP", { reason: e?.kind, tried: i + 1 });
-        break;
-      }
-      // 404 / bağlantı / JSON değil: bu aday yok, sıradakine geç.
+      if (e?.kind === "CANCELLED" || e?.kind === "MAG_RATE_LIMIT") throw e;
+      // MAG_SAFE_BUDGET/AUTH_GOVERNOR artık tek aday içindir (bütçe sıfırlanıyor); 404/timeout/JSON
+      // değil: bu aday yok, sıradakine geç.
     }
   }
   void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_NONE", { tried: limit });

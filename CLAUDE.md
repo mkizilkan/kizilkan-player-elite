@@ -180,15 +180,25 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.1 RC1 — dal `v18.7.1-rc1-startup-crash`)
+## 9. Mevcut durum (v18.7.2 RC1 — dal `v18.7.2-rc1-multimac-ux`)
 
-**v18.7.1 (bu sürüm):** v18.7.0 her açılışta çöküyordu (kısayol dinleyicisi Activity yapıcısında `applicationContext`
-istiyordu). Düzeltme + kalıcı kapı + stalker.ts'in açılışta statik yüklenmesi kaldırıldı. Ayrıntı `AI-DEVIR-v18.7.1.md`.
-**Veri uyarısı:** v18.7.0 kurulu cihazda uygulamayı KALDIRMA (veri silinir); v18.7.1 üstüne kurulur.
-Cihazda doğrulandı (OnePlus 7 Pro, adb): açılış ve kısayolla soğuk açılış çalışıyor.
-**SIRADAKİ İŞ (onaylı, v18.7.2): kısayolların asıl sorunu** — kodda İKİ kısayol sistemi var; eski `src/utils/quickActions.ts`
+**v18.7.1:** v18.7.0 her açılışta çöküyordu (kısayol dinleyicisi Activity yapıcısında `applicationContext`
+istiyordu). Düzeltme + kalıcı kapı. Cihazda doğrulandı (OnePlus 7 Pro, adb). Ayrıntı `AI-DEVIR-v18.7.1.md`.
+
+**v18.7.2 (bu sürüm):** çoklu-MAC UX. (A) MAG ekranı ters renk — palette'te `background` yok, `surface` kullan;
+`makeStyles` tipi `ThemePalette` (any tema hatasını gizliyordu). (B) portsuz keşif takılması — toplu tarama düz fetch
+(`setMagBulkRouting`, native exact atla), kısa timeout, aday başına bütçe, **yol-öncelikli süpürme**, port 54 + yol 14'e
+genişletildi. (C) canlı bilgilendirme (`onStage`). (D) analiz modları + elle paralel sayı. (E) dosyadan MAC. (F) bulunanı
+TXT+katalog kaydet. (G) portsuz NORMAL MAG eklemede de port keşfi. Ayrıntı `AI-DEVIR-v18.7.2.md`. Kapı `check-v18702-release.js`.
+**Veri uyarısı:** v18.7.x kurulu cihazda uygulamayı KALDIRMA (veri silinir); üstüne kur.
+
+**Tuzak (v18.7.2):** tema paletinde `background` anahtarı YOK → kök zemin için `colors.surface`. `makeStyles`/stil üreticilerini
+`c: any` tipleme (olmayan anahtarı gizler) → `ThemePalette` tiple. `magExactRequest` toplu taramada reddedilir → toplu tarama
+hostları düz fetch kullanmalı. Keşifte host eşleşmesi PORTSUZ (hostname) yap (keşif portu bulunca host:port değişir).
+
+**SIRADAKİ İŞ (onaylı, v18.7.3): kısayolların asıl sorunu** — kodda İKİ kısayol sistemi var; eski `src/utils/quickActions.ts`
 (`expo-quick-actions`, `icon=null`, `act=expo.modules.quickactions.SHORTCUT`) her açılışta bizimkinin üstüne yazıyor.
-Plan ve kanıt: `AI-DEVIR-v18.7.1.md` "AÇIK — v18.7.2". Kısayol durumunu cihazda `adb shell dumpsys shortcut` ile doğrula.
+Plan ve kanıt: `AI-DEVIR-v18.7.1.md` "AÇIK — v18.7.2". Cihazda `adb shell dumpsys shortcut` ile doğrula.
 
 v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md` … `AI-DEVIR-v18.6.0.md`.
 
