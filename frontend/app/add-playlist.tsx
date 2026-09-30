@@ -3469,6 +3469,15 @@ ${pub.path}`, [
                 autoCorrect={false}
                 style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
               />
+              {/* v18.7.0: Çoklu MAC (portal/port otomatik keşfi, çoklu DNS, rehber, proxy). */}
+              <FocusButton
+                testID="stalker-bulk-btn"
+                onPress={() => router.push("/mag-bulk")}
+                style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: SPACING.lg, paddingVertical: SPACING.md, borderRadius: RADIUS.md, borderWidth: 1, borderColor: colors.brandPrimary, backgroundColor: colors.brandPrimary + "18" }}
+              >
+                <Ionicons name="layers" size={18} color={colors.brandPrimary} />
+                <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>Çoklu MAC / birden fazla MAC tara & ekle</Text>
+              </FocusButton>
             </>
           )}
 

@@ -67,6 +67,19 @@ export type LocalMediaEntry = {
 };
 export type LocalMediaListing = { ok: boolean; entries: LocalMediaEntry[]; total?: number; skipped?: number; elapsedMs: number; error?: string };
 /** v18.6.0 — İndirme motoru. */
+/** v18.7.0 — Ana ekran kısayolu kurulum sonucu (telemetri). */
+export type AppShortcutInstallResult = {
+  ok: boolean;
+  installed: number;
+  reason?: string;
+  /** "<id>:<adaptive-bitmap|bitmap|app-icon>" */
+  icons?: string[];
+  pinned?: number;
+  pinnedUpdated?: number;
+  manifest?: number;
+  dynamicNow?: number;
+};
+
 export type NativeDownloadConfig = {
   id: string; url: string; headers?: Record<string, string>;
   subdir: string; fileName: string; treeUri?: string; size?: number; parts: number;
@@ -251,11 +264,23 @@ export const KizilkanNativeCore = {
     try { return JSON.parse(String(await native.queryDeviceMediaJson(kind, offset, limit) || "{}")) as DeviceMediaPage; }
     catch (e: any) { return { ok: false, error: String(e?.message || e), kind, total: 0, offset, items: [] }; }
   },
-  /** v18.4.0 — Ana ekran kısayollarını kur (uzun basma). Dönüş: kurulan sayı. */
-  installAppShortcuts: async (list: Array<{ id: string; short: string; long?: string; icon: string }>): Promise<number> =>
-    native?.installAppShortcuts ? Number(await native.installAppShortcuts(JSON.stringify(list))) : 0,
+  /**
+   * v18.4.0 — Ana ekran kısayollarını kur (uzun basma).
+   * v18.7.0: ayrıntılı sonuç (telemetri "SHORTCUTS_INSTALLED"): kurulan sayı, simge türleri
+   * (adaptive-bitmap/bitmap/app-icon), sabitlenmiş/manifest kısayol sayıları, hata sebebi.
+   */
+  installAppShortcuts: async (list: Array<{ id: string; short: string; long?: string; icon: string }>): Promise<AppShortcutInstallResult> => {
+    if (!native?.installAppShortcuts) return { ok: false, installed: 0, reason: "NATIVE_UNAVAILABLE" };
+    const raw = await native.installAppShortcuts(JSON.stringify(list));
+    // Eski native (sayı döndüren) ile uyum.
+    if (typeof raw === "number") return { ok: raw > 0, installed: raw };
+    try { const r = JSON.parse(String(raw || "{}")); return { ...r, ok: !!r.ok, installed: Number(r.installed || 0) }; }
+    catch (e: any) { return { ok: false, installed: 0, reason: String(e?.message || e) }; }
+  },
   /** v18.4.0 — Kısayolla açıldıysa hedef kimliği (bir kez) döner, yoksa "". */
   consumePendingShortcut: (): string => native?.consumePendingShortcut ? String(native.consumePendingShortcut() || "") : "",
+  /** v18.7.0 — Son kısayol yakalamasının yolu: "cold" | "warm" | "warm-module" | "late" | "". */
+  lastShortcutVia: (): string => native?.lastShortcutVia ? String(native.lastShortcutVia() || "") : "",
   /** v18.6.0 — İndirme motoru: boyut + Range desteği ön sorgusu. */
   downloadProbe: async (url: string, headers: Record<string, string> = {}): Promise<{ ok: boolean; size: number; acceptRanges: boolean; mime?: string; httpCode?: number; error?: string }> => {
     if (!native?.downloadProbe) return { ok: false, size: -1, acceptRanges: false, error: "NATIVE_UNAVAILABLE" };

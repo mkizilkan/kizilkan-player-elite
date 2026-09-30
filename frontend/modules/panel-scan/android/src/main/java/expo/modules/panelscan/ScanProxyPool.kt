@@ -729,24 +729,50 @@ object ScanProxyPool {
   }
 
   // JS kesfi icin proxy uzerinden GET (serverCode.ts); olen proxy'de siradakine gecer.
-  fun proxiedGet(context: Context, url: String, timeoutMs: Int): JSONObject {
+  fun proxiedGet(context: Context, url: String, timeoutMs: Int): JSONObject =
+    proxiedRequest(context, url, "GET", null, null, timeoutMs)
+
+  /**
+   * v18.7.0 — GENEL PROXY İSTEĞİ (özel başlık + gövde). proxiedGet buradan türer.
+   * MAG çoklu-MAC taraması stalker handshake/profil isteklerini (Cookie + Authorization +
+   * X-User-Agent başlıkları, bazen POST gövdesi) proxy üzerinden gönderir; proxiedGet'in
+   * yalnız "Accept: application/json" GET'i bunun için yetmiyordu. Rotasyon/hata sınıflandırma
+   * aynı havuzu kullanır (proxy ölürse diğerine geçilir). Yanıt başlıkları da döner (Set-Cookie
+   * MAG oturumunda gerekebilir). Yönlendirme İZLENMEZ (stalker Location'ı kendi yönetir).
+   */
+  fun proxiedRequest(context: Context, url: String, method: String, headersJson: String?, body: String?, timeoutMs: Int): JSONObject {
     val out = JSONObject()
     var lastEx: Throwable? = null
+    val headers: JSONObject? = headersJson?.takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() }
     for (attempt in 0 until 3) {
       val sel = select() ?: break
       var conn: HttpURLConnection? = null
       try {
         val target = URL(url)
         conn = (target.openConnection(sel.proxy) as HttpURLConnection).apply {
-          connectTimeout = timeoutMs; readTimeout = timeoutMs; requestMethod = "GET"
-          setRequestProperty("Accept", "application/json")
+          connectTimeout = timeoutMs; readTimeout = timeoutMs
+          requestMethod = method.uppercase().let { if (it in setOf("GET", "POST", "HEAD")) it else "GET" }
+          instanceFollowRedirects = false
+          if (headers != null) {
+            val it2 = headers.keys()
+            while (it2.hasNext()) { val k = it2.next(); setRequestProperty(k, headers.optString(k, "")) }
+          } else {
+            setRequestProperty("Accept", "application/json")
+          }
           sel.basicHeader?.let { setRequestProperty("Proxy-Authorization", it) }
+          if (!body.isNullOrEmpty() && requestMethod == "POST") {
+            doOutput = true
+            outputStream.use { os -> os.write(body.toByteArray(Charsets.UTF_8)) }
+          }
         }
         val code = conn!!.responseCode
         val stream = if (code in 200..399) conn!!.inputStream else conn!!.errorStream
-        val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
+        val respBody = stream?.bufferedReader()?.use { it.readText() } ?: ""
+        val respHeaders = JSONObject()
+        conn!!.headerFields?.forEach { (k, v) -> if (k != null) respHeaders.put(k, v.joinToString(", ")) }
         reportResult(context, sel.entry.key, Fault.TARGET)
-        return out.put("ok", code in 200..299).put("status", code).put("body", body)
+        return out.put("ok", code in 200..299).put("status", code).put("body", respBody).put("headers", respHeaders)
+          .put("proxy", sel.entry.host + ":" + sel.entry.port)
       } catch (t: Throwable) {
         lastEx = t
         reportResult(context, sel.entry.key, if (classify(t) == Fault.UNKNOWN) Fault.PROXY else classify(t))

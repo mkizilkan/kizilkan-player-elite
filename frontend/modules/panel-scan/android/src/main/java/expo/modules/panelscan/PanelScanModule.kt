@@ -65,6 +65,11 @@ class PanelScanModule : Module() {
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
       ScanProxyPool.proxiedGet(context, url, timeoutMs.coerceIn(2000, 30000)).toString()
     }
+    // v18.7.0: MAG çoklu-MAC taraması stalker isteklerini (özel başlık + POST gövdesi) proxy'den geçirir.
+    AsyncFunction("proxiedRequest") { url: String, method: String, headersJson: String, body: String, timeoutMs: Int ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.proxiedRequest(context, url, method, headersJson.ifBlank { null }, body.ifBlank { null }, timeoutMs.coerceIn(2000, 30000)).toString()
+    }
 
     // v17.1.1: Büyük TXT/CSV dosyaları JS `response.text()` yoluna alınmaz.
     // ContentResolver InputStream satır satır okunur; ham dosya hiçbir zaman tek

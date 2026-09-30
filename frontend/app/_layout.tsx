@@ -226,12 +226,18 @@ export default function RootLayout() {
    */
   useEffect(() => {
     if (!loaded && !error) return;
-    void KizilkanNativeCore.installAppShortcuts([
+    // v18.7.0: sonuç telemetriye yazılır (eskiden `.catch(() => 0)` hatayı sessizce yutuyordu;
+    // "kısayol kuruldu mu, simge hangi türde" logdan görülemiyordu).
+    KizilkanNativeCore.installAppShortcuts([
       { id: "search", short: "Ara", long: "Kanal/film/dizi ara", icon: "search" },
       { id: "favorites", short: "Favoriler", icon: "star" },
       { id: "guide", short: "TV Rehberi", icon: "guide" },
       { id: "multiview", short: "Çoklu Ekran", icon: "view" },
-    ]).catch(() => 0);
+    ]).then(r => {
+      void recordDiagnostic("navigation", "SHORTCUTS_INSTALLED", r as any, { stage: "shortcut", outcome: r.ok ? "success" : "failed" });
+    }).catch((e: unknown) => {
+      void recordDiagnostic("navigation", "SHORTCUTS_INSTALLED", { ok: false, reason: String((e as any)?.message || e).slice(0, 160) }, { stage: "shortcut", outcome: "failed" });
+    });
   }, [loaded, error]);
   useEffect(() => {
     if (!loaded && !error) return;
@@ -241,13 +247,14 @@ export default function RootLayout() {
       if (!onMain) {
         // v18.6.0: kısayol geldi ama kullanıcı henüz profil/PIN/oynatıcıda → bekliyor (telemetri).
         const waiting = KizilkanNativeCore.peekPendingShortcut();
-        if (waiting) void recordDiagnostic("navigation", "APP_SHORTCUT_WAITING", { id: waiting, at: String(segments[0] || "") });
+        if (waiting) void recordDiagnostic("navigation", "APP_SHORTCUT_WAITING", { id: waiting, at: String(segments[0] || ""), via: KizilkanNativeCore.lastShortcutVia() });
         return;
       }
       const id = KizilkanNativeCore.consumePendingShortcut();
       if (!id) return;
-      if (!target[id]) { void recordDiagnostic("navigation", "APP_SHORTCUT_UNKNOWN", { id }); return; }
-      void recordDiagnostic("navigation", "APP_SHORTCUT_OPEN", { id, route: target[id] });
+      const via = KizilkanNativeCore.lastShortcutVia();
+      if (!target[id]) { void recordDiagnostic("navigation", "APP_SHORTCUT_UNKNOWN", { id, via }); return; }
+      void recordDiagnostic("navigation", "APP_SHORTCUT_OPEN", { id, route: target[id], via });
       router.push(target[id] as any);
     };
     tryConsume();
@@ -374,6 +381,7 @@ export default function RootLayout() {
                         <Stack.Screen name="hidden-pin" options={{ presentation: "modal", animation: "fade" }} />
                         <Stack.Screen name="diagnostic" options={{ presentation: "modal" }} />
                         <Stack.Screen name="downloads" options={{ presentation: "modal" }} />
+                        <Stack.Screen name="mag-bulk" options={{ presentation: "modal" }} />
                         <Stack.Screen name="+not-found" options={{ animation: "fade" }} />
                       </Stack>
                       {/* YOL B / v15: KALICI PLAYER — her zaman mount.

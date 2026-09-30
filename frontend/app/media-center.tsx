@@ -251,19 +251,40 @@ function MediaCenterInner() {
   // v18.6.0: süzme+sıralama+satır üretim süresi (sekme geçişi: hesap mı, çizim mi?).
   const computeStartRef = useRef(0);
   const computeMsRef = useRef(0);
+  /**
+   * v18.7.0 — Sekme başına görünüm önbelleği. Kanıt (log): sekmeye geri dönünce aynı liste
+   * baştan süzülüp sıralanıyordu (video 1.104 öğede 1,7 sn). Kaynak dizi (kimlik) ve seçenekler
+   * aynıysa önceki sonuç kullanılır; veri/sıralama/arama değişince yeniden hesaplanır.
+   */
+  const itemsCacheRef = useRef(new Map<string, { src: MediaItem[]; out: MediaItem[] }>());
+  const rowsCacheRef = useRef(new Map<string, { src: MediaItem[]; out: Row[] }>());
   const items = useMemo(() => {
     computeStartRef.current = Date.now();
     if (!mediaTab || !tp) return [] as MediaItem[];
     const base = data[mediaTab] || [];
+    const ck = `${mediaTab}|${tp.filter}|${tp.sort}|${tp.desc ? 1 : 0}|${query}`;
+    const hit = itemsCacheRef.current.get(ck);
+    if (hit && hit.src === base) return hit.out;
     const filtered = applySmartFilter(base, tp.filter);
     const searched = query ? filtered.filter(i => matchesQuery(i, query)) : filtered;
-    return sortItems(searched, tp.sort, tp.desc);
+    const out = sortItems(searched, tp.sort, tp.desc);
+    // Aynı sekmenin eski arama sonuçları birikmesin: sekme başına en fazla 4 kayıt.
+    const sameTab = [...itemsCacheRef.current.keys()].filter(k => k.startsWith(`${mediaTab}|`));
+    if (sameTab.length >= 4) itemsCacheRef.current.delete(sameTab[0]);
+    itemsCacheRef.current.set(ck, { src: base, out });
+    return out;
   }, [mediaTab, tp, data, query]);
   const itemsRef = useRef(items);
   itemsRef.current = items;
 
   const rows = useMemo<Row[]>(() => {
     if (!mediaTab || !tp) return [];
+    const rk = `${mediaTab}|${tp.group}|${cols}`;
+    const rhit = rowsCacheRef.current.get(rk);
+    if (rhit && rhit.src === items) {
+      computeMsRef.current = Date.now() - (computeStartRef.current || Date.now());
+      return rhit.out;
+    }
     const sections = groupItems(items, tp.group);
     const out: Row[] = [];
     for (const s of sections) {
@@ -275,6 +296,7 @@ function MediaCenterInner() {
       }
     }
     computeMsRef.current = Date.now() - (computeStartRef.current || Date.now());
+    rowsCacheRef.current.set(rk, { src: items, out });
     return out;
   }, [items, mediaTab, tp, cols]);
 

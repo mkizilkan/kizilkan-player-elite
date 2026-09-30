@@ -52,48 +52,89 @@ class KizilkanNativeCoreModule : Module() {
   // v18.2.0 — Chromecast yayın köprüsü (yerel dosya / başlıklı yayın / TS→HLS canlı).
   private val castBridge by lazy { CastBridgeServer(context(), liveTimeshiftManager) }
   // v18.4.0 — Ana ekran kısayolu: uygulama açılış isteğindeki işaret (URL değil → profil/PIN kapısı atlanmaz).
-  @Volatile private var pendingShortcut: String? = null
-  private val shortcutExtra = "kizilkanShortcut"
+  // v18.7.0: bekleyen kısayol artık süreç çapındaki ShortcutInbox'ta (Activity oluşturulurken yakalanır).
+  private val shortcutExtra = ShortcutInbox.EXTRA
+
+  /**
+   * v18.7.0 — Kısayol simgesi BİTMAP olarak çizilir. v18.6.0 cihaz gözlemi: kaynak (mipmap
+   * uyarlanabilir XML) simgeler kısayol menüsünde hâlâ "boş kutu". Kısayol hizmeti bitmap
+   * simgeleri kendi deposunda saklar ve her başlatıcı bunları çizer; kaynak çözümlemesine
+   * (yoğunluk/uyarlanabilir XML/başlatıcı desteği) bağımlılık kalmaz.
+   * Android 8+: uyarlanabilir bitmap (108 dp tuval: zemin + ortadaki glif; başlatıcı kendi
+   * şekline kırpar). Android 7.1: daire zeminli düz bitmap. Dönüş: (simge, türü) — telemetri için.
+   */
+  private fun shortcutIcon(ctx: Context, iconName: String): Pair<android.graphics.drawable.Icon, String> {
+    val res = ctx.resources
+    val pkg = ctx.packageName
+    val density = res.displayMetrics.density.coerceAtLeast(1f)
+    try {
+      if (android.os.Build.VERSION.SDK_INT >= 26) {
+        val fgId = res.getIdentifier("ksc_${iconName}_fg", "drawable", pkg)
+        val fg = if (fgId != 0) ctx.getDrawable(fgId) else null
+        if (fg != null) {
+          val px = (108 * density).toInt().coerceIn(108, 432)
+          val bmp = android.graphics.Bitmap.createBitmap(px, px, android.graphics.Bitmap.Config.ARGB_8888)
+          val canvas = android.graphics.Canvas(bmp)
+          canvas.drawColor(0xFF0A0000.toInt())
+          fg.setBounds(0, 0, px, px)
+          fg.draw(canvas)
+          return android.graphics.drawable.Icon.createWithAdaptiveBitmap(bmp) to "adaptive-bitmap"
+        }
+      }
+      val legacyId = res.getIdentifier("ksc_${iconName}_legacy", "drawable", pkg)
+      val legacy = if (legacyId != 0) ctx.getDrawable(legacyId) else null
+      if (legacy != null) {
+        val px = (48 * density).toInt().coerceIn(48, 192)
+        val bmp = android.graphics.Bitmap.createBitmap(px, px, android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bmp)
+        legacy.setBounds(0, 0, px, px)
+        legacy.draw(canvas)
+        return android.graphics.drawable.Icon.createWithBitmap(bmp) to "bitmap"
+      }
+    } catch (_: Throwable) {}
+    // Son çare: uygulama simgesi (kaynak) — asla boş bırakma.
+    return android.graphics.drawable.Icon.createWithResource(ctx, ctx.applicationInfo.icon) to "app-icon"
+  }
 
   /**
    * v18.4.0 — Dinamik kısayollar (uygulama simgesine uzun basma). Paket adı çalışma anında
    * alındığı için DEV (.dev) ve asıl uygulama kendi kısayolunu açar. Android TV başlatıcıları
-   * kısayol göstermez (zararsız). API < 25 → 0.
+   * kısayol göstermez (zararsız).
+   * v18.7.0: sonuç JSON olarak döner (JS "SHORTCUTS_INSTALLED" telemetrisine yazar; eskiden
+   * hata sessizce yutuluyordu): kurulan sayı, simge türleri, sabit (manifest) kısayol sayısı,
+   * sabitlenmiş (ana ekrana eklenmiş) kısayol sayısı. Sabitlenmiş kısayollar updateShortcuts ile
+   * yeni istek/simgeye güncellenir (eski sürümden kalan kısayol eski isteği taşımasın).
    */
-  private fun installShortcuts(json: String): Int {
-    if (android.os.Build.VERSION.SDK_INT < 25) return 0
+  private fun installShortcuts(json: String): String {
+    val out = org.json.JSONObject()
+    if (android.os.Build.VERSION.SDK_INT < 25) return out.put("ok", false).put("reason", "api<25").toString()
     val ctx = context()
-    val sm = ctx.getSystemService(android.content.pm.ShortcutManager::class.java) ?: return 0
-    val launch = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName) ?: return 0
-    val component = launch.component ?: return 0
+    val sm = ctx.getSystemService(android.content.pm.ShortcutManager::class.java)
+      ?: return out.put("ok", false).put("reason", "no-shortcut-manager").toString()
+    val launch = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
+      ?: return out.put("ok", false).put("reason", "no-launch-intent").toString()
+    val component = launch.component
+      ?: return out.put("ok", false).put("reason", "no-component").toString()
     val arr = org.json.JSONArray(json)
     val list = ArrayList<android.content.pm.ShortcutInfo>()
+    val kinds = org.json.JSONArray()
     for (i in 0 until minOf(arr.length(), sm.maxShortcutCountPerActivity)) {
       val o = arr.getJSONObject(i)
       val id = o.getString("id")
       /**
-       * v18.6.0 — KÖK NEDEN (cihaz: kısayol uygulamayı açıyor ama ekrana götürmüyor; log'da
-       * APP_SHORTCUT_OPEN 0 kez): kısayol isteği, uygulamanın normal açılış isteğiyle AYNIYDI
-       * (MAIN/LAUNCHER; yalnız ek veri farklı). Android istekleri karşılaştırırken ek veriye
-       * bakmaz → açık uygulamayı öne getirir, isteği İLETMEZ (onNewIntent yok) → hedef kaybolur.
-       * Artık her kısayolun KENDİ eylemi var (URL yok: yönlendirici/"Şununla aç" etkilenmez).
+       * v18.6.0 — Kısayol isteği, uygulamanın normal açılış isteğiyle AYNIYDI (MAIN/LAUNCHER;
+       * yalnız ek veri farklı). Android istekleri karşılaştırırken ek veriye bakmaz → açık
+       * uygulamayı öne getirir, isteği İLETMEZ. Her kısayolun KENDİ eylemi var (URL yok).
+       * v18.7.0: kimlik eylem sonekinden de çözülür (ShortcutInbox.idFrom).
        */
       val intent = android.content.Intent("${ctx.packageName}.SHORTCUT_${id.uppercase()}").apply {
         setComponent(component)
         addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP)
         putExtra(shortcutExtra, id)
       }
-      // v18.6.0: uygulamanın kendi simgeleri (withShortcutIcons). Sistem simgeleri birçok
-      // başlatıcıda çizilmiyordu (boş kutu).
       val iconName = when (o.optString("icon")) { "search" -> "search"; "star" -> "star"; "guide" -> "guide"; else -> "multiview" }
-      val res = ctx.resources
-      val adaptiveId = if (android.os.Build.VERSION.SDK_INT >= 26) res.getIdentifier("ksc_$iconName", "mipmap", ctx.packageName) else 0
-      val legacyId = res.getIdentifier("ksc_${iconName}_legacy", "drawable", ctx.packageName)
-      val icon = when {
-        adaptiveId != 0 -> android.graphics.drawable.Icon.createWithResource(ctx, adaptiveId)
-        legacyId != 0 -> android.graphics.drawable.Icon.createWithResource(ctx, legacyId)
-        else -> android.graphics.drawable.Icon.createWithResource(ctx, ctx.applicationInfo.icon)
-      }
+      val (icon, kind) = shortcutIcon(ctx, iconName)
+      kinds.put("$id:$kind")
       list.add(android.content.pm.ShortcutInfo.Builder(ctx, id)
         .setShortLabel(o.getString("short"))
         .setLongLabel(o.optString("long", o.getString("short")))
@@ -102,7 +143,19 @@ class KizilkanNativeCoreModule : Module() {
         .build())
     }
     sm.dynamicShortcuts = list
-    return list.size
+    // Ana ekrana sabitlenmiş aynı kimlikli kısayollar da yeni istek/simgeyi alsın.
+    val pinnedIds = try { sm.pinnedShortcuts.map { it.id }.toSet() } catch (_: Throwable) { emptySet() }
+    val pinnedUpdate = list.filter { it.id in pinnedIds }
+    if (pinnedUpdate.isNotEmpty()) try { sm.updateShortcuts(pinnedUpdate) } catch (_: Throwable) {}
+    val manifestCount = try { sm.manifestShortcuts.size } catch (_: Throwable) { -1 }
+    return out.put("ok", true)
+      .put("installed", list.size)
+      .put("icons", kinds)
+      .put("pinned", pinnedIds.size)
+      .put("pinnedUpdated", pinnedUpdate.size)
+      .put("manifest", manifestCount)
+      .put("dynamicNow", try { sm.dynamicShortcuts.size } catch (_: Throwable) { -1 })
+      .toString()
   }
 
   data class IndexResult(val snapshot: PlaylistSnapshotEntity, val cacheHit: Boolean)
@@ -805,8 +858,10 @@ class KizilkanNativeCoreModule : Module() {
 
     // v18.4.0: Ana ekran kısayolları. Hedef ekrana JS, kullanıcı normal açılış akışından
     // (profil/PIN) geçip ana ekrana ulaşınca gider.
+    // v18.7.0: asıl yakalama KizilkanShortcutPackage'da (Activity yaşam döngüsü). Bu, modül
+    // düzeyinde yedek: dinleyici önce yakaladıysa istek zaten temizlenmiştir (çift kayıt olmaz).
     OnNewIntent { intent ->
-      intent.getStringExtra(shortcutExtra)?.let { if (it.isNotEmpty()) pendingShortcut = it }
+      try { ShortcutInbox.capture(context(), intent, "warm-module") } catch (_: Throwable) {}
     }
     // v18.6.0: film/dizi indirme motoru (tek/çok parçalı, görünür klasör, duraklat/devam).
     AsyncFunction("downloadProbe") { url: String, headersJson: String -> DownloadEngine.probe(url, headersJson, 15000).toString() }
@@ -821,19 +876,21 @@ class KizilkanNativeCoreModule : Module() {
       mapOf("ok" to true, "uri" to t.uri.toString(), "path" to t.displayPath)
     }
     // v18.6.0: tüketmeden bak (telemetri: kısayol geldi ama kullanıcı henüz profil/PIN'de).
+    // v18.7.0: kutu boşsa son çare olarak o anki Activity isteği de yakalanır ("late").
     Function("peekPendingShortcut") {
-      pendingShortcut ?: (appContext.currentActivity?.intent?.getStringExtra(shortcutExtra) ?: "")
+      if (ShortcutInbox.peek().isEmpty()) {
+        try { ShortcutInbox.capture(context(), appContext.currentActivity?.intent, "late") } catch (_: Throwable) {}
+      }
+      ShortcutInbox.peek()
     }
     Function("consumePendingShortcut") {
-      var s = pendingShortcut
-      pendingShortcut = null
-      if (s.isNullOrEmpty()) {
-        val launchIntent = appContext.currentActivity?.intent
-        s = launchIntent?.getStringExtra(shortcutExtra)
-        if (!s.isNullOrEmpty()) launchIntent?.removeExtra(shortcutExtra)
+      if (ShortcutInbox.peek().isEmpty()) {
+        try { ShortcutInbox.capture(context(), appContext.currentActivity?.intent, "late") } catch (_: Throwable) {}
       }
-      s ?: ""
+      ShortcutInbox.consume()
     }
+    // v18.7.0: son yakalamanın yolu (cold/warm/late) — JS telemetrisi için.
+    Function("lastShortcutVia") { ShortcutInbox.lastVia }
     AsyncFunction("installAppShortcuts") { json: String -> installShortcuts(json) }
     // v18.4.0: Slayt gösterisinde ekran kapanmasın (pencere bayrağı; ayrı keep-awake paketi yok).
     Function("setKeepScreenOn") { on: Boolean ->

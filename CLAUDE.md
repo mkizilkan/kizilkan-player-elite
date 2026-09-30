@@ -174,7 +174,7 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.6.0 RC1 — dal `v18.6.0-rc1-record-download-cast`)
+## 9. Mevcut durum (v18.7.0 RC1 — dal `v18.7.0-rc1-repeat-shortcut-multimac`)
 
 v18 = Claude Code ile çalışmanın başladığı sürüm. Ayrıntı: `AI-DEVIR-v18.0.0.md` … `AI-DEVIR-v18.6.0.md`.
 
@@ -208,6 +208,21 @@ kısayollar boş simge + yönlendirme yok. Logdaki 47 ANR'nin hepsi uygulama ARK
 (`DownloadEngine.kt`, görünür klasör `PublicStorage.kt`); kısayol kendi eylemi + kendi simgeleri; combo parti işçi doyurma;
 TXT görünür klasöre; Medya Merkezi native sayfa önbelleği + aşamalı yükleme; Cast fotoğraf/slayt; sürekli çal; izlendi işaretleri;
 Türk Bayrağı oranlı ay-yıldız simgesi. Ayrıntı `AI-DEVIR-v18.6.0.md`.
+
+**v18.6.0 cihaz:** yerel medya "tekrar" çalışmadı; kısayollar yine ekrana götürmedi, simgeler boş; Medya Merkezi fotoğrafta 80 sn.
+
+**v18.7.0 (bu sürüm):** tekrar düzeltmesi (MPV `idle=yes` → dosya bitince boşalıyordu; artık `reload`); kısayol kimliği Activity
+oluşturulurken yakalanır (`ShortcutInbox` + `KizilkanShortcutPackage`) + native telemetri; bitmap kısayol simgeleri; Medya Merkezi
+hızı (tek `Intl.Collator`, önbellek); **çoklu MAC** (`app/mag-bulk.tsx`: çoklu DNS, MAC liste/aralık, port/portal keşfi, rehber, proxy).
+Ayrıntı `AI-DEVIR-v18.7.0.md`.
+
+**Önerilerin kod denetimi (30.09):** sıralama/kategori düzenleme, ebeveyn kilidi, uyku zamanlayıcı, yedekle/geri yükle ZATEN VAR.
+Gerçek eksikler (sonraki build'ler, onaysız kodlanmaz): EPG'den zamanlı kayıt + hatırlatıcı; ana ekranda film/dizi "devam et" şeridi;
+aramada EPG program adı; ölü kanal taraması; hız testi; yazı boyutu ayarı; yedek şifreleme.
+
+**Tuzak (v18.7.0):** stalker.ts'e üst düzey `@/modules/panel-scan` import'u EKLEME — v15214/v15216 kapıları stalker.ts'i sahte
+`require` ile çalıştırıyor; panel-scan tembel (`await import`) yüklenir. `FONT.size.md` YOK (`base` kullan).
+Git Bash altında Gradle "Unable to establish loopback connection" verebilir → derlemeyi PowerShell'de çalıştır.
 
 **Tuzak (v18.4.0):** PlayerHost'ta oynatma kararında `activePlaylist?.source` DOĞRUDAN kullanma → `playlistSource`.
 MAG film/catch-up da `ext=true` ile açılır; "external = yerel" sanma.

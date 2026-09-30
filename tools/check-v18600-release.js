@@ -30,7 +30,8 @@ const lml = rd(NC + 'LocalMediaLibrary.kt');
 
 // Kısayollar
 need(/Intent\("\$\{ctx\.packageName\}\.SHORTCUT_\$\{id\.uppercase\(\)\}"\)/.test(mod), 'kısayol kendi eylemini kullanmıyor (Android isteği iletmez)');
-need(/getIdentifier\("ksc_\$iconName", "mipmap"/.test(mod), 'kısayol kendi simgelerini kullanmıyor');
+// v18.7.0+: kendi simgeler bitmap olarak çizilir (ksc_<ad>_fg) — mipmap kaynağı da kabul (ileri uyumlu).
+need(/getIdentifier\("ksc_\$iconName", "mipmap"/.test(mod) || /getIdentifier\("ksc_\$\{iconName\}_fg", "drawable"/.test(mod), 'kısayol kendi simgelerini kullanmıyor');
 need(/"\.\/plugins\/withShortcutIcons"/.test(app), 'withShortcutIcons eklentisi kayıtlı değil');
 need(/APP_SHORTCUT_WAITING/.test(layout) && /APP_SHORTCUT_UNKNOWN/.test(layout), 'kısayol telemetrisi eksik');
 

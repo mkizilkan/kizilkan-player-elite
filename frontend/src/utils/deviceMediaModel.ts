@@ -38,17 +38,38 @@ export function withSearchKeys(items: MediaItem[]): MediaItem[] {
 export type MediaSortKey = "date" | "name" | "size" | "duration" | "type";
 export type MediaGroupMode = "none" | "folder" | "album" | "artist" | "month";
 
-/** Türkçe duyarsız normalleştirme: "İSTANBUL Şarkı" → "istanbul sarki". */
+const ASCII_ONLY = /^[\x00-\x7f]*$/;
+
+/**
+ * Türkçe duyarsız normalleştirme: "İSTANBUL Şarkı" → "istanbul sarki".
+ * v18.7.0 — HIZ (kanıt: 19.536 fotoğrafta yükleme 80 sn): eski sürüm her çağrıda 12 regex +
+ * `toLocaleLowerCase("tr")` + NFD çalıştırıyordu. Sonuç AYNI kalacak şekilde sadeleştirildi:
+ *  - Yalnız ASCII ad (IMG_2024.jpg gibi — büyük çoğunluk) → yalnız küçültme.
+ *  - Diğerleri: yerel olmayan küçültme ("I"→"i"; "İ"→"i̇", nokta işareti NFD ile silinir),
+ *    NFD + birleşik işaretleri silme (ş→s, ğ→g, ü→u, ö→o, ç→c ayrışır), ayrışmayan "ı"→"i".
+ *  Eski sonuçla birebir aynıdır (tools/test-device-media.js).
+ */
 export function normalizeTr(s: string): string {
-  return String(s || "")
-    .replace(/İ/g, "i").replace(/I/g, "ı")
-    .toLocaleLowerCase("tr")
-    .replace(/ı/g, "i").replace(/ş/g, "s").replace(/ğ/g, "g")
-    .replace(/ü/g, "u").replace(/ö/g, "o").replace(/ç/g, "c")
-    .normalize("NFD").replace(/[̀-ͯ]/g, "")
-    .replace(/[_\-.]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  let t = String(s || "");
+  if (!t) return "";
+  if (ASCII_ONLY.test(t)) t = t.toLowerCase();
+  else t = t.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/ı/g, "i");
+  return t.replace(/[_\-.]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * v18.7.0 — TEK Türkçe karşılaştırıcı. Kanıt: fotoğraf sekmesi 9.500 öğede hesap 9,9 sn.
+ * `a.localeCompare(b, "tr", { numeric: true })` Hermes'te HER ÇAĞRIDA yeni bir ICU
+ * karşılaştırıcısı kurar; aynı tarihli fotoğraflarda (seri çekim/toplu aktarım) her
+ * karşılaştırma ada düştüğü için ~130 bin kez çağrılıyordu. Tek örnek aynı sıralamayı verir.
+ */
+let trCompareFn: ((a: string, b: string) => number) | null = null;
+export function trCompare(a: string, b: string): number {
+  if (!trCompareFn) {
+    try { trCompareFn = new Intl.Collator("tr", { numeric: true }).compare; }
+    catch { trCompareFn = (x, y) => (x < y ? -1 : x > y ? 1 : 0); }
+  }
+  return trCompareFn(a, b);
 }
 
 export function extOf(name: string): string {
@@ -66,16 +87,23 @@ export function matchesQuery(item: MediaItem, query: string): boolean {
 
 export function sortItems(items: MediaItem[], key: MediaSortKey, desc: boolean): MediaItem[] {
   const dir = desc ? -1 : 1;
-  const collator = (a: string, b: string) => normalizeTr(a).localeCompare(normalizeTr(b), "tr", { numeric: true });
-  const byName = (a: MediaItem, b: MediaItem) => (a._n ?? normalizeTr(a.name)).localeCompare(b._n ?? normalizeTr(b.name), "tr", { numeric: true });
+  // v18.7.0: ad anahtarı öğe başına BİR KEZ (withSearchKeys yoksa burada hesaplanıp saklanır);
+  // karşılaştırma tek Collator örneğiyle (trCompare).
+  const nameOf = (it: MediaItem) => it._n ?? (it._n = normalizeTr(it.name));
+  const byName = (a: MediaItem, b: MediaItem) => trCompare(nameOf(a), nameOf(b));
   const out = items.slice();
+  if (key === "type") {
+    const ext = new Map<MediaItem, string>();
+    for (const it of out) ext.set(it, normalizeTr(extOf(it.name)));
+    out.sort((a, b) => (trCompare(ext.get(a) || "", ext.get(b) || "") || byName(a, b)) * dir);
+    return out;
+  }
   out.sort((a, b) => {
     let c = 0;
     switch (key) {
       case "name": c = byName(a, b); break;
       case "size": c = (a.size || 0) - (b.size || 0); break;
       case "duration": c = (a.duration || 0) - (b.duration || 0); break;
-      case "type": c = collator(extOf(a.name), extOf(b.name)) || byName(a, b); break;
       default: c = (a.dateAdded || 0) - (b.dateAdded || 0);
     }
     if (c === 0) c = byName(a, b);
@@ -99,15 +127,27 @@ export type MediaSection = { title: string; key: string; items: MediaItem[] };
 export function groupItems(items: MediaItem[], mode: MediaGroupMode): MediaSection[] {
   if (mode === "none") return [{ title: "", key: "all", items }];
   const map = new Map<string, MediaSection>();
+  // v18.7.0: başlık → anahtar ve zaman dilimi → ay başlığı önbelleği (19 bin fotoğrafta her öğe
+  // için normalleştirme + Date nesnesi kurulmasın). Dilim 15 dk: tüm saat dilimi farkları 15 dk'nın
+  // katı olduğundan bir dilim YEREL ay sınırını asla aşmaz (UTC günü aşabilirdi → yanlış ay).
+  const keyOf = new Map<string, string>();
+  const monthOfSlot = new Map<number, string>();
   for (const it of items) {
     let title: string;
     switch (mode) {
       case "folder": title = it.folder || "Diğer"; break;
       case "album": title = it.album && it.album !== "<unknown>" ? it.album : "Bilinmeyen albüm"; break;
       case "artist": title = it.artist && it.artist !== "<unknown>" ? it.artist : "Bilinmeyen sanatçı"; break;
-      default: title = monthLabel(it.dateModified || it.dateAdded);
+      default: {
+        const sec = it.dateModified || it.dateAdded;
+        const slot = sec ? Math.floor(sec / 900) : -1;
+        let label = monthOfSlot.get(slot);
+        if (label === undefined) { label = monthLabel(sec); monthOfSlot.set(slot, label); }
+        title = label;
+      }
     }
-    const key = normalizeTr(title) || "_";
+    let key = keyOf.get(title);
+    if (key === undefined) { key = normalizeTr(title) || "_"; keyOf.set(title, key); }
     let sec = map.get(key);
     if (!sec) { sec = { title, key, items: [] }; map.set(key, sec); }
     sec.items.push(it);

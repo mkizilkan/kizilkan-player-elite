@@ -187,6 +187,21 @@ export const PanelScan = {
     try { return JSON.parse(await native.proxiedProbe(url, timeoutMs)); }
     catch (e: any) { return { ok: false, status: 0, body: "", error: String(e?.message || e) }; }
   },
+  /**
+   * v18.7.0 — Özel başlık/gövdeli proxy isteği (MAG çoklu-MAC stalker handshake/profil).
+   * proxy YOKSA/kapalıysa native "proxy yok" döner; çağıran doğrudan isteğe düşer.
+   */
+  proxiedRequest: async (
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+    body: string,
+    timeoutMs: number,
+  ): Promise<{ ok: boolean; status: number; body: string; headers?: Record<string, string>; proxy?: string; error?: string }> => {
+    if (!native?.proxiedRequest) return { ok: false, status: 0, body: "", error: "native-unavailable" };
+    try { return JSON.parse(await native.proxiedRequest(url, method, JSON.stringify(headers || {}), body || "", timeoutMs)); }
+    catch (e: any) { return { ok: false, status: 0, body: "", error: String(e?.message || e) }; }
+  },
 };
 
 function emptyProxyStatus(err: string): NativeScanProxyStatus {

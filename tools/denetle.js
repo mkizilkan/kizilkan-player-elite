@@ -53,6 +53,8 @@ const CHECKS = [
   ["test-device-media.js", "v18.4.0 Media Center model (Turkish search, sort, group, smart filters, quality badge)", ""],
   ["check-v18500-release.js", "v18.5.0 empty-pool guard, two-stage proxy test, diag export, media center perf", ""],
   ["check-v18600-release.js", "v18.6.0 record on 3 engines, segmented downloads, shortcuts, scan workers, watched marks", ""],
+  ["test-mag-bulk.js", "v18.7.0 multi-MAC model (MAC list/range, multi-DNS parse, portal discovery candidates, jobs)", ""],
+  ["check-v18700-release.js", "v18.7.0 repeat fix, shortcut inbox+bitmap, media perf, multi-MAC scan+proxy bridge", ""],
   ["check-v16143-regression-contract.js", "v16.14.3+ regression preservation contract", ""],
   ["check-v16143-corrective-hardgate.js", "v16.14.3+ corrective hard-gate", ""],
   ["check-v16144-ci-hardening.js", "v16.14.4 CI/gate/MPV release-chain contract", ""],

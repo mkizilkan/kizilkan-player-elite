@@ -696,6 +696,24 @@ function playbackHeadersFor(cred: StalkerCreds, ses: StalkerSession, playbackUrl
 }
 
 type ReqOptions = { timeoutMs?: number; signal?: AbortSignal; allowNon2xxParsed?: (parsed:any, status:number)=>boolean; postForm?: boolean };
+
+/**
+ * v18.7.0 — ÇOKLU MAC TARAMASINDA PROXY YÖNLENDİRME (host kapsamlı).
+ * Yalnız çoklu-MAC taraması, taradığı portal hostlarını buraya ekler; req() bu hostlara giden
+ * istekleri native proxy havuzundan (PanelScan.proxiedRequest, özel başlık + gövde) geçirir.
+ * Küme boşken (normal ekleme, oynatma, katalog) hiçbir istek etkilenmez. Proxy isteği
+ * başarısızsa SESSİZCE doğrudan bağlantıya DÜŞÜLMEZ (kullanıcı proxy'li tarama istedi) ve
+ * sonuç "MAC geçersiz" SAYILMAZ: kind="PROXY" hatası atılır (v18.4.0 boş havuz dersi).
+ */
+const magProxyHosts = new Set<string>();
+export function setMagProxyRouting(hosts: string[], on: boolean): void {
+  for (const h of hosts) {
+    let host = "";
+    try { host = new URL(/^https?:\/\//i.test(h) ? h : `http://${h}`).host.toLowerCase(); } catch {}
+    if (!host) continue;
+    if (on) magProxyHosts.add(host); else magProxyHosts.delete(host);
+  }
+}
 function parseStalkerBody(text:string): { parsed:any|null; bodyKind:"json"|"html"|"empty"|"other" } {
   const trimmed=String(text||"").replace(/^\uFEFF/,"").trim();
   if (!trimmed) return {parsed:null,bodyKind:"empty"};
@@ -760,7 +778,32 @@ async function req(url: string, headers: Record<string, string>, options: number
     const useNativeExact = !opts.postForm && KizilkanNativeCore.available
       && headers["User-Agent"] === MAG320_UA
       && /timezone=Europe%2FParis/i.test(String(headers.Cookie || ""));
-    if (useNativeExact) {
+    const proxyRoute = magProxyHosts.size > 0 && magProxyHosts.has(String(requestMeta.host || "").toLowerCase());
+    if (proxyRoute) {
+      // v18.7.0: çoklu-MAC taraması — istek native proxy havuzundan (bkz. setMagProxyRouting).
+      const { PanelScan } = await import("@/modules/panel-scan");
+      let target = url, method = "GET", body = "";
+      const hdrs: Record<string, string> = { ...headers };
+      if (opts.postForm) {
+        const u = new URL(url);
+        target = u.origin + u.pathname; body = u.searchParams.toString(); method = "POST";
+        hdrs["Content-Type"] = "application/x-www-form-urlencoded";
+      }
+      const pr = await PanelScan.proxiedRequest(target, method, hdrs, body, timeoutMs);
+      if (!(pr.status > 0)) {
+        const err: any = new Error(`Proxy isteği başarısız: ${pr.error || "proxy yok"}`);
+        err.kind = "PROXY";
+        void recordDiagnostic("mag", "MAG_PROXY_WIRE_FAILED", { ...requestMeta, elapsedMs: Date.now() - startedAt, error: String(pr.error || "").slice(0, 120) });
+        throw err;
+      }
+      const headerMap = new Map<string, string>(Object.entries(pr.headers || {}).map(([k, v]) => [k.toLowerCase(), String(v)]));
+      res = {
+        status: pr.status, ok: pr.status >= 200 && pr.status < 300, url: target, redirected: false,
+        headers: { get: (name: string) => headerMap.get(String(name).toLowerCase()) || "" },
+        text: async () => String(pr.body || ""),
+      };
+      void recordDiagnostic("mag", "MAG_PROXY_WIRE", { ...requestMeta, status: pr.status, elapsedMs: Date.now() - startedAt });
+    } else if (useNativeExact) {
       try {
         const nr:any = await KizilkanNativeCore.magExactRequest(url, headers, timeoutMs);
         if (!nr) throw new Error("Native MAG transport boş yanıt döndürdü");
@@ -1088,6 +1131,50 @@ async function handshakeAttempt(
     }
   }
   if (lastErr) throw lastErr;
+  return null;
+}
+
+/**
+ * v18.7.0 — PORTAL/PORT OTOMATİK KEŞFİ.
+ * Kullanıcı port/portal yolunu bilmiyorsa: verilen aday listesi (magBulk.portalDiscoveryCandidates:
+ * host × yaygın portlar × yaygın yollar) sırayla, HER ADAY İÇİN TEK hafif handshake ile denenir.
+ * Token dönen ilk aday = doğru portal (MAG/stalker destekli). Ban-güvenli: tek guard, adaylar
+ * arasında handshake spacing korunur, güvenli deneme bütçesi (HANDSHAKE_MAX_NETWORK_ATTEMPTS)
+ * aşılınca durur, reddeden (401/403/429) aday atlanır. Bulunamazsa null.
+ *
+ * DÖNÜŞ: { endpoint } — tam çalışan portal adresi (örn. http://host:8080/c/portal.php). Çağıran
+ * bunu StalkerCreds.portal olarak kullanıp normal stalkerLogin'i çalıştırır (profil doğrulaması
+ * orada yapılır; buradaki token yalnız "portal var ve MAC'i tanıyor" kanıtıdır).
+ */
+export async function discoverMagPortal(
+  cred: StalkerCreds,
+  candidates: string[],
+  opts: { signal?: AbortSignal; maxCandidates?: number } = {},
+): Promise<{ endpoint: string; token: string } | null> {
+  const guard: HandshakeAttemptGuard = { networkAttempts: 0, authRejects: 0, lastAttemptAt: 0, rejectionFingerprints: new Map() };
+  const profile = preferredCompatProfiles(cred)[0];
+  const limit = Math.min(candidates.length, opts.maxCandidates ?? 24);
+  await primeMagIdentity(cred);
+  void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_START", { candidateCount: limit, profile });
+  for (let i = 0; i < limit; i++) {
+    if (opts.signal?.aborted) { const e: any = new Error("Keşif iptal edildi"); e.kind = "CANCELLED"; throw e; }
+    const endpoint = candidates[i];
+    const probeCred: StalkerCreds = { ...cred, portal: endpoint };
+    try {
+      const session = await handshakeAttempt(probeCred, endpoint, profile, guard, undefined, opts.signal);
+      if (session?.token) {
+        void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_OK", { endpoint: endpointPath(endpoint), index: i });
+        return { endpoint, token: session.token };
+      }
+    } catch (e: any) {
+      if (e?.kind === "MAG_SAFE_BUDGET" || e?.kind === "MAG_AUTH_GOVERNOR") {
+        void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_STOP", { reason: e?.kind, tried: i + 1 });
+        break;
+      }
+      // 404 / bağlantı / JSON değil: bu aday yok, sıradakine geç.
+    }
+  }
+  void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_NONE", { tried: limit });
   return null;
 }
 

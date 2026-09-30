@@ -1952,6 +1952,29 @@ export default function PlayerHost() {
    */
   const seekToRef = useRef(seekTo);
   seekToRef.current = seekTo;
+
+  /**
+   * v18.7.0 — YEREL MEDYA "TEKRAR" DÜZELTMESİ (kanıt: log'da LOCAL_REPEAT_ONE tetikleniyor
+   * ama video baştan başlamıyordu). MPV açılışta `idle=yes` ile çalışır; dosya bitince
+   * END_FILE gelir ve dosya BELLEKTEN BOŞALIR → `seekTo(0)` yapacak dosya kalmaz, hiçbir şey
+   * olmaz. Bu yüzden tekrar, motora göre farklı yapılır: MPV'de dosya yeniden yüklenir
+   * (`reload` → loadfile replace + oynat), VLC'de başa sarılıp oynatılır, Media3'te
+   * currentTime=0 + play. Böylece "Tek Tekrarla" ve tek öğe "Tümünü Tekrarla" gerçekten çalışır.
+   */
+  const restartCurrentPlayback = (playbackEngine: string) => {
+    if (playbackEngine === "mpv") {
+      void mpvRef.current?.reload?.();
+    } else if (playbackEngine === "vlc") {
+      try { vlcRef.current?.seek(0, "time"); } catch {}
+      try { void vlcRef.current?.play(); } catch {}
+    } else {
+      try { (player as any).currentTime = 0; } catch {}
+      try { (player as any).play?.(); } catch {}
+    }
+    const now = Date.now();
+    userSeekGraceUntilRef.current = now + (isSynthetic ? 8000 : 5000);
+    setVideoStats(prev => ({ ...prev, position: 0 }));
+  };
   useEffect(() => {
     if (!liveTimeshiftReady || !liveTimeshiftStartPausedRef.current) return;
     let cancelled = false;
@@ -2133,7 +2156,7 @@ export default function PlayerHost() {
         if (cancelled) return;
         const items = queue?.items || [];
         const idx = items.findIndex(it => it.id === String(params.id));
-        if (idx < 0 || (items.length < 2 && localRepeat !== "one")) {
+        if (idx < 0 || (items.length < 2 && localRepeat === "off")) {
           setPlaybackNeighbors(null);
           void recordDiagnostic("player", "LOCAL_MEDIA_QUEUE_MISS", { queueSize: items.length, found: idx >= 0 }, { sessionId: playerDiagnosticSessionRef.current, stage: "local-media", outcome: "skipped" });
           return;
@@ -2343,11 +2366,17 @@ export default function PlayerHost() {
 
   naturalEndRef.current = (sid, playbackEngine, position=0, duration=0) => {
     const localQueueSession = sessionKind === "external" && isLocalMediaId(params.id);
-    // v18.6.0: tek parçayı tekrarla → sona gelince baştan.
-    if (localQueueSession && localRepeatRef.current === "one" && visible && endHandledSessionRef.current !== sid) {
+    const rep = localRepeatRef.current;
+    const nextIsSelf = !playbackNeighbors?.next || String(playbackNeighbors.next.id||"") === String(channel?.id||"");
+    // v18.7.0: "Tek Tekrarla" HER ZAMAN başa döner; "Tümünü Tekrarla" tek öğede (sonraki
+    // kendisi) yine başa döner. Motora göre yeniden yükleme/başa sarma (bkz. restartCurrentPlayback).
+    const shouldRestart = localQueueSession && visible && endHandledSessionRef.current !== sid &&
+      (rep === "one" || (rep === "all" && nextIsSelf));
+    if (shouldRestart) {
       endHandledSessionRef.current = sid;
-      void recordDiagnostic("player", "LOCAL_REPEAT_ONE", { engine: playbackEngine }, { sessionId: playerDiagnosticSessionRef.current, stage: "local-media" });
-      setTimeout(() => { endHandledSessionRef.current = 0; seekTo(0); if (!isPlayingRef.current) togglePlay(); }, 150);
+      void recordDiagnostic("player", rep === "one" ? "LOCAL_REPEAT_ONE" : "LOCAL_REPEAT_RESTART",
+        { engine: playbackEngine, mode: rep, nextIsSelf }, { sessionId: playerDiagnosticSessionRef.current, stage: "local-media" });
+      setTimeout(() => { endHandledSessionRef.current = 0; restartCurrentPlayback(playbackEngine); }, 150);
       return;
     }
     const localAudioSession = localQueueSession && playbackRequest?.expectsVideo === false;
