@@ -60,6 +60,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   private var currentUrl: String? = null
   private var currentHeaders: Map<String, String> = emptyMap()
   private var currentBufferMs: Int = 1500
+  private var currentSoftwareDecode = false
   private var playbackStarted: Boolean = false
   private var textureFrameSeen: Boolean = false
   @Volatile private var ownsAudio: Boolean = false
@@ -315,6 +316,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
     videoFormat = null
     hwdecCurrent = null
     val softwareDecode = source["softwareDecode"] as? Boolean ?: false
+    currentSoftwareDecode = softwareDecode
     emitDiagnostic("SOURCE_LOAD", mapOf("bufferMs" to currentBufferMs, "decodeMode" to if (softwareDecode) "software" else "hardware-auto"))
 
     try {
@@ -349,7 +351,7 @@ class KizilkanMpvView(context: Context, appContext: AppContext) : ExpoView(conte
   fun stop() { try { if (initialized) mpv?.command(arrayOf("stop")) } catch (_: Throwable) {} }
   fun reload() {
     currentUrl?.let {
-      setSource(mapOf("url" to it, "headers" to currentHeaders, "bufferMs" to currentBufferMs))
+      setSource(mapOf("url" to it, "headers" to currentHeaders, "bufferMs" to currentBufferMs, "softwareDecode" to currentSoftwareDecode))
     }
   }
   fun seekTo(seconds: Double) {

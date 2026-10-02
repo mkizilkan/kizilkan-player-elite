@@ -1,166 +1,213 @@
-/**
- * KIZILKAN PLAYER v18.7.0 — ÇOKLU MAC TARAMA ORKESTRATÖRÜ.
- * ===========================================================================
- * magBulk.ts'in ürettiği işleri (host × MAC) sırayla/eşzamanlı tarar:
- *   1. Host portu/portalı bilinmiyorsa discoverMagPortal ile bulunur (host başına BİR kez, önbellek).
- *   2. stalkerLogin ile MAC denenir; sonuç sınıflandırılır (geçerli/dolmuş/bloke/hata).
- *   3. Yalnız GEÇERLİ sonuçlar UI'da eklenmeye aday olur.
- * Proxy açıksa setMagProxyRouting ile taranan hostlar proxy havuzuna yönlendirilir; bitince temizlenir.
- * Ban-güvenli: düşük eşzamanlılık (MAG portalları çoğu "1 kullanıcı"), duraklat/devam/iptal.
- *
- * YASAL: yalnız kullanıcının KENDİ MAC adresleri (UI uyarısı). Bu modül kısıt getirmez.
- * ===========================================================================
- */
-// v18.7.1: stalker.ts projenin her yerinde TEMBEL yüklenir (açılış yükü); bu dosya da mag-bulk
-// ekranı üzerinden açılışta yüklendiği için aynı kurala uyar (yalnız tip içe aktarımı statik).
-import type { StalkerCreds } from "@/src/utils/stalker";
+/** Çoklu MAG analizi: kullanıcı kapsamı, işlem sahipliği, ortak host temposu ve kanıtlı sonuçlar. */
+import type { AccountInfo } from "@/src/types";
+import type { StalkerCreds, StalkerRequestScope, MagProtectionObservation } from "@/src/utils/stalker";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
-import { portalDiscoveryCandidates, type MagBulkJob, type MagHostEntry } from "@/src/utils/magBulk";
+import { parseAccountExpiryMs } from "@/src/utils/accountExpiry";
+import { MAG_MAX_PARALLEL, portalDiscoveryCandidates, type MagBulkJob, type MagHostEntry, type MagDiscoveryScope } from "@/src/utils/magBulk";
 
-export type MagScanCategory = "valid" | "expired" | "blocked" | "no-portal" | "error";
-
+export type MagScanCategory = "valid" | "expired" | "blocked" | "protected" | "no-portal" | "error";
 export type MagScanResult = {
-  hostRaw: string;
-  portal: string;           // keşfedilen/kullanılan tam portal adresi
-  mac: string;
-  category: MagScanCategory;
-  status?: string;          // portal profil durumu (ham)
-  expiry?: string | null;   // bitiş tarihi (varsa)
-  liveCount?: number;       // biliniyorsa canlı sayısı
-  message?: string;         // hata/açıklama
+  hostRaw: string; portal: string; mac: string; category: MagScanCategory;
+  status?: string; expiry?: string | null; liveCount?: number; message?: string;
+  accountInfo?: AccountInfo;
+  protection?: MagProtectionObservation;
 };
-
-export type MagScanControl = {
-  isCancelled?: () => boolean;
-  waitIfPaused?: () => Promise<void>;
-  signal?: AbortSignal;
-};
-
+export type MagScanControl = { isCancelled?: () => boolean; waitIfPaused?: () => Promise<void>; signal?: AbortSignal };
 export type MagScanOptions = {
-  concurrency?: number;
-  useProxy?: boolean;
-  /** Host başına keşif aday sınırı (ban-güvenli). */
-  maxCandidatesPerHost?: number;
-  /** Her denemenin zaman aşımı (mod profili: Turbo kısa, Güvenli uzun). */
-  timeoutMs?: number;
+  concurrency?: number; useProxy?: boolean; scope?: MagDiscoveryScope;
+  maxCandidatesPerHost?: number; timeoutMs?: number;
   onResult?: (r: MagScanResult) => void;
   onProgress?: (done: number, total: number, current?: string) => void;
-  /** v18.7.2: canlı bilgilendirme — keşifte denenen aday (port/yol). */
   onStage?: (msg: string) => void;
   control?: MagScanControl;
 };
 
-/** Portal profil durumundan kategori. Aktif + gelecekte bitiş → geçerli. */
-function classifyStatus(status: string | undefined, expiry: string | null | undefined): MagScanCategory {
-  const s = String(status || "").toLowerCase();
-  if (/block|ban|disable|deakt|kapal/.test(s)) return "blocked";
-  if (/expire|süre|bitti|dol/.test(s)) return "expired";
-  if (expiry) {
-    const t = Date.parse(expiry);
-    if (Number.isFinite(t) && t < Date.now()) return "expired";
+function cancelled(control?: MagScanControl): boolean { return !!control?.signal?.aborted || !!control?.isCancelled?.(); }
+function checkCancelled(control?: MagScanControl): void {
+  if (cancelled(control)) { const e: any = new Error("MAG analizi iptal edildi"); e.kind = "CANCELLED"; throw e; }
+}
+function aborted(error: any): boolean { return ["CANCELLED", "BACKGROUND_PAUSE"].includes(String(error?.kind || "")); }
+async function delay(ms: number, control?: MagScanControl): Promise<void> {
+  checkCancelled(control);
+  await new Promise<void>((resolve, reject) => {
+    const signal = control?.signal;
+    const done = () => { signal?.removeEventListener("abort", stop); resolve(); };
+    const timer = setTimeout(done, ms);
+    const stop = () => { clearTimeout(timer); signal?.removeEventListener("abort", stop); const e: any = new Error("MAG analizi iptal edildi"); e.kind = "CANCELLED"; reject(e); };
+    signal?.addEventListener("abort", stop, { once: true });
+    if (signal?.aborted) stop();
+  });
+  checkCancelled(control);
+}
+function hostname(url: string): string { try { return new URL(url).hostname.toLowerCase(); } catch { return url; } }
+async function waitControlled<T>(work: Promise<T>, control?: MagScanControl): Promise<T> {
+  const finished = work.then(value => ({ done: true as const, value }));
+  void finished.catch(() => undefined);
+  while (true) {
+    checkCancelled(control);
+    const next = await Promise.race([finished, delay(100, control).then(() => ({ done: false as const }))]);
+    if (next.done) return next.value;
   }
-  // "Active", "1", "OK", boş (bazı portallar durum vermez ama login başarılı) → geçerli.
+}
+
+/** Bir çalışmadaki bütün MAC'ler/portlar aynı host sınırını paylaşır; oynatmaya etki etmez. */
+export function createMagRequestGate(control?: MagScanControl, onStage?: (message: string) => void): Pick<StalkerRequestScope, "beforeRequest" | "onRateLimit"> {
+  const hostState = new Map<string, { tail: Promise<void>; lastAt: number; holdUntil: number; announced: number }>();
+  const stateFor = (url: string) => {
+    const key = hostname(url); let state = hostState.get(key);
+    if (!state) { state = { tail: Promise.resolve(), lastAt: 0, holdUntil: 0, announced: 0 }; hostState.set(key, state); }
+    return state;
+  };
+  return {
+    onRateLimit(url, retryAfterMs) {
+      const state = stateFor(url);
+      state.holdUntil = Math.max(state.holdUntil, Date.now() + Math.max(1000, retryAfterMs));
+      state.announced = 0;
+      onStage?.(`Portal istek sınırı · ${hostname(url)} · aynı hosttaki analizler bekletiliyor`);
+    },
+    async beforeRequest(url, requestSignal) {
+      const requestControl: MagScanControl = { ...control, signal: requestSignal || control?.signal,
+        isCancelled: () => cancelled(control) || !!requestSignal?.aborted };
+      const state = stateFor(url);
+      const previous = state.tail;
+      let release!: () => void;
+      state.tail = new Promise<void>(resolve => { release = resolve; });
+      let reserved = false;
+      try {
+        await waitControlled(previous, requestControl); reserved = true;
+        checkCancelled(requestControl);
+        if (control?.waitIfPaused) await waitControlled(control.waitIfPaused(), requestControl);
+        checkCancelled(requestControl);
+        while (true) {
+          const now = Date.now();
+          const remaining = Math.max(state.holdUntil - now, 650 - (now - state.lastAt));
+          if (remaining <= 0) break;
+          if (state.holdUntil > now && now - state.announced >= 1000) {
+            state.announced = now;
+            onStage?.(`Portal istek sınırı · ${hostname(url)} · ${Math.ceil((state.holdUntil - now) / 1000)} sn bekleniyor`);
+          }
+          await delay(Math.min(remaining, 250), requestControl);
+          if (control?.waitIfPaused) await waitControlled(control.waitIfPaused(), requestControl);
+          checkCancelled(requestControl);
+        }
+        state.lastAt = Date.now();
+      } finally {
+        // A cancelled waiter must not open a gap in the host reservation chain.
+        if (reserved) release(); else void previous.then(release, release);
+      }
+    },
+  };
+}
+
+function classifyStatus(info: AccountInfo): MagScanCategory {
+  const status = String(info.status || "").toLowerCase();
+  if (/block|ban|disable|inactive|deakt|kapal/.test(status) || status === "0" || status === "false") return "blocked";
+  if (/expire|süre|bitti|dol/.test(status)) return "expired";
+  const expiry = parseAccountExpiryMs(info.tariff_expired_date);
+  if (expiry !== null && expiry < Date.now()) return "expired";
   return "valid";
 }
-
-/** Tek işi tarar (portal keşfi + login + sınıflandırma). portalCache host başına keşfi paylaşır. */
-async function scanOne(
-  job: MagBulkJob,
-  portalCache: Map<string, string | null>,
-  opts: MagScanOptions,
-): Promise<MagScanResult> {
-  const base: MagScanResult = { hostRaw: job.hostRaw, portal: job.portal, mac: job.mac, category: "error" };
-  const signal = opts.control?.signal;
-  const { discoverMagPortal, normalizeStalkerAccountInfo, stalkerLogin } = await import("@/src/utils/stalker");
-  try {
-    // 1) Portal adresi: kullanıcı port verdiyse doğrudan; yoksa host başına bir kez keşif.
-    let portal = job.portal;
-    if (!job.hasPort) {
-      const cacheKey = job.portal.toLowerCase();
-      if (!portalCache.has(cacheKey)) {
-        const entry: MagHostEntry = { raw: job.hostRaw, host: job.portal, hasPort: false };
-        const cands = portalDiscoveryCandidates(entry);
-        const found = await discoverMagPortal({ portal: job.portal, mac: job.mac }, cands, {
-          signal, maxCandidates: opts.maxCandidatesPerHost, timeoutMs: opts.timeoutMs,
-          onProbe: (endpoint, idx, total) => {
-            try { const u = new URL(endpoint); opts.onStage?.(`Portal aranıyor · ${u.host}${u.pathname} (${idx + 1}/${total})`); } catch {}
-          },
-        });
-        portalCache.set(cacheKey, found?.endpoint || null);
-        if (found?.endpoint) { try { const u = new URL(found.endpoint); opts.onStage?.(`Portal bulundu: ${u.host}${u.pathname}`); } catch {} }
-      }
-      const discovered = portalCache.get(cacheKey);
-      if (!discovered) return { ...base, category: "no-portal", message: "MAG/stalker destekli portal bulunamadı." };
-      portal = discovered;
-    }
-    base.portal = portal;
-
-    // 2) Login (portal doğrulaması + profil).
-    const cred: StalkerCreds = { portal, mac: job.mac };
-    const { session, profile } = await stalkerLogin(cred, { forceFresh: true, signal });
-    const info = normalizeStalkerAccountInfo(profile);
-    const category = session.profileError && !profile ? "error" : classifyStatus(info.status, info.tariff_expired_date);
-    return {
-      ...base,
-      portal,
-      category,
-      status: info.status,
-      expiry: info.tariff_expired_date,
-      message: session.profileError || undefined,
-    };
-  } catch (e: any) {
-    const kind = String(e?.kind || "");
-    const status = Number(e?.status || 0);
-    // MAC tanınmadı / yetki reddi → bloke (geçersiz MAC). Rate-limit/ağ → hata.
-    if (status === 401 || status === 403 || /authorization|not authorized|unauthori/i.test(String(e?.snippet || e?.message || ""))) {
-      return { ...base, category: "blocked", message: "MAC yetkili değil ya da başka cihaza kilitli." };
-    }
-    return { ...base, category: "error", message: `${kind || "HATA"}: ${String(e?.message || e).slice(0, 140)}` };
-  }
+function unknownObservation(portal: string, proxy: boolean): MagProtectionObservation {
+  return { state: "unknown", kind: "unknown", endpoint: portal, stage: "analysis", evidence: [], observedAt: new Date().toISOString(), transport: proxy ? "proxy" : "direct" };
 }
 
-/**
- * İş listesini tarar. Eşzamanlılık düşük tutulur (MAG portalları çoğu tek kullanıcı).
- * Proxy açıksa taranan tüm hostlar proxy havuzuna yönlendirilir (bitince temizlenir).
- */
 export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = {}): Promise<MagScanResult[]> {
-  const concurrency = Math.max(1, Math.min(opts.concurrency ?? 3, 8));
+  const concurrency = Math.max(1, Math.min(MAG_MAX_PARALLEL, Math.floor(Number(opts.concurrency) || 3)));
+  const scope = opts.scope || "fallback";
   const results: MagScanResult[] = [];
-  const portalCache = new Map<string, string | null>();
-  const total = jobs.length;
-  let done = 0;
-  let cursor = 0;
+  const positivePortalCache = new Map<string, string>();
+  const portalInFlight = new Map<string, Promise<string | null>>();
+  const gate = createMagRequestGate(opts.control, opts.onStage);
+  const { discoverMagPortal, normalizeStalkerAccountInfo, stalkerLogin } = await import("@/src/utils/stalker");
+  let done = 0, cursor = 0;
 
-  const uniqueHosts = Array.from(new Set(jobs.map(j => j.portal)));
-  const { setMagProxyRouting, setMagBulkRouting } = await import("@/src/utils/stalker");
-  // v18.7.2: toplu taramada tüm bu hostlar düz fetch kullansın (native exact reddi → 20-40 sn kayıp).
-  setMagBulkRouting(uniqueHosts, true);
-  if (opts.useProxy) setMagProxyRouting(uniqueHosts, true);
-  void recordDiagnostic("scan", "MAG_BULK_SCAN_START", { jobs: total, hosts: uniqueHosts.length, concurrency, proxy: !!opts.useProxy, timeoutMs: opts.timeoutMs });
-
-  const worker = async () => {
-    while (true) {
-      if (opts.control?.isCancelled?.()) return;
-      await opts.control?.waitIfPaused?.();
-      const i = cursor++;
-      if (i >= jobs.length) return;
-      const job = jobs[i];
-      opts.onProgress?.(done, total, `${job.hostRaw} · ${job.mac}`);
-      const r = await scanOne(job, portalCache, opts);
-      results.push(r);
-      done++;
-      opts.onResult?.(r);
-      opts.onProgress?.(done, total, `${job.hostRaw} · ${job.mac}`);
+  const scanOne = async (job: MagBulkJob): Promise<MagScanResult> => {
+    const base: MagScanResult = { hostRaw: job.hostRaw, portal: job.portal, mac: job.mac, category: "error" };
+    let observation = unknownObservation(job.portal, !!opts.useProxy);
+    const requestScope: StalkerRequestScope = {
+      ...gate, transport: opts.useProxy ? "proxy" : "direct", signal: opts.control?.signal, timeoutMs: opts.timeoutMs,
+      onObservation(next) {
+        // Bir sonraki başarılı yanıt önce gözlenen challenge/429 kanıtını silmez.
+        if (observation.state !== "present" || next.state === "present") observation = next;
+      },
+    };
+    const creds = (portal: string): StalkerCreds => ({ portal, mac: job.mac, endpointPolicy: "exact", requestScope });
+    const discover = async (): Promise<string | null> => {
+      const key = job.portal;
+      while (portalInFlight.has(key)) {
+        const found = await portalInFlight.get(key)!;
+        checkCancelled(opts.control);
+        if (found) return found;
+        // Önceki MAC'in yetkisizliği/yokluğu bu MAC için negatif cache değildir.
+      }
+      const cached = positivePortalCache.get(key);
+      if (cached) return cached;
+      const entry: MagHostEntry = { raw: job.hostRaw, host: job.portal, hasPort: job.hasPort, explicitPort: job.explicitPort, hasPath: job.hasPath };
+      const candidates = Array.from(new Set([job.portal, ...portalDiscoveryCandidates(entry, { allPorts: true })]));
+      const task = discoverMagPortal(creds(job.portal), candidates, {
+        signal: opts.control?.signal, maxCandidates: opts.maxCandidatesPerHost ?? candidates.length, timeoutMs: opts.timeoutMs,
+        onProbe(endpoint, index, total) {
+          checkCancelled(opts.control);
+          try { const u = new URL(endpoint); opts.onStage?.(`Portal aranıyor · ${u.host}${u.pathname} (${index + 1}/${total})`); } catch (error: any) { if (aborted(error)) throw error; }
+        },
+      }).then(found => {
+        if (found?.endpoint) { positivePortalCache.set(key, found.endpoint); opts.onStage?.(`Portal bulundu: ${found.endpoint}`); }
+        return found?.endpoint || null;
+      });
+      portalInFlight.set(key, task);
+      try { return await task; }
+      finally { if (portalInFlight.get(key) === task) portalInFlight.delete(key); }
+    };
+    try {
+      checkCancelled(opts.control);
+      let login: Awaited<ReturnType<typeof stalkerLogin>> | undefined;
+      let portal = job.portal;
+      if (scope !== "all") {
+        try { login = await stalkerLogin(creds(portal), { forceFresh: true, signal: opts.control?.signal }); }
+        catch (error: any) {
+          if (scope === "exact" || aborted(error) || observation.kind === "access_denied" || /authorization failed|not authorized|unauthori[sz]ed/i.test(String(error?.message || "")) || ["MAG_RATE_LIMIT", "MAG_PROTECTION"].includes(String(error?.kind || ""))) throw error;
+          // Fallback yalnız kullanıcının seçtiği politikada çalışır.
+        }
+      }
+      if (!login) {
+        const found = await discover();
+        if (!found) return { ...base, category: "no-portal", protection: observation, message: "Seçilen kapsamda çalışan MAG API portalı bulunamadı." };
+        portal = found;
+        login = await stalkerLogin(creds(portal), { forceFresh: true, signal: opts.control?.signal });
+      }
+      checkCancelled(opts.control);
+      const info = normalizeStalkerAccountInfo(login.profile);
+      const category = login.session.profileError && !login.profile ? "error" : classifyStatus(info);
+      return { ...base, portal: login.session.endpoint || portal, category, status: info.status,
+        expiry: info.tariff_expired_date, accountInfo: { ...info, extra: { ...info.extra, magProtection: observation } }, protection: observation, message: login.session.profileError || undefined };
+    } catch (error: any) {
+      if (aborted(error) || cancelled(opts.control)) throw error;
+      if (error?.observation) observation = error.observation;
+      const kind = String(error?.kind || "");
+      const explicitlyUnauthorized = /authorization failed|not authorized|unauthori[sz]ed/.test(String(error?.snippet || error?.message || "").toLowerCase());
+      const category: MagScanCategory = kind === "MAG_PROTECTION" ? "protected" : explicitlyUnauthorized ? "blocked" : "error";
+      return { ...base, category, protection: observation,
+        message: `${kind || "HATA"}: ${String(error?.message || error).slice(0, 180)}` };
     }
   };
-
-  try {
-    await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, () => worker()));
-  } finally {
-    setMagBulkRouting(uniqueHosts, false);
-    if (opts.useProxy) setMagProxyRouting(uniqueHosts, false);
-  }
-  const valid = results.filter(r => r.category === "valid").length;
-  void recordDiagnostic("scan", "MAG_BULK_SCAN_DONE", { jobs: total, scanned: done, valid });
+  void recordDiagnostic("scan", "MAG_BULK_SCAN_START", { jobs: jobs.length, concurrency, proxy: !!opts.useProxy, scope, timeoutMs: opts.timeoutMs });
+  const worker = async () => {
+    while (!cancelled(opts.control)) {
+      await opts.control?.waitIfPaused?.();
+      if (cancelled(opts.control)) return;
+      const index = cursor++;
+      if (index >= jobs.length) return;
+      const job = jobs[index];
+      opts.onProgress?.(done, jobs.length, `${job.hostRaw} · ${job.mac}`);
+      try {
+        const result = await scanOne(job);
+        if (cancelled(opts.control)) return;
+        results.push(result); done++;
+        opts.onResult?.(result); opts.onProgress?.(done, jobs.length, `${job.hostRaw} · ${job.mac}`);
+      } catch (error: any) { if (aborted(error) || cancelled(opts.control)) return; throw error; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, () => worker()));
+  void recordDiagnostic("scan", "MAG_BULK_SCAN_DONE", { jobs: jobs.length, scanned: done, valid: results.filter(r => r.category === "valid").length, cancelled: cancelled(opts.control) });
   return results;
 }

@@ -1,4 +1,5 @@
 import type { Playlist } from '@/src/types';
+import { parseAccountExpiryMs } from './accountExpiry';
 
 export type PlaylistSortMode =
   | 'manual'
@@ -56,18 +57,7 @@ export function playlistMaxUsers(p: Playlist): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-function parseEpochLike(value?: string | null): number | null {
-  if (!value) return null;
-  const raw = String(value).trim();
-  if (!raw || raw === '0' || raw.toLowerCase() === 'null') return null;
-  if (/^\d{9,13}$/.test(raw)) {
-    const n = Number(raw);
-    if (!Number.isFinite(n)) return null;
-    return raw.length >= 12 ? n : n * 1000;
-  }
-  const t = Date.parse(raw);
-  return Number.isFinite(t) ? t : null;
-}
+const parseEpochLike = parseAccountExpiryMs;
 
 export function playlistExpiryMs(p: Playlist): number | null {
   return parseEpochLike(p.accountInfo?.exp_date) ?? parseEpochLike(p.accountInfo?.tariff_expired_date);

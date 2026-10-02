@@ -1,40 +1,27 @@
-/**
- * LibraryContext — extra per-profile library state that PlaylistContext
- * does not own:
- *   • watchProgress : { [itemId]: { current, duration, updatedAt, kind } }
- *   • watchlist     : string[]  (item IDs the user wants to watch later)
- *   • searchHistory : string[]  (recent search terms)
- *   • hiddenItems   : string[]  (item IDs completely hidden until PIN)
- *   • hiddenGroups  : string[]  (group names completely hidden until PIN)
- *
- * The Parental context already stores lockedCategories (require PIN but shown).
- * Hidden items are STRICTER: they don't appear in lists at all until unlocked.
- */
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+/** Per-profile storage retains every playlist; the public API exposes current-list raw IDs. */
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { storage } from "@/src/utils/storage";
 import { useProfiles } from "./ProfileContext";
-import { isLocalMediaId, saveLocalProgress } from "@/src/utils/localMedia";
+import { usePlaylists } from "./PlaylistContext";
+import { isLocalMediaId, saveLocalProgressChecked } from "@/src/utils/localMedia";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
+import { subscribeProfileDataReload, registerProfileDataDrain } from "@/src/utils/profileDataReload";
+import { isCatalogRestoreActive } from "@/src/utils/catalogOperations";
+import { claimLibraryLegacyOwner } from "@/src/utils/libraryLegacyOwner";
+import { clearScopedLibraryMap, libraryItemKey, libraryScopedIds, libraryScopedMap, removeScopedLibraryId, removeScopedLibraryItem, trimScopedLibraryIds, trimScopedLibraryMap } from "@/src/utils/libraryScope";
 
 const PROG_KEY = "kizilkan.progress.";
 const WL_KEY = "kizilkan.watchlist.";
 const SH_KEY = "kizilkan.searchHistory.";
 const HID_ITEM_KEY = "kizilkan.hiddenItems.";
 const HID_GROUP_KEY = "kizilkan.hiddenGroups.";
-const MAX_SEARCH = 20;
-/**
- * v18.6.0 — İZLENENLER. Eskiden %95'i geçen içeriğin ilerleme kaydı SİLİNİYORDU ve
- * "izlendi" bilgisi hiç tutulmuyordu; kullanıcı hangi bölümü/filmi bitirdiğini göremiyordu.
- * Artık %90'ı geçen film/bölüm kalıcı olarak "izlendi" işaretlenir (profil başına);
- * elle işaretleme/kaldırma da yapılabilir. İlerleme silme davranışı AYNEN korunur.
- */
 const WATCHED_KEY = "kizilkan.watched.";
+const SERIES_LAST_KEY = "kizilkan.seriesLast.";
+const LEGACY_OWNER_KEY = "kizilkan.libraryLegacyOwner.";
+const MAX_SEARCH = 20;
 const WATCHED_RATIO = 0.9;
 const WATCHED_MAX = 20000;
-/** v18.6.0: dizi başına son açılan bölüm (afişte "S2·B5" — hangi bölümde kaldın). */
-const SERIES_LAST_KEY = "kizilkan.seriesLast.";
 export type SeriesLast = { season: string | number; episode: string | number; title?: string; episodeId: string; at: number };
-
 export interface WatchProgress {
   current: number;
   duration: number;
@@ -42,11 +29,10 @@ export interface WatchProgress {
   kind: "vod" | "series" | "live";
   name?: string;
   poster?: string | null;
+  group?: string;
 }
-
 interface LibraryContextValue {
   watchProgress: Record<string, WatchProgress>;
-  /** v18.6.0: id → izlenme zamanı (ms). */
   watched: Record<string, number>;
   isWatched: (id: string) => boolean;
   setWatched: (id: string, on: boolean) => Promise<void>;
@@ -71,209 +57,216 @@ interface LibraryContextValue {
   unlockHiddenSession: () => void;
   lockHiddenSession: () => void;
 }
-
+type LibraryData = {
+  progress: Record<string, WatchProgress>;
+  watched: Record<string, number>;
+  seriesLast: Record<string, SeriesLast>;
+  watchlist: string[];
+  searches: string[];
+  hiddenItems: string[];
+  hiddenGroups: string[];
+  legacyOwner: string | null;
+};
+type Scope = { profileId: string; playlistId: string; stamp: string; token: number };
+type Loaded = { token: number; data: LibraryData };
+const FIELD_KEYS = { progress: PROG_KEY, watched: WATCHED_KEY, seriesLast: SERIES_LAST_KEY, watchlist: WL_KEY, searches: SH_KEY, hiddenItems: HID_ITEM_KEY, hiddenGroups: HID_GROUP_KEY } as const;
+type PersistedField = keyof typeof FIELD_KEYS;
+const emptyData = (): LibraryData => ({ progress: {}, watched: {}, seriesLast: {}, watchlist: [], searches: [], hiddenItems: [], hiddenGroups: [], legacyOwner: null });
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+const finiteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const optionalText = (value: unknown) => value === undefined || typeof value === "string";
+const seriesNumber = (value: unknown) => typeof value === "string" || finiteNumber(value);
+function validProgress(value: unknown): value is WatchProgress {
+  return isRecord(value) && finiteNumber(value.current) && finiteNumber(value.duration) && finiteNumber(value.updatedAt)
+    && typeof value.kind === "string" && ["vod", "series", "live"].includes(value.kind) && optionalText(value.name) && optionalText(value.group)
+    && (value.poster === null || optionalText(value.poster));
+}
+function validSeriesLast(value: unknown): value is SeriesLast {
+  return isRecord(value) && typeof value.episodeId === "string" && seriesNumber(value.season) && seriesNumber(value.episode)
+    && finiteNumber(value.at) && optionalText(value.title);
+}
+function parseMap<T>(raw: string | null, validEntry: (value: unknown) => value is T): Record<string, T> {
+  let data:unknown;try{data=raw?JSON.parse(raw):{};}catch{throw new Error('Kütüphane kaydı bozuk; mevcut kayıt korunuyor.');}
+  if(!isRecord(data)||Object.values(data).some(value=>!validEntry(value)))throw new Error('Kütüphane kaydının biçimi geçersiz; mevcut kayıt korunuyor.');
+  return data as Record<string,T>;
+}
+function parseIds(raw: string | null): string[] {
+  let data:unknown;try{data=raw?JSON.parse(raw):[];}catch{throw new Error('Kütüphane listesi bozuk; mevcut kayıt korunuyor.');}
+  if(!Array.isArray(data)||data.some(id=>typeof id!=='string'))throw new Error('Kütüphane listesinin biçimi geçersiz; mevcut kayıt korunuyor.');
+  return data;
+}
 const LibraryContext = createContext<LibraryContextValue | null>(null);
 
 export function LibraryProvider({ children }: { children: React.ReactNode }) {
   const { activeProfile } = useProfiles();
+  const { activePlaylist } = usePlaylists();
   const profileId = activeProfile?.id || "default";
-
-  const [watchProgress, setWatchProgress] = useState<Record<string, WatchProgress>>({});
-  const [watched, setWatchedMap] = useState<Record<string, number>>({});
-  const [seriesLast, setSeriesLastMap] = useState<Record<string, SeriesLast>>({});
-  const [watchlist, setWatchlist] = useState<string[]>([]);
-  const [searchHistory, setSearchHistory] = useState<string[]>([]);
-  const [hiddenItems, setHiddenItems] = useState<string[]>([]);
-  const [hiddenGroups, setHiddenGroups] = useState<string[]>([]);
-  const [hiddenModeUnlocked, setHiddenModeUnlocked] = useState(false);
+  const playlistId = activePlaylist?.id || "";
+  const [reloadRevision, setReloadRevision] = useState(0);
+  const [snapshot, setSnapshot] = useState<Loaded | null>(null);
+  const [unlockedToken, setUnlockedToken] = useState<number | null>(null);
+  const scopeRef = useRef<Scope>({ profileId, playlistId, stamp: "", token: 0 });
+  const loadedRef = useRef<Loaded | null>(null);
+  const queueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const mountedRef = useRef(true);
+  const stamp = JSON.stringify([profileId, playlistId, reloadRevision]);
+  if (scopeRef.current.stamp !== stamp) scopeRef.current = { profileId, playlistId, stamp, token: scopeRef.current.token + 1 };
+  // Capture the scope in each callback. A retained player callback cannot target a later list.
+  const scope = scopeRef.current;
+  const ownsScope = useCallback((captured: Scope) => mountedRef.current && scopeRef.current.token === captured.token, []);
+  const serialize = useCallback(<T,>(work: () => Promise<T>): Promise<T> => {
+    const task = queueRef.current.catch(() => undefined).then(work);
+    queueRef.current = task.then(() => undefined, () => undefined);
+    return task;
+  }, []);
+  useEffect(() => {
+    mountedRef.current = true;
+    const unsubscribe = subscribeProfileDataReload(() => {
+      // Invalidate in the bus callback, before React schedules the next render.
+      scopeRef.current = { ...scopeRef.current, token: scopeRef.current.token + 1 };
+      setUnlockedToken(null);
+      setReloadRevision(value => value + 1);
+    });
+    const unregister = registerProfileDataDrain(() => queueRef.current);
+    return () => { mountedRef.current = false; unsubscribe(); unregister(); };
+  }, []);
 
   useEffect(() => {
-    (async () => {
-      const [p, wl, sh, hi, hg, wd, sl] = await Promise.all([
-        storage.getItem<string>(PROG_KEY + profileId, ""),
-        storage.getItem<string>(WL_KEY + profileId, ""),
-        storage.getItem<string>(SH_KEY + profileId, ""),
-        storage.getItem<string>(HID_ITEM_KEY + profileId, ""),
-        storage.getItem<string>(HID_GROUP_KEY + profileId, ""),
-        storage.getItem<string>(WATCHED_KEY + profileId, ""),
-        storage.getItem<string>(SERIES_LAST_KEY + profileId, ""),
+    setUnlockedToken(null);
+    void serialize(async () => {
+      if (!ownsScope(scope) || isCatalogRestoreActive()) return;
+      const [p, wl, sh, hi, hg, wd, sl, owner] = await Promise.all([
+        storage.getItemStrict<string>(PROG_KEY + profileId, ""), storage.getItemStrict<string>(WL_KEY + profileId, ""),
+        storage.getItemStrict<string>(SH_KEY + profileId, ""), storage.getItemStrict<string>(HID_ITEM_KEY + profileId, ""),
+        storage.getItemStrict<string>(HID_GROUP_KEY + profileId, ""), storage.getItemStrict<string>(WATCHED_KEY + profileId, ""),
+        storage.getItemStrict<string>(SERIES_LAST_KEY + profileId, ""), storage.getItemStrict<string>(LEGACY_OWNER_KEY + profileId, ""),
       ]);
-      let progressMap: Record<string, WatchProgress> = {};
-      try { progressMap = p ? JSON.parse(p) : {}; } catch { progressMap = {}; }
-      /**
-       * v18.2.0 — TEK SEFERLİK TAŞIMA: v18.1.0 öncesinde yerel dosyaların ilerlemesi
-       * buraya film gibi yazılıyordu; "Devam Et" listesinde görünüp açılınca detay
-       * ekranı dosyayı bulamıyordu. Bu kayıtlar yerel medyanın kendi deposuna
-       * TAŞINIR (kaldığın yer kaybolmaz) ve buradan çıkarılır.
-       */
-      const localIds = Object.keys(progressMap).filter(isLocalMediaId);
-      if (localIds.length) {
-        for (const id of localIds) {
-          const e = progressMap[id];
-          if (e && e.duration > 0) await saveLocalProgress(id, Number(e.current || 0), Number(e.duration));
-          delete progressMap[id];
+      if (!ownsScope(scope) || isCatalogRestoreActive()) return;
+      const data: LibraryData = { progress: parseMap(p, validProgress), watched: parseMap(wd, finiteNumber), seriesLast: parseMap(sl, validSeriesLast), watchlist: parseIds(wl), searches: parseIds(sh), hiddenItems: parseIds(hi), hiddenGroups: parseIds(hg), legacyOwner: typeof owner === "string" && owner ? owner : null };
+      if (!data.legacyOwner && playlistId) {
+        data.legacyOwner = await claimLibraryLegacyOwner(profileId, playlistId);
+      }
+      if (!ownsScope(scope) || isCatalogRestoreActive()) return;
+      // Source records are removed only after the destination write succeeds.
+      let migrated = 0;
+      for (const id of Object.keys(data.progress).filter(isLocalMediaId)) {
+        if (!ownsScope(scope) || isCatalogRestoreActive()) return;
+        const entry = data.progress[id];
+        if (!entry || !(Number(entry.duration) > 0)) continue;
+        try {
+          await saveLocalProgressChecked(id, Number(entry.current || 0), Number(entry.duration));
+          if (!ownsScope(scope) || isCatalogRestoreActive()) return;
+          delete data.progress[id]; migrated++;
+        } catch (error) {
+          void recordDiagnostic("import", "LOCAL_PROGRESS_MIGRATION_FAILED", { id, error: String(error) }, { stage: "local-media", outcome: "failed" });
         }
-        await storage.setItem(PROG_KEY + profileId, JSON.stringify(progressMap));
-        void recordDiagnostic("import", "LOCAL_PROGRESS_MIGRATED", { count: localIds.length }, { stage: "local-media", outcome: "success" });
       }
-      setWatchProgress(progressMap);
-      try { setWatchlist(wl ? JSON.parse(wl) : []); } catch { setWatchlist([]); }
-      try { setSearchHistory(sh ? JSON.parse(sh) : []); } catch { setSearchHistory([]); }
-      try { setHiddenItems(hi ? JSON.parse(hi) : []); } catch { setHiddenItems([]); }
-      try { setHiddenGroups(hg ? JSON.parse(hg) : []); } catch { setHiddenGroups([]); }
-      try { const w = wd ? JSON.parse(wd) : {}; setWatchedMap(w && typeof w === "object" ? w : {}); } catch { setWatchedMap({}); }
-      try { const x = sl ? JSON.parse(sl) : {}; setSeriesLastMap(x && typeof x === "object" ? x : {}); } catch { setSeriesLastMap({}); }
-      setHiddenModeUnlocked(false);
-    })();
-  }, [profileId]);
-
-  const markWatched = useCallback((id: string, on: boolean) => {
-    setWatchedMap(prev => {
-      if (on ? !!prev[id] : !prev[id]) return prev;
-      const next = { ...prev };
-      if (on) next[id] = Date.now(); else delete next[id];
-      const keys = Object.keys(next);
-      if (keys.length > WATCHED_MAX) {
-        keys.sort((a, b) => next[a] - next[b]).slice(0, keys.length - WATCHED_MAX).forEach(k => { delete next[k]; });
+      if (migrated) {
+        if (!(await storage.setItem(PROG_KEY + profileId, JSON.stringify(data.progress)))) throw new Error("Taşınan ilerleme kayıtları kaydedilemedi.");
+        void recordDiagnostic("import", "LOCAL_PROGRESS_MIGRATED", { count: migrated }, { stage: "local-media", outcome: "success" });
       }
-      storage.setItem(WATCHED_KEY + profileId, JSON.stringify(next));
-      return next;
+      if (!ownsScope(scope) || isCatalogRestoreActive()) return;
+      const loaded = { token: scope.token, data }; loadedRef.current = loaded; setSnapshot(loaded);
+    }).catch(error => {
+      if (!ownsScope(scope)) return;
+      void recordDiagnostic("import", "LIBRARY_LOAD_FAILED", { profileId, error: String(error) }, { stage: "library", outcome: "failed" });
     });
-  }, [profileId]);
+  }, [stamp, ownsScope, serialize]);
 
-  const setWatched = useCallback(async (id: string, on: boolean) => {
-    markWatched(id, on);
-    if (on) {
-      // Elle "izlendi" → yarım ilerleme de temizlenir (Devam Et listesinden düşer).
-      setWatchProgress(prev => {
-        if (!prev[id]) return prev;
-        const next = { ...prev }; delete next[id];
-        storage.setItem(PROG_KEY + profileId, JSON.stringify(next));
-        return next;
-      });
+  const mutate = useCallback((work: (data: LibraryData, commit: <K extends PersistedField>(field: K, value: LibraryData[K]) => Promise<void>) => Promise<void>, needsList = true): Promise<void> => {
+    if (!ownsScope(scope)) return Promise.resolve();
+    if (isCatalogRestoreActive()) return Promise.reject(new Error("Yedek geri yüklenirken kütüphane değiştirilemez."));
+    return serialize(async () => {
+      if (!ownsScope(scope)) return;
+      if (isCatalogRestoreActive()) throw new Error("Yedek geri yüklenirken kütüphane değiştirilemez.");
+      const loaded = loadedRef.current;
+      if (!loaded || loaded.token !== scope.token) throw new Error("Kütüphane henüz yüklenmedi.");
+      if (needsList && !scope.playlistId) throw new Error("Önce bir playlist seçin.");
+      let data = loaded.data;
+      const commit = async <K extends PersistedField>(field: K, value: LibraryData[K]) => {
+        if (!ownsScope(scope)) return;
+        if (!(await storage.setItem(FIELD_KEYS[field] + scope.profileId, JSON.stringify(value)))) throw new Error("Kütüphane kaydı yazılamadı: " + field);
+        data = { ...data, [field]: value };
+        if (ownsScope(scope)) { const next = { token: scope.token, data }; loadedRef.current = next; setSnapshot(next); }
+      };
+      await work(data, commit);
+    });
+  }, [stamp, ownsScope, serialize]);
+
+  const setWatched = useCallback((id: string, on: boolean) => mutate(async (data, commit) => {
+    if (!id) return;
+    const visible = libraryScopedMap(data.watched, playlistId, data.legacyOwner);
+    if (on ? !visible[id] : !!visible[id]) {
+      const next = on ? { ...data.watched, [libraryItemKey(playlistId, id)]: Date.now() } : removeScopedLibraryItem(data.watched, playlistId, id, data.legacyOwner);
+      await commit("watched", trimScopedLibraryMap(next, playlistId, WATCHED_MAX, value => Number(value || 0)));
     }
-  }, [markWatched, profileId]);
-
-  const isWatched = useCallback((id: string) => !!watched[id], [watched]);
-
-  const setSeriesLast = useCallback((seriesId: string, v: Omit<SeriesLast, "at">) => {
+    if (on && libraryScopedMap(data.progress, playlistId, data.legacyOwner)[id]) await commit("progress", removeScopedLibraryItem(data.progress, playlistId, id, data.legacyOwner));
+  }), [mutate, playlistId]);
+  const setSeriesLast = useCallback((seriesId: string, value: Omit<SeriesLast, "at">) => {
     if (!seriesId) return;
-    setSeriesLastMap(prev => {
-      const next = { ...prev, [seriesId]: { ...v, at: Date.now() } };
-      const keys = Object.keys(next);
-      if (keys.length > 3000) keys.sort((a, b) => next[a].at - next[b].at).slice(0, keys.length - 3000).forEach(k => { delete next[k]; });
-      storage.setItem(SERIES_LAST_KEY + profileId, JSON.stringify(next));
-      return next;
-    });
-  }, [profileId]);
+    void mutate(async (data, commit) => {
+      await commit("seriesLast", trimScopedLibraryMap({ ...data.seriesLast, [libraryItemKey(playlistId, seriesId)]: { ...value, at: Date.now() } }, playlistId, 3000, entry => Number(entry.at || 0)));
+    }).catch(error => { void recordDiagnostic("import", "LIBRARY_WRITE_FAILED", { field: "seriesLast", error: String(error) }, { stage: "library", outcome: "failed" }); });
+  }, [mutate, playlistId]);
+  const setProgress = useCallback((id: string, value: Omit<WatchProgress, "updatedAt">) => mutate(async (data, commit) => {
+    if (!id) return;
+    if (isLocalMediaId(id)) { await saveLocalProgressChecked(id, value.current, value.duration); return; }
+    const markWatched = async (itemId: string, on: boolean) => {
+      if (on && !libraryScopedMap(data.watched, playlistId, data.legacyOwner)[itemId]) await commit("watched", trimScopedLibraryMap({ ...data.watched, [libraryItemKey(playlistId, itemId)]: Date.now() }, playlistId, WATCHED_MAX, entry => Number(entry || 0)));
+    };
+    if (value.kind !== "live" && value.duration > 0 && value.current / value.duration >= WATCHED_RATIO) await markWatched(id, true);
+    const next = value.duration > 0 && value.current > 0 && value.current / value.duration > 0.95
+      ? removeScopedLibraryItem(data.progress, playlistId, id, data.legacyOwner)
+      : { ...data.progress, [libraryItemKey(playlistId, id)]: { ...value, updatedAt: Date.now() } };
+    await commit("progress", next);
+  }), [mutate, playlistId]);
+  const clearProgress = useCallback((id: string) => mutate(async (data, commit) => { await commit("progress", removeScopedLibraryItem(data.progress, playlistId, id, data.legacyOwner)); }), [mutate, playlistId]);
+  const clearAllProgress = useCallback(() => mutate(async (data, commit) => { await commit("progress", clearScopedLibraryMap(data.progress, playlistId, data.legacyOwner)); }), [mutate, playlistId]);
+  const toggleWatchlist = useCallback((id: string) => mutate(async (data, commit) => {
+    if (!id) return;
+    const next = libraryScopedIds(data.watchlist, playlistId, data.legacyOwner).includes(id)
+      ? removeScopedLibraryId(data.watchlist, playlistId, id, data.legacyOwner)
+      : [libraryItemKey(playlistId, id), ...data.watchlist];
+    await commit("watchlist", trimScopedLibraryIds(next, playlistId, 500));
+  }), [mutate, playlistId]);
+  const pushSearch = useCallback((query: string) => mutate(async (data, commit) => {
+    const text = query.trim(); if (!text) return;
+    await commit("searches", [text, ...data.searches.filter(value => value.toLowerCase() !== text.toLowerCase())].slice(0, MAX_SEARCH));
+  }, false), [mutate]);
+  const clearSearchHistory = useCallback(() => mutate(async (_data, commit) => { await commit("searches", []); }, false), [mutate]);
+  const toggleHiddenItem = useCallback((id: string) => mutate(async (data, commit) => {
+    if (!id) return;
+    const next = libraryScopedIds(data.hiddenItems, playlistId, data.legacyOwner).includes(id) ? removeScopedLibraryId(data.hiddenItems, playlistId, id, data.legacyOwner) : [...data.hiddenItems, libraryItemKey(playlistId, id)];
+    await commit("hiddenItems", next);
+  }), [mutate, playlistId]);
+  const toggleHiddenGroup = useCallback((group: string) => mutate(async (data, commit) => {
+    if (!group) return;
+    const next = libraryScopedIds(data.hiddenGroups, playlistId, data.legacyOwner).includes(group) ? removeScopedLibraryId(data.hiddenGroups, playlistId, group, data.legacyOwner) : [...data.hiddenGroups, libraryItemKey(playlistId, group)];
+    await commit("hiddenGroups", next);
+  }), [mutate, playlistId]);
 
-  const setProgress = useCallback(async (id: string, data: Omit<WatchProgress, "updatedAt">) => {
-    // v18.6.0: %90 → izlendi (kalıcı). Canlı yayın hariç.
-    if (data.kind !== "live" && data.duration > 0 && data.current / data.duration >= WATCHED_RATIO) markWatched(id, true);
-    // Skip storing meaningless progress
-    if (data.duration > 0 && data.current > 0 && data.current / data.duration > 0.95) {
-      // finished — remove
-      setWatchProgress(prev => {
-        const next = { ...prev };
-        delete next[id];
-        storage.setItem(PROG_KEY + profileId, JSON.stringify(next));
-        return next;
-      });
-      return;
-    }
-    setWatchProgress(prev => {
-      const next = { ...prev, [id]: { ...data, updatedAt: Date.now() } };
-      storage.setItem(PROG_KEY + profileId, JSON.stringify(next));
-      return next;
-    });
-  }, [profileId]);
-
-  const clearProgress = useCallback(async (id: string) => {
-    setWatchProgress(prev => {
-      const next = { ...prev };
-      delete next[id];
-      storage.setItem(PROG_KEY + profileId, JSON.stringify(next));
-      return next;
-    });
-  }, [profileId]);
-
-  const clearAllProgress = useCallback(async () => {
-    setWatchProgress({});
-    await storage.setItem(PROG_KEY + profileId, JSON.stringify({}));
-  }, [profileId]);
-
-  const toggleWatchlist = useCallback(async (id: string) => {
-    setWatchlist(prev => {
-      const next = prev.includes(id) ? prev.filter(x => x !== id) : [id, ...prev].slice(0, 500);
-      storage.setItem(WL_KEY + profileId, JSON.stringify(next));
-      return next;
-    });
-  }, [profileId]);
-
-  const inWatchlist = useCallback((id: string) => watchlist.includes(id), [watchlist]);
-
-  const pushSearch = useCallback(async (q: string) => {
-    const t = q.trim();
-    if (!t) return;
-    setSearchHistory(prev => {
-      const next = [t, ...prev.filter(x => x.toLowerCase() !== t.toLowerCase())].slice(0, MAX_SEARCH);
-      storage.setItem(SH_KEY + profileId, JSON.stringify(next));
-      return next;
-    });
-  }, [profileId]);
-
-  const clearSearchHistory = useCallback(async () => {
-    setSearchHistory([]);
-    await storage.setItem(SH_KEY + profileId, JSON.stringify([]));
-  }, [profileId]);
-
-  const toggleHiddenItem = useCallback(async (id: string) => {
-    setHiddenItems(prev => {
-      const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
-      storage.setItem(HID_ITEM_KEY + profileId, JSON.stringify(next));
-      return next;
-    });
-  }, [profileId]);
-
-  /**
-   * PERFORMANS (v9.2.0 — kullanıcı bildirimi: arama/sekme geç tepki veriyor)
-   * .includes() bir DİZİ TARAMASIDIR. 40.000+ öğelik listeleri süzerken her
-   * öğe için baştan sona tarama yapılıyordu (O(n×m)) — arama ve sekme geçişi
-   * bu yüzden donuyordu.
-   * Set kullanımıyla arama sabit zamanlı hale geldi.
-   */
+  const data = snapshot?.token === scope.token ? snapshot.data : emptyData();
+  const watchProgress = useMemo(() => Object.fromEntries(Object.entries(libraryScopedMap(data.progress, playlistId, data.legacyOwner)).filter(([id]) => !isLocalMediaId(id))), [data.progress, playlistId, data.legacyOwner]);
+  const watched = useMemo(() => libraryScopedMap(data.watched, playlistId, data.legacyOwner), [data.watched, playlistId, data.legacyOwner]);
+  const seriesLast = useMemo(() => libraryScopedMap(data.seriesLast, playlistId, data.legacyOwner), [data.seriesLast, playlistId, data.legacyOwner]);
+  const watchlist = useMemo(() => libraryScopedIds(data.watchlist, playlistId, data.legacyOwner), [data.watchlist, playlistId, data.legacyOwner]);
+  const hiddenItems = useMemo(() => libraryScopedIds(data.hiddenItems, playlistId, data.legacyOwner), [data.hiddenItems, playlistId, data.legacyOwner]);
+  const hiddenGroups = useMemo(() => libraryScopedIds(data.hiddenGroups, playlistId, data.legacyOwner), [data.hiddenGroups, playlistId, data.legacyOwner]);
   const hiddenItemSet = useMemo(() => new Set(hiddenItems), [hiddenItems]);
-  const isItemHidden = useCallback((id: string) => hiddenItemSet.has(id), [hiddenItemSet]);
-
-  const toggleHiddenGroup = useCallback(async (group: string) => {
-    setHiddenGroups(prev => {
-      const next = prev.includes(group) ? prev.filter(x => x !== group) : [...prev, group];
-      storage.setItem(HID_GROUP_KEY + profileId, JSON.stringify(next));
-      return next;
-    });
-  }, [profileId]);
-
   const hiddenGroupSet = useMemo(() => new Set(hiddenGroups), [hiddenGroups]);
+  const isWatched = useCallback((id: string) => !!watched[id], [watched]);
+  const inWatchlist = useCallback((id: string) => watchlist.includes(id), [watchlist]);
+  const isItemHidden = useCallback((id: string) => hiddenItemSet.has(id), [hiddenItemSet]);
   const isGroupHidden = useCallback((group: string) => hiddenGroupSet.has(group), [hiddenGroupSet]);
-
-  const unlockHiddenSession = useCallback(() => setHiddenModeUnlocked(true), []);
-  const lockHiddenSession = useCallback(() => setHiddenModeUnlocked(false), []);
-
-  return (
-    <LibraryContext.Provider value={{
-      watchProgress, watched, isWatched, setWatched, seriesLast, setSeriesLast, watchlist, searchHistory, hiddenItems, hiddenGroups, hiddenModeUnlocked,
-      setProgress, clearProgress, clearAllProgress,
-      toggleWatchlist, inWatchlist,
-      pushSearch, clearSearchHistory,
-      toggleHiddenItem, isItemHidden,
-      toggleHiddenGroup, isGroupHidden,
-      unlockHiddenSession, lockHiddenSession,
-    }}>
-      {children}
-    </LibraryContext.Provider>
-  );
+  const unlockHiddenSession = useCallback(() => { if (ownsScope(scope)) setUnlockedToken(scope.token); }, [stamp, ownsScope]);
+  const lockHiddenSession = useCallback(() => setUnlockedToken(null), []);
+  const hiddenModeUnlocked = unlockedToken === scope.token;
+  return <LibraryContext.Provider value={{
+    watchProgress, watched, isWatched, setWatched, seriesLast, setSeriesLast, watchlist, searchHistory: data.searches, hiddenItems, hiddenGroups, hiddenModeUnlocked,
+    setProgress, clearProgress, clearAllProgress, toggleWatchlist, inWatchlist, pushSearch, clearSearchHistory, toggleHiddenItem, isItemHidden, toggleHiddenGroup, isGroupHidden,
+    unlockHiddenSession, lockHiddenSession,
+  }}>{children}</LibraryContext.Provider>;
 }
-
 export function useLibrary(): LibraryContextValue {
   const ctx = useContext(LibraryContext);
   if (!ctx) throw new Error("useLibrary must be used within LibraryProvider");

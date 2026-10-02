@@ -611,10 +611,11 @@ try {
   requireText(backupV3, 'KIZILKAN_BACKUP_V3', 'streaming backup v3 format');
   requireText(backupV3, 'KizilkanNativeCore.queryItems', 'backup Room paging');
   requireText(backupV3, 'appendPlaylistChunk', 'backup chunked Room restore');
-  requireText(backupV3, '__kzb_stage_', 'backup restore isolated staging namespace');
-  requireText(backupV3, 'applyAtomicPlaylistRestore', 'backup atomic Room swap');
-  requireText(backupV3, 'rollbackAtomicPlaylistRestore', 'backup transactional rollback');
-  requireText(backupV3, 'restoreBackupMetadataExact', 'backup exact metadata rollback');
+  const restoreTransaction = fs.readFileSync(path.join(root, 'src/utils/backupRestoreTransaction.ts'), 'utf8');
+  requireText(restoreTransaction, '__kzb_stage_', 'backup restore isolated staging namespace');
+  requireText(restoreTransaction, 'applyAtomicPlaylistRestore', 'backup atomic Room swap');
+  requireText(restoreTransaction, 'rollbackAtomicPlaylistRestore', 'backup transactional rollback');
+  requireText(restoreTransaction, 'recoverPendingPlaylistRestore', 'backup durable metadata rollback/recovery');
   requireText(backup, 'export async function restoreBackupMetadataExact', 'backup exact metadata helper export');
   requireText(nativeCore, 'applyAtomicPlaylistRestore', 'native backup atomic swap implementation');
   requireText(nativeCore, 'restoreRollbackId', 'native backup rollback namespace');

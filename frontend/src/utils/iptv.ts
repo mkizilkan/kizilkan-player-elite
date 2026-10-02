@@ -231,6 +231,7 @@ export function parseM3U(rawContent: string): ParsedM3U {
           url: pending.url,
           container_ext: pending.container_ext || 'mp4',
           stream_id: null,
+          headers: { ...pending.headers },
           year: null, rating: null, rating_5based: null,
           plot: null, cast: null, director: null, genre: null,
         } as VodItem);
@@ -241,6 +242,7 @@ export function parseM3U(rawContent: string): ParsedM3U {
           group: pending.group,
           poster: pending.logo,
           series_id: null,
+          headers: { ...pending.headers },
           url: pending.url,
           container_ext: pending.container_ext || null,
           year: null, rating: null, rating_5based: null,

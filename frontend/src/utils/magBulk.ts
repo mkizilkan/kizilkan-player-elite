@@ -54,7 +54,9 @@ export const MAG_MAX_MACS = 1024;
 
 /** Ham metni MAC'e normalleştirir: BÜYÜK harf, iki nokta ayraçlı, yoksa null. */
 export function normalizeMacStrict(raw: string): string | null {
-  const hex = String(raw || "").replace(/[^0-9a-fA-F]/g, "").toUpperCase();
+  const input = String(raw || "").trim();
+  if (!/^(?:[0-9a-f]{12}|[0-9a-f]{2}(?::[0-9a-f]{2}){5}|[0-9a-f]{2}(?:-[0-9a-f]{2}){5})$/i.test(input)) return null;
+  const hex = input.replace(/[:-]/g, "").toUpperCase();
   if (hex.length !== 12) return null;
   return (hex.match(/.{2}/g) || []).join(":");
 }
@@ -83,7 +85,7 @@ export function parseMacList(text: string): { macs: string[]; invalid: string[] 
   const invalid: string[] = [];
   const seen = new Set<string>();
   for (const tok of tokens) {
-    const norm = normalizeMacStrict(tok);
+    const norm = normalizeMacStrict(tok.replace(/^MAC[=:]/i, ""));
     if (!norm) { invalid.push(tok); continue; }
     if (!seen.has(norm)) { seen.add(norm); macs.push(norm); }
   }
@@ -107,6 +109,7 @@ export function expandMacRange(startRaw: string, opts: { end?: string; count?: n
     end = start + count - 1;
   }
   if (end < start) return { macs: [], capped: false, error: "Bitiş MAC başlangıçtan küçük." };
+  if (!Number.isSafeInteger(end) || end > 0xffffffffffff) return { macs: [], capped: false, error: "MAC aralığı 48 bit adres sınırını aşıyor." };
   let capped = false;
   let last = end;
   if (last - start + 1 > MAG_MAX_MACS) { last = start + MAG_MAX_MACS - 1; capped = true; }
@@ -122,7 +125,53 @@ export type MagHostEntry = {
   host: string;
   /** Kullanıcı açıkça port verdi mi (keşif portları denenmesin). */
   hasPort: boolean;
+  /** URL.port normalleştirse bile kullanıcının açıkça yazdığı 80/443 korunur. */
+  explicitPort?: string;
+  hasPath?: boolean;
 };
+
+export type MagDiscoveryScope = "exact" | "fallback" | "all";
+export const MAG_MAX_PARALLEL = 16;
+
+export type MagArchiveEntry = {
+  portal: string; mac: string; category: string; status?: string; expiry?: string | null;
+  expiryDisplay?: string; username?: string; tariffPlan?: string;
+  protection?: { state: string; kind: string; evidence: string[]; observedAt: string; endpoint: string; transport: string };
+  liveCategories: string[]; vodCategories: string[]; seriesCategories: string[]; warnings: string[];
+};
+/** İnsan tarafından okunabilir TXT, JSON ile aynı hesap/kategori bilgisini taşır. */
+export function formatMagArchiveTxt(entries: MagArchiveEntry[], stamp: string): string {
+  const clean = (value: unknown) => String(value ?? "").replace(/[\r\n\t]+/g, " ").trim();
+  const blocks = entries.map((entry, index) => {
+    const p = entry.protection;
+    const protection = p?.state === "present" ? "Koruma / istek sınırı gözlendi" : p?.state === "not_observed" ? "Koruma görülmedi" : "Belirlenemedi";
+    const cats = (label: string, names: string[], warningPrefix: string) => {
+      const failed = entry.warnings.some(w => w.startsWith(warningPrefix) || w.startsWith("Kategori özeti:"));
+      return `${label} (${names.length} kategori): ${names.length ? names.map(clean).join(" | ") : failed ? "Alınamadı / desteklenmiyor (uyarılara bakın)" : "Boş"}`;
+    };
+    return [
+      `=== HESAP ${index + 1} ===`, `PORTAL=${clean(entry.portal)}`, `MAC=${clean(entry.mac)}`,
+      `SONUC=${clean(entry.category)} · DURUM=${clean(entry.status) || "Bilinmiyor"}`,
+      `BITIS=${clean(entry.expiryDisplay || entry.expiry) || "Bilinmiyor / bildirilmedi"}`,
+      `KULLANICI=${clean(entry.username) || "Bildirilmedi"}`, `TARIFE=${clean(entry.tariffPlan) || "Bildirilmedi"}`,
+      `KORUMA=${protection}${p ? ` · ${clean(p.kind)} · ${clean(p.observedAt)} · ${clean(p.transport)}` : ""}`,
+      p?.evidence.length ? `KORUMA_KANITI=${p.evidence.map(clean).join(" | ")}` : "",
+      cats("CANLI", entry.liveCategories, "Canlı"), cats("FILM", entry.vodCategories, "VOD"), cats("DIZI", entry.seriesCategories, "Series"),
+      entry.warnings.length ? `UYARILAR=${entry.warnings.map(clean).join(" | ")}` : "",
+    ].filter(Boolean).join("\n");
+  });
+  return `# KIZILKAN MAG hesap arşivi · ${clean(stamp)}\n# ${entries.length} seçili analiz sonucu\n# Koruma bilgisi yalnız belirtilen zamanda ve bağlantıda gözlenmiştir.\n\n${blocks.join("\n\n")}\n`;
+}
+
+/** Aynı default port tek kimliktir; farklı portal yolları farklı hesaptır. */
+export function magAccountIdentity(portal: string, mac: string): string {
+  let endpoint = String(portal || "").trim();
+  try {
+    const u = new URL(/^https?:\/\//i.test(endpoint) ? endpoint : `http://${endpoint}`);
+    endpoint = `${u.protocol}//${u.host.toLowerCase()}${u.pathname.replace(/\/+$/, "")}`;
+  } catch {}
+  return `${endpoint}\u0000${String(mac || "").toUpperCase()}`;
+}
 
 /**
  * Serbest metinden portal/DNS listesi. http/https olmadan da kabul (http:// eklenir).
@@ -142,11 +191,13 @@ export function parsePortalHosts(text: string): { hosts: MagHostEntry[]; invalid
       if (!/^https?:$/i.test(u.protocol) || !u.hostname) { invalid.push(tok); continue; }
       // Konak adı en az bir nokta veya IPv6 köşeli parantez içermeli.
       if (!(u.hostname.includes(".") || /^\[[0-9a-f:]+\]$/i.test(u.hostname))) { invalid.push(tok); continue; }
-      const hasPort = u.port !== "";
+      const authority = v.replace(/^https?:\/\//i, "").split(/[/?#]/, 1)[0];
+      const explicitPort = /:(\d+)$/.exec(authority)?.[1];
+      const hasPort = explicitPort !== undefined;
       const path = u.pathname.replace(/\/+$/, "");
-      const host = `${u.protocol}//${u.host}${path}`;
+      const host = `${u.protocol}//${u.hostname}${explicitPort ? `:${explicitPort}` : ""}${path}`;
       const key = host.toLowerCase();
-      if (!seen.has(key)) { seen.add(key); hosts.push({ raw: tok, host, hasPort }); }
+      if (!seen.has(key)) { seen.add(key); hosts.push({ raw: tok, host, hasPort, explicitPort, hasPath: path !== "" }); }
     } catch { invalid.push(tok); }
   }
   return { hosts, invalid };
@@ -161,13 +212,16 @@ export function parsePortalHosts(text: string): { hosts: MagHostEntry[]; invalid
  * geri kalan port×yol matrisi arkadan gelir. Böylece kısa zaman aşımıyla doğru portal ilk
  * birkaç denemede bulunur. Tekilleştirilir.
  */
-export function portalDiscoveryCandidates(entry: MagHostEntry): string[] {
+export function portalDiscoveryCandidates(entry: MagHostEntry, options: { allPorts?: boolean } = {}): string[] {
   let u: URL;
   try { u = new URL(/^https?:\/\//i.test(entry.host) ? entry.host : "http://" + entry.host); }
   catch { return []; }
   const scheme = u.protocol.replace(":", "");
   const userPath = u.pathname.replace(/\/+$/, "");
-  const ports = (entry.hasPort ? [u.port] : MAG_DISCOVERY_PORTS.map(String)).filter((p, i, a) => a.indexOf(p) === i);
+  const givenPort = entry.explicitPort || u.port || (u.protocol === "https:" ? "443" : "80");
+  const ports = (options.allPorts
+    ? [givenPort, ...MAG_DISCOVERY_PORTS.map(String)]
+    : entry.hasPort ? [givenPort] : MAG_DISCOVERY_PORTS.map(String)).filter((p, i, a) => a.indexOf(p) === i);
   const out: string[] = [];
   const seen = new Set<string>();
   const add = (port: string, p: string) => {
@@ -186,7 +240,7 @@ export function portalDiscoveryCandidates(entry: MagHostEntry): string[] {
   return out;
 }
 
-export type MagBulkJob = { hostRaw: string; portal: string; mac: string; hasPort: boolean };
+export type MagBulkJob = { hostRaw: string; portal: string; mac: string; hasPort: boolean; explicitPort?: string; hasPath?: boolean };
 
 /**
  * (host × MAC) kartezyeni → tarama işleri. Toplam iş MAG_MAX_MACS×host sayısıyla değil,
@@ -199,7 +253,7 @@ export function buildMagBulkJobs(hosts: MagHostEntry[], macs: string[], maxJobs 
   for (const h of hosts) {
     for (const mac of macs) {
       if (jobs.length >= maxJobs) { capped = true; break outer; }
-      jobs.push({ hostRaw: h.raw, portal: h.host, mac, hasPort: h.hasPort });
+      jobs.push({ hostRaw: h.raw, portal: h.host, mac, hasPort: h.hasPort, ...(h.explicitPort ? { explicitPort: h.explicitPort } : {}), ...(h.hasPath !== undefined ? { hasPath: h.hasPath } : {}) });
     }
   }
   return { jobs, capped };

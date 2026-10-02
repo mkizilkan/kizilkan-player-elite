@@ -64,6 +64,79 @@ export interface StalkerCreds {
   timezone?: string;
   /** Verified timezone previously reported by portal profile. */
   portalTimezone?: string;
+  /** İşleme ait tercih; normal oynatmanın global transport ayarını değiştirmez. */
+  requestScope?: StalkerRequestScope;
+  endpointPolicy?: "exact" | "auto";
+}
+
+export type MagProtectionObservation = {
+  state: "present" | "not_observed" | "unknown";
+  kind: "challenge" | "captcha" | "waf" | "rate_limit" | "access_denied" | "none" | "unknown";
+  evidence: string[];
+  endpoint: string;
+  stage: string;
+  observedAt: string;
+  transport: "direct" | "proxy" | "native";
+  httpStatus?: number;
+};
+
+export type StalkerRequestScope = {
+  transport: "direct" | "proxy";
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  beforeRequest?: (url: string, signal?: AbortSignal) => Promise<void>;
+  onObservation?: (observation: MagProtectionObservation) => void;
+  onRateLimit?: (url: string, retryAfterMs: number) => void;
+};
+const scopedHeaders = new WeakMap<object, StalkerRequestScope>();
+type RequestScopeRuntime = { controller: AbortController; terminalError?: any };
+const requestScopeRuntimes = new WeakMap<StalkerRequestScope, RequestScopeRuntime>();
+function requestScopeRuntime(scope: StalkerRequestScope): RequestScopeRuntime {
+  let runtime = requestScopeRuntimes.get(scope);
+  if (!runtime) { runtime = { controller: new AbortController() }; requestScopeRuntimes.set(scope, runtime); }
+  return runtime;
+}
+function scopeCancelledError(): any { const error: any = new Error("İşlem iptal edildi"); error.kind = "CANCELLED"; return error; }
+function checkScopeRuntime(runtime?: RequestScopeRuntime): void {
+  if (runtime?.terminalError) throw runtime.terminalError;
+  if (runtime?.controller.signal.aborted) throw scopeCancelledError();
+}
+function withRequestScope(cred: StalkerCreds, headers: Record<string, string>): Record<string, string> {
+  if (cred.requestScope) scopedHeaders.set(headers, cred.requestScope);
+  return headers;
+}
+
+/** Gözlem, yalnız bu yanıtın kanıtıdır; sunucunun gelecekteki koruma politikasının garantisi değildir. */
+export function observeMagProtection(input: {
+  endpoint: string; stage: string; status: number; body: string;
+  headers: Record<string, string>; transport: MagProtectionObservation["transport"];
+  now?: number;
+}): MagProtectionObservation {
+  const hdr = Object.fromEntries(Object.entries(input.headers).map(([k, v]) => [k.toLowerCase(), String(v)]));
+  const html = String(input.body || "").slice(0, 65536).toLowerCase();
+  let endpoint = input.endpoint;
+  try { const u = new URL(endpoint); endpoint = `${u.protocol}//${u.host}${u.pathname}`; } catch {}
+  const base: MagProtectionObservation = { state: "unknown", kind: "unknown", evidence: [], endpoint,
+    stage: input.stage, observedAt: new Date(input.now ?? Date.now()).toISOString(), transport: input.transport, httpStatus: input.status };
+  if (hdr["cf-mitigated"]?.toLowerCase() === "challenge") return { ...base, state: "present", kind: "challenge", evidence: ["cf-mitigated:challenge"] };
+  if (input.status === 429 || (input.status >= 400 && /too many requests|rate.?limit exceeded|request limit exceeded/.test(html))) return { ...base, state: "present", kind: "rate_limit", evidence: [input.status === 429 ? "HTTP429" : "explicit-rate-limit-response"] };
+  if (/<(?:!doctype|html|head|body|form|script)\b/.test(html)) {
+    if (html.includes("/cdn-cgi/challenge-platform/") || /\bcf_chl_opt\b|\b__cf_chl_/.test(html)) return { ...base, state: "present", kind: "challenge", evidence: ["cloudflare-challenge-markup"] };
+    if (/class=["'][^"']*\b(?:g-recaptcha|h-captcha|cf-turnstile)\b/.test(html)
+      || /(?:google\.com\/recaptcha|hcaptcha\.com)\/(?:api|1\/api)\.js/.test(html)) return { ...base, state: "present", kind: "captcha", evidence: ["captcha-widget-markup"] };
+    if (/web application firewall|request blocked by.*(?:waf|firewall)|access denied.*incapsula/.test(html)) return { ...base, state: "present", kind: "waf", evidence: ["explicit-firewall-block-response"] };
+  }
+  if (input.status >= 400 && /(?:your |client )?ip(?: address)? (?:has been |is )?(?:temporarily )?(?:blocked|banned)|request blocked by.*(?:waf|firewall)/.test(html)) return { ...base, state: "present", kind: "waf", evidence: ["explicit-ip-or-firewall-block-response"] };
+  const decoded = parseStalkerBody(input.body);
+  const portalError = String(decoded.parsed?.js?.error || decoded.parsed?.error || decoded.parsed?.message || "").toLowerCase();
+  if (/captcha (?:is )?required|human verification required/.test(portalError)) return { ...base, state: "present", kind: "captcha", evidence: ["explicit-captcha-required-response"] };
+  if (input.status === 401 || input.status === 403) return { ...base, kind: "access_denied", evidence: [`HTTP${input.status}:reason-unconfirmed`] };
+  if (input.status >= 200 && input.status < 300 && decoded.parsed?.js != null) return { ...base, state: "not_observed", kind: "none", evidence: ["expected-portal-json"] };
+  return base;
+}
+
+function terminalMagError(error: any): boolean {
+  return ["CANCELLED", "BACKGROUND_PAUSE", "MAG_RATE_LIMIT", "MAG_PROTECTION"].includes(String(error?.kind || ""));
 }
 
 export function stalkerCredsFromPlaylist(pl: Pick<Playlist, "stalkerPortal" | "stalkerMac" | "stalkerSerial" | "stalkerTimezoneMode" | "stalkerTimezone" | "stalkerPortalTimezone">): StalkerCreds {
@@ -147,7 +220,8 @@ const stalkerPlaybackLinkCache = new Map<string, { url: string; at: number }>();
 function sessionKey(cred: StalkerCreds): string {
   const mode = cred.timezoneMode || "auto";
   const timezoneKey = mode === "manual" ? (cred.timezone || "") : mode === "portal" ? (cred.portalTimezone || "") : "";
-  return `${baseOf(cred.portal).toLowerCase()}|${normalizeMac(cred.mac)}|${cred.serial || ""}|${cred.deviceId || ""}|${mode}|${timezoneKey}`;
+  const portal = String(cred.portal || "").replace(/\/+$/, "");
+  return `${portal}|${normalizeMac(cred.mac)}|${cred.serial || ""}|${cred.deviceId || ""}|${mode}|${timezoneKey}|${cred.endpointPolicy || "auto"}|${cred.requestScope?.transport || "normal"}`;
 }
 function getCachedSession(cred: StalkerCreds): { session: StalkerSession; profile: any } | null {
   const key = sessionKey(cred); const hit = stalkerSessionCache.get(key); if (!hit) return null;
@@ -209,9 +283,10 @@ function baseOf(portal: string): string {
   }
 }
 
-function portalCandidates(portal: string): string[] {
+function portalCandidates(portal: string, policy: "exact" | "auto" = "auto"): string[] {
   let p = String(portal || "").trim();
   if (!/^https?:\/\//i.test(p)) p = "http://" + p;
+  if (policy === "exact") return [p.replace(/\/+$/, "")];
   const out: string[] = [];
   const push = (v: string) => { const x = v.replace(/\?$/, "").replace(/\/+$/, ""); if (x && !out.includes(x)) out.push(x); };
   try {
@@ -332,7 +407,7 @@ function preferredCompatProfiles(cred: StalkerCreds, learned?: LearnedMagCompat 
   return ordered;
 }
 function learnedCompatKey(cred: StalkerCreds): string {
-  return `${baseOf(cred.portal).toLowerCase()}|${normalizeMac(cred.mac)}`;
+  return `${String(cred.portal || "").replace(/\/+$/, "")}|${normalizeMac(cred.mac)}|${cred.endpointPolicy || "auto"}|${cred.requestScope?.transport || "normal"}`;
 }
 type LearnedMagCompatStore = Record<string, LearnedMagCompat>;
 
@@ -565,7 +640,7 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
       "Accept-Encoding": "gzip",
     };
     if (token) p.Authorization = `Bearer ${token}`;
-    return p;
+    return withRequestScope(cred, p);
   }
 
   if (profile === "wire250") {
@@ -580,7 +655,7 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
       "Cache-Control": "no-cache",
     };
     if (token) w.Authorization = `Bearer ${token}`;
-    return w;
+    return withRequestScope(cred, w);
   }
 
   if (profile === "fulldevice" || profile === "fulldevice-macid") {
@@ -595,7 +670,7 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
       Cookie: fullDeviceCookie(cred, encodedMac, tzWire(cred, "Europe/Istanbul", false), macOnly),
     };
     if (token) f.Authorization = `Bearer ${token}`;
-    return f;
+    return withRequestScope(cred, f);
   }
 
   if (profile === "golden") {
@@ -606,7 +681,7 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
       Cookie: `mac=${encodedMac}; stb_lang=en; timezone=${tzWire(cred, "Europe/Istanbul", false)}`,
     };
     if (token) g.Authorization = `Bearer ${token}`;
-    return g;
+    return withRequestScope(cred, g);
   }
 
   const h: Record<string, string> = {
@@ -619,7 +694,7 @@ function headersFor(cred: StalkerCreds, token?: string, endpoint?: string, profi
   };
   if (encoded) h["Accept-Encoding"] = "gzip, deflate";
   if (token) h.Authorization = `Bearer ${token}`;
-  return h;
+  return withRequestScope(cred, h);
 }
 
 
@@ -773,12 +848,27 @@ function magPcapShapeParity(nr:any, requestMeta:{action:string;type:string}) {
 
 async function req(url: string, headers: Record<string, string>, options: number | ReqOptions = 20000): Promise<any> {
   const opts:ReqOptions=typeof options === "number" ? {timeoutMs:options} : (options || {});
-  const timeoutMs=opts.timeoutMs ?? 20000;
+  const scope = scopedHeaders.get(headers);
+  const runtime = scope ? requestScopeRuntime(scope) : undefined;
+  const parentSignal = opts.signal || scope?.signal;
+  checkScopeRuntime(runtime);
+  if (parentSignal?.aborted) throw scopeCancelledError();
+  // Per-request listeners are removed even when cancellation happens in the shared gate.
+  const cancelScope = () => runtime?.controller.abort();
+  parentSignal?.addEventListener("abort", cancelScope, { once: true });
+  try { await scope?.beforeRequest?.(url, runtime?.controller.signal); }
+  catch (error) { checkScopeRuntime(runtime); throw error; }
+  finally { parentSignal?.removeEventListener("abort", cancelScope); }
+  checkScopeRuntime(runtime);
+  if (parentSignal?.aborted) { const e: any = new Error("İşlem iptal edildi"); e.kind = "CANCELLED"; throw e; }
+  const timeoutMs=scope?.timeoutMs ?? opts.timeoutMs ?? 20000;
   const c = new AbortController();
   const abortFromParent=()=>c.abort();
-  if (opts.signal) {
-    if (opts.signal.aborted) c.abort();
-    else opts.signal.addEventListener("abort",abortFromParent,{once:true});
+  const abortFromScope=()=>c.abort();
+  runtime?.controller.signal.addEventListener("abort",abortFromScope,{once:true});
+  if (parentSignal) {
+    if (parentSignal.aborted) c.abort();
+    else parentSignal.addEventListener("abort",abortFromParent,{once:true});
   }
   const t = setTimeout(() => c.abort(), timeoutMs);
   const startedAt = Date.now();
@@ -796,9 +886,10 @@ async function req(url: string, headers: Record<string, string>, options: number
     // kanıtlanır. Native modül yoksa eski fetch yolu regresyonsuz korunur.
     const useNativeExact = !opts.postForm && KizilkanNativeCore.available
       && !magBulkHosts.has(hostnameOf(requestMeta.host))   // v18.7.2: toplu taramada düz fetch
+      && !scope
       && headers["User-Agent"] === MAG320_UA
       && /timezone=Europe%2FParis/i.test(String(headers.Cookie || ""));
-    const proxyRoute = magProxyHosts.size > 0 && magProxyHosts.has(hostnameOf(requestMeta.host));
+    const proxyRoute = scope ? scope.transport === "proxy" : magProxyHosts.size > 0 && magProxyHosts.has(hostnameOf(requestMeta.host));
     if (proxyRoute) {
       // v18.7.0: çoklu-MAC taraması — istek native proxy havuzundan (bkz. setMagProxyRouting).
       const { PanelScan } = await import("@/modules/panel-scan");
@@ -809,10 +900,10 @@ async function req(url: string, headers: Record<string, string>, options: number
         target = u.origin + u.pathname; body = u.searchParams.toString(); method = "POST";
         hdrs["Content-Type"] = "application/x-www-form-urlencoded";
       }
-      const pr = await PanelScan.proxiedRequest(target, method, hdrs, body, timeoutMs);
+      const pr = await PanelScan.proxiedRequest(target, method, hdrs, body, timeoutMs, c.signal);
       if (!(pr.status > 0)) {
         const err: any = new Error(`Proxy isteği başarısız: ${pr.error || "proxy yok"}`);
-        err.kind = "PROXY";
+        err.kind = c.signal.aborted ? parentSignal?.aborted ? "CANCELLED" : "TIMEOUT" : "PROXY";
         void recordDiagnostic("mag", "MAG_PROXY_WIRE_FAILED", { ...requestMeta, elapsedMs: Date.now() - startedAt, error: String(pr.error || "").slice(0, 120) });
         throw err;
       }
@@ -853,7 +944,8 @@ async function req(url: string, headers: Record<string, string>, options: number
           refererPath:(()=>{try{return new URL(String(nr.referer||"")).pathname}catch{return""}})(),
           xUserAgentModel:/Model:\s*([^;]+)/i.exec(String(nr.xUserAgent||""))?.[1]||"",
         });
-      } catch (cause:any) {
+    } catch (cause:any) {
+      checkScopeRuntime(runtime);
         const err:any=new Error(`Native MAG transport failed: ${String(cause?.message||cause)}`); err.kind="NETWORK"; throw err;
       }
     } else
@@ -884,7 +976,7 @@ async function req(url: string, headers: Record<string, string>, options: number
       }
     }
     catch (cause:any) {
-      const parentAbort=!!opts.signal?.aborted;
+       const parentAbort=!!parentSignal?.aborted;
       const err:any=new Error(cause?.name==="AbortError"
         ? (parentAbort ? "İşlem kullanıcı/üst seviye tarafından iptal edildi" : `Bağlantı zaman aşımı (${timeoutMs} ms)`)
         : `Network request failed: ${String(cause?.message || cause || "bilinmeyen ağ hatası")}`);
@@ -898,6 +990,24 @@ async function req(url: string, headers: Record<string, string>, options: number
     const redirected=!!(res as any).redirected;
     const text=await res.text();
     const decoded=parseStalkerBody(text);
+    const responseHeaders: Record<string, string> = {};
+    for (const name of ["content-type", "cf-mitigated", "retry-after"]) responseHeaders[name] = String(res.headers?.get?.(name) || "");
+    checkScopeRuntime(runtime);
+    const observation = observeMagProtection({ endpoint: finalUrl, stage: requestMeta.action, status: Number(res.status || 0),
+      body: text, headers: responseHeaders, transport: proxyRoute ? "proxy" : useNativeExact ? "native" : "direct" });
+    scope?.onObservation?.(observation);
+    if (observation.state === "present") {
+      const e: any = new Error(observation.kind === "rate_limit" ? "Portal istek sınırı uyguladı; aynı hosttaki analizler bekletiliyor." : "Portal CAPTCHA / anti-bot / güvenlik duvarı doğrulaması istiyor.");
+      e.kind = observation.kind === "rate_limit" ? "MAG_RATE_LIMIT" : "MAG_PROTECTION";
+      e.status = Number(res.status || 0); e.observation = observation; e.finalUrl = finalUrl;
+      const rawRetry = responseHeaders["retry-after"];
+      const seconds = /^\d+(?:\.\d+)?$/.test(rawRetry) ? Number(rawRetry) * 1000 : Date.parse(rawRetry) - Date.now();
+      e.retryAfterMs = Number.isFinite(seconds) && seconds > 0 ? Math.max(1000, seconds) : 60_000;
+      if (observation.kind === "rate_limit") scope?.onRateLimit?.(url, e.retryAfterMs);
+      // Only this account scope stops. Other accounts retain the host's shared Retry-After pause.
+      if (runtime) { runtime.terminalError = e; runtime.controller.abort(); }
+      throw e;
+    }
     void recordDiagnostic("mag","STALKER_HTTP_RESPONSE",{
       ...requestMeta,status:Number(res.status||0),ok:!!res.ok,elapsedMs:Date.now()-startedAt,
       bytes:text.length,contentType:contentType.split(";")[0]||"",redirected,parsedJs:!!decoded.parsed?.js,bodyKind:decoded.bodyKind,
@@ -910,14 +1020,14 @@ async function req(url: string, headers: Record<string, string>, options: number
     }
     if (!res.ok) {
       const err:any=new Error(`HTTP ${res.status}${contentType?` · ${contentType.split(";")[0]}`:""}`);
-      err.status=res.status; err.kind="HTTP"; err.contentType=contentType; err.finalUrl=finalUrl; err.redirected=redirected; err.bodyKind=decoded.bodyKind;
+      err.status=res.status; err.kind="HTTP"; err.contentType=contentType; err.finalUrl=finalUrl; err.redirected=redirected; err.bodyKind=decoded.bodyKind; err.observation=observation;
       err.snippet=sanitizeBodySnippet(text);
       void recordDiagnostic("mag","STALKER_HTTP_REJECTED",{...requestMeta,status:Number(res.status||0),bodyKind:decoded.bodyKind,snippet:err.snippet});
       throw err;
     }
     const kind=decoded.bodyKind==="html" ? "HTML" : "NON_JSON";
     const err:any=new Error(`Portal JSON değil · HTTP ${res.status}${contentType?` · ${contentType.split(";")[0]}`:""}${redirected?" · yönlendirme var":""}`);
-    err.kind=kind; err.status=res.status; err.contentType=contentType; err.finalUrl=finalUrl; err.redirected=redirected; err.bodyKind=decoded.bodyKind;
+    err.kind=kind; err.status=res.status; err.contentType=contentType; err.finalUrl=finalUrl; err.redirected=redirected; err.bodyKind=decoded.bodyKind; err.observation=observation;
     /**
      * v16.3.0 — GÖVDE ÖRNEĞİ KAYDA EKLENDİ (telemetri boşluğu)
      * Bu hatada şimdiye kadar YALNIZ boyut ve içerik türü kaydediliyordu
@@ -930,9 +1040,14 @@ async function req(url: string, headers: Record<string, string>, options: number
     err.message=`${err.message}${err.snippet?` · yanıt: ${err.snippet}`:""}`;
     void recordDiagnostic("mag","STALKER_HTTP_PARSE_ERROR",{...requestMeta,elapsedMs:Date.now()-startedAt,status:res.status,kind,bytes:text.length,contentType:contentType.split(";")[0]||"",redirected,snippet:err.snippet});
     throw err;
+  } catch (error) {
+    checkScopeRuntime(runtime);
+    if (parentSignal?.aborted) throw scopeCancelledError();
+    throw error;
   } finally {
     clearTimeout(t);
-    if (opts.signal) opts.signal.removeEventListener("abort",abortFromParent);
+    if (parentSignal) parentSignal.removeEventListener("abort",abortFromParent);
+    runtime?.controller.signal.removeEventListener("abort",abortFromScope);
   }
 }
 
@@ -1128,6 +1243,7 @@ async function handshakeAttempt(
       }
     } catch (e:any) {
       lastErr=e;
+      if (terminalMagError(e)) throw e;
       if (e?.kind === "MAG_SAFE_BUDGET" || e?.kind === "MAG_AUTH_GOVERNOR" || e?.kind === "MAG_RATE_LIMIT") throw e;
       const status=Number(e?.status||0);
       if (isRateLimitRejection(e)) {
@@ -1195,7 +1311,7 @@ export async function discoverMagPortal(
         return { endpoint, token: session.token };
       }
     } catch (e: any) {
-      if (e?.kind === "CANCELLED" || e?.kind === "MAG_RATE_LIMIT") throw e;
+      if (terminalMagError(e)) throw e;
       // MAG_SAFE_BUDGET/AUTH_GOVERNOR artık tek aday içindir (bütçe sıfırlanıyor); 404/timeout/JSON
       // değil: bu aday yok, sıradakine geç.
     }
@@ -1218,13 +1334,13 @@ async function stalkerHandshakeInternal(cred: StalkerCreds, signal?: AbortSignal
      */
     await primeMagIdentity(cred);
     const learned=await loadLearnedCompat(cred);
-    const all=portalCandidates(cred.portal);
+    const all=portalCandidates(cred.portal, cred.endpointPolicy);
     const plan:string[]=[];
     const push=(x?:string)=>{if(x && !plan.includes(x)) plan.push(x)};
     // v16.12.2: temiz ilk deneme kullanıcının/primer portal endpoint'inde başlar.
     // Eski learned endpoint korunur fakat primer endpoint'in önüne geçemez.
     push(all[0]);
-    push(learned?.endpoint);
+    if (cred.endpointPolicy !== "exact") push(learned?.endpoint);
     /**
      * v16.8.0: Plan 3 uç noktayla sınırlıydı; doğru uç nokta 4-5. sırada
      * kalırsa HİÇ denenmiyordu (cihaz kaydında tam olarak bu oldu). Sınır 6'ya
@@ -1268,6 +1384,7 @@ async function stalkerHandshakeInternal(cred: StalkerCreds, signal?: AbortSignal
           errors.push(`${label}/${compatProfile}: token yok`);
           void recordDiagnostic("catalog","STALKER_COMPAT_ERROR",{endpoint,path:label,compatProfile,elapsedMs:Date.now()-profileAttemptAt,kind:"NO_TOKEN"});
         } catch (e:any) {
+          if (terminalMagError(e)) throw e;
           if (e?.kind === "MAG_SAFE_BUDGET" || e?.kind === "MAG_AUTH_GOVERNOR" || e?.kind === "MAG_RATE_LIMIT") throw e;
           errors.push(`${label}/${compatProfile}: ${String(e?.message||e)}`);
           void recordDiagnostic("catalog","STALKER_COMPAT_ERROR",{endpoint,path:label,compatProfile,elapsedMs:Date.now()-profileAttemptAt,kind:e?.kind,status:e?.status,bodyKind:e?.bodyKind,message:String(e?.message||e)});
@@ -1286,7 +1403,9 @@ async function stalkerHandshakeInternal(cred: StalkerCreds, signal?: AbortSignal
       // Kullanıcının/primer path'in kendisi reddedilirse aynı hostta geniş taramayı durdur.
       if (ei===0 && endpointRejected && (!learnedEndpoint || endpoint===all[0])) {
         void recordDiagnostic("catalog","STALKER_HANDSHAKE_STOPPED",{reason:"HTTP_REJECT",path:label,statusClass:"401/403/429/512"});
-        throw new Error(`Portal bu MAG isteğini reddetti (${errors.at(-1)||"HTTP ret"}). Aynı host üzerinde geniş endpoint taraması güvenlik nedeniyle durduruldu.`);
+        const e: any = new Error(`Portal bu MAG isteğini reddetti (${errors.at(-1)||"HTTP ret"}). Aynı host üzerinde geniş endpoint taraması güvenlik nedeniyle durduruldu.`);
+        e.kind = "HTTP_REJECT";
+        throw e;
       }
     }
     /**
@@ -1474,6 +1593,7 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession, si
       errors.push(`${variant.label}: profil boş`);
       void recordDiagnostic("catalog","STALKER_PROFILE_VARIANT_EMPTY",{variant:variant.label, elapsedMs:Date.now()-started, endpoint:ses.endpoint});
     } catch (e:any) {
+      if (terminalMagError(e)) throw e;
       errors.push(`${variant.label}: ${String(e?.message || e)}`);
       void recordDiagnostic("catalog","STALKER_PROFILE_VARIANT_ERROR",{variant:variant.label, elapsedMs:Date.now()-started, endpoint:ses.endpoint, status:e?.status, kind:e?.kind, contentType:e?.contentType, redirected:e?.redirected, finalUrl:e?.finalUrl, message:String(e?.message || e)});
     }
@@ -1500,7 +1620,8 @@ export async function stalkerGenres(cred: StalkerCreds, ses: StalkerSession): Pr
     headersFor(cred, ses.token, ses.endpoint, ses.compatProfile)
   );
   const map = new Map<string, string>();
-  const list = Array.isArray(data?.js) ? data.js : [];
+  const list = Array.isArray(data?.js) ? data.js : Array.isArray(data?.js?.data) ? data.js.data : null;
+  if (!list) throw new Error("Canlı kategori yanıt biçimi desteklenmiyor.");
   for (const g of list) {
     if (g?.id != null) map.set(String(g.id), String(g.title || "Genel"));
   }
@@ -1590,13 +1711,15 @@ function primitiveString(v: any): string | undefined {
 /** Portal get_profile yanıtını uygulama içi sabit tipe çevirir. */
 export function normalizeStalkerAccountInfo(profile: any): AccountInfo {
   const p = profile && typeof profile === "object" ? profile : {};
+  const blocked = p.blocked === true || p.blocked === 1 || p.blocked === "1";
+  const inactive = p.active === false || p.active === 0 || p.active === "0";
   return {
     username: primitiveString(p.login || p.username),
-    status: primitiveString(p.status ?? p.blocked ?? p.active),
+    status: blocked ? "blocked" : primitiveString(p.status) || (inactive ? "inactive" : p.active != null || p.blocked != null ? "Active" : undefined),
     mac: primitiveString(p.mac),
     phone: primitiveString(p.phone),
     tariff_plan: primitiveString(p.tariff_plan || p.tariff_plan_name),
-    tariff_expired_date: primitiveString(p.tariff_expired_date || p.exp_billing_date || p.exp_date) || null,
+    tariff_expired_date: primitiveString(p.tariff_expired_date || p.expire_billing_date || p.exp_billing_date || p.expiration_date || p.exp_date) || null,
   };
 }
 
@@ -1647,17 +1770,21 @@ async function stalkerCategories(cred: StalkerCreds, ses: StalkerSession, type: 
   return out;
 }
 
-export async function stalkerCategoryPreview(cred: StalkerCreds, ses: StalkerSession): Promise<{vod:string[];series:string[];warnings:string[]}> {
+export async function stalkerCategoryPreview(cred: StalkerCreds, ses: StalkerSession): Promise<{live:string[];vod:string[];series:string[];warnings:string[]}> {
   const warnings:string[]=[];
-  const [vodRes,seriesRes]=await Promise.allSettled([stalkerCategories(cred,ses,"vod"),stalkerCategories(cred,ses,"series")]);
+  const [liveRes,vodRes,seriesRes]=await Promise.allSettled([stalkerGenres(cred,ses),stalkerCategories(cred,ses,"vod"),stalkerCategories(cred,ses,"series")]);
+  if (cred.requestScope) checkScopeRuntime(requestScopeRuntime(cred.requestScope));
+  for (const result of [liveRes,vodRes,seriesRes]) if (result.status === "rejected" && terminalMagError(result.reason)) throw result.reason;
+  if (cred.requestScope?.signal?.aborted) { const e: any = new Error("Kategori özeti iptal edildi"); e.kind = "CANCELLED"; throw e; }
   const names=(r:PromiseSettledResult<Map<string,string>>,label:string):string[]=>{
     if(r.status==="rejected"){ warnings.push(`${label}: ${String((r.reason as any)?.message || r.reason)}`); return []; }
     return Array.from(new Set(Array.from(r.value.values()).map(v=>String(v||"Genel").trim()||"Genel"))).sort((a,b)=>a.localeCompare(b,"tr"));
   };
+  const live=names(liveRes,"Canlı kategori önizleme");
   const vod=names(vodRes,"VOD kategori önizleme");
   const series=names(seriesRes,"Series kategori önizleme");
-  void recordDiagnostic("catalog","STALKER_CATEGORY_PREVIEW",{vod:vod.length,series:series.length,warnings});
-  return {vod,series,warnings};
+  void recordDiagnostic("catalog","STALKER_CATEGORY_PREVIEW",{live:live.length,vod:vod.length,series:series.length,warnings});
+  return {live,vod,series,warnings};
 }
 
 const ORDERED_LIST_ABSOLUTE_MAX_PAGES = 120;
@@ -1945,7 +2072,7 @@ async function retryCatalogPart<T>(label:string, fn:()=>Promise<T>, onAuthFailur
   let last:any;
   for (let i=0;i<2;i++) {
     try { return await fn(); }
-    catch (e) { if (e instanceof StalkerCatalogUnsupportedError) throw e; last=e; if (i===0) await new Promise(r=>setTimeout(r,350)); }
+    catch (e) { if (terminalMagError(e) || e instanceof StalkerCatalogUnsupportedError) throw e; last=e; if (i===0) await new Promise(r=>setTimeout(r,350)); }
   }
   // v16.3.0: yetkilendirme imzası -> oturumu tazeleyip SON bir deneme.
   if (onAuthFailure && looksLikeAuthFailure(last)) {
@@ -1953,7 +2080,7 @@ async function retryCatalogPart<T>(label:string, fn:()=>Promise<T>, onAuthFailur
     try {
       await onAuthFailure();
       return await fn();
-    } catch (e2) { last=e2; }
+    } catch (e2) { if (terminalMagError(e2)) throw e2; last=e2; }
   }
   void recordDiagnostic("catalog", "STALKER_CATALOG_PART_ERROR", { label, kind:last?.kind, status:last?.status, contentType:last?.contentType, redirected:last?.redirected, finalUrl:last?.finalUrl, message:String(last?.message || last) });
   const err:any=new Error(`${label} kataloğu alınamadı: ${last?.message || last}`); err.cause=last; err.kind=last?.kind; err.status=last?.status; err.contentType=last?.contentType; err.redirected=last?.redirected; err.finalUrl=last?.finalUrl; throw err;
@@ -1985,7 +2112,7 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
   let liveError="";
   const finishLiveTask = startDiagnosticTask("mag:catalog-live");
   try {if(wanted.has("live"))channels=await retryCatalogPart("MAG Live",()=>stalkerChannels(cred,ses,opts.signal),refreshSession);}
-  catch (e:any) { liveError=String(e?.message || e); void recordDiagnostic("mag","STALKER_LIVE_PARTIAL_FAILURE",{message:liveError,status:e?.status,kind:e?.kind}); }
+  catch (e:any) { if (terminalMagError(e)) throw e; liveError=String(e?.message || e); void recordDiagnostic("mag","STALKER_LIVE_PARTIAL_FAILURE",{message:liveError,status:e?.status,kind:e?.kind}); }
   finally { finishLiveTask(); }
   const liveCount=channels.length;
   void recordDiagnostic("catalog","STALKER_CATALOG_STAGE_DONE",{stage:"live",elapsedMs:Date.now()-liveStageStarted,count:liveCount,error:liveError});
@@ -2015,7 +2142,7 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
   let vodError="";
   const finishVodTask = startDiagnosticTask("mag:catalog-vod");
   try {if(wanted.has("vod")||wanted.has("series"))vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses,opts),refreshSession);}
-  catch (e:any) { vodError=String(e?.message || e); vodPart={vod:[],fallbackSeries:[],supported:!(e instanceof StalkerCatalogUnsupportedError),rawCount:0,seriesFlagged:0}; void recordDiagnostic("mag","STALKER_VOD_PARTIAL_FAILURE",{message:vodError,status:e?.status,kind:e?.kind}); }
+  catch (e:any) { if (terminalMagError(e)) throw e; vodError=String(e?.message || e); vodPart={vod:[],fallbackSeries:[],supported:!(e instanceof StalkerCatalogUnsupportedError),rawCount:0,seriesFlagged:0}; void recordDiagnostic("mag","STALKER_VOD_PARTIAL_FAILURE",{message:vodError,status:e?.status,kind:e?.kind}); }
   finally { finishVodTask(); }
   const vodCount=vodPart.vod.length;
   void recordDiagnostic("catalog","STALKER_CATALOG_STAGE_DONE",{stage:"vod",elapsedMs:Date.now()-vodStageStarted,count:vodCount,seriesFlagged:vodPart.fallbackSeries.length,error:vodError});
@@ -2032,7 +2159,7 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
   let seriesError="";
   const finishSeriesTask = startDiagnosticTask("mag:catalog-series");
   try {if(wanted.has("series"))nativeSeries=await retryCatalogPart("MAG Series",()=>nativeStalkerSeries(cred,ses,opts),refreshSession);}
-  catch (e:any) { seriesError=String(e?.message || e); nativeSeries={items:[],supported:!(e instanceof StalkerCatalogUnsupportedError)}; void recordDiagnostic("mag","STALKER_SERIES_PARTIAL_FAILURE",{message:seriesError,status:e?.status,kind:e?.kind}); }
+  catch (e:any) { if (terminalMagError(e)) throw e; seriesError=String(e?.message || e); nativeSeries={items:[],supported:!(e instanceof StalkerCatalogUnsupportedError)}; void recordDiagnostic("mag","STALKER_SERIES_PARTIAL_FAILURE",{message:seriesError,status:e?.status,kind:e?.kind}); }
   finally { finishSeriesTask(); }
 
   // type=series boş dönse bile VOD is_series/kategori fallback'i HER ZAMAN birleştirilir.
@@ -2097,12 +2224,12 @@ export async function stalkerEnrichment(cred:StalkerCreds, ses:StalkerSession, o
     emitCatalogProgress(opts,{stage:"vod",message:"Film kataloğu arka planda tamamlanıyor..."});
     let vodPart:VodPartition, vodError="";
     try { vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses,opts),refreshSession); }
-    catch (e:any) { vodError=String(e?.message||e); vodPart={vod:[],fallbackSeries:[],supported:!(e instanceof StalkerCatalogUnsupportedError),rawCount:0,seriesFlagged:0}; }
+    catch (e:any) { if (terminalMagError(e)) throw e; vodError=String(e?.message||e); vodPart={vod:[],fallbackSeries:[],supported:!(e instanceof StalkerCatalogUnsupportedError),rawCount:0,seriesFlagged:0}; }
 
     emitCatalogProgress(opts,{stage:"series",message:"Dizi kataloğu arka planda tamamlanıyor..."});
     let nativeSeries:{items:SeriesItem[];supported:boolean}, seriesError="";
     try { nativeSeries=await retryCatalogPart("MAG Series",()=>nativeStalkerSeries(cred,ses,opts),refreshSession); }
-    catch (e:any) { seriesError=String(e?.message||e); nativeSeries={items:[],supported:!(e instanceof StalkerCatalogUnsupportedError)}; }
+    catch (e:any) { if (terminalMagError(e)) throw e; seriesError=String(e?.message||e); nativeSeries={items:[],supported:!(e instanceof StalkerCatalogUnsupportedError)}; }
 
     const merged=new Map<string,SeriesItem>();
     for (const x of [...nativeSeries.items,...vodPart.fallbackSeries]) {
@@ -2257,6 +2384,7 @@ export async function stalkerLogin(
     profile = await stalkerProfile(cred, session, opts.signal);
     void recordDiagnostic("catalog", "STALKER_PROFILE_OK", { endpoint: session.endpoint, elapsedMs: Date.now()-started });
   } catch (e: any) {
+    if (terminalMagError(e)) throw e;
     session.profileError = String(e?.message || e);
     void recordDiagnostic("catalog", "STALKER_PROFILE_ERROR", { endpoint: session.endpoint, message: session.profileError, status: e?.status, kind:e?.kind, contentType:e?.contentType, redirected:e?.redirected, finalUrl:e?.finalUrl });
     // Bazı eski Ministra/Stalker varyantları get_profile alanlarının bir kısmını

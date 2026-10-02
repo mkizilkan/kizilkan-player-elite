@@ -1,5 +1,6 @@
 // Web storage (Metro picks index.ts on native).
-// Helpers never throw: reads return `fallback`, writes return `false`.
+// Legacy reads return fallback and writes return false on failure.
+// getItemStrict throws on unreadable/corrupt data; only an absent key returns fallback.
 // Values supported: string | number | boolean | null (JSON-serialized on disk).
 // Usage: import { storage } from "@/src/utils/storage"; await storage.getItem(key, fallback);
 // No Keychain on web — secure* helpers reuse AsyncStorage (no expo-secure-store).
@@ -9,6 +10,14 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AssertNoExtras, StorageBase, StorageItemValue } from "./storage-base";
 
 export class Storage extends StorageBase {
+  /** Missing keys retain fallback compatibility; I/O, outer JSON and type failures throw safely. */
+  async getItemStrict<Fallback extends StorageItemValue>(key: string, fallback: Fallback): Promise<Fallback | null> {
+    let raw: string | null;
+    try { raw = await AsyncStorage.getItem(key); }
+    catch { throw new Error("Yerel kayıt okunamadı."); }
+    return this.retrieveStrict(raw, fallback);
+  }
+
   // General KV — backed by AsyncStorage (its built-in web shim uses IndexedDB).
   async getItem<Fallback extends StorageItemValue>(
     key: string,

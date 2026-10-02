@@ -9,7 +9,7 @@ const checks=[
  ['bounded backpressure queue',/ArrayBlockingQueue<StreamAccountV172>/.test(svc)&&/queueCapacity/.test(svc)],
  ['producer consumer split',/producerDone/.test(svc)&&/worker/.test(svc)],
  ['adaptive effective concurrency',/val adaptiveLimit = AtomicInteger/.test(svc)&&/effectiveConcurrency/.test(svc)],
- ['immediate encrypted journal result',/journal\.addResult/.test(svc)&&/checkpointUnified/.test(svc)],
+ ['immediate encrypted journal result',/persistScanResult/.test(svc)&&/ScanJournalStore\.get\(applicationContext\)\.addResult/.test(svc)&&/checkpointUnified/.test(svc)],
  ['pause cancel aware',/paused/.test(svc)&&/cancel/.test(svc)],
  ['recovery mode',/streaming-file-v172/.test(svc)&&/ACTION_RECOVER/.test(svc)&&/accountCursor/.test(svc)&&/checkpointUnified/.test(svc)],
  ['UI uses native inspect + streaming scan',/inspectBulkAccountsFile/.test(ui)&&/runNativeStreamingBulkFile/.test(ui)&&/bulkFileStreamSource/.test(ui)],

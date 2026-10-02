@@ -29,7 +29,7 @@
 import { Stack, usePathname, useRouter, useSegments } from "expo-router";
 import * as Linking from "expo-linking";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -39,13 +39,13 @@ import { ErrorBoundary } from "@/src/components/ErrorBoundary";
 import { ThemeProvider } from "@/src/theme/ThemeContext";
 import { ProfileProvider, useProfiles } from "@/src/store/ProfileContext";
 import { PlaylistProvider, usePlaylists } from "@/src/store/PlaylistContext";
-import { ParentalProvider } from "@/src/store/ParentalContext";
+import { ParentalProvider, useParental } from "@/src/store/ParentalContext";
 import { LibraryProvider } from "@/src/store/LibraryContext";
 import { DownloadProvider } from "@/src/store/DownloadContext";
 import { registerQuickActions } from "@/src/utils/quickActions";
 import { requestBaselinePermissions } from "@/src/utils/permissions";
 import { prepareExternalStream } from "@/src/utils/externalOpen";
-import { AppState, View } from "react-native";
+import { AppState, View, Text, ActivityIndicator, Pressable } from "react-native";
 import { PlayerProvider, usePlayer } from "@/src/player/PlayerContext";
 import PlayerHost from "@/src/player/PlayerHost";
 import PlaylistRepairOverlay from "@/src/components/PlaylistRepairOverlay";
@@ -67,13 +67,28 @@ const PROFILE_GATE_EXEMPT_PATHS = new Set(["/", "/welcome", "/profile-select"]);
 function ProfileSessionGate({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { activeProfile, isLoading, sessionAuthorizedProfileId } = useProfiles();
+  const { activeProfile, isLoading, loadError, retryLoad, sessionAuthorizedProfileId } = useProfiles();
   const blocked = !isLoading && !PROFILE_GATE_EXEMPT_PATHS.has(pathname) && !!activeProfile?.hasPin && sessionAuthorizedProfileId !== activeProfile.id;
   useEffect(() => {
-    if (blocked) router.replace("/profile-select");
-  }, [blocked, router]);
+    if (blocked && !loadError) router.replace("/profile-select");
+  }, [blocked, loadError, router]);
+  if(loadError)return <StoredDataLoadError title="Profil bilgisi açılamadı" error={loadError} retry={retryLoad}/>;
   // PIN korumalı route bir frame bile görünmesin; redirect tamamlanana kadar siyah bariyer.
   if (blocked) return <View style={{ flex: 1, backgroundColor: "#000" }} />;
+  return <>{children}</>;
+}
+
+function StoredDataLoadError({title,error,retry}:{title:string;error:string;retry:()=>void}){
+  return <View testID="stored-data-load-error" style={{flex:1,backgroundColor:'#080808',justifyContent:'center',padding:32,gap:20}}>
+    <Text style={{color:'#fff',fontSize:24,fontWeight:'700'}}>{title}</Text>
+    <Text style={{color:'#ddd',fontSize:16}}>{error}</Text>
+    <Text style={{color:'#ddd'}}>Mevcut kayıtlar korundu. Bilgiler güvenle okunana kadar oynatma ve değişiklikler durduruldu.</Text>
+    <Pressable accessibilityRole="button" onPress={retry} style={({focused})=>({padding:16,borderRadius:12,backgroundColor:focused?'#e53935':'#882020'})}><Text style={{color:'#fff',textAlign:'center'}}>Yeniden dene</Text></Pressable>
+  </View>;
+}
+function ParentalDataGate({children}:{children:ReactNode}){
+  const {loadError,retryLoad}=useParental();
+  if(loadError)return <StoredDataLoadError title="Ebeveyn bilgisi açılamadı" error={loadError} retry={retryLoad}/>;
   return <>{children}</>;
 }
 
@@ -179,6 +194,18 @@ const PERMISSION_PROMPT_DELAY_MS = 3000;
 
 export default function RootLayout() {
   const [loaded, error] = useIconFonts();
+  const [restoreReady, setRestoreReady] = useState(false);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [restoreRetry, setRestoreRetry] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    setRestoreError(null);
+    import('@/src/utils/backupRestoreTransaction')
+      .then(module => module.recoverPendingPlaylistRestore())
+      .then(() => { if (!cancelled) setRestoreReady(true); })
+      .catch((e: any) => { if (!cancelled) { setRestoreError(String(e?.message || e)); void SplashScreen.hideAsync(); } });
+    return () => { cancelled = true; };
+  }, [restoreRetry]);
   const router = useRouter();
   const pathname = usePathname();
   const segments = useSegments();
@@ -301,6 +328,17 @@ export default function RootLayout() {
   }, [loaded, error]);
 
   if (!loaded && !error) return null;
+  // Providers must not publish disk metadata before interrupted restore recovery.
+  if (!restoreReady) return (
+    <View style={{ flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', padding: 28 }}>
+      {restoreError ? <>
+        <Text style={{ color: '#fff', textAlign: 'center', marginBottom: 20 }}>Yarım geri yükleme tamamlanamadı: {restoreError}</Text>
+        <Pressable onPress={() => setRestoreRetry(v => v + 1)} style={{ padding: 18, backgroundColor: '#b71c1c', borderRadius: 8 }}>
+          <Text style={{ color: '#fff' }}>Tekrar dene</Text>
+        </Pressable>
+      </> : <ActivityIndicator color="#fff" />}
+    </View>
+  );
 
   return (
     <ErrorBoundary>
@@ -318,6 +356,7 @@ export default function RootLayout() {
           <ThemeProvider>
               <PlaylistProvider>
                 <ParentalProvider>
+                  <ParentalDataGate>
                   <LibraryProvider>
                     <DownloadProvider>
                       <PlayerProvider>
@@ -402,6 +441,7 @@ export default function RootLayout() {
                       </PlayerProvider>
                     </DownloadProvider>
                   </LibraryProvider>
+                  </ParentalDataGate>
                 </ParentalProvider>
               </PlaylistProvider>
             </ThemeProvider>
@@ -414,4 +454,3 @@ export default function RootLayout() {
     </ErrorBoundary>
   );
 }
-

@@ -9,14 +9,29 @@ import java.util.UUID
 import java.io.File
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.util.concurrent.Executors
 import org.json.JSONObject
 import androidx.core.content.ContextCompat
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.cancel
 
 class PanelScanModule : Module() {
+  // Cancellation must remain schedulable while provider reads occupy IO workers.
+  private val proxyCancelDispatcher = Executors.newSingleThreadExecutor { task ->
+    Thread(task, "PanelScan.ProxyCancel").apply { isDaemon = true }
+  }.asCoroutineDispatcher()
+  private val proxyCancelScope = CoroutineScope(SupervisorJob() + proxyCancelDispatcher)
+
   override fun definition() = ModuleDefinition {
     Name("PanelScan")
+    OnDestroy {
+      proxyCancelScope.cancel()
+      proxyCancelDispatcher.close()
+    }
 
     // ── v18.4.0: Taramaya özel proxy (test motoru + rotasyon) ─────────────────
     // Yalnız tarama trafiği (probePhysical + proxiedProbe) etkilenir; oynatma/
@@ -64,12 +79,18 @@ class PanelScanModule : Module() {
     AsyncFunction("proxiedProbe") { url: String, timeoutMs: Int ->
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
       ScanProxyPool.proxiedGet(context, url, timeoutMs.coerceIn(2000, 30000)).toString()
-    }
+    }.runOnQueue(appContext.backgroundCoroutineScope)
     // v18.7.0: MAG çoklu-MAC taraması stalker isteklerini (özel başlık + POST gövdesi) proxy'den geçirir.
     AsyncFunction("proxiedRequest") { url: String, method: String, headersJson: String, body: String, timeoutMs: Int ->
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
       ScanProxyPool.proxiedRequest(context, url, method, headersJson.ifBlank { null }, body.ifBlank { null }, timeoutMs.coerceIn(2000, 30000)).toString()
-    }
+    }.runOnQueue(appContext.backgroundCoroutineScope)
+    AsyncFunction("proxiedRequestCancelable") { requestId: String, url: String, method: String, headersJson: String, body: String, timeoutMs: Int ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.proxiedRequest(context, url, method, headersJson.ifBlank { null }, body.ifBlank { null }, timeoutMs.coerceIn(2000, 30000), requestId).toString()
+    }.runOnQueue(appContext.backgroundCoroutineScope)
+    AsyncFunction("cancelProxiedRequest") { requestId: String -> ScanProxyPool.cancelProxiedRequest(requestId) }
+      .runOnQueue(proxyCancelScope)
 
     // v17.1.1: Büyük TXT/CSV dosyaları JS `response.text()` yoluna alınmaz.
     // ContentResolver InputStream satır satır okunur; ham dosya hiçbir zaman tek

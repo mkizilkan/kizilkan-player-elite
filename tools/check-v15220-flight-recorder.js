@@ -16,7 +16,8 @@ if(app?.expo?.version !== pkg.version || Number(app?.expo?.android?.versionCode)
 
 // v15.2.19 CI TS2322 kök nedeninin gerçek düzeltmesi: Promise<void> kuyruğu boolean döndürmemeli.
 need('frontend/src/store/PlaylistContext.tsx', '.then(async () => {', 'playlist persist queue void callback');
-need('frontend/src/store/PlaylistContext.tsx', 'await storage.setItem(key, id);', 'playlist persist await');
+need('frontend/src/store/PlaylistContext.tsx', 'await storage.setItem(key, id)', 'playlist persist await');
+need('frontend/src/store/PlaylistContext.tsx', "throw new Error('Aktif liste seçimi kaydedilemedi.')", 'playlist false write must reject');
 forbid('frontend/src/store/PlaylistContext.tsx', '.then(() => storage.setItem(key, id))', 'Promise<boolean> -> Promise<void> regresyonu');
 
 // Native uçuş kayıt sistemi.

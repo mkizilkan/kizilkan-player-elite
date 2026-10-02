@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, TextInput } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -8,6 +8,9 @@ import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { useParental } from "@/src/store/ParentalContext";
 import { FocusButton } from "@/src/components/FocusButton";
 import { useTv } from "@/src/store/TvContext";
+import { useProfiles } from "@/src/store/ProfileContext";
+import { PIN_MIN_LENGTH, PIN_MAX_LENGTH } from "@/src/utils/pin";
+import { isCatalogRestoreActive } from "@/src/utils/catalogOperations";
 
 export default function PinEntry() {
   // PDF Bulgu 5: TV'de klavye otomatik açılmamalı, odağı kaçırıyor.
@@ -15,17 +18,56 @@ export default function PinEntry() {
   const router = useRouter();
   const { colors } = useTheme();
   const params = useLocalSearchParams<{ category?: string; returnTo?: string }>();
-  const { verifyPinAsync, unlockCategoryForSession } = useParental();
+  const { settings, isLoading: parentalLoading, loadError: parentalError, verifyPinAsync, unlockCategoryForSession } = useParental();
+  const { activeProfile, isLoading: profileLoading, loadError: profileError } = useProfiles();
   const [pin, setPin] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const [pinBusy, setPinBusy] = useState(false);
+  const mounted = useRef(true);
+  const busy = useRef(false);
+  const submission = useRef(0);
+  const owner = JSON.stringify([activeProfile.id, activeProfile.pin || "", settings.pin, settings.enabled, params.category || "", params.returnTo || ""]);
+  const ready = !parentalLoading && !profileLoading && !parentalError && !profileError;
+  const currentOwner = useRef({ key: owner, ready });
+  currentOwner.current = { key: owner, ready };
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; submission.current += 1; busy.current = false; };
+  }, []);
+  useEffect(() => {
+    submission.current += 1;
+    busy.current = false;
+    setPinBusy(false);
+    setPin("");
+    setErr(null);
+  }, [owner]);
 
   const submit = async () => {
-    if (await verifyPinAsync(pin)) {
-      if (params.category) unlockCategoryForSession(params.category);
-      router.back();
-    } else {
-      setErr("Yanlış PIN");
-      setPin("");
+    if (busy.current || currentOwner.current.key !== owner || !currentOwner.current.ready || isCatalogRestoreActive() || pin.length < PIN_MIN_LENGTH) return;
+    const key = owner;
+    const attempt = ++submission.current;
+    const stillMine = () => mounted.current && submission.current === attempt && currentOwner.current.key === key && currentOwner.current.ready && !isCatalogRestoreActive();
+    busy.current = true;
+    setPinBusy(true);
+    setErr(null);
+    try {
+      const accepted = await verifyPinAsync(pin);
+      if (!stillMine()) return;
+      if (accepted) {
+        if (params.category) unlockCategoryForSession(params.category);
+        router.back();
+      } else {
+        setErr("Yanlış PIN");
+        setPin("");
+      }
+    } catch (error: any) {
+      if (stillMine()) setErr(`PIN doğrulanamadı: ${String(error?.message || error)}`);
+    } finally {
+      if (mounted.current && submission.current === attempt && currentOwner.current.key === key) {
+        busy.current = false;
+        setPinBusy(false);
+      }
     }
   };
 
@@ -43,16 +85,17 @@ export default function PinEntry() {
         <TextInput
           testID="parental-pin-input"
           value={pin}
-          onChangeText={t => { setPin(t.replace(/\D/g, "").slice(0, 4)); setErr(null); }}
+          onChangeText={t => { setPin(t.replace(/\D/g, "").slice(0, PIN_MAX_LENGTH)); setErr(null); }}
           placeholder="••••"
           placeholderTextColor={colors.onSurfaceTertiary}
           keyboardType="number-pad"
           secureTextEntry
-          maxLength={10}
+          maxLength={PIN_MAX_LENGTH}
+          editable={!pinBusy && ready && !isCatalogRestoreActive()}
           autoFocus={!isTv}
           style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
         />
-        {err && <Text style={[styles.err, { color: colors.error }]}>{err}</Text>}
+        {(err || parentalError || profileError) && <Text testID="parental-pin-error" style={[styles.err, { color: colors.error }]}>{err || parentalError || profileError}</Text>}
 
         <View style={styles.row}>
           <FocusButton
@@ -65,10 +108,10 @@ export default function PinEntry() {
           <FocusButton
             testID="pin-submit-btn"
             onPress={submit}
-            disabled={pin.length < 4}
-            style={[styles.btn, { backgroundColor: colors.brandPrimary, opacity: pin.length < 4 ? 0.5 : 1 }]}
+            disabled={pinBusy || !ready || isCatalogRestoreActive() || pin.length < PIN_MIN_LENGTH}
+            style={[styles.btn, { backgroundColor: colors.brandPrimary, opacity: pinBusy || !ready || pin.length < PIN_MIN_LENGTH ? 0.5 : 1 }]}
           >
-            <Text style={[styles.btnText, { color: colors.onBrandPrimary }]}>Onayla</Text>
+            <Text style={[styles.btnText, { color: colors.onBrandPrimary }]}>{pinBusy ? "Doğrulanıyor…" : "Onayla"}</Text>
           </FocusButton>
         </View>
       </View>

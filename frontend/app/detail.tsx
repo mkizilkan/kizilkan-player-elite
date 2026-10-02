@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
+import { useProfiles } from "@/src/store/ProfileContext";
 import { useLibrary } from "@/src/store/LibraryContext";
 import { useDownloads } from "@/src/store/DownloadContext";
 import { DownloadDialog, type SaveTarget, type DownloadOptions } from "@/src/components/DownloadDialog";
@@ -36,6 +37,12 @@ export default function DetailScreen() {
   const { colors } = useTheme();
   const params = useLocalSearchParams<{ type: string; id: string; navOrigin?: string; navGroup?: string; navSearch?: string; focusKey?: string; navScopeKey?: string }>();
   const { activePlaylist, addToRecent, ensureHeavyLoaded } = usePlaylists();
+  const { activeProfile } = useProfiles();
+  const sourceOwner = { playlistId: activePlaylist?.id || "", profileId: activeProfile.id };
+  const detailScope = JSON.stringify([sourceOwner.profileId, sourceOwner.playlistId, params.id, params.type]);
+  const detailScopeRef = useRef(detailScope);
+  detailScopeRef.current = detailScope;
+  const nativeItemOwnerRef = useRef("");
 
   // v15.2.4: detay ekranı bütün VOD/Series koleksiyonunu hydrate etmez.
   // Native Core varsa seçili öğeyi doğrudan Room'dan ister.
@@ -65,20 +72,21 @@ export default function DetailScreen() {
 
   const isSeries = params.type === "series";
   useEffect(() => {
+    nativeItemOwnerRef.current = ""; setNativeItem(null);
     if (!KizilkanNativeCore.available || !activePlaylist?.id || !params.id) { setNativeItem(null); return; }
     let cancelled = false;
     KizilkanNativeCore.getItem(activePlaylist.id, isSeries ? "series" : "vod", params.id)
-      .then(value => { if (!cancelled) setNativeItem(value); })
+      .then(value => { if (!cancelled) { nativeItemOwnerRef.current = detailScope; setNativeItem(value); } })
       .catch(e => console.warn("[Detail] Room getItem failed", e));
     return () => { cancelled = true; };
-  }, [activePlaylist?.id, params.id, isSeries]);
+  }, [activePlaylist?.id, activeProfile.id, params.id, isSeries]);
 
   const item = useMemo(() => {
-    if (KizilkanNativeCore.available) return nativeItem;
+    if (KizilkanNativeCore.available) return nativeItemOwnerRef.current === detailScope ? nativeItem : null;
     if (!activePlaylist) return null;
     const list = isSeries ? (activePlaylist.series || []) : (activePlaylist.vod || []);
     return list.find(x => x.id === params.id) || null;
-  }, [activePlaylist, params.id, isSeries, nativeItem]);
+  }, [activePlaylist, params.id, isSeries, nativeItem, detailScope]);
 
   useEffect(() => {
     if (!activePlaylist || !item) { setLoading(false); return; }
@@ -154,13 +162,16 @@ export default function DetailScreen() {
     // Store movie URL under a synthetic channel id and navigate to player
     const syntheticId = `vodplay-${item.id}`;
     await storage.setItem(EPISODE_URL_KEY + syntheticId, JSON.stringify({
+      ...sourceOwner,
       url: (item as any).url,
+      headers: (item as any).headers,
       name: item.name,
       group: (item as any).group || "Film",
       container_ext: (item as any).container_ext || "mp4",
       poster,
     }));
     const resumeAt = await chooseResumePosition(watchProgress[item.id]);
+    if (detailScope !== detailScopeRef.current) return;
     addToRecent(item.id);
     router.push({ pathname: "/player", params: {
       id: syntheticId, ext: "true",
@@ -177,11 +188,13 @@ export default function DetailScreen() {
     const orderedEpisodes = seasons.flatMap((season: any) => Array.isArray(season?.episodes) ? season.episodes : []);
     const seriesNavKey = `${activePlaylist?.id || "playlist"}:${item.id}`;
     const navItems = orderedEpisodes.map((candidate: any) => ({
+      ...sourceOwner,
       id: `epplay-${candidate.id}`,
       realId: String(candidate.id),
       url: candidate.url,
       name: `${item.name} • ${candidate.title}`,
-      group: "Dizi",
+      group: (item as any).group || "Dizi",
+      headers: candidate.headers || (item as any).headers,
       container_ext: candidate.container_ext || "mp4",
       poster: poster || null,
       episode_num: candidate.episode_num ?? null,
@@ -196,8 +209,9 @@ export default function DetailScreen() {
     });
     const idx = navItems.findIndex((candidate: any) => candidate.id === syntheticId);
     const currentPayload = idx >= 0 ? navItems[idx] : {
+      ...sourceOwner,
       id: syntheticId, realId: String(ep.id), url: ep.url, name: `${item.name} • ${ep.title}`,
-      group: "Dizi", container_ext: ep.container_ext || "mp4", poster: poster || null,
+      group: (item as any).group || "Dizi", headers: ep.headers || (item as any).headers, container_ext: ep.container_ext || "mp4", poster: poster || null,
     };
     await storage.setItem(EPISODE_URL_KEY + syntheticId, JSON.stringify({ ...currentPayload, seriesNavKey }));
     // Geriye dönük küçük komşu kaydı da korunur; bundle okunamazsa fail-safe çalışır.
@@ -207,6 +221,7 @@ export default function DetailScreen() {
     }));
 
     const resumeAt = await chooseResumePosition(watchProgress[String(ep.id)]);
+    if (detailScope !== detailScopeRef.current) return;
     addToRecent(item.id);
     router.push({ pathname: "/player", params: {
       id: syntheticId, ext: "true", ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}),
@@ -486,9 +501,11 @@ export default function DetailScreen() {
               <FocusButton testID="play-series-direct-btn" onPress={async () => {
                 const syntheticId = `seriesplay-${item.id}`;
                 await storage.setItem(EPISODE_URL_KEY + syntheticId, JSON.stringify({
-                  url: (item as any).url, name: item.name, group: "Dizi", container_ext: (item as any).container_ext || "mp4",
+                  ...sourceOwner,
+                  url: (item as any).url, headers: (item as any).headers, name: item.name, group: (item as any).group || "Dizi", container_ext: (item as any).container_ext || "mp4",
                 }));
                 const resumeAt = await chooseResumePosition(watchProgress[item.id]);
+                if (detailScope !== detailScopeRef.current) return;
                 addToRecent(item.id);
                 router.push({ pathname: "/player", params: { id: syntheticId, ext: "true", ...(resumeAt > 0 ? { resumeAt: String(resumeAt) } : {}), navOrigin: params.navOrigin || "detail", navGroup: params.navGroup || (item as any).group || "__all__", navSearch: params.navSearch || "", focusKey: params.focusKey || `detail:vod:${item.id}`, navScopeKey: params.navScopeKey } });
               }} focusable style={[styles.playBtn, { backgroundColor: colors.brandPrimary }]}>

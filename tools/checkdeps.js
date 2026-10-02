@@ -33,7 +33,15 @@ for (const file of process.argv.slice(2)) {
       // Fonksiyon gövdesinde kullanılan izlenen değişkenler
       const used = new Set();
       function scanBody(n) {
-        if (ts.isIdentifier(n) && WATCH.includes(n.text)) used.add(n.text);
+        // `scope.profileId` and `{ profileId: value }` name a property; neither
+        // captures the outer variable `profileId`. Shorthand `{ profileId }`
+        // does capture it and must still be checked.
+        const parent = n.parent;
+        const propertyName = parent && (
+          (ts.isPropertyAccessExpression(parent) && parent.name === n) ||
+          ((ts.isPropertyAssignment(parent) || ts.isPropertySignature(parent) || ts.isMethodDeclaration(parent) || ts.isMethodSignature(parent)) && parent.name === n && !ts.isComputedPropertyName(parent.name))
+        );
+        if (ts.isIdentifier(n) && WATCH.includes(n.text) && !propertyName) used.add(n.text);
         ts.forEachChild(n, scanBody);
       }
       scanBody(fn);

@@ -20,6 +20,7 @@ import { ContentSelectionModal } from "@/src/components/ContentSelectionModal";
 import { applyContentSelection, catalogCategories } from "@/src/utils/contentSelection";
 import { DEFAULT_PLAYLIST_SORT, PLAYLIST_SORT_LABELS, sortPlaylists, playlistRemainingDays, playlistTotalCount, playlistMaxUsers, type PlaylistSortMode, type PlaylistSortPreferences } from "@/src/utils/playlistManagement";
 import type { Playlist, PlaylistContentSelection } from "@/src/types";
+import { playlistExpiryText, playlistProtectionText, playlistCatalogStateText } from '@/src/utils/accountCard';
 
 export default function PlaylistSelect() {
   /**
@@ -33,7 +34,7 @@ export default function PlaylistSelect() {
   const params = useLocalSearchParams<{ manage?: string }>();
   const managementMode = String(params.manage || "") === "1";
   const { colors } = useTheme();
-  const { playlists, activePlaylist, setActivePlaylist, isLoading, loadedProfileId, updatePlaylist, removePlaylist, heavyLoading, repairFailedId} = usePlaylists();
+  const { playlists, activePlaylist, setActivePlaylist, isLoading, loadedProfileId, loadError, reloadAfterRestore, updatePlaylist, removePlaylist, heavyLoading, repairFailedId} = usePlaylists();
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [refreshAllProgress, setRefreshAllProgress] = useState("");
@@ -447,7 +448,12 @@ export default function PlaylistSelect() {
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top"]} testID="playlist-select-screen">
-      {isLoading ? (
+      {loadError ? (
+        <View style={{flex:1,alignItems:'center',justifyContent:'center',padding:SPACING.lg,gap:SPACING.md}}>
+          <Text style={{color:colors.onSurface,textAlign:'center'}}>{loadError}</Text>
+          <FocusButton onPress={()=>void reloadAfterRestore().catch((e:any)=>Alert.alert('Listeler yüklenemedi',String(e?.message||e)))} style={{padding:SPACING.md,backgroundColor:colors.brandPrimary,borderRadius:RADIUS.md}}><Text style={{color:colors.onBrandPrimary}}>Tekrar dene</Text></FocusButton>
+        </View>
+      ) : isLoading ? (
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
           <ActivityIndicator size="large" color={colors.brandPrimary} />
         </View>
@@ -587,6 +593,9 @@ export default function PlaylistSelect() {
                     {(p.seriesCount ?? p.series?.length ?? 0) ? ` • ${p.seriesCount ?? p.series?.length} dizi` : ""}
                   </Text>
                   <Text style={[styles.sub,{color:colors.onSurfaceTertiary}]} numberOfLines={1}>{`Toplam ${playlistTotalCount(p)} • Maks. kullanıcı: ${playlistMaxUsers(p)==null?'Bilinmiyor':playlistMaxUsers(p)} • Kalan gün: ${playlistRemainingDays(p)==null?'Bilinmiyor':playlistRemainingDays(p)}${p.lastRefreshedAt?` • Son güncelleme ${new Date(p.lastRefreshedAt).toLocaleDateString('tr-TR')} ${p.lastRefreshOk===true?'✓':p.lastRefreshOk===false?'✕':''}`:''}`}</Text>
+                  {p.accountInfo && <Text style={[styles.sub, { color: colors.onSurfaceSecondary }]}>{playlistExpiryText(p)}</Text>}
+                  {playlistProtectionText(p) && <Text style={[styles.sub, { color: colors.onSurfaceTertiary }]}>{playlistProtectionText(p)}</Text>}
+                  {playlistCatalogStateText(p) && <Text style={[styles.sub, { color: colors.onSurfaceTertiary }]}>{playlistCatalogStateText(p)}</Text>}
                   {p.serverCodeBinding && (
                     <Text style={[styles.sub, { color: colors.onSurfaceTertiary }]} numberOfLines={1}>
                       Panel: {p.serverCodeBinding.panelName} • Sunucu kodu: {p.serverCodeBinding.code}

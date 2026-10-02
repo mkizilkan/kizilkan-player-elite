@@ -120,16 +120,16 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
 
   @Synchronized fun checkpoint(runId:String, cursor:Long, state:String="RUNNING") {
     writableDatabase.execSQL(
-      "UPDATE scan_session SET committed_cursor=?,committed_tested=?,state=?,updated_at=? WHERE run_id=?",
-      arrayOf(cursor,cursor,state,System.currentTimeMillis(),runId)
+      "UPDATE scan_session SET committed_cursor=?,committed_tested=?,state=?,updated_at=? WHERE run_id=? AND committed_cursor<=?",
+      arrayOf<Any>(cursor,cursor,state,System.currentTimeMillis(),runId,cursor)
     )
   }
 
   /** v17.1.0: yalnız tamamı biten batch commit edilir. */
   @Synchronized fun checkpointUnified(runId:String, nextAccount:Int, committedTested:Long, state:String="RUNNING") {
     writableDatabase.execSQL(
-      "UPDATE scan_session SET committed_account=?,committed_tested=?,committed_cursor=?,state=?,updated_at=? WHERE run_id=?",
-      arrayOf(nextAccount, committedTested, committedTested, state, System.currentTimeMillis(), runId)
+      "UPDATE scan_session SET committed_account=?,committed_tested=?,committed_cursor=?,state=?,updated_at=? WHERE run_id=? AND committed_account<=? AND committed_tested<=?",
+      arrayOf<Any>(nextAccount, committedTested, committedTested, state, System.currentTimeMillis(), runId, nextAccount, committedTested)
     )
   }
 
@@ -141,6 +141,14 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
       put("created_at", System.currentTimeMillis())
     }
     return writableDatabase.insertWithOnConflict("scan_result", null, v, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+  }
+
+  /** Safely replay legacy checkpoints while retaining verified result/probe rows. */
+  @Synchronized fun resetCheckpointForReplay(runId: String, payload: String) {
+    writableDatabase.execSQL(
+      "UPDATE scan_session SET payload_enc=?,committed_cursor=0,committed_account=0,committed_tested=0,state='RUNNING',updated_at=? WHERE run_id=?",
+      arrayOf<Any>(enc(payload), System.currentTimeMillis(), runId),
+    )
   }
 
   @Synchronized fun results(runId:String, limit:Int=1000000): JSONArray {
@@ -158,6 +166,31 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
     readableDatabase.rawQuery("SELECT COUNT(*) FROM scan_result WHERE run_id=?", arrayOf(runId)).use { c ->
       return if (c.moveToFirst()) c.getInt(0) else 0
     }
+  }
+
+  /** Old scan versions accepted missing/unknown auth as a match. Validate decoded rows in bounded pages. */
+  @Synchronized fun pruneUnverifiedResults(runId: String): Int {
+    val db = writableDatabase
+    var afterId = 0L
+    var removed = 0
+    while (true) {
+      val invalid = mutableListOf<Long>()
+      var rows = 0
+      db.rawQuery(
+        "SELECT id,payload_enc FROM scan_result WHERE run_id=? AND id>? ORDER BY id LIMIT 200",
+        arrayOf(runId, afterId.toString()),
+      ).use { cursor ->
+        while (cursor.moveToNext()) {
+          val id = cursor.getLong(0); afterId = id; rows++
+          // Preserve undecodable rows for recovery; only a decoded, unverified match is removed.
+          val decoded = runCatching { JSONObject(dec(cursor.getString(1))) }.getOrNull() ?: continue
+          if (scanAuthStatus(decoded.optJSONObject("login")?.optJSONObject("user_info")?.opt("auth")) != true) invalid.add(id)
+        }
+      }
+      for (id in invalid) removed += db.delete("scan_result", "run_id=? AND id=?", arrayOf(runId, id.toString()))
+      if (rows < 200) break
+    }
+    return removed
   }
 
   @Synchronized fun recoverable(): JSONObject? {
@@ -194,7 +227,7 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
   @Synchronized fun finish(runId:String,state:String) {
     writableDatabase.execSQL(
       "UPDATE scan_session SET state=?,updated_at=? WHERE run_id=?",
-      arrayOf(state,System.currentTimeMillis(),runId)
+      arrayOf<Any>(state,System.currentTimeMillis(),runId)
     )
   }
 

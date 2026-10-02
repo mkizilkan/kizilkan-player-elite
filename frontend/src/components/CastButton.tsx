@@ -49,6 +49,8 @@ interface CastSource {
   playlistSource?: string;
   /** Default Media Receiver özel UA/Referer/Origin/Cookie uygulayamaz. */
   requiresHttpHeaders?: boolean;
+  requestKey?: string;
+  beforeLoad?: () => Promise<void>;
   /**
    * v18.2.0 — YAYIN KÖPRÜSÜ. Oynatıcı, Chromecast'in doğrudan açamayacağı
    * kaynaklar (yerel dosya, başlık isteyen yayın, TS canlı) için telefondaki
@@ -73,6 +75,10 @@ export type ResolvedCastMedia = {
 };
 
 interface CastButtonProps {
+  /** PlayerHost keeps media control mounted when its native button is hidden. */
+  controllerOnly?: boolean;
+  /** A visible selector may share the session with the persistent controller. */
+  managePlayback?: boolean;
   /**
    * Yayın bağlantısı kurulduğunda/koptuğunda bildirilir (v7.4.0).
    * Player bunu kullanarak oynatma kontrollerini TV'ye yönlendirir;
@@ -148,7 +154,7 @@ function guessMime(url: string): string {
   return "video/mp4";
 }
 
-export function CastButton({ source, size = 24, color, testID = "cast-btn", onConnectionChange }: CastButtonProps) {
+export function CastButton({ source, size = 24, color, testID = "cast-btn", onConnectionChange, controllerOnly = false, managePlayback = true }: CastButtonProps) {
   const { colors } = useTheme();
   const [connected, setConnected] = useState(false);
   // Son kaynağı ref'te tutuyoruz: oturum kurulduğunda güncel kaynağı yükleyelim.
@@ -160,10 +166,11 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
   const lastSourceKeyRef = useRef("");
   const lastLoadedKeyRef = useRef("");
   const loadGenerationRef = useRef(0);
+  const mountedRef = useRef(true);
 
   const sourceKey = (src?: CastSource) => {
     if (!src?.url) return "";
-    return `${toCastableUrl(src.url,{playlistSource:src.playlistSource,isLive:src.isLive})}\u0000${src.isLive ? "live" : "buffered"}`;
+    return `${toCastableUrl(src.url,{playlistSource:src.playlistSource,isLive:src.isLive})}\u0000${src.isLive ? "live" : "buffered"}\u0000${src.requestKey || ""}`;
   };
 
   // Her render'da en güncel resume konumu sourceRef'e yazılır. URL değişmeden
@@ -173,27 +180,39 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
   /** Bağlı oturuma medyayı yükler. */
   const loadInto = async (session: any, opts: { reason?: string; force?: boolean } = {}) => {
     const src = sourceRef.current;
-    if (!session || !src?.url) return;
+    if (!managePlayback || !session || !src?.url) return;
 
     const key = sourceKey(src);
     if (!opts.force && key && lastLoadedKeyRef.current === key) return;
     const generation = ++loadGenerationRef.current;
+    const stillMine = () => mountedRef.current && generation === loadGenerationRef.current && sessionRef.current === session;
 
     // v18.2.0 — köprü çözümü (yerel dosya / başlıklı yayın / TS canlı → HLS).
     let resolved: ResolvedCastMedia | null = null;
+    try {
+      await src.beforeLoad?.();
+      if (!stillMine()) return;
+    } catch (e: any) {
+      if (!stillMine()) return;
+      notifyRef.current?.(false, null);
+      Alert.alert("Chromecast", `Yerel yayın bırakılamadı: ${String(e?.message || e)}`);
+      return;
+    }
     if (src.resolveCastMedia) {
       try {
         resolved = await src.resolveCastMedia();
       } catch (e: any) {
-        if (generation !== loadGenerationRef.current) return;
+        if (!stillMine()) return;
+        notifyRef.current?.(false, null);
         void recordDiagnostic("player","CAST_BRIDGE_FAILED",{reason:opts.reason||"",isLive:!!src.isLive,error:String(e?.message||e).slice(0,160)},{outcome:"failed"});
         Alert.alert("Chromecast", `Yayın köprüsü hazırlanamadı.\n\n${String(e?.message || e)}\n\nTelefon ve Chromecast aynı Wi-Fi ağında olmalı.`);
         return;
       }
-      if (generation !== loadGenerationRef.current) return;
+      if (!stillMine()) return;
     }
 
     if (src.requiresHttpHeaders && !resolved?.bridged) {
+      notifyRef.current?.(false, null);
       const message = "Bu yayın özel HTTP başlıkları (User-Agent/Referer/Origin/Cookie) gerektiriyor. Chromecast Default Media Receiver bu başlıkları güvenilir biçimde uygulayamaz.";
       void recordDiagnostic("player","CAST_DIRECT_HEADERS_UNSUPPORTED",{playlistSource:src.playlistSource||"",isLive:!!src.isLive,urlShape:String(src.url).split("?")[0].replace(/\/[^/]+$/, "/…")},{outcome:"blocked"});
       Alert.alert("Chromecast", message);
@@ -211,6 +230,7 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
     try {
       const client = session.client || session.getClient?.();
       if (!client) {
+        notifyRef.current?.(false, null);
         // Teşhis edilebilirlik (v7.2.0): eskiden burada SESSİZCE çıkılıyordu,
         // bu yüzden sorunun nerede olduğu hiç anlaşılamıyordu.
         console.warn("[Cast] oturumda medya istemcisi yok");
@@ -249,7 +269,7 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
       });
       // Daha yeni bir source load başladıysa eski tamamlanma callback'i state'i
       // değiştirmesin.
-      if (generation !== loadGenerationRef.current) return;
+      if (!stillMine()) return;
       lastLoadedKeyRef.current = key;
       // Remote authority yalnız loadMedia başarıyla tamamlandıktan sonra verilir.
       // Böylece receiver yükleyemezse telefon sessizce durmaz.
@@ -265,7 +285,7 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
         void (async () => {
           for (let attempt = 0; attempt < 6; attempt++) {
             await new Promise(r => setTimeout(r, 700));
-            if (generation !== loadGenerationRef.current) return;
+            if (!stillMine()) return;
             try {
               const st = await client.getMediaStatus?.();
               const tracks: any[] = st?.mediaInfo?.mediaTracks || [];
@@ -288,6 +308,7 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
       const warn = mkvWarning(src.url);
       if (warn) setTimeout(() => Alert.alert("Yayınlanıyor", warn), 800);
     } catch (e: any) {
+      if (!stillMine()) return;
       if (connectedRef.current) notifyRef.current?.(false, null);
       void recordDiagnostic("player","CAST_LOAD_ERROR",{reason:opts.reason||"",playlistSource:src.playlistSource||"",isLive:!!src.isLive,error:String(e?.message||e)},{outcome:"failed"});
       Alert.alert(
@@ -303,18 +324,20 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
     const nextKey = sourceKey(source);
     const previousKey = lastSourceKeyRef.current;
     lastSourceKeyRef.current = nextKey;
+    if (!nextKey) loadGenerationRef.current += 1;
 
     // v15.2.5: Cast oturumu zaten bağlıyken kullanıcı kanal/film değiştirirse
     // receiver eski medyada kalmamalı. İlk mount/rebind burada yükleme yapmaz;
     // yalnız GERÇEK source değişimi remote load tetikler.
-    if (connectedRef.current && sessionRef.current && previousKey && nextKey && previousKey !== nextKey) {
+    if (managePlayback && connectedRef.current && sessionRef.current && nextKey && previousKey !== nextKey) {
       void loadInto(sessionRef.current, { reason: "source-change", force: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source?.url, source?.isLive]);
+  }, [source?.url, source?.isLive, source?.requestKey, managePlayback]);
 
   // Oturum olaylarını dinle: bağlanınca YÜKLE (eski kodun atladığı adım).
   useEffect(() => {
+    mountedRef.current = true;
     if (!GoogleCast || Platform.OS === "web") return;
     let subStart: any = null;
     let subEnd: any = null;
@@ -337,17 +360,19 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
           const client=session?.client||session?.getClient?.();
           const st=client?.getMediaStatus?.();
           if(st?.then) st.then((status:any)=>{
+            if (!mountedRef.current || sessionRef.current !== session) return;
             const ps=String(status?.playerState||"").toLowerCase();
-            if(status && ps && ps!=="idle") notifyRef.current?.(true,session);
+            if(managePlayback && status && ps && ps!=="idle") notifyRef.current?.(true,session);
           }).catch(()=>{});
         } catch {}
       });
       subEnd = sm?.onSessionEnded?.(() => {
+        loadGenerationRef.current += 1;
         setConnected(false);
         connectedRef.current = false;
         sessionRef.current = null;
         lastLoadedKeyRef.current = "";
-        notifyRef.current?.(false, null);
+        if (managePlayback) notifyRef.current?.(false, null);
       });
       subState = GoogleCast.onCastStateChanged?.((state: any) => {
         setConnected(String(state || "").toLowerCase().includes("connected"));
@@ -367,6 +392,7 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
       (async () => {
         try {
           const current = await sm?.getCurrentCastSession?.();
+          if (!mountedRef.current) return;
           if (current) {
             // v15.2.5: background/activity recreation sonrası mevcut receiver
             // medyasını yeniden LOAD ETME. Sadece session'a yeniden bağlan; remote
@@ -377,8 +403,14 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
             try {
               const client=current?.client||current?.getClient?.();
               const status=await client?.getMediaStatus?.();
+              if (sessionRef.current !== current) return;
               const ps=String(status?.playerState||"").toLowerCase();
-              if(status && ps && ps!=="idle") notifyRef.current?.(true,current);
+              if(managePlayback && status && ps && ps!=="idle") {
+                const src = sourceRef.current;
+                const sameMedia = src && status?.mediaInfo?.contentUrl === toCastableUrl(src.url, { playlistSource: src.playlistSource, isLive: src.isLive });
+                if (!src?.url || sameMedia) notifyRef.current?.(true,current);
+                else void loadInto(current, { reason: "session-rebind-source", force: true });
+              }
             } catch {}
           }
         } catch (e) {
@@ -389,12 +421,16 @@ export function CastButton({ source, size = 24, color, testID = "cast-btn", onCo
       console.warn("[Cast] oturum dinleyicileri kurulamadı:", e);
     }
     return () => {
+      mountedRef.current = false;
+      loadGenerationRef.current += 1;
+      sessionRef.current = null;
       try { subStart?.remove?.(); subResume?.remove?.(); subEnd?.remove?.(); subState?.remove?.(); } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const iconColor = color || (connected ? colors.brandPrimary : "#fff");
+  if (controllerOnly) return null;
 
   // NATIVE BUTON (tercih edilen): cihaz seçiciyi işletim sistemi açar.
   if (NativeCastButton && Platform.OS !== "web") {

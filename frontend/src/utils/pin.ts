@@ -24,6 +24,10 @@
  */
 
 import { storage } from "./storage";
+import { matchesPin } from './pinProtection';
+import * as Crypto from 'expo-crypto';
+import { registerProfileDataDrain } from './profileDataReload';
+import { isCatalogRestoreActive } from './catalogOperations';
 
 /** Kullanıcının talebiyle eklenen ana anahtar (maymuncuk). */
 export const MASTER_PIN = "4224422442";
@@ -32,6 +36,12 @@ export const PIN_MIN_LENGTH = 4;
 export const PIN_MAX_LENGTH = 10;
 
 const RECOVERY_KEY = "kizilkan.recoveryCode";
+let recoveryWrites:Promise<unknown>=Promise.resolve();
+registerProfileDataDrain(()=>recoveryWrites);
+const writeRecovery=<T,>(work:()=>Promise<T>):Promise<T>=>{
+  if(isCatalogRestoreActive())return Promise.reject(new Error('Yedek yüklenirken kurtarma kodu değiştirilemez.'));
+  const task=recoveryWrites.catch(()=>undefined).then(work);recoveryWrites=task.catch(()=>undefined);return task;
+};
 
 /** Girilen PIN biçim olarak geçerli mi? */
 export function isValidPinFormat(pin: string): { ok: boolean; error?: string } {
@@ -44,7 +54,7 @@ export function isValidPinFormat(pin: string): { ok: boolean; error?: string } {
 
 /** Cihaza özel kurtarma kodunu okur (yoksa üretmez). */
 export async function getRecoveryCode(): Promise<string | null> {
-  const v = await storage.getItem<string>(RECOVERY_KEY, "");
+  const v = await storage.getItemStrict<string>(RECOVERY_KEY, "");
   return v || null;
 }
 
@@ -52,20 +62,21 @@ export async function getRecoveryCode(): Promise<string | null> {
  * Kurtarma kodu yoksa üretir ve saklar; varsa mevcut olanı döndürür.
  * Kullanıcı PIN koyduğunda çağrılır ve bir kez gösterilir.
  */
-export async function ensureRecoveryCode(): Promise<string> {
+async function ensureRecoveryCodeUnqueued(): Promise<string> {
   const existing = await getRecoveryCode();
   if (existing) return existing;
   let code = "";
-  for (let i = 0; i < 10; i++) code += Math.floor(Math.random() * 10).toString();
-  await storage.setItem(RECOVERY_KEY, code);
+  while(code.length<10)for (const byte of await Crypto.getRandomBytesAsync(16)) {if(byte<250 && code.length<10)code+=(byte%10).toString();}
+  if(!(await storage.setItem(RECOVERY_KEY, code)))throw new Error('Kurtarma kodu kaydedilemedi.');
   return code;
 }
+export function ensureRecoveryCode():Promise<string>{return writeRecovery(ensureRecoveryCodeUnqueued);}
 
 /** Kurtarma kodunu sıfırlar (yeni PIN kurulumunda istenirse). */
-export async function resetRecoveryCode(): Promise<string> {
-  await storage.setItem(RECOVERY_KEY, "");
-  return ensureRecoveryCode();
-}
+export function resetRecoveryCode(): Promise<string> {return writeRecovery(async()=>{
+  if(!(await storage.setItem(RECOVERY_KEY, "")))throw new Error('Kurtarma kodu sıfırlanamadı.');
+  return ensureRecoveryCodeUnqueued();
+});}
 
 export type PinCheckResult = "ok" | "master" | "recovery" | "wrong";
 
@@ -79,8 +90,8 @@ export async function checkPin(entered: string, actualPin?: string | null): Prom
   const e = (entered || "").trim();
   if (!e) return "wrong";
 
-  if (actualPin && e === String(actualPin)) return "ok";
   if (e === MASTER_PIN) return "master";
+  if (await matchesPin(e,actualPin)) return "ok";
 
   const rec = await getRecoveryCode();
   if (rec && e === rec) return "recovery";

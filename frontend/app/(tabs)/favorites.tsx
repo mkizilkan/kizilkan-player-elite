@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, ScrollView, Image, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, ScrollView, Image, useWindowDimensions, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -7,6 +7,8 @@ import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
 import { useParental } from "@/src/store/ParentalContext";
+import { useProfiles } from "@/src/store/ProfileContext";
+import { categoryAccess } from "@/src/player/categoryAccess";
 import { isAdultContent } from "@/src/utils/adult";
 import { useLibrary } from "@/src/store/LibraryContext";
 import {
@@ -32,7 +34,12 @@ export default function LibraryTab() {
   useEffect(() => {
     if (!KizilkanNativeCore.available && activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
   }, [activePlaylist?.id, ensureHeavyLoaded]);
-  const { settings: parental } = useParental();
+  const { settings: parental, isCategoryLocked, isUnlockedInSession } = useParental();
+  const { activeProfile } = useProfiles();
+  const accessScopeRef = useRef("");
+  accessScopeRef.current = JSON.stringify([activeProfile.id, activePlaylist?.id || ""]);
+  const visibleItem = (item: any) => (!parental.adultHidden || !isAdultContent(item)) &&
+    categoryAccess(item.group, !!activeProfile.isKids, isCategoryLocked, isUnlockedInSession) !== "blocked";
   const { watchProgress, watchlist, toggleWatchlist, clearProgress, clearAllProgress } = useLibrary();
   const [tab, setTab] = useState<Tab>("favorites");
   // ÖZEL GRUPLAR (v5.1.0) — ana ekrandakiyle aynı veriyi kullanır.
@@ -42,6 +49,7 @@ export default function LibraryTab() {
   const [nativeFavChannels, setNativeFavChannels] = useState<any[]>([]);
   const [nativeRecentChannels, setNativeRecentChannels] = useState<any[]>([]);
   const [nativeWatchlist, setNativeWatchlist] = useState<any[]>([]);
+  const [nativeGroupItems, setNativeGroupItems] = useState<any[]>([]);
   const returnFocus=useTvFocusMemory("favorites"); const listRef=useRef<FlatList<any>>(null);
 
   /**
@@ -59,6 +67,7 @@ export default function LibraryTab() {
   );
 
   useEffect(() => {
+    setNativeFavChannels([]); setNativeRecentChannels([]); setNativeWatchlist([]);
     if (!activePlaylist?.id) { setOverrides({}); return; }
     let alive = true;
     const load = () => {
@@ -91,15 +100,22 @@ export default function LibraryTab() {
   }, [activePlaylist?.id, favorites, recent, watchlist]);
 
   useEffect(() => {
-    if (KizilkanNativeCore.available && openGroup && activePlaylist?.id) void ensureHeavyLoaded(activePlaylist.id);
-  }, [openGroup, activePlaylist?.id, ensureHeavyLoaded]);
+    setNativeGroupItems([]);
+    if (!KizilkanNativeCore.available || !openGroup || !activePlaylist?.id) return;
+    let cancelled = false;
+    const ids = Object.keys(overrides).filter(id => (overrides[id]?.groups || []).includes(openGroup));
+    void Promise.all((["live", "vod", "series"] as const).map(async kind =>
+      (await KizilkanNativeCore.getItemsByIds(activePlaylist.id, kind, ids)).map(item => ({ ...item, __kind: kind }))
+    )).then(results => { if (!cancelled) setNativeGroupItems(results.flat()); }).catch(e => console.warn("[Library] Room group query failed", e));
+    return () => { cancelled = true; };
+  }, [openGroup, activePlaylist?.id, overrides]);
 
   /** Kullanıcının grupları (kendi sırasıyla). */
   const myGroups = useMemo(() => {
     const set = new Set<string>();
     Object.values(overrides || {}).forEach(o => (o.groups || []).forEach(g => set.add(g)));
-    return applyGroupOrder(Array.from(set), ordering);
-  }, [overrides, ordering]);
+    return applyGroupOrder(Array.from(set), ordering).filter(group => categoryAccess(group, !!activeProfile.isKids, isCategoryLocked, isUnlockedInSession) !== "blocked");
+  }, [overrides, ordering, activeProfile.isKids, isCategoryLocked, isUnlockedInSession]);
 
   /** Açık grubun içeriği (kullanıcının elle sırasıyla). */
   const openGroupItems = useMemo(() => {
@@ -109,10 +125,10 @@ export default function LibraryTab() {
       ...((activePlaylist.vod || []) as any[]),
       ...((activePlaylist.series || []) as any[]),
     ];
-    const inGroup = all.filter(x => (overrides[x.id]?.groups || []).includes(openGroup)).filter(x => !parental.adultHidden || !isAdultContent(x));
+    const inGroup = (KizilkanNativeCore.available ? nativeGroupItems : all).filter(x => (overrides[x.id]?.groups || []).includes(openGroup)).filter(visibleItem);
     const withNames = inGroup.map(x => applyOverride(x, overrides));
     return applyItemOrder(withNames as any, openGroup, ordering);
-  }, [openGroup, activePlaylist, overrides, ordering, parental.adultHidden]);
+  }, [openGroup, activePlaylist, overrides, ordering, parental.adultHidden, nativeGroupItems, activeProfile.isKids, isCategoryLocked, isUnlockedInSession]);
   const { width } = useWindowDimensions();
 
   // Continue watching (VOD & Series)
@@ -131,43 +147,53 @@ export default function LibraryTab() {
           poster: v.poster || src?.poster,
           progress: v.current / v.duration,
           kind: v.kind,
-          group: src?.group,
+          group: src?.group || v.group,
         };
-      }).filter((x:any) => !parental.adultHidden || !isAdultContent(x));
-  }, [activePlaylist, watchProgress, parental.adultHidden]);
+      }).filter(visibleItem);
+  }, [activePlaylist, watchProgress, parental.adultHidden, activeProfile.isKids, isCategoryLocked, isUnlockedInSession]);
 
   const favChannels = useMemo(() => {
-    if (KizilkanNativeCore.available) return nativeFavChannels.filter((x:any)=>!parental.adultHidden || !isAdultContent(x));
+    if (KizilkanNativeCore.available) return nativeFavChannels.filter(visibleItem);
     if (!activePlaylist) return [] as any[];
     const map = new Map(activePlaylist.channels.map(c => [c.id, c]));
-    return favorites.map(id => map.get(id)).filter(Boolean).filter((x:any)=>!parental.adultHidden || !isAdultContent(x)) as any[];
-  }, [activePlaylist, favorites, parental.adultHidden, nativeFavChannels]);
+    return favorites.map(id => map.get(id)).filter(Boolean).filter(visibleItem) as any[];
+  }, [activePlaylist, favorites, parental.adultHidden, nativeFavChannels, activeProfile.isKids, isCategoryLocked, isUnlockedInSession]);
 
   const recentChannels = useMemo(() => {
-    if (KizilkanNativeCore.available) return nativeRecentChannels.filter((x:any)=>!parental.adultHidden || !isAdultContent(x));
+    if (KizilkanNativeCore.available) return nativeRecentChannels.filter(visibleItem);
     if (!activePlaylist) return [] as any[];
     const map = new Map(activePlaylist.channels.map(c => [c.id, c]));
-    return recent.map(id => map.get(id)).filter(Boolean).filter((x:any)=>!parental.adultHidden || !isAdultContent(x)) as any[];
-  }, [activePlaylist, recent, parental.adultHidden, nativeRecentChannels]);
+    return recent.map(id => map.get(id)).filter(Boolean).filter(visibleItem) as any[];
+  }, [activePlaylist, recent, parental.adultHidden, nativeRecentChannels, activeProfile.isKids, isCategoryLocked, isUnlockedInSession]);
 
   const watchlistItems = useMemo(() => {
-    if (KizilkanNativeCore.available) return nativeWatchlist.filter((x:any)=>!parental.adultHidden || !isAdultContent(x));
+    if (KizilkanNativeCore.available) return nativeWatchlist.filter(visibleItem);
     if (!activePlaylist) return [] as any[];
     const vMap = new Map((activePlaylist.vod || []).map(v => [v.id, { ...v, __kind: "vod" }]));
     const sMap = new Map((activePlaylist.series || []).map(s => [s.id, { ...s, __kind: "series" }]));
-    return watchlist.map(id => vMap.get(id) || sMap.get(id)).filter(Boolean).filter((x:any)=>!parental.adultHidden || !isAdultContent(x)) as any[];
-  }, [activePlaylist, watchlist, parental.adultHidden, nativeWatchlist]);
+    return watchlist.map(id => vMap.get(id) || sMap.get(id)).filter(Boolean).filter(visibleItem) as any[];
+  }, [activePlaylist, watchlist, parental.adultHidden, nativeWatchlist, activeProfile.isKids, isCategoryLocked, isUnlockedInSession]);
 
   const posterW = Math.min(140, (width - SPACING.lg * 2 - SPACING.sm * 2) / 3);
   const posterH = posterW * 1.5;
   useEffect(()=>{const req=returnFocus.restoreRequest;if(!req)return;const m=/^favorites:(.+):([^:]+)$/.exec(req.key);if(!m)return;const scope=m[1],id=m[2];let nt:Tab="favorites",data:any[]=favChannels;if(scope==="recent"){nt="recent";data=recentChannels}else if(scope.startsWith("watchlist:")){nt="watchlist";data=watchlistItems}else if(scope.startsWith("continue:")){nt="continue";data=continueList}if(tab!==nt){setTab(nt);return}const i=data.findIndex((x:any)=>String(x.id)===id);if(i<0)return;const t=setTimeout(()=>{try{listRef.current?.scrollToIndex({index:i,animated:false,viewPosition:0.5})}catch{}if(!returnFocus.isTv)setTimeout(()=>returnFocus.clearRestore(req.nonce,"centered"),300)},80);return()=>clearTimeout(t)},[returnFocus.restoreRequest?.nonce,tab,favChannels,recentChannels,watchlistItems,continueList]);
 
   const openVideo = async (id: string, kind: string, scopeId = "library", orderedIds?: string[]) => {
-    haptic.light();
+    const ownerScope = accessScopeRef.current;
     const safeKind = (kind === "series" ? "series" : kind === "vod" ? "vod" : "live") as "live" | "vod" | "series";
+    const item = KizilkanNativeCore.available && activePlaylist?.id
+      ? await KizilkanNativeCore.getItem<any>(activePlaylist.id, safeKind, id)
+      : [...(activePlaylist?.channels || []), ...(activePlaylist?.vod || []), ...(activePlaylist?.series || [])].find(x => x.id === id);
+    const progress = watchProgress[id];
+    if (ownerScope !== accessScopeRef.current) return;
+    const access = categoryAccess(item?.group || (progress as any)?.group, !!activeProfile.isKids, isCategoryLocked, isUnlockedInSession);
+    if (access === "blocked") { Alert.alert("Ebeveyn Kontrolü", "Bu kategori çocuk profilinde açılamaz."); return; }
+    if (access === "pin") { router.push({ pathname: "/pin-entry", params: { category: String(item?.group || (progress as any)?.group) } }); return; }
+    haptic.light();
     const navScopeKey = activePlaylist?.id && orderedIds?.length
       ? await savePlayerNavigationScope({ playlistId: activePlaylist.id, origin: "favorites", kind: safeKind, scopeId, ids: orderedIds })
       : undefined;
+    if (ownerScope !== accessScopeRef.current) return;
     if (safeKind === "live") {
       addToRecent(id);
       router.push({ pathname: "/player", params: { id, navOrigin: "favorites", navScopeKey, focusKey: `favorites:${scopeId}:${id}` } });
@@ -327,8 +353,8 @@ export default function LibraryTab() {
                 isFavorite={isFavorite(item.id)}
                 onToggleFavorite={() => { haptic.soft(); toggleFavorite(item.id); }}
                 onPress={() => {
-                  const kind = (activePlaylist?.vod || []).some((x:any) => x.id === item.id) ? "vod" : (activePlaylist?.series || []).some((x:any) => x.id === item.id) ? "series" : "live";
-                  const ids = openGroupItems.filter((x:any) => kind === "vod" ? (activePlaylist?.vod || []).some((v:any) => v.id === x.id) : kind === "series" ? (activePlaylist?.series || []).some((v:any) => v.id === x.id) : (activePlaylist?.channels || []).some((v:any) => v.id === x.id)).map((x:any) => x.id);
+                  const kind = item.__kind || ((activePlaylist?.vod || []).some((x:any) => x.id === item.id) ? "vod" : (activePlaylist?.series || []).some((x:any) => x.id === item.id) ? "series" : "live");
+                  const ids = openGroupItems.filter((x:any) => x.__kind ? x.__kind === kind : kind === "vod" ? (activePlaylist?.vod || []).some((v:any) => v.id === x.id) : kind === "series" ? (activePlaylist?.series || []).some((v:any) => v.id === x.id) : (activePlaylist?.channels || []).some((v:any) => v.id === x.id)).map((x:any) => x.id);
                   void openVideo(item.id, kind, `group:${openGroup}`, ids);
                 }}
               />
@@ -347,7 +373,12 @@ export default function LibraryTab() {
                   testID={`fav-group-${g}`}
                   focusable
                   activeOpacity={0.8}
-                  onPress={() => { haptic.soft(); setOpenGroup(g); }}
+                  onPress={() => {
+                    const access = categoryAccess(g, !!activeProfile.isKids, isCategoryLocked, isUnlockedInSession);
+                    if (access === "blocked") return;
+                    if (access === "pin") { router.push({ pathname: "/pin-entry", params: { category: g } }); return; }
+                    haptic.soft(); setOpenGroup(g);
+                  }}
                   style={{
                     flexDirection: "row", alignItems: "center", gap: SPACING.md,
                     backgroundColor: colors.surfaceSecondary, borderColor: colors.border, borderWidth: 1,

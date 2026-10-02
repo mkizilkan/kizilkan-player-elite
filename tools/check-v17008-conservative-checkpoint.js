@@ -1,13 +1,15 @@
 const fs=require('fs'),p=require('path'),root=p.resolve(__dirname,'..');let f=0;const r=(x,m)=>{if(!x){console.error('HATA:',m);f++}else console.log('✓',m)};const rd=x=>fs.readFileSync(p.join(root,x),'utf8');
 const pkg=JSON.parse(rd('frontend/package.json')), app=JSON.parse(rd('frontend/app.json'));
 const svc=rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt');
+const coordinator=rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/ScanWorkCoordinator.kt');
 const gate7=rd('tools/check-v17007-scan-journal-resume.js');
 r((()=>{const p=String(pkg.version||'').split('.').map(Number);return (p[0]||0)>17||((p[0]||0)===17&&((p[1]||0)>0||((p[1]||0)===0&&(p[2]||0)>=8)))})()&&app.expo.version===pkg.version&&Number(app.expo.android.versionCode)>=170008,'v17.0.8+ sürüm zinciri');
-r(svc.includes('class ConservativeCursorTracker')&&svc.includes('AtomicLongArray'),'in-flight tabanlı konservatif cursor tracker');
+r(coordinator.includes('class ConservativeCursorTracker')&&coordinator.includes('AtomicLongArray'),'in-flight tabanlı konservatif cursor tracker');
 r(svc.includes('checkpointTracker.safeCursor(cursor.get().toLong())'),'single/bulk güvenli contiguous checkpoint');
 r(svc.includes('checkpointTracker.safeCursor(cursor.get())'),'unified güvenli 64-bit contiguous checkpoint');
 r(!svc.includes('(cursor.get() - workerCount).coerceAtLeast(0L)')&&!svc.includes('(cursor.get() - concurrency).coerceAtLeast(0)'),'eski cursor-workerCount checkpoint kaldırıldı');
-r((svc.match(/checkpointTracker\.begin\(workerId/g)||[]).length>=3&&(svc.match(/checkpointTracker\.finish\(workerId\)/g)||[]).length>=3,'single/bulk/unified in-flight iş takibi');
+r((svc.match(/checkpointTracker\.claim\(workerId, cursor, total\)/g)||[]).length>=3&&(svc.match(/checkpointTracker\.finish\(workerId\)/g)||[]).length>=3,'single/bulk/unified atomik rezervasyon ve in-flight iş takibi');
+r(/@Synchronized\s+fun claim\(/.test(coordinator)&&/inFlight\.set\(workerId, index\)[\s\S]*?cursor\.incrementAndGet\(\)/.test(coordinator),'cursor ilerletme ve in-flight kayıt aynı kilit altında');
 r(svc.includes('val before = (safeStart - ai * candidateCount).coerceIn(0, candidateCount)'),'bulk resume hesap ilerlemesi yeniden kurulur');
 r(svc.includes('fullLayers')&&svc.includes('partialInLayer')&&svc.includes('completedByAccount[ai].set(before)'),'unified resume hesap ilerlemesi round-robin prefixinden yeniden kurulur');
 r(svc.includes('for (i in 0 until safeStart)')&&svc.includes('panelRemaining[key]?.decrementAndGet()'),'single resume panel ilerlemesi yeniden kurulur');

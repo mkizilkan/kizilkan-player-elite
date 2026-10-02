@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, FlatList, Modal, Pressable } from "react-native";
+import React, { useEffect, useMemo, useState, useRef } from "react";
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, FlatList, Modal, Pressable, Alert, ActivityIndicator } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -8,6 +8,14 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
+import { useTv } from "@/src/store/TvContext";
+import { useProfiles } from "@/src/store/ProfileContext";
+import { useParental } from "@/src/store/ParentalContext";
+import { isAdultContent } from "@/src/utils/adult";
+import { categoryAccess } from "@/src/player/categoryAccess";
+import { resolveLivePlayback } from "@/src/player/resolveLivePlayback";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
+import type { PlaybackRequest } from "@/src/player/v2/types";
 
 type Layout = 2 | 4;
 
@@ -17,9 +25,22 @@ export default function MultiView() {
   const router = useRouter();
   const { colors } = useTheme();
   const { activePlaylist, playlists } = usePlaylists();
+  const { isTv } = useTv();
+  const { activeProfile } = useProfiles();
+  const { settings: parental, isCategoryLocked, isUnlockedInSession } = useParental();
   const [layout, setLayout] = useState<Layout>(2);
   const [slotUrls, setSlotUrls] = useState<(string | null)[]>([null, null, null, null]);
   const [slotNames, setSlotNames] = useState<(string | null)[]>([null, null, null, null]);
+  const [slotRequests, setSlotRequests] = useState<(PlaybackRequest | null)[]>([null, null, null, null]);
+  const slotItemsRef = useRef<any[]>([null, null, null, null]);
+  const [nativeChannels, setNativeChannels] = useState<any[]>([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [resolvingSlot, setResolvingSlot] = useState<number | null>(null);
+  const selectionGeneration = useRef(0);
+  const selectionScope = useRef("");
+  selectionScope.current = activeProfile.id;
+  const allowItemRef = useRef<(item: any) => boolean>(() => true);
+  allowItemRef.current = item => (!parental.adultHidden || !isAdultContent(item)) && categoryAccess(item.group, !!activeProfile.isKids, isCategoryLocked, isUnlockedInSession) === "allowed";
   const [audioSlot, setAudioSlot] = useState<number>(0);
   const [pickerFor, setPickerFor] = useState<number | null>(null);
   const [search, setSearch] = useState("");
@@ -27,11 +48,38 @@ export default function MultiView() {
   const [allChannelsMode, setAllChannelsMode] = useState(true);
 
   useEffect(() => {
+    if (isTv) return;
     (async () => { try { await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE); } catch {} })();
     return () => { ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT).catch(() => {}); };
-  }, []);
+  }, [isTv]);
+  useEffect(() => {
+    selectionGeneration.current += 1;
+    setSlotUrls([null, null, null, null]); setSlotNames([null, null, null, null]); setSlotRequests([null, null, null, null]); setResolvingSlot(null);
+  }, [activeProfile.id]);
+  useEffect(() => () => { selectionGeneration.current += 1; }, []);
+
+  const pickerSources = useMemo(() => allChannelsMode ? playlists : activePlaylist ? [activePlaylist] : [], [allChannelsMode, playlists, activePlaylist]);
+  useEffect(() => {
+    let cancelled = false;
+    setNativeChannels([]);
+    if (!KizilkanNativeCore.available || pickerFor === null) { setPickerLoading(false); return; }
+    setPickerLoading(true);
+    const timer = setTimeout(() => {
+      // Fair shares keep every selected provider discoverable within the small
+      // picker window; a search is queried against each complete Room catalog.
+      const limit = Math.max(1, Math.ceil(300 / Math.max(1, pickerSources.length)));
+      void Promise.all(pickerSources.map(async pl => {
+        const page = await KizilkanNativeCore.queryItems<any>(pl.id, "live", { offset: 0, limit, search: search.trim() });
+        return (page.items || []).map(item => ({ ...item, __plId: pl.id, __plName: pl.name }));
+      })).then(rows => { if (!cancelled) setNativeChannels(rows.flat().slice(0, 300)); })
+        .catch((e: any) => { if (!cancelled) Alert.alert("Kanallar yüklenemedi", String(e?.message || e)); })
+        .finally(() => { if (!cancelled) setPickerLoading(false); });
+    }, 200);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [pickerSources, search, pickerFor === null, activeProfile.id]);
 
   const activeSlots = layout === 2 ? [0, 1] : [0, 1, 2, 3];
+  useEffect(() => { if (audioSlot >= layout) setAudioSlot(0); }, [layout, audioSlot]);
   /**
    * ÇOKLU LİSTE DESTEĞİ (v8.0.0 — kullanıcı isteği)
    * Kanallar artık YALNIZCA aktif listeden değil, TÜM listelerden seçilebilir.
@@ -45,6 +93,8 @@ export default function MultiView() {
   const filteredChannels = useMemo(() => {
     const t = search.trim().toLocaleLowerCase("tr");
     const out: any[] = [];
+    const allowed = (item: any) => (!parental.adultHidden || !isAdultContent(item)) && categoryAccess(item.group, !!activeProfile.isKids, isCategoryLocked, isUnlockedInSession) !== "blocked";
+    if (KizilkanNativeCore.available) return nativeChannels.filter(allowed);
 
     const sources = allChannelsMode
       ? playlists
@@ -54,6 +104,7 @@ export default function MultiView() {
       const chans = (pl as any).channels as any[] | undefined;
       if (!chans || chans.length === 0) continue;   // henüz yüklenmemiş liste
       for (const c of chans) {
+        if (!allowed(c)) continue;
         if (t && !String(c.name || "").toLocaleLowerCase("tr").includes(t)) continue;
         out.push({ ...c, __plName: pl.name, __plId: pl.id });
         if (out.length >= 300) break;
@@ -61,21 +112,42 @@ export default function MultiView() {
       if (out.length >= 300) break;
     }
     return out;
-  }, [allChannelsMode, playlists, activePlaylist, search]);
+  }, [allChannelsMode, playlists, activePlaylist, search, nativeChannels, parental.adultHidden, activeProfile.isKids, isCategoryLocked, isUnlockedInSession]);
 
-  const pickChannel = (slot: number, url: string, name: string) => {
-    const nextUrls = [...slotUrls]; nextUrls[slot] = url; setSlotUrls(nextUrls);
-    const nextNames = [...slotNames]; nextNames[slot] = name; setSlotNames(nextNames);
-    setPickerFor(null);
+  const pickChannel = async (slot: number, candidate: any) => {
+    const access = categoryAccess(candidate.group, !!activeProfile.isKids, isCategoryLocked, isUnlockedInSession);
+    if (access === "blocked") return;
+    if (access === "pin") { setPickerFor(null); router.push({ pathname: "/pin-entry", params: { category: String(candidate.group) } }); return; }
+    const playlist = playlists.find(pl => pl.id === candidate.__plId);
+    if (!playlist || resolvingSlot !== null) return;
+    const generation = ++selectionGeneration.current;
+    const profileId = selectionScope.current;
+    setResolvingSlot(slot);
+    try {
+      const { item, request } = await resolveLivePlayback(playlist, candidate, { allowItem: item => profileId === selectionScope.current && allowItemRef.current(item) });
+      if (generation !== selectionGeneration.current || profileId !== selectionScope.current) return;
+      const resolvedAccess = categoryAccess(item.group, !!activeProfile.isKids, isCategoryLocked, isUnlockedInSession);
+      if (resolvedAccess !== "allowed" || !allowItemRef.current(item)) throw new Error("Bu kanal ebeveyn kontrolü nedeniyle açılamaz.");
+      setSlotRequests(prev => prev.map((r, i) => i === slot ? request : r));
+      slotItemsRef.current[slot] = item;
+      setSlotUrls(prev => prev.map((url, i) => i === slot ? request.url : url));
+      setSlotNames(prev => prev.map((name, i) => i === slot ? String(item.name) : name));
+      setPickerFor(null);
+    } catch (e: any) { if (generation === selectionGeneration.current) Alert.alert("Kanal açılamadı", String(e?.message || e)); }
+    finally { if (generation === selectionGeneration.current) setResolvingSlot(null); }
   };
 
   const clearSlot = (slot: number) => {
+    selectionGeneration.current += 1; setResolvingSlot(null);
+    slotItemsRef.current[slot] = null;
+    setSlotRequests(prev => prev.map((r, i) => i === slot ? null : r));
     const nextUrls = [...slotUrls]; nextUrls[slot] = null; setSlotUrls(nextUrls);
     const nextNames = [...slotNames]; nextNames[slot] = null; setSlotNames(nextNames);
   };
+  const dismissPicker = () => { selectionGeneration.current += 1; setResolvingSlot(null); setPickerFor(null); };
 
   const goBack = async () => {
-    try { await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT); } catch {}
+    if (!isTv) { try { await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT); } catch {} }
     router.back();
   };
 
@@ -107,8 +179,9 @@ export default function MultiView() {
           <Slot
             key={slot}
             index={slot}
-            url={slotUrls[slot]}
+            url={slotItemsRef.current[slot] && allowItemRef.current(slotItemsRef.current[slot]) ? slotUrls[slot] : null}
             name={slotNames[slot]}
+            request={slotItemsRef.current[slot] && allowItemRef.current(slotItemsRef.current[slot]) ? slotRequests[slot] : null}
             isAudio={audioSlot === slot}
             onPickChannel={() => setPickerFor(slot)}
             onSetAudio={() => setAudioSlot(slot)}
@@ -118,8 +191,8 @@ export default function MultiView() {
       </View>
 
       {/* Channel picker modal */}
-      <Modal visible={pickerFor !== null} transparent animationType="fade" onRequestClose={() => setPickerFor(null)}>
-        <Pressable style={styles.pickerBg} onPress={() => setPickerFor(null)}>
+      <Modal visible={pickerFor !== null} transparent animationType="fade" onRequestClose={dismissPicker}>
+        <Pressable style={styles.pickerBg} onPress={dismissPicker}>
           <Pressable style={[styles.pickerCard, { backgroundColor: colors.surface, borderColor: colors.border }]} onPress={e => e.stopPropagation()}>
             <Text style={[styles.pickerTitle, { color: colors.onSurface }]}>Ekran {(pickerFor ?? 0) + 1} için kanal seç</Text>
 
@@ -169,12 +242,12 @@ export default function MultiView() {
             <View style={{ flex: 1 }}>
               <FlatList
                 data={filteredChannels}
-                keyExtractor={c => c.id}
+                keyExtractor={c => `${c.__plId}:${c.id}`}
                 initialNumToRender={12}
                 renderItem={({ item }) => (
                   <TouchableOpacity
                     testID={`mv-pick-${item.id}`}
-                    onPress={() => pickChannel(pickerFor as number, item.url, item.name)}
+                    onPress={() => { if (pickerFor !== null) void pickChannel(pickerFor, item); }}
                     style={[styles.pickerRow, { borderBottomColor: colors.border }]}
                   >
                     <Ionicons name="tv-outline" size={18} color={colors.onSurfaceSecondary} />
@@ -191,8 +264,9 @@ export default function MultiView() {
                   </TouchableOpacity>
                 )}
               />
+              {(pickerLoading || resolvingSlot !== null) && <ActivityIndicator color={colors.brandPrimary} />}
             </View>
-            <TouchableOpacity onPress={() => setPickerFor(null)} style={[styles.closeBtn, { backgroundColor: colors.surfaceSecondary }]}>
+            <TouchableOpacity onPress={dismissPicker} style={[styles.closeBtn, { backgroundColor: colors.surfaceSecondary }]}>
               <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold }}>Kapat</Text>
             </TouchableOpacity>
           </Pressable>
@@ -202,12 +276,15 @@ export default function MultiView() {
   );
 }
 
-function Slot({ index, url, name, isAudio, onPickChannel, onSetAudio, onClear }: {
+function Slot({ index, url, name, request, isAudio, onPickChannel, onSetAudio, onClear }: {
   index: number; url: string | null; name: string | null; isAudio: boolean;
+  request: PlaybackRequest | null;
   onPickChannel: () => void; onSetAudio: () => void; onClear: () => void;
 }) {
   const { colors } = useTheme();
-  const player = useVideoPlayer(url, (p) => { p.loop = false; if (url) p.play(); });
+  const mediaSource = useMemo(() => request ? { uri: request.url, headers: request.headers, contentType: request.contentType === "auto" ? undefined : request.contentType } : null, [request]);
+  const player = useVideoPlayer(mediaSource, (p) => { p.loop = false; if (request) p.play(); });
+  useEffect(() => { if (request) { try { player.play(); } catch {} } }, [player, request]);
 
   useEffect(() => {
     if (!player) return;

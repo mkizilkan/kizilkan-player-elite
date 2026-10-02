@@ -24,26 +24,9 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicLongArray
 import java.util.concurrent.atomic.AtomicReference
 
 class PanelScanService : Service() {
-  /**
-   * v17.0.8: En düşük hâlâ çalışan işi izleyerek yalnız tamamlandığı kesin olan
-   * contiguous prefix'i journal checkpoint olarak yazar. cursor-workerCount
-   * yaklaşımı, tek bir yavaş worker geride kalırken ilerideki işleri atlayabiliyordu.
-   */
-  private class ConservativeCursorTracker(workerCount: Int) {
-    private val inFlight = AtomicLongArray(workerCount)
-    init { for (i in 0 until workerCount) inFlight.set(i, Long.MAX_VALUE) }
-    fun begin(workerId: Int, index: Long) { inFlight.set(workerId, index) }
-    fun finish(workerId: Int) { inFlight.set(workerId, Long.MAX_VALUE) }
-    fun safeCursor(nextAssigned: Long): Long {
-      var safe = nextAssigned
-      for (i in 0 until inFlight.length()) safe = minOf(safe, inFlight.get(i))
-      return safe.coerceAtLeast(0L)
-    }
-  }
   companion object {
     const val ACTION_START = "expo.modules.panelscan.START"
     const val ACTION_BULK_START = "expo.modules.panelscan.BULK_START"
@@ -218,6 +201,22 @@ class PanelScanService : Service() {
   // v17.1.1: Aynı DNS'e yüzlerce hesabın aynı anda bindirmesini engelle.
   private val hostPermits = ConcurrentHashMap<String, Semaphore>()
   private val hostBackoffUntil = ConcurrentHashMap<String, Long>()
+  private val persistentFound = AtomicInteger(0)
+  @Volatile private var resultCountRunId = ""
+
+  private fun initializeResultCount() {
+    if (resultCountRunId == currentRunId) return
+    val journal = ScanJournalStore.get(applicationContext)
+    journal.pruneUnverifiedResults(currentRunId)
+    persistentFound.set(journal.resultCount(currentRunId))
+    resultCountRunId = currentRunId
+  }
+
+  private fun persistScanResult(key: String, hit: JSONObject): Boolean {
+    val added = ScanJournalStore.get(applicationContext).addResult(currentRunId, key, hit.toString())
+    if (added) persistentFound.incrementAndGet()
+    return added
+  }
 
   private fun abortActiveNetworkWork() {
     try { activeExecutor?.shutdownNow() } catch (_: Throwable) {}
@@ -282,13 +281,26 @@ class PanelScanService : Service() {
         val requestedRunId = rec.optString("runId")
         if (requestedRunId.isBlank() || requestedRunId != activeRunId() || running) return START_NOT_STICKY
         currentRunId=requestedRunId; running=true; cancelled.set(false); paused.set(false)
-        val mode=rec.optString("mode"); val payload=rec.optString("payload"); val concurrency=rec.optInt("concurrency",8); val timeoutMs=rec.optInt("timeoutMs",8000); val start=rec.optLong("cursor",0L)
+        val mode=rec.optString("mode"); val originalPayload=rec.optString("payload"); val concurrency=rec.optInt("concurrency",8); val timeoutMs=rec.optInt("timeoutMs",8000); val start=rec.optLong("cursor",0L)
+        val payloadObject = runCatching { JSONObject(originalPayload) }.getOrNull()
+          ?: if (mode == "unified") runCatching { JSONObject().put("jobs", JSONArray(originalPayload)) }.getOrNull() else null
+        val checkpointVersion = payloadObject?.optInt("checkpointVersion", 0) ?: 0
+        val replay = checkpointVersion != SCAN_CHECKPOINT_VERSION
+        val payload = if (replay && payloadObject != null) payloadObject.put("checkpointVersion", SCAN_CHECKPOINT_VERSION).toString() else originalPayload
+        val resumeCursor = if (replay) 0L else start
+        val resumeAccount = scanCheckpointResumePoint(
+          checkpointVersion,
+          rec.optLong("accountCursor", 0L), rec.optLong("committedTested", 0L),
+        )
+        if (replay && payloadObject != null) ScanJournalStore.get(applicationContext).resetCheckpointForReplay(requestedRunId, payload)
+        initializeResultCount()
         val oldResults=ScanJournalStore.get(applicationContext).results(requestedRunId, 200)
-        writeSnapshot(JSONObject().put("mode",mode).put("runId",requestedRunId).put("state","RUNNING").put("running",true).put("tested",start).put("total",rec.optLong("total",0L)).put("found",oldResults.length()).put("matches",oldResults).put("recovered",true))
+        val resumeTested = if (mode == "streaming-file-v172" || mode == "unified" && rec.optInt("batchSize", 0) > 0) resumeAccount.second else resumeCursor
+        writeSnapshot(JSONObject().put("mode",mode).put("runId",requestedRunId).put("state","RUNNING").put("running",true).put("tested",resumeTested).put("total",rec.optLong("total",0L)).put("found",oldResults.length()).put("matches",oldResults).put("recovered",true))
         startForeground(NOTIF_ID, notification("Yarım kalan tarama devam ediyor…",0,0))
-        Thread { when(mode){
-          "single" -> { val o=JSONObject(payload); runScan(o.optString("candidates","[]"),o.optString("username"),o.optString("password"),concurrency,timeoutMs,start.toInt()) }
-          "bulk" -> { val o=JSONObject(payload); runBulkScan(o.optString("candidates","[]"),o.optString("accounts","[]"),concurrency,timeoutMs,start.toInt()) }
+        Thread { try { when(mode){
+          "single" -> { val o=JSONObject(payload); runScan(o.optString("candidates","[]"),o.optString("username"),o.optString("password"),concurrency,timeoutMs,resumeCursor.toInt()) }
+          "bulk" -> { val o=JSONObject(payload); runBulkScan(o.optString("candidates","[]"),o.optString("accounts","[]"),concurrency,timeoutMs,resumeCursor.toInt()) }
           "unified" -> {
             val batchSize = rec.optInt("batchSize", 0)
             if (batchSize > 0) {
@@ -299,10 +311,10 @@ class PanelScanService : Service() {
                 timeoutMs,
                 batchSize,
                 rec.optString("sourceFingerprint", ""),
-                rec.optInt("accountCursor", 0),
-                rec.optLong("committedTested", start),
+                resumeAccount.first.toInt(),
+                resumeAccount.second,
               )
-            } else runUnifiedScan(payload,concurrency,timeoutMs,start)
+            } else runUnifiedScan(payload,concurrency,timeoutMs,resumeCursor)
           }
           "streaming-file-v172" -> {
             val o = JSONObject(payload)
@@ -314,10 +326,18 @@ class PanelScanService : Service() {
               timeoutMs,
               rec.optInt("batchSize", 15).coerceIn(5, 15),
               rec.optString("sourceFingerprint", ""),
-              rec.optInt("accountCursor", 0).toLong().coerceAtLeast(0L),
+              resumeAccount.first,
+              resumeAccount.second,
             )
           }
           else -> throw IllegalStateException("Bilinmeyen recovery modu: $mode")
+        } } catch (e: Throwable) {
+          writeSnapshot(JSONObject().put("mode", mode).put("running", false).put("error", "Tarama kurtarma hatası: ${e.javaClass.simpleName}"))
+          finalizeSnapshot(mode)
+          ScanJournalStore.get(applicationContext).finish(requestedRunId, "FAILED")
+          abortActiveNetworkWork()
+          running = false; releaseRun(requestedRunId)
+          stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
         } }.start()
       }
       ACTION_STREAM_FILE_V172 -> {
@@ -340,7 +360,7 @@ class PanelScanService : Service() {
           releaseRun(requestedRunId)
           return START_NOT_STICKY
         }
-        val recoveryPayload = JSONObject().put("uri", uriText).put("directory", directoryJson).toString()
+        val recoveryPayload = JSONObject().put("uri", uriText).put("directory", directoryJson).put("checkpointVersion", SCAN_CHECKPOINT_VERSION).toString()
         ScanJournalStore.get(applicationContext).createSessionV171(
           requestedRunId, "streaming-file-v172", recoveryPayload, requestedConcurrency, effectiveConcurrency,
           timeoutMs, 0L, batchSize, sourceFingerprint
@@ -372,7 +392,7 @@ class PanelScanService : Service() {
         val candidateCount = try { JSONArray(candidatesJson).length() } catch (_: Throwable) { 0 }
         val accountCount = try { JSONArray(accountsJson).length() } catch (_: Throwable) { 0 }
         val initialTotal = candidateCount * accountCount
-        ScanJournalStore.get(applicationContext).createSession(requestedRunId, "bulk", JSONObject().put("candidates",candidatesJson).put("accounts",accountsJson).toString(), concurrency, timeoutMs, initialTotal.toLong())
+        ScanJournalStore.get(applicationContext).createSession(requestedRunId, "bulk", JSONObject().put("candidates",candidatesJson).put("accounts",accountsJson).put("checkpointVersion", SCAN_CHECKPOINT_VERSION).toString(), concurrency, timeoutMs, initialTotal.toLong())
         writeSnapshot(JSONObject().put("mode", "bulk").put("running", true).put("paused", false)
           .put("tested", 0).put("total", initialTotal).put("accountTested", 0).put("accountTotal", accountCount)
           .put("found", 0).put("matches", JSONArray()))
@@ -425,7 +445,7 @@ class PanelScanService : Service() {
         val concurrency = intent.getIntExtra("concurrency", 6).coerceIn(1,20)
         val timeoutMs = intent.getIntExtra("timeoutMs", 8000).coerceIn(2000,20000)
         val initialTotal = try { JSONArray(candidatesJson).length() } catch (_: Throwable) { 0 }
-        ScanJournalStore.get(applicationContext).createSession(requestedRunId, "single", JSONObject().put("candidates",candidatesJson).put("username",username).put("password",password).toString(), concurrency, timeoutMs, initialTotal.toLong())
+        ScanJournalStore.get(applicationContext).createSession(requestedRunId, "single", JSONObject().put("candidates",candidatesJson).put("username",username).put("password",password).put("checkpointVersion", SCAN_CHECKPOINT_VERSION).toString(), concurrency, timeoutMs, initialTotal.toLong())
         writeSnapshot(JSONObject()
           .put("running", true).put("paused", false).put("tested", 0).put("total", initialTotal)
           .put("panelTested", 0).put("panelTotal", 0)
@@ -467,6 +487,7 @@ class PanelScanService : Service() {
   }
 
   @Synchronized private fun writeSnapshot(obj: JSONObject) {
+    if (resultCountRunId == currentRunId && currentRunId.isNotBlank()) obj.put("found", persistentFound.get())
     if (currentRunId.isNotBlank() && !obj.has("runId")) obj.put("runId", currentRunId)
     if (!obj.has("createdAt")) {
       val previousRaw = getSharedPreferences(PREFS, 0).getString(KEY_SNAPSHOT, "{}") ?: "{}"
@@ -562,10 +583,15 @@ class PanelScanService : Service() {
       if(cancelled.get()||Thread.currentThread().isInterrupted)return null
       val journal=ScanJournalStore.get(applicationContext)
       val cached=journal.readProbe(currentRunId,key)
-      if(cached!=null)return if(cached=="null")null else JSONObject(cached)
-      val result=probePhysical(base,username,password,timeoutMs)
-      if(!cancelled.get()&&!Thread.currentThread().isInterrupted)journal.writeProbe(currentRunId,key,result?.let{sanitizeLogin(it).toString()}?:"null")
-      return result
+      // Legacy "null" also included transport/rate-limit failures; retry those after upgrade.
+      if(cached==SCAN_AUTH_REJECTED_CACHE)return null
+      if(cached!=null&&cached!="null") {
+        val cachedLogin = runCatching { JSONObject(cached) }.getOrNull()
+        if (scanAuthStatus(cachedLogin?.optJSONObject("user_info")?.opt("auth")) == true) return cachedLogin
+      }
+      val outcome=probePhysical(base,username,password,timeoutMs)
+      if(outcome.cacheable&&!cancelled.get()&&!Thread.currentThread().isInterrupted)journal.writeProbe(currentRunId,key,outcome.value?.let{sanitizeLogin(it).toString()}?:SCAN_AUTH_REJECTED_CACHE)
+      return outcome.value
     }
   }
 
@@ -582,11 +608,11 @@ class PanelScanService : Service() {
     }
   }
 
-  private fun probePhysical(server: String, username: String, password: String, timeoutMs: Int): JSONObject? {
+  private fun probePhysical(server: String, username: String, password: String, timeoutMs: Int): ScanProbeOutcome<JSONObject> {
     val base = server.trim().trimEnd('/')
     val hostKey = runCatching { URL(base).host.lowercase() }.getOrDefault(base.lowercase())
     val permit = hostPermits.computeIfAbsent(hostKey) { Semaphore(4, true) }
-    if (!permit.tryAcquire(timeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)) return null
+    if (!awaitScanHostPermit(permit, cancelled)) return ScanProbeOutcome(null)
     val u = java.net.URLEncoder.encode(username, "UTF-8")
     val p = java.net.URLEncoder.encode(password, "UTF-8")
     try {
@@ -594,28 +620,27 @@ class PanelScanService : Service() {
       // PROXY hatası ≠ sunucu hatası (yanlış negatif önlenir). Kapalıysa tek doğrudan deneme.
       val maxAttempts = if (ScanProxyPool.enabled) 3 else 1
       for (attempt in 0 until maxAttempts) {
-        if (cancelled.get() || Thread.currentThread().isInterrupted) return null
+        if (cancelled.get() || Thread.currentThread().isInterrupted) return ScanProbeOutcome(null)
         var sel = ScanProxyPool.select()
         // v18.5.0: Proxy açık ama kullanılabilir proxy YOK (havuz boş veya hepsi ölü).
         // Kullanıcının IP'sine sessizce düşülmez VE bu deneme "bulunamadı" sayılmaz:
         // tarama duraklar, kullanıcı karar verene (yeniden test / kendi bağlantısıyla devam) kadar
         // bu işçi bekler, sonra aynı denemeyi yeniden dener.
         while (ScanProxyPool.enabled && sel == null) {
-          if (cancelled.get() || Thread.currentThread().isInterrupted) return null
+          if (cancelled.get() || Thread.currentThread().isInterrupted) return ScanProbeOutcome(null)
           pauseForProxy(if (ScanProxyPool.isEmptyPool()) "SCAN_PROXY_EMPTY" else "SCAN_PROXY_EXHAUSTED", hostKey)
           while (paused.get() && !cancelled.get()) Thread.sleep(200)
-          if (cancelled.get()) return null
+          if (cancelled.get()) return ScanProbeOutcome(null)
           sel = ScanProxyPool.select()
         }
         var conn: HttpURLConnection? = null
         try {
-          val waitMs = (hostBackoffUntil[hostKey] ?: 0L) - System.currentTimeMillis()
-          if (waitMs > 0) Thread.sleep(waitMs.coerceAtMost(5000L))
+          if (!awaitScanHostBackoff({ hostBackoffUntil[hostKey] ?: 0L }, cancelled)) return ScanProbeOutcome(null)
           val target = URL("$base/player_api.php?username=$u&password=$p")
           val opened = (if (sel != null) target.openConnection(sel.proxy) else target.openConnection()) as HttpURLConnection
           conn = opened
           activeConnections.add(opened)
-          if (cancelled.get() || Thread.currentThread().isInterrupted) return null
+          if (cancelled.get() || Thread.currentThread().isInterrupted) return ScanProbeOutcome(null)
           opened.connectTimeout = timeoutMs
           opened.readTimeout = timeoutMs
           opened.requestMethod = "GET"
@@ -625,31 +650,38 @@ class PanelScanService : Service() {
           // Buraya geldiysek proxy isteği İLETTİ → proxy sağlam (TARGET geri bildir).
           sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, ScanProxyPool.Fault.TARGET) }
           if (code == 429 || code == 503) {
-            val retrySeconds = opened.getHeaderField("Retry-After")?.toLongOrNull()?.coerceIn(1L, 5L) ?: 2L
-            hostBackoffUntil[hostKey] = System.currentTimeMillis() + retrySeconds * 1000L
-            recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("state", "HOST_BACKOFF").put("host", hostKey).put("httpCode", code).put("backoffMs", retrySeconds * 1000L))
-            return null
+            val now = System.currentTimeMillis()
+            val retryMs = scanRetryAfterMillis(opened.getHeaderField("Retry-After"), now)
+            val deadline = now + minOf(retryMs, Long.MAX_VALUE - now)
+            hostBackoffUntil.compute(hostKey) { _, previous -> maxOf(previous ?: 0L, deadline) }
+            recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("state", "HOST_BACKOFF").put("host", hostKey).put("httpCode", code).put("backoffMs", retryMs))
+            return ScanProbeOutcome(null)
           }
-          if (code !in 200..299) return null
-          hostBackoffUntil.remove(hostKey)
+          if (code !in 200..299) return ScanProbeOutcome(null)
           val text = opened.inputStream.bufferedReader().use { it.readText() }
           val data = JSONObject(text)
-          val ui = data.optJSONObject("user_info") ?: return null
-          val auth = ui.opt("auth")?.toString()
-          if (auth == "0" || auth == "false") return null
-          return data
+          val ui = data.optJSONObject("user_info") ?: return ScanProbeOutcome(null)
+          return when (scanAuthStatus(ui.opt("auth"))) {
+            false -> ScanProbeOutcome(null, cacheable = true)
+            true -> ScanProbeOutcome(data, cacheable = true)
+            null -> ScanProbeOutcome(null)
+          }
         } catch (t: Throwable) {
+          if (t is InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw t
+          }
           // Hata sınıflandır: PROXY suçluysa proxy'yi düşür ve SIRADAKİ proxy ile tekrar dene.
           val fault = if (sel != null) (if (ScanProxyPool.classify(t) == ScanProxyPool.Fault.TARGET) ScanProxyPool.Fault.TARGET else ScanProxyPool.Fault.PROXY) else ScanProxyPool.Fault.TARGET
           sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, fault) }
-          if (sel == null || fault == ScanProxyPool.Fault.TARGET) return null
+          if (sel == null || fault == ScanProxyPool.Fault.TARGET) return ScanProbeOutcome(null)
           // PROXY hatası: döngü sıradaki proxy ile devam eder.
         } finally {
           conn?.let { activeConnections.remove(it) }; conn?.disconnect()
           ScanProxyPool.release(sel)
         }
       }
-      return null
+      return ScanProbeOutcome(null)
     } finally {
       permit.release()
     }
@@ -680,9 +712,13 @@ class PanelScanService : Service() {
 
   private fun runBulkScan(candidatesRaw: String, accountsRaw: String, concurrency: Int, timeoutMs: Int, startCursor: Int = 0) {
     try {
+      initializeResultCount()
       val candidates = JSONArray(candidatesRaw); val accounts = JSONArray(accountsRaw)
-      val candidateCount = candidates.length(); val accountCount = accounts.length(); val total = candidateCount * accountCount
+      val candidateCount = candidates.length(); val accountCount = accounts.length()
       if (candidateCount == 0 || accountCount == 0) throw IllegalArgumentException("Tarama için hesap veya aday sunucu yok")
+      val totalLong = candidateCount.toLong() * accountCount.toLong()
+      if (totalLong > Int.MAX_VALUE) throw IllegalArgumentException("Bu tarama 32-bit iş sınırını aşıyor; büyük dosya taramasını kullanın")
+      val total = totalLong.toInt()
       val safeStart = startCursor.coerceIn(0, total)
       val cursor = AtomicInteger(safeStart); val tested = AtomicInteger(safeStart)
       val matches = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
@@ -697,21 +733,24 @@ class PanelScanService : Service() {
       for (i in 0 until candidateCount) { val c = candidates.getJSONObject(i); panelSet.add("${c.optString("code")}\u0000${c.optString("panelName")}") }
       val workerCount = concurrency.coerceIn(1, minOf(32, total)); val pool = Executors.newFixedThreadPool(workerCount)
       val checkpointTracker = ConservativeCursorTracker(workerCount)
+      val workerFailure = AtomicReference<Throwable?>(null)
       activeExecutor = pool
       repeat(workerCount) { workerId ->
         pool.submit {
-          while (!cancelled.get()) {
-            while (paused.get() && !cancelled.get()) Thread.sleep(100)
-            if (cancelled.get()) break
-            val flat = cursor.getAndIncrement(); if (flat >= total) break
-            checkpointTracker.begin(workerId, flat.toLong())
+          try {
+          while (!cancelled.get() && workerFailure.get() == null) {
+            while (paused.get() && !cancelled.get() && workerFailure.get() == null) Thread.sleep(100)
+            if (cancelled.get() || workerFailure.get() != null) break
+            val flat = checkpointTracker.claim(workerId, cursor, total) ?: break
             val ai = flat / candidateCount; val ci = flat % candidateCount
             val account = accounts.getJSONObject(ai); val candidate = candidates.getJSONObject(ci)
             val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
+            if (cancelled.get() || workerFailure.get() != null) break
+            if (Thread.currentThread().isInterrupted) throw InterruptedException("Tarama işçisi kesildi")
             if (login != null) { val hit=JSONObject()
               .put("accountIndex", ai).put("sourceRow", account.optInt("row", ai + 1)).put("username", account.optString("username"))
               .put("name", account.optString("name")).put("panelName", candidate.optString("panelName")).put("code", candidate.optString("code"))
-              .put("server", candidate.optString("server")).put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login)); if (ScanJournalStore.get(applicationContext).addResult(currentRunId, "$ai|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit.toString())) matches.add(hit) }
+              .put("server", candidate.optString("server")).put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login)); if (persistScanResult("$ai|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit)) matches.add(hit) }
             if (completedByAccount[ai].incrementAndGet() == candidateCount) accountDone.incrementAndGet()
             val done = tested.incrementAndGet()
             checkpointTracker.finish(workerId)
@@ -719,9 +758,19 @@ class PanelScanService : Service() {
             if (done == total || done % 16 == 0 || login != null) writeBulkSnapshot(done,total,accountDone.get(),accountCount,panelSet.size,matches,candidate.optString("panelName"),ai)
             if (done % 16 == 0 || login != null) getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", if (total > Int.MAX_VALUE) ((done * Int.MAX_VALUE) / total).toInt() else done.toInt(), if (total > Int.MAX_VALUE) Int.MAX_VALUE else total.toInt()))
           }
+          } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            if (!cancelled.get()) workerFailure.compareAndSet(null, e)
+          } catch (e: Throwable) {
+            workerFailure.compareAndSet(null, e)
+          }
         }
       }
-      pool.shutdown(); while (!pool.isTerminated) Thread.sleep(100)
+      pool.shutdown(); while (!pool.isTerminated) {
+        if (cancelled.get() || workerFailure.get() != null) abortActiveNetworkWork()
+        Thread.sleep(100)
+      }
+      workerFailure.get()?.let { if (!cancelled.get()) throw it }
       writeBulkSnapshot(tested.get(),total,accountDone.get(),accountCount,panelSet.size,matches,"",-1,false)
     } catch (e: Throwable) {
       writeSnapshot(JSONObject().put("mode","bulk").put("running",false).put("error",e.message ?: "Native çoklu hesap tarama hatası"))
@@ -878,7 +927,10 @@ class PanelScanService : Service() {
       val i = line.indexOf(':')
       if (i > 0 && i < line.length - 1) {
         val u = line.substring(0, i).trim(); val p = line.substring(i + 1).trim()
-        if (u.isNotBlank() && p.isNotBlank() && !u.contains(' ')) return StreamAccountV172(ordinal,row,"",u,p,"","","")
+        val key = normStreamKeyV172(u)
+        if (u.isNotBlank() && p.isNotBlank() && !u.contains(Regex("\\s")) &&
+          key !in streamServerKeysV172 && key !in streamCodeKeysV172 && key !in streamPanelKeysV172)
+          return StreamAccountV172(ordinal,row,"",u,p,"","","")
       }
     }
     val vals = parseDelimitedV172(line, delimiter)
@@ -944,6 +996,7 @@ class PanelScanService : Service() {
     batchSize: Int,
     sourceFingerprint: String,
     startAccountCursor: Long = 0L,
+    committedTestedStart: Long = 0L,
   ) {
     val journal = ScanJournalStore.get(applicationContext)
     val directory = try { JSONArray(directoryRaw) } catch (_: Throwable) { JSONArray() }
@@ -959,17 +1012,19 @@ class PanelScanService : Service() {
     val queue = ArrayBlockingQueue<StreamAccountV172>(queueCapacity)
     val producerDone = AtomicBoolean(false)
     val producerFailure = AtomicReference<Throwable?>(null)
+    val pipelineStopped = AtomicBoolean(false)
+    var producerThread: Thread? = null
     val produced = AtomicLong(0L)
     val skippedNoCandidate = AtomicLong(0L)
     val completed = AtomicLong(startAccountCursor)
-    val tested = AtomicLong(0L)
+    val tested = AtomicLong(committedTestedStart.coerceAtLeast(0L))
     val matches = mutableListOf<JSONObject>()
     val lastSnapshotAt = AtomicLong(0L)
-    val poison = StreamAccountV172(Long.MIN_VALUE, -1, "", "", "", "", "", "")
-    val tracker = ConservativeCursorTracker(workerCount)
+    val tracker = ConservativeCursorTracker(workerCount, committedTestedStart)
     val nextAssigned = AtomicLong(startAccountCursor)
 
     try {
+      initializeResultCount()
       val oldResults = journal.results(currentRunId, 200)
       for (i in 0 until oldResults.length()) oldResults.optJSONObject(i)?.let { matches.add(it) }
       patchSnapshot { it.put("mode", "streaming-file-v172").put("producerDone", false).put("queueCapacity", queueCapacity).put("directoryPanels", directory.length())
@@ -982,8 +1037,9 @@ class PanelScanService : Service() {
           activeFileStream = stream
           var delimiter: Char? = null; var headers: List<String>? = null; var lineNo = 0; var validOrdinal = 0L
           BufferedReader(InputStreamReader(stream, Charsets.UTF_8), 64 * 1024).use { reader ->
-            while (!cancelled.get()) {
-              while (paused.get() && !cancelled.get()) Thread.sleep(100)
+            while (!cancelled.get() && !pipelineStopped.get() && producerFailure.get() == null) {
+              while (paused.get() && !cancelled.get() && !pipelineStopped.get() && producerFailure.get() == null) Thread.sleep(100)
+              if (cancelled.get() || pipelineStopped.get() || producerFailure.get() != null) break
               val raw = reader.readLine() ?: break
               lineNo++
               val line = if (lineNo == 1) raw.removePrefix("\uFEFF").trim() else raw.trim()
@@ -996,12 +1052,13 @@ class PanelScanService : Service() {
                 if (headerLooksValidV172(first)) { headers = first; continue }
               }
               val ordinal = validOrdinal++
+              if (ordinal >= Int.MAX_VALUE.toLong()) throw IllegalArgumentException("Dosya 32-bit hesap checkpoint sınırını aşıyor")
               if (ordinal < startAccountCursor) continue
               val account = parseStreamAccountV172(line, delimiter!!, headers, lineNo, ordinal) ?: continue
-              while (!cancelled.get() && !queue.offer(account, 250, TimeUnit.MILLISECONDS)) {
+              while (!cancelled.get() && !pipelineStopped.get() && producerFailure.get() == null && !queue.offer(account, 250, TimeUnit.MILLISECONDS)) {
                 patchSnapshot { it.put("queueDepth", queue.size).put("queueCapacity", queueCapacity).put("producerBackpressure", true) }
               }
-              if (cancelled.get()) break
+              if (cancelled.get() || pipelineStopped.get() || producerFailure.get() != null) break
               produced.incrementAndGet()
               val now = System.currentTimeMillis()
               val prev = lastSnapshotAt.get()
@@ -1014,12 +1071,12 @@ class PanelScanService : Service() {
         finally {
           activeFileStream = null
           producerDone.set(true)
-          repeat(workerCount) {
-            while (!queue.offer(poison, 250, TimeUnit.MILLISECONDS) && !cancelled.get()) { }
-          }
-          patchSnapshot { it.put("producerDone", true).put("accountTotal", startAccountCursor + produced.get()).put("queueDepth", queue.size) }
+          // Consumers drain the queue and exit once producerDone is true; no poison
+          // enqueue may keep a failed producer blocked behind a full queue.
+          if (!pipelineStopped.get()) patchSnapshot { it.put("producerDone", true).put("accountTotal", startAccountCursor + produced.get()).put("queueDepth", queue.size) }
         }
       }, "kizilkan-v172-producer")
+      producerThread = producer
       producer.start()
 
       val pool = Executors.newFixedThreadPool(workerCount)
@@ -1027,24 +1084,31 @@ class PanelScanService : Service() {
       repeat(workerCount) { workerId ->
         pool.submit {
           try {
-            while (!cancelled.get()) {
-              // Inactive workers must still drain their termination sentinels when
-              // the producer finishes; otherwise the executor never terminates.
-              while ((paused.get() || (workerId >= adaptiveLimit.get() && !producerDone.get())) && !cancelled.get()) Thread.sleep(100)
-              val account = queue.poll(500, TimeUnit.MILLISECONDS) ?: if (producerDone.get()) break else continue
-              if (account.ordinal == Long.MIN_VALUE) break
-              tracker.begin(workerId, account.ordinal)
-              nextAssigned.updateAndGet { maxOf(it, account.ordinal + 1L) }
+            while (!cancelled.get() && producerFailure.get() == null) {
+              // Finished producers let all workers drain the remaining bounded queue.
+              while ((paused.get() || (workerId >= adaptiveLimit.get() && !producerDone.get())) && !cancelled.get() && producerFailure.get() == null) Thread.sleep(100)
+              if (cancelled.get() || producerFailure.get() != null) break
+              val account = tracker.claimQueued(workerId, queue, nextAssigned) { it.ordinal }
+              if (account == null) {
+                if (producerDone.get()) break
+                Thread.sleep(100)
+                continue
+              }
               val candidates = resolveCandidatesV172(account, directory)
               if (candidates.isEmpty()) skippedNoCandidate.incrementAndGet()
               var foundForAccount = 0
+              var testedForAccount = 0L
               for (candidate in candidates) {
-                if (cancelled.get()) break
-                while (paused.get() && !cancelled.get()) Thread.sleep(100)
+                if (cancelled.get() || producerFailure.get() != null) break
+                while (paused.get() && !cancelled.get() && producerFailure.get() == null) Thread.sleep(100)
+                if (cancelled.get() || producerFailure.get() != null) break
                 val server = candidate.optString("server")
                 if (server.isBlank()) continue
                 val login = probe(server, account.username, account.password, timeoutMs)
+                if (cancelled.get() || producerFailure.get() != null) break
+                if (Thread.currentThread().isInterrupted) throw InterruptedException("Tarama işçisi kesildi")
                 val done = tested.incrementAndGet()
+                testedForAccount++
                 if (login != null) adaptiveSuccess.incrementAndGet() else adaptiveFailure.incrementAndGet()
                 if (done % 16L == 0L) {
                   val ok = adaptiveSuccess.getAndSet(0)
@@ -1069,8 +1133,8 @@ class PanelScanService : Service() {
                     .put("code", candidate.optString("code"))
                     .put("server", server)
                     .put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login))
-                  if (journal.addResult(currentRunId, "${account.ordinal}|${candidate.optString("panelName")}|${candidate.optString("code")}|$server", hit.toString())) {
-                    synchronized(matches) { matches.add(hit) }
+                  if (persistScanResult("${account.ordinal}|${candidate.optString("panelName")}|${candidate.optString("code")}|$server", hit)) {
+                    synchronized(matches) { matches.add(hit); if (matches.size > 200) matches.removeAt(0) }
                     foundForAccount++
                   }
                 }
@@ -1083,6 +1147,7 @@ class PanelScanService : Service() {
                       .put("sourceFingerprint", sourceFingerprint.take(128)).put("foundForAccount", foundForAccount))
                 }
               }
+              if (cancelled.get() || producerFailure.get() != null) break
               completed.incrementAndGet()
               val now = System.currentTimeMillis(); val prev = lastSnapshotAt.get()
               if (now - prev >= 300L && lastSnapshotAt.compareAndSet(prev, now)) {
@@ -1091,21 +1156,28 @@ class PanelScanService : Service() {
                   JSONObject().put("streamingFile", true).put("producerDone", producerDone.get()).put("queueDepth", queue.size).put("queueCapacity", queueCapacity)
                     .put("skippedNoCandidate", skippedNoCandidate.get()).put("requestedConcurrency", requestedConcurrency).put("effectiveConcurrency", adaptiveLimit.get()).put("batchSize", batchSize))
               }
-              tracker.finish(workerId)
-              val safe = tracker.safeCursor(nextAssigned.get())
-              journal.checkpointUnified(currentRunId, safe.toInt(), tested.get())
+              tracker.finishAccount(workerId, account.ordinal, testedForAccount)
+              val (safe, committedTests) = tracker.streamingProgress(nextAssigned.get())
+              journal.checkpointUnified(currentRunId, safe.toInt(), committedTests)
             }
-          } catch (e: InterruptedException) { Thread.currentThread().interrupt() }
+          } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            if (!cancelled.get()) producerFailure.compareAndSet(null, e)
+          }
           catch (e: Throwable) { producerFailure.compareAndSet(null, e) }
-          finally { tracker.finish(workerId) }
+          // A failed/cancelled claim stays registered until the run ends, pinning recovery.
         }
       }
       pool.shutdown()
       while (!pool.isTerminated) {
-        if (cancelled.get()) pool.shutdownNow()
+        if (cancelled.get() || producerFailure.get() != null) {
+          abortActiveNetworkWork()
+          producer.interrupt()
+        }
         Thread.sleep(100)
       }
       producer.join(2000)
+      if (producer.isAlive) throw IllegalStateException("Dosya üreticisi zamanında durdurulamadı")
       producerFailure.get()?.let { if (!cancelled.get()) throw it }
       if (!cancelled.get() && produced.get() == 0L && startAccountCursor == 0L) {
         throw IllegalArgumentException("Dosyada geçerli kullanıcı adı/şifre kaydı bulunamadı; sütunları ve ayırıcıyı kontrol edin")
@@ -1124,6 +1196,12 @@ class PanelScanService : Service() {
       recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("mode", "streaming-file-v172").put("state", "V172_RUNTIME_FAILED")
         .put("error", "${e.javaClass.simpleName}: ${e.message ?: ""}"))
     } finally {
+      pipelineStopped.set(true)
+      if (producerThread?.isAlive == true) {
+        abortActiveNetworkWork()
+        producerThread?.interrupt()
+        try { producerThread?.join(2000) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+      }
       val finishedRunId = currentRunId
       finalizeSnapshot("streaming-file-v172")
       journal.finish(finishedRunId, try { JSONObject(getSharedPreferences(PREFS,0).getString(KEY_SNAPSHOT,"{}") ?: "{}").optString("state","FAILED") } catch (_:Throwable) { "FAILED" })
@@ -1148,11 +1226,16 @@ class PanelScanService : Service() {
       recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("mode", "unified")
         .put("state", "STAGING_READ").put("payloadBytes", file.length()))
       setProcessSummary(applicationContext, "scan:STAGING_READ:b${file.length()}")
-      val raw = file.bufferedReader(Charsets.UTF_8).use { it.readText() }
-      val estimatedTotal = try {
-        val root = JSONObject(raw); val jobs = root.optJSONArray("jobs") ?: JSONArray(); var n=0L
-        val sets=root.optJSONArray("candidateSets"); for(i in 0 until jobs.length()){ val j=jobs.optJSONObject(i); val a=j?.optJSONArray("candidates") ?: sets?.optJSONArray(j?.optInt("candidateSet",-1) ?: -1); n += (a?.length() ?: 0) } ; n
-      } catch (_:Throwable){0L}
+      // Keep the temporary parsed tree scoped to preparation, rather than retaining
+      // a second large jobs tree on this stack throughout the whole scan.
+      val (raw, estimatedTotal) = file.bufferedReader(Charsets.UTF_8).use { reader ->
+        val originalRaw = reader.readText()
+        val root = try { JSONObject(originalRaw) } catch (_: Throwable) { JSONObject().put("jobs", JSONArray(originalRaw)) }
+        root.put("checkpointVersion", SCAN_CHECKPOINT_VERSION)
+        val jobs = root.optJSONArray("jobs") ?: JSONArray(); var n=0L
+        val sets=root.optJSONArray("candidateSets"); for(i in 0 until jobs.length()){ val j=jobs.optJSONObject(i); val a=j?.optJSONArray("candidates") ?: sets?.optJSONArray(j?.optInt("candidateSet",-1) ?: -1); n += (a?.length() ?: 0) }
+        root.toString() to n
+      }
       if (batchSize > 0) {
         ScanJournalStore.get(applicationContext).createSessionV171(
           currentRunId, "unified", raw,
@@ -1210,6 +1293,7 @@ class PanelScanService : Service() {
     committedTestedStart: Long = 0L,
   ) {
     try {
+      initializeResultCount()
       val root = JSONObject(jobsRaw)
       val jobs = root.optJSONArray("jobs") ?: throw IllegalArgumentException("Tarama işleri yok")
       val candidateSets = root.optJSONArray("candidateSets") ?: JSONArray()
@@ -1369,7 +1453,7 @@ class PanelScanService : Service() {
           pool.submit {
             try {
               while (!cancelled.get() && workerFailure.get() == null) {
-                while (paused.get() && !cancelled.get()) Thread.sleep(100)
+                while (paused.get() && !cancelled.get() && workerFailure.get() == null) Thread.sleep(100)
                 if (cancelled.get() || workerFailure.get() != null) break
                 val wi = cursor.getAndIncrement()
                 if (wi >= batchWork) break
@@ -1378,6 +1462,8 @@ class PanelScanService : Service() {
                 val account = jobs.getJSONObject(accountIndex)
                 val candidate = candidatesFor(accountIndex).getJSONObject(candidateIndex)
                 val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
+                if (cancelled.get() || workerFailure.get() != null) break
+                if (Thread.currentThread().isInterrupted) throw InterruptedException("Tarama işçisi kesildi")
                 if (login != null) {
                   val hit = JSONObject()
                     .put("accountIndex", accountIndex)
@@ -1388,7 +1474,7 @@ class PanelScanService : Service() {
                     .put("code", candidate.optString("code"))
                     .put("server", candidate.optString("server"))
                     .put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login))
-                  if (journal.addResult(currentRunId, "$accountIndex|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit.toString())) {
+                  if (persistScanResult("$accountIndex|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit)) {
                     matches.add(hit)
                     synchronized(foundCounts) { foundCounts[local]++ }
                   }
@@ -1426,7 +1512,10 @@ class PanelScanService : Service() {
           }
         }
         pool.shutdown()
-        while (!pool.isTerminated) Thread.sleep(100)
+        while (!pool.isTerminated) {
+          if (cancelled.get() || workerFailure.get() != null) abortActiveNetworkWork()
+          Thread.sleep(100)
+        }
         workerFailure.get()?.let { if (!cancelled.get()) throw it }
         if (cancelled.get()) break
 
@@ -1479,6 +1568,7 @@ class PanelScanService : Service() {
 
   private fun runUnifiedScan(jobsRaw: String, concurrency: Int, timeoutMs: Int, startCursor: Long = 0L) {
     try {
+      initializeResultCount()
       val root = try { JSONObject(jobsRaw) } catch (_: Throwable) { null }
       val jobs = root?.optJSONArray("jobs") ?: JSONArray(jobsRaw)
       val candidateSets = root?.optJSONArray("candidateSets")
@@ -1620,16 +1710,16 @@ class PanelScanService : Service() {
         pool.submit {
           try {
             while (!cancelled.get() && workerFailure.get() == null) {
-              while (paused.get() && !cancelled.get()) Thread.sleep(100)
+              while (paused.get() && !cancelled.get() && workerFailure.get() == null) Thread.sleep(100)
               if (cancelled.get() || workerFailure.get() != null) break
-              val wi = cursor.getAndIncrement()
-              if (wi >= total) break
-              checkpointTracker.begin(workerId, wi)
+              val wi = checkpointTracker.claim(workerId, cursor, total) ?: break
               val (accountIndex, candidateIndex) = resolveWork(wi)
               val account = jobs.getJSONObject(accountIndex)
               val candidates = candidateArrays[accountIndex]
               val candidate = candidates.getJSONObject(candidateIndex)
               val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
+              if (cancelled.get() || workerFailure.get() != null) break
+              if (Thread.currentThread().isInterrupted) throw InterruptedException("Tarama işçisi kesildi")
               if (login != null) { val hit=JSONObject()
                 .put("accountIndex", accountIndex)
                 .put("sourceRow", account.optInt("row", accountIndex + 1))
@@ -1638,7 +1728,7 @@ class PanelScanService : Service() {
                 .put("panelName", candidate.optString("panelName"))
                 .put("code", candidate.optString("code"))
                 .put("server", candidate.optString("server"))
-                .put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login)); if (ScanJournalStore.get(applicationContext).addResult(currentRunId, "$accountIndex|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit.toString())) matches.add(hit) }
+                .put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login)); if (persistScanResult("$accountIndex|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit)) matches.add(hit) }
               if (completedByAccount[accountIndex].incrementAndGet() == expectedByAccount[accountIndex]) accountDone.incrementAndGet()
               val done = tested.incrementAndGet()
               checkpointTracker.finish(workerId)
@@ -1670,7 +1760,10 @@ class PanelScanService : Service() {
         }
       }
       pool.shutdown()
-      while (!pool.isTerminated) Thread.sleep(100)
+      while (!pool.isTerminated) {
+        if (cancelled.get() || workerFailure.get() != null) abortActiveNetworkWork()
+        Thread.sleep(100)
+      }
       workerFailure.get()?.let { if (!cancelled.get()) throw it }
       writeUnifiedSnapshot(
         tested.get(), total, accountDone.get(), accountCount, panelSet.size, matches, "", -1, false,
@@ -1695,6 +1788,7 @@ class PanelScanService : Service() {
 
   private fun runScan(raw: String, user: String, pass: String, concurrency: Int, timeoutMs: Int, startCursor: Int = 0) {
     try {
+      initializeResultCount()
       val arr = JSONArray(raw)
       val total = arr.length()
       val safeStart = startCursor.coerceIn(0, total)
@@ -1717,21 +1811,23 @@ class PanelScanService : Service() {
       val panelDone = AtomicInteger(panelRemaining.values.count { it.get() == 0 })
       val pool = Executors.newFixedThreadPool(concurrency)
       val checkpointTracker = ConservativeCursorTracker(concurrency)
+      val workerFailure = AtomicReference<Throwable?>(null)
       activeExecutor = pool
       repeat(concurrency) { workerId ->
         pool.submit {
-          while (!cancelled.get()) {
-            while (paused.get() && !cancelled.get()) Thread.sleep(120)
-            if (cancelled.get()) break
-            val i = cursor.getAndIncrement()
-            if (i >= total) break
-            checkpointTracker.begin(workerId, i.toLong())
+          try {
+          while (!cancelled.get() && workerFailure.get() == null) {
+            while (paused.get() && !cancelled.get() && workerFailure.get() == null) Thread.sleep(120)
+            if (cancelled.get() || workerFailure.get() != null) break
+            val i = checkpointTracker.claim(workerId, cursor, total) ?: break
             val c = arr.getJSONObject(i)
             val panelName = c.optString("panelName")
             val server = c.optString("server")
             val data = probe(server, user, pass, timeoutMs)
+            if (cancelled.get() || workerFailure.get() != null) break
+            if (Thread.currentThread().isInterrupted) throw InterruptedException("Tarama işçisi kesildi")
             if (data != null) {
-              val hit=JSONObject().put("panelName", panelName).put("code", c.optString("code")).put("server", server).put("sources",c.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(data)); if (ScanJournalStore.get(applicationContext).addResult(currentRunId,"$panelName|${c.optString("code")}|$server",hit.toString())) matches.add(hit)
+              val hit=JSONObject().put("panelName", panelName).put("code", c.optString("code")).put("server", server).put("sources",c.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(data)); if (persistScanResult("$panelName|${c.optString("code")}|$server",hit)) matches.add(hit)
             }
             val done = tested.incrementAndGet()
             checkpointTracker.finish(workerId)
@@ -1750,10 +1846,20 @@ class PanelScanService : Service() {
             val nm = getSystemService(NotificationManager::class.java)
             nm.notify(NOTIF_ID, notification("$done/$total · ${matches.size} hesap bulundu", if (total > Int.MAX_VALUE) ((done * Int.MAX_VALUE) / total).toInt() else done.toInt(), if (total > Int.MAX_VALUE) Int.MAX_VALUE else total.toInt()))
           }
+          } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            if (!cancelled.get()) workerFailure.compareAndSet(null, e)
+          } catch (e: Throwable) {
+            workerFailure.compareAndSet(null, e)
+          }
         }
       }
       pool.shutdown()
-      while (!pool.isTerminated) Thread.sleep(100)
+      while (!pool.isTerminated) {
+        if (cancelled.get() || workerFailure.get() != null) abortActiveNetworkWork()
+        Thread.sleep(100)
+      }
+      workerFailure.get()?.let { if (!cancelled.get()) throw it }
       val resultArray = JSONArray()
       synchronized(matches) { matches.forEach { resultArray.put(it) } }
       writeSnapshot(JSONObject()

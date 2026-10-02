@@ -8,6 +8,7 @@ const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 const ts = require('./_ts');
+const strictValue = require('./_strict-storage-fixture');
 const root = path.resolve(__dirname, '..', 'frontend');
 
 function compile(rel) {
@@ -23,7 +24,7 @@ async function testStalker() {
     const store=new Map();
     const req = id => {
       if(id==='@/src/utils/diagnostics') return { recordDiagnostic: async()=>{}, markTask:()=>()=>{} };
-      if(id==='@/src/utils/storage') return { storage:{getItem:async(k,f)=>store.has(k)?store.get(k):f,setItem:async(k,v)=>{store.set(k,v);return true;},removeItem:async(k)=>{store.delete(k);return true;}} };
+      if(id==='@/src/utils/storage') return { storage:{getItem:async(k,f)=>store.has(k)?store.get(k):f,getItemStrict:async(k,f)=>strictValue(store.get(k),f,store.has(k)),setItem:async(k,v)=>{store.set(k,v);return true;},removeItem:async(k)=>{store.delete(k);return true;}} };
       if(id==='@/modules/kizilkan-native-core') return { KizilkanNativeCore:{ available:false, magExactRequest:async()=>null } };
       return require(id);
     };
@@ -92,32 +93,49 @@ class MemFile {
   open(){ let off=0,self=this; return { get offset(){return off}, get size(){return self.content.length}, readBytes(n){const b=self.content.subarray(off,off+n);off+=b.length;return new Uint8Array(b)}, close(){} }; }
 }
 async function testBackup() {
-  const js=compile('src/utils/backupV3.ts');
-  const currentMeta={appName:'KIZILKAN PLAYER ELITE',version:'2.1',createdAt:'x',data:{},playlists:{profiles:{p:{metadata:'',playlistIds:['old']}}}};
-  const incomingMeta={appName:'KIZILKAN PLAYER ELITE',version:'3.0-meta',createdAt:'x',data:{},playlists:{profiles:{p:{metadata:'',playlistIds:['new']}}}};
+  const metadata=id=>JSON.stringify([{id,name:id,source:'m3u_url',m3uUrl:'https://test/'+id}]);
+  const incomingMeta={appName:'KIZILKAN PLAYER ELITE',version:'3.0-meta',createdAt:'x',data:{'kizilkan.profiles':JSON.stringify([{id:'p',name:'Profile'}]),'kizilkan.playlists.meta.p':metadata('new')},playlists:{profiles:{p:{metadata:metadata('new'),playlistIds:['new']}},heavy:{}}};
   const data=[{magic:'KIZILKAN_BACKUP_V3',version:3,metadata:incomingMeta},{type:'playlist-start',playlistId:'new'},{type:'chunk',playlistId:'new',kind:'live',items:[{id:'1'}]},{type:'playlist-end',playlistId:'new'},{type:'end',playlists:1,items:1}].map(JSON.stringify).join('\n')+'\n';
   const make=(failMeta=false)=>{
-    const staged=new Map(), live=new Map([['old',[{id:'old'}]]]); let swapped=false,rolled=false,finalized=false;
+    const staged=new Map(),live=new Map([['old',[{id:'old'}]]]),markers=new Map();let swapped=false,rolled=false,finalized=false,failOnce=failMeta;
+    const kv=new Map([['kizilkan.profiles',JSON.stringify([{id:'p',name:'Profile'}])],['kizilkan.playlists.meta.p',metadata('old')]]);
+    const storage={getItem:async(k,f)=>kv.has(k)?kv.get(k):f,getItemStrict:async(k,f)=>strictValue(kv.get(k),f,kv.has(k)),setItem:async(k,v)=>{if(failOnce&&k==='kizilkan.playlists.meta.p'){failOnce=false;return false;}kv.set(k,v);return true;},removeItem:async k=>{kv.delete(k);return true;}};
+    const summary=id=>({roomIndexed:true,channels:(staged.get(id)||live.get(id)||[]).length,vod:0,series:0});
     const core={available:true,
       async beginChunkedPlaylistImport(id){staged.set(id,[]);return true},
       async appendPlaylistChunk(id,k,j){const a=JSON.parse(j);staged.get(id).push(...a);return a.length},
-      async finishChunkedPlaylistImport(id){return{roomIndexed:true,channels:staged.get(id).length,vod:0,series:0}},
-      async applyAtomicPlaylistRestore(session,maps){core.back=new Map(live);for(const x of maps){if(x.stageId)live.set(x.targetId,[...staged.get(x.stageId)]);else live.delete(x.targetId)}swapped=true;return true},
-      async finalizeAtomicPlaylistRestore(){finalized=true;core.back=null;return true},
-      async rollbackAtomicPlaylistRestore(){live.clear();for(const [k,v] of core.back||[])live.set(k,v);rolled=true;return true},
-      async cancelChunkedPlaylistImport(){return true}, async removePlaylistIndex(){return true}, async queryItems(){return{items:[],hasMore:false,total:0}}
+      async finishChunkedPlaylistImport(id){return summary(id)},async getPlaylistSummaryVerified(id){return summary(id)},
+      async applyAtomicPlaylistRestore(session,maps){core.back=new Map(live);for(const x of maps){if(x.stageId)live.set(x.targetId,[...staged.get(x.stageId)]);else live.delete(x.targetId)}markers.set(session,'applied');swapped=true;return true},
+      async finalizeAtomicPlaylistRestore(session){finalized=true;core.back=null;markers.set(session,'finalized');return true},
+      async rollbackAtomicPlaylistRestore(session){if(markers.get(session)!=='applied')return true;live.clear();for(const [k,v]of core.back||[])live.set(k,v);markers.delete(session);rolled=true;return true},
+      async getAtomicPlaylistRestoreState(session){return markers.get(session)||'none'},async clearAtomicPlaylistRestoreState(session){markers.delete(session);return true},
+      async cancelChunkedPlaylistImport(){return true},async removePlaylistIndex(id){staged.delete(id);return true},async deleteLegacyPlaylistFile(){return true},async queryItems(){return{items:[],hasMore:false,total:0}}
     };
-    const backup={backupPlaylistIds:p=>Object.values(p.playlists?.profiles||{}).flatMap(x=>x.playlistIds||[]),createBackupMetadata:async()=>currentMeta,restoreBackupMetadataExact:async meta=>{if(meta?.version==='3.0-meta'&&failMeta)throw new Error('meta fail');return{profiles:1,playlists:1,heavyPlaylists:0,settings:1,warnings:[]}}};
-    const req=id=>id==='expo-file-system'?{File:MemFile,Paths:{cache:{}}}:id==='@/modules/kizilkan-native-core'?{KizilkanNativeCore:core}:id==='@/src/utils/storage/bigStore'?{bigStore:{remove:async id=>(live.delete(id),true)}}:id==='@/src/utils/backup'?backup:require(id);
-    const box={module:{exports:{}},exports:{},require:req,console,TextDecoder,TextEncoder,Uint8Array,Math,Date};box.exports=box.module.exports;vm.runInNewContext(js,box,{filename:'backupV3.ts'});
-    return {m:box.module.exports,live,state:()=>({swapped,rolled,finalized})};
+    const bigStore={remove:async id=>(live.delete(id),true)};
+    const loaded=new Map();
+    const load=rel=>{
+      if(loaded.has(rel))return loaded.get(rel);
+      const exports={};loaded.set(rel,exports);
+      const req=id=>{
+        if(id==='expo-file-system')return{File:MemFile,Paths:{cache:{}}};
+        if(id==='@/modules/kizilkan-native-core')return{KizilkanNativeCore:core};
+        if(id==='@/src/utils/storage'||id==='./storage')return{storage};
+        if(id==='@/src/utils/storage/bigStore'||id==='./storage/bigStore')return{bigStore};
+        if(id==='@/src/utils/backup')return load('src/utils/backup.ts');
+        if(id.startsWith('./'))return load(path.posix.join(path.posix.dirname(rel),id+'.ts'));
+        throw Error('Unmocked backup dependency '+id);
+      };
+      vm.runInNewContext(compile(rel),{exports,require:req,console,TextDecoder,TextEncoder,Uint8Array,Math,Date,Map,Set,JSON},{filename:rel});
+      return exports;
+    };
+    return{m:load('src/utils/backupV3.ts'),live,state:()=>({swapped,rolled,finalized})};
   };
-  let x=make(false); await x.m.restoreFullBackupV3({content:data,name:'ok.kzb'});
-  if(x.live.has('old')||x.live.get('new')?.length!==1||!x.state().finalized) throw new Error('Backup atomik başarılı restore fixture başarısız');
-  x=make(true); let failed=false; try{await x.m.restoreFullBackupV3({content:data,name:'meta-fail.kzb'})}catch(e){failed=/meta fail/.test(String(e?.message))}
-  if(!failed||!x.live.has('old')||x.live.has('new')||!x.state().rolled) throw new Error('Backup metadata hatasında Room rollback başarısız');
-  const broken=data.split('\n').slice(0,-2).join('\n')+'\n'; x=make(false); try{await x.m.restoreFullBackupV3({content:broken,name:'broken.kzb'});throw new Error('Eksik backup kabul edildi')}catch(e){if(!/son doğrulama|tamamlanmamış/i.test(String(e?.message)))throw e}
-  if(!x.live.has('old')||x.state().swapped) throw new Error('Eksik backup canlı Room verisine dokundu');
+  let x=make(false);await x.m.restoreFullBackupV3({content:data,name:'ok.kzb'});
+  if(x.live.has('old')||x.live.get('new')?.length!==1||!x.state().finalized)throw new Error('Backup atomik başarılı restore fixture başarısız');
+  x=make(true);let failed=false;try{await x.m.restoreFullBackupV3({content:data,name:'meta-fail.kzb'})}catch(e){failed=/meta fail|Geri yükleme bilgisi cihaza yazılamadı/.test(String(e?.message))}
+  if(!failed||!x.live.has('old')||x.live.has('new')||!x.state().rolled)throw new Error('Backup metadata hatasında Room rollback başarısız');
+  const broken=data.split('\n').slice(0,-2).join('\n')+'\n';x=make(false);try{await x.m.restoreFullBackupV3({content:broken,name:'broken.kzb'});throw new Error('Eksik backup kabul edildi')}catch(e){if(!/son doğrulama|tamamlanmamış/i.test(String(e?.message)))throw e}
+  if(!x.live.has('old')||x.state().swapped)throw new Error('Eksik backup canlı Room verisine dokundu');
 }
 
 (async()=>{ await testStalker(); await testBackup(); console.log('TEMIZ — v15.2.14 Stalker/Backup fonksiyonel fixture kapisi'); })().catch(e=>{console.error('HATA — v15.2.14 hardening fixture:',e);process.exit(1)});

@@ -211,6 +211,13 @@ export const KizilkanNativeCore = {
   applyAtomicPlaylistRestore: async (sessionId: string, mappings: Array<{targetId:string; stageId:string|null}>): Promise<boolean> => native ? !!(await native.applyAtomicPlaylistRestore(sessionId, JSON.stringify(mappings))) : false,
   finalizeAtomicPlaylistRestore: async (sessionId: string, targetIds: string[]): Promise<boolean> => native ? !!(await native.finalizeAtomicPlaylistRestore(sessionId, JSON.stringify(targetIds))) : false,
   rollbackAtomicPlaylistRestore: async (sessionId: string, targetIds: string[]): Promise<boolean> => native ? !!(await native.rollbackAtomicPlaylistRestore(sessionId, JSON.stringify(targetIds))) : false,
+  getAtomicPlaylistRestoreState: async (sessionId: string): Promise<'none' | 'applied' | 'finalized'> => {
+    if (!native?.getAtomicPlaylistRestoreState) throw new Error('Native restore journal API kullanılamıyor.');
+    const state = await native.getAtomicPlaylistRestoreState(sessionId);
+    if (state !== 'none' && state !== 'applied' && state !== 'finalized') throw new Error('Native restore journal durumu geçersiz.');
+    return state;
+  },
+  clearAtomicPlaylistRestoreState: async (sessionId: string): Promise<boolean> => native ? !!(await native.clearAtomicPlaylistRestoreState(sessionId)) : false,
   importM3uText: async (id: string, text: string): Promise<NativePlaylistSummary | null> => native ? native.importM3uText(id, text) : null,
   fetchAndImportM3u: async (id: string, url: string, userAgent = "VLC/3.0.20 LibVLC/3.0.20"): Promise<NativePlaylistSummary | null> => native ? native.fetchAndImportM3u(id, url, userAgent) : null,
   hasPlaylistIndex: async (id: string): Promise<boolean> => native ? !!(await native.hasPlaylistIndex(id)) : false,
@@ -295,6 +302,28 @@ export const KizilkanNativeCore = {
   downloadCancel: async (id: string): Promise<NativeDownloadStatus[]> => { try { return JSON.parse(await native.downloadCancel(id)).downloads || []; } catch { return []; } },
   downloadStatus: (): NativeDownloadStatus[] => { try { return native?.downloadStatus ? (JSON.parse(native.downloadStatus()).downloads || []) : []; } catch { return []; } },
   /** v18.6.0 — Dosya yöneticisinde görünür klasöre metin dosyası yaz (Download/KIZILKAN PLAYER ELITE/<alt>). */
+  hashPin: async (pin: string): Promise<string> => {
+    if(!native?.hashPin)throw new Error('PIN koruması bu sürümde kullanılamıyor.');
+    return native.hashPin(pin);
+  },
+  verifyProtectedPin: async (pin: string, encoded: string): Promise<boolean> => {
+    if(!native?.verifyProtectedPin)return false;
+    return !!(await native.verifyProtectedPin(pin,encoded));
+  },
+  cancelBackupCrypto: (jobId:string):void => { native?.cancelBackupCrypto?.(jobId); },
+  encryptBackupFile: async (inputUri:string,outputPath:string,password:string,jobId:string):Promise<{ok:boolean;uri?:string}> => {
+    if(!native?.encryptBackupFile)throw new Error('Şifreli yedek için Android Native Core gerekli.');
+    return native.encryptBackupFile(inputUri,outputPath,password,jobId);
+  },
+  decryptBackupFile: async (inputUri:string,outputPath:string,password:string,jobId:string):Promise<{ok:boolean;uri?:string;kind?:'full'|'json'}> => {
+    if(!native?.decryptBackupFile)throw new Error('Şifreli yedek için Android Native Core gerekli.');
+    return native.decryptBackupFile(inputUri,outputPath,password,jobId);
+  },
+  copyFileToPublicStorage: async (sourcePath: string, subdir: string, fileName: string, mime: string, treeUri = ""): Promise<{ ok: boolean; uri?: string; path?: string; error?: string }> => {
+    if (!native?.copyFileToPublicStorage) return { ok: false, error: "NATIVE_UNAVAILABLE" };
+    try { return await native.copyFileToPublicStorage(sourcePath, subdir, fileName, mime, treeUri); }
+    catch (e: any) { return { ok: false, error: String(e?.message || e) }; }
+  },
   writePublicTextFile: async (subdir: string, fileName: string, mime: string, text: string, treeUri = ""): Promise<{ ok: boolean; uri?: string; path?: string; error?: string }> => {
     if (!native?.writePublicTextFile) return { ok: false, error: "NATIVE_UNAVAILABLE" };
     try { return await native.writePublicTextFile(subdir, fileName, mime, text, treeUri) as any; }
@@ -324,13 +353,24 @@ export const KizilkanNativeCore = {
   removeEpg: async (playlistId: string): Promise<boolean> => native ? !!(await native.removeEpg(playlistId)) : false,
   readPlaylistHeavy: async <T = any>(id: string): Promise<T | null> => native ? native.readPlaylistHeavy(id) : null,
   getPlaylistSummary: async (id: string): Promise<NativePlaylistSummary | null> => native ? native.getPlaylistSummary(id) : null,
+  getPlaylistSummaryVerified: async (id: string): Promise<NativePlaylistSummary | null> => native ? native.getPlaylistSummaryVerified(id) : null,
   getCategories: async (id: string, kind: "live" | "vod" | "series") => native ? native.getCategories(id, kind) : [],
   queryItems: async <T = any>(id: string, kind: "live" | "vod" | "series", opts?: { group?: string; search?: string; offset?: number; limit?: number }): Promise<NativeQueryPage<T>> => {
     if (!native) return { items: [], offset: 0, returned: 0, total: 0, hasMore: false };
     return native.queryItems(id, kind, opts?.group || "__all__", opts?.search || "", opts?.offset || 0, opts?.limit || 80);
   },
   getItem: async <T = any>(id: string, kind: "live" | "vod" | "series", itemId: string): Promise<T | null> => native ? native.getItem(id, kind, itemId) : null,
-  getItemsByIds: async <T = any>(id: string, kind: "live" | "vod" | "series", itemIds: string[]): Promise<T[]> => native ? (await native.getItemsByIds(id, kind, itemIds)) : [],
+  getItemsByIds: async <T = any>(id: string, kind: "live" | "vod" | "series", itemIds: string[]): Promise<T[]> => {
+    if (!native) return [];
+    const ids = Array.from(new Set(itemIds.map(String)));
+    const rows: T[] = [];
+    // Native bounds each call; chunk instead of silently dropping IDs after 500.
+    for (let offset = 0; offset < ids.length; offset += 250) {
+      rows.push(...((await native.getItemsByIds(id, kind, ids.slice(offset, offset + 250))) || []));
+    }
+    const byId=new Map<string,T>(rows.map(row=>[String((row as any).id),row]));
+    return ids.map(key=>byId.get(key)).filter((row):row is T=>row!==undefined);
+  },
   getPlaybackNeighbors: async <T = any>(id: string, kind: "live" | "vod" | "series", itemId: string, opts?: { group?: string; search?: string; wrap?: boolean }): Promise<{ currentId:string; previous:T|null; next:T|null; position:number; total:number; found:boolean; elapsedMs?:number }> => native
     ? (await native.getPlaybackNeighbors(id, kind, itemId, opts?.group || "__all__", opts?.search || "", opts?.wrap !== false))
     : { currentId:itemId, previous:null, next:null, position:0, total:0, found:false },

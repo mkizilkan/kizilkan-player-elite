@@ -82,7 +82,8 @@ export async function authenticateGoogleDrive(): Promise<DriveAuthResult> {
 export async function uploadJsonToDrive(
   accessToken: string,
   fileName: string,
-  jsonContent: string
+  jsonContent: string,
+  signal?: AbortSignal
 ): Promise<{ id: string; name: string; webViewLink?: string }> {
   const metadata = { name: fileName, mimeType: 'application/json' };
   const boundary = 'kizilkan-boundary-' + Date.now();
@@ -97,6 +98,7 @@ export async function uploadJsonToDrive(
     `--${boundary}--`;
 
   const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink', {
+    signal,
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,

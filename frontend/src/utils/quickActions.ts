@@ -41,7 +41,9 @@ const ITEMS: any[] = [
 let listener: any = null;
 
 export async function registerQuickActions() {
-  if (Platform.OS === "web") return;
+  // Android dynamic shortcuts have one owner: Native Core bitmap/action shortcuts.
+  // The Expo module would overwrite the same OS list with incompatible intents.
+  if (Platform.OS === "web" || Platform.OS === "android") return;
   try {
     await QuickActions.setItems(ITEMS);
     if (listener) return;

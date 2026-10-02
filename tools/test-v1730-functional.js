@@ -2,6 +2,7 @@
 const assert=require('node:assert/strict'),fs=require('fs'),path=require('path'),vm=require('vm');
 const root=path.resolve(__dirname,'..');
 const ts=require(require.resolve('typescript',{paths:[path.join(root,'frontend'),process.env.KIZILKAN_TEST_RUNTIME||'']}));
+const strictValue=require('./_strict-storage-fixture');
 function load(file,mocks={},globals={}){
  const js=ts.transpileModule(fs.readFileSync(path.join(root,file),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
  const exports={};vm.runInNewContext(js,{exports,require:id=>{if(id in mocks)return mocks[id];throw Error('Unmocked '+id);},URL,AbortController,setTimeout,clearTimeout,console,Date,Map,Set,Promise,...globals},{filename:file});return exports;
@@ -46,8 +47,12 @@ const model=load('frontend/src/utils/panelDirectoryModel.ts'),plain=x=>JSON.pars
    const rf=await refresh({...pl,xtreamServer:'http://dead.example',backupHosts:['http://also-dead.example']},undefined,{kinds:['vod']});assert.equal(rf.ok,false);
    iptv.xtreamLogin=origLogin;iptv.xtreamVod=origVod; }
  const ops=load('frontend/src/utils/catalogOperations.ts');assert.equal(ops.freshnessDue(1000,15,1001),false);assert.equal(ops.freshnessDue(1000,15,901001),true);
- const data=new Map([['kizilkan.profiles',JSON.stringify([{id:'family'}])],['kizilkan.player.autoNext.family','true'],['kizilkan.playlists.meta.family',JSON.stringify([{id:'pl',m3uValidators:{url:'https://example.com/list',etag:'"abc"'},serverCodeBinding:{sources:[{source:'splayer'}]}}])]]);
- const backup=load('frontend/src/utils/backup.ts',{'@/src/utils/storage':{storage:{getItem:async(k,d)=>data.get(k)??d,setItem:async(k,v)=>{data.set(k,v);return true;},removeItem:async k=>{data.delete(k);return true;}}},'@/src/utils/storage/bigStore':{bigStore:{}}});
+ const data=new Map([['kizilkan.profiles',JSON.stringify([{id:'family',name:'Family'}])],['kizilkan.player.autoNext.family','true'],['kizilkan.playlists.meta.family',JSON.stringify([{id:'pl',m3uValidators:{url:'https://example.com/list',etag:'"abc"'},serverCodeBinding:{sources:[{source:'splayer'}]}}])]]);
+ const backupStorage={getItem:async(k,d)=>data.get(k)??d,getItemStrict:async(k,d)=>strictValue(data.get(k),d,data.has(k)),setItem:async(k,v)=>{data.set(k,v);return true;},removeItem:async k=>{data.delete(k);return true;}};
+ const backupMocks={'@/src/utils/storage':{storage:backupStorage},'./storage':{storage:backupStorage},'@/src/utils/storage/bigStore':{bigStore:{}},'./storage/bigStore':{bigStore:{}},'@/modules/kizilkan-native-core':{KizilkanNativeCore:{available:false}}};
+ backupMocks['./backupSelection']=load('frontend/src/utils/backupSelection.ts');
+ backupMocks['./backupRestoreTransaction']=load('frontend/src/utils/backupRestoreTransaction.ts',backupMocks);
+ const backup=load('frontend/src/utils/backup.ts',backupMocks);
  const snapshot=await backup.createBackupMetadata('full');assert.equal(snapshot.data['kizilkan.player.autoNext.family'],'true');assert.equal(JSON.parse(snapshot.playlists.profiles.family.metadata)[0].m3uValidators.etag,'"abc"');
  data.delete('kizilkan.player.autoNext.family');await backup.restoreBackupMetadataExact(snapshot);assert.equal(data.get('kizilkan.player.autoNext.family'),'true');assert.equal(JSON.parse(data.get('kizilkan.playlists.meta.family'))[0].serverCodeBinding.sources[0].source,'splayer');
  let release;const blocked=new Promise(r=>release=r),order=[];

@@ -39,6 +39,8 @@ export type PlaybackRequest = {
   expectsVideo: boolean;
   /** Aynı Xtream live stream için güvenli alternatif endpoint adayları. */
   fallbackUrls?: string[];
+  /** Explicit account/item/protocol headers must be applied through the Cast bridge. */
+  requiresHttpHeaders?: boolean;
 };
 
 export type ClassifiedPlaybackError = {

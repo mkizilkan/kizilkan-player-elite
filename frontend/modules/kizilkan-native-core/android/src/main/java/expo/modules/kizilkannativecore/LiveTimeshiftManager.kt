@@ -116,12 +116,15 @@ internal class LiveTimeshiftManager(private val context: Context) {
     @Volatile var teeError = ""
     val teeLock = Any()
     fun teeWrite(b: ByteArray) {
-      val o = teeOut ?: return
-      try { synchronized(teeLock) { o.write(b); teeBytes += b.size } }
+      try { synchronized(teeLock) { val o = teeOut ?: return; o.write(b); teeBytes += b.size } }
       catch (t: Throwable) { teeError = t.message ?: "yazma hatası"; closeTee() }
     }
     fun closeTee(): Map<String, Any> {
-      synchronized(teeLock) { runCatching { teeOut?.flush(); teeOut?.close() }; teeOut = null }
+      synchronized(teeLock) {
+        try { try { teeOut?.flush() } finally { teeOut?.close() } }
+        catch (t: Throwable) { if (teeError.isEmpty()) teeError = t.message ?: "kayıt kapatma hatası" }
+        finally { teeOut = null }
+      }
       return mapOf("ok" to teeError.isEmpty(), "path" to teePath, "bytes" to teeBytes, "error" to teeError)
     }
     @Volatile var mode = "probing"
@@ -201,9 +204,9 @@ internal class LiveTimeshiftManager(private val context: Context) {
 
 
     fun stop(deleteFiles: Boolean = true) {
-      runCatching { closeTee() }
       running = false
       try { workerCall?.cancel() } catch (_: Throwable) {}
+      runCatching { closeTee() }
       try { server?.close() } catch (_: Throwable) {}
       executor.shutdownNow()
       if (deleteFiles) {
@@ -229,6 +232,10 @@ internal class LiveTimeshiftManager(private val context: Context) {
         "startedAtMs" to startedAtMs,
         "lastSegmentAtMs" to lastSegmentAtMs,
         "error" to error,
+        "recording" to (teeOut != null),
+        "recordPath" to teePath,
+        "recordBytes" to teeBytes,
+        "recordError" to teeError,
         // v18.0.0 telemetri
         "ingestBytes" to ingestBytes.get(),
         "ingestKbps" to run {
@@ -446,7 +453,7 @@ internal class LiveTimeshiftManager(private val context: Context) {
             val identity = "${spec.upstreamSeq}|${spec.uri}|${spec.byteRange.orEmpty()}"
             if (!seenUpstream.add(identity)) continue
             try {
-              val localKey = spec.keyLine?.let { rewriteAssetTag(it, spec.playlistBaseUrl) }
+              val localKey = spec.keyLine?.let { rewriteAssetTag(explicitSegmentIv(it, spec.upstreamSeq), spec.playlistBaseUrl) }
               val localMap = spec.mapLine?.let { rewriteAssetTag(it, spec.playlistBaseUrl) }
               val ext = extensionFromUrl(spec.uri, "ts")
               val seq = localSeq.getAndIncrement()
@@ -459,7 +466,7 @@ internal class LiveTimeshiftManager(private val context: Context) {
               addSegment(Segment(seq, file, spec.duration, System.currentTimeMillis(), spec.discontinuity, localKey, localMap))
               if (teeOut != null) {
                 // Şifresiz MPEG-TS parçaları ardışık eklenince oynatılabilir tek dosya olur.
-                if (spec.keyLine == null && spec.mapLine == null && ext.equals("ts", true)) teeWrite(file.readBytes())
+                if ((spec.keyLine == null || spec.keyLine.contains("METHOD=NONE", true)) && spec.mapLine == null && ext.equals("ts", true)) teeWrite(file.readBytes())
                 else if (teeError.isEmpty()) { teeError = "HLS_ENCRYPTED_OR_FMP4_NOT_RECORDABLE"; closeTee() }
               }
               highestUpstreamSeq = max(highestUpstreamSeq, spec.upstreamSeq)
@@ -669,6 +676,14 @@ internal class LiveTimeshiftManager(private val context: Context) {
       return line.replace(Regex("""URI=(?:\"[^\"]+\"|'[^']+'|[^,]+)"""), "URI=\"/asset/$id/${file.name}\"")
     }
 
+    /** RFC 8216 §5.2: implicit AES IV belongs to upstream media sequence,
+     * not the local rolling-window sequence used for file names. */
+    private fun explicitSegmentIv(line: String, upstreamSeq: Long): String {
+      if (!Regex("(?:^|[:,])METHOD=AES-128(?:,|$)", RegexOption.IGNORE_CASE).containsMatchIn(line) ||
+        Regex("(?:^|,)IV=", RegexOption.IGNORE_CASE).containsMatchIn(line)) return line
+      return "$line,IV=0x${java.lang.Long.toHexString(upstreamSeq).padStart(32, '0')}"
+    }
+
     private fun parseMediaPlaylist(baseUrl: String, text: String): ParsedMediaPlaylist {
       val lines = text.replace("\r\n", "\n").replace('\r', '\n').lines()
       var mediaSequence = 0L
@@ -755,13 +770,15 @@ internal class LiveTimeshiftManager(private val context: Context) {
       return b
     }
 
-    private fun requestClient(): OkHttpClient = OkHttpClient.Builder()
+    private val sharedRequestClient: OkHttpClient by lazy { OkHttpClient.Builder()
       .followRedirects(true)
       .followSslRedirects(true)
       .connectTimeout(12, TimeUnit.SECONDS)
       .readTimeout(20, TimeUnit.SECONDS)
       .writeTimeout(12, TimeUnit.SECONDS)
-      .build()
+      .build() }
+
+    private fun requestClient(): OkHttpClient = sharedRequestClient
 
     private fun streamingClient(): OkHttpClient = requestClient().newBuilder().readTimeout(0, TimeUnit.MILLISECONDS).build()
   }
@@ -783,6 +800,7 @@ internal class LiveTimeshiftManager(private val context: Context) {
     try { File(context.cacheDir, "kizilkan-timeshift").deleteRecursively() } catch (_: Throwable) {}
   }
 
+  @Synchronized
   fun start(sourceUrl: String, headersJson: String, windowSeconds: Int = DEFAULT_WINDOW_SECONDS, maxBytes: Long = DEFAULT_MAX_BYTES): Map<String, Any> {
     if (!sourceUrl.startsWith("http://", true) && !sourceUrl.startsWith("https://", true)) {
       return mapOf("ready" to false, "running" to false, "error" to "UNSUPPORTED_SCHEME", "localUrl" to "", "sessionId" to "")
@@ -790,6 +808,9 @@ internal class LiveTimeshiftManager(private val context: Context) {
     val headersObj = try { JSONObject(headersJson) } catch (_: Throwable) { JSONObject() }
     val headers = LinkedHashMap<String, String>()
     headersObj.keys().forEach { key -> headers[key] = headersObj.optString(key, "") }
+    // Local playback and Cast share this manager; old recorder calls must be
+    // cancelled before a replacement opens another provider connection.
+    sessions.keys.toList().forEach { stop(it) }
     val id = "ts-${System.currentTimeMillis().toString(36)}-${sha256(sourceUrl + headersJson).take(10)}"
     val session = Session(id, sourceUrl, headers, windowSeconds, maxBytes)
     sessions[id] = session
@@ -816,9 +837,18 @@ internal class LiveTimeshiftManager(private val context: Context) {
   /** v18.6.0 — Oturumun akışını ayrıca dosyaya yaz (aynı bağlantı). */
   fun startRecord(id: String, path: String): Map<String, Any> {
     val s = sessions[id] ?: return mapOf("ok" to false, "error" to "SESSION_NOT_FOUND")
+    if (!s.running || !s.ready) return mapOf("ok" to false, "error" to "SESSION_NOT_READY")
+    if (s.mode == "hls") {
+      val segment = synchronized(s.lock) { s.segments.peekLast() }
+      if (segment == null || segment.mapTag != null || !segment.file.extension.equals("ts", true) ||
+        (segment.keyTag != null && !segment.keyTag.contains("METHOD=NONE", true))) {
+        return mapOf("ok" to false, "error" to "HLS_ENCRYPTED_OR_FMP4_NOT_RECORDABLE")
+      }
+    }
     return try {
       val f = File(path); f.parentFile?.mkdirs()
       synchronized(s.teeLock) {
+        if (!s.running || sessions[id] !== s) return mapOf("ok" to false, "error" to "SESSION_NOT_READY")
         runCatching { s.teeOut?.close() }
         s.teeOut = java.io.BufferedOutputStream(FileOutputStream(f, false), 256 * 1024)
         s.teePath = f.absolutePath; s.teeBytes = 0L; s.teeError = ""; s.teeNeedsHeaders = true

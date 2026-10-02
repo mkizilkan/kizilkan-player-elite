@@ -1,16 +1,43 @@
 import { DEFAULT_USER_AGENT } from "@/src/utils/streamTest";
 import type { PlaybackRequest } from "./types";
 
-function cleanHeaders(source: any): Record<string, string> {
+export function normalizePlaybackHeaders(source: any): Record<string, string> {
   const out: Record<string, string> = {};
   if (!source || typeof source !== "object") return out;
   for (const [k,v] of Object.entries(source)) {
     if (v === undefined || v === null) continue;
-    const key = String(k).trim();
+    const rawKey = String(k).trim();
+    const lower = rawKey.toLowerCase();
+    const aliases: Record<string, string> = {
+      "http-user-agent": "User-Agent", "user-agent": "User-Agent",
+      "http-referrer": "Referer", "http-referer": "Referer", referer: "Referer", referrer: "Referer",
+      "http-origin": "Origin", origin: "Origin", cookie: "Cookie", authorization: "Authorization",
+    };
+    if (lower === "inputstream.adaptive.stream_headers" || lower === "inputstream.adaptive.manifest_headers") {
+      for (const pair of String(v).split("&")) {
+        const split = pair.indexOf("=");
+        if (split < 1) continue;
+        const decode = (s: string) => { try { return decodeURIComponent(s.replace(/\+/g, " ")); } catch { return s; } };
+        Object.assign(out, normalizePlaybackHeaders({ [decode(pair.slice(0, split))]: decode(pair.slice(split + 1)) }));
+      }
+      continue;
+    }
+    // Kodi player/DRM configuration remains item metadata, not HTTP headers.
+    if (lower.startsWith("inputstream.") || lower === "inputstream") continue;
+    const key = aliases[lower] || rawKey;
     const val = String(v).trim();
-    if (key && val) out[key] = val;
+    if (key && val && !/[\r\n]/.test(key + val)) out[key] = val;
   }
   return out;
+}
+
+const cleanHeaders = normalizePlaybackHeaders;
+
+/** URL alone is insufficient: an account may change UA/Referer without changing media. */
+export function playbackSourceIdentity(request: { url: string; headers?: Record<string, string>; contentType?: string } | null): string {
+  if (!request) return "";
+  const headers = Object.entries(normalizePlaybackHeaders(request.headers)).sort(([a], [b]) => a.localeCompare(b));
+  return JSON.stringify([request.url, request.contentType || "auto", headers]);
 }
 
 export function buildPlaybackRequest(args: {
@@ -114,5 +141,8 @@ export function buildPlaybackRequest(args: {
     isLive,
     expectsVideo,
     fallbackUrls,
+    requiresHttpHeaders: Boolean(override?.userAgent || itemHeaderOverrides["User-Agent"] || playlistHeaders?.userAgent ||
+      protocolHeaders["User-Agent"] || providerHeaders["User-Agent"] ||
+      headers["User-Agent"] !== DEFAULT_USER_AGENT || Object.keys(headers).some(k => k.toLowerCase() !== "user-agent")),
   };
 }

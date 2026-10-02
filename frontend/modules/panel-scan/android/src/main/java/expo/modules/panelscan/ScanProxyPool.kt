@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicIntegerArray
+import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -740,11 +741,33 @@ object ScanProxyPool {
    * aynı havuzu kullanır (proxy ölürse diğerine geçilir). Yanıt başlıkları da döner (Set-Cookie
    * MAG oturumunda gerekebilir). Yönlendirme İZLENMEZ (stalker Location'ı kendi yönetir).
    */
-  fun proxiedRequest(context: Context, url: String, method: String, headersJson: String?, body: String?, timeoutMs: Int): JSONObject {
+  private class RequestControl {
+    val cancelled = AtomicBoolean(false)
+    val connection = AtomicReference<HttpURLConnection?>(null)
+    val createdAt = System.currentTimeMillis()
+  }
+  private val requestControls = ConcurrentHashMap<String, RequestControl>()
+
+  fun cancelProxiedRequest(requestId: String): Boolean {
+    require(requestId.matches(Regex("[a-zA-Z0-9_-]{1,100}"))) { "Geçersiz proxy istek kimliği" }
+    val control = requestControls.computeIfAbsent(requestId) { RequestControl() }
+    control.cancelled.set(true)
+    runCatching { control.connection.get()?.disconnect() }
+    requestControls.entries.removeIf { System.currentTimeMillis() - it.value.createdAt > 120_000 }
+    return true
+  }
+
+  fun proxiedRequest(context: Context, url: String, method: String, headersJson: String?, body: String?, timeoutMs: Int, requestId: String? = null): JSONObject {
     val out = JSONObject()
+    val control = requestId?.let {
+      require(it.matches(Regex("[a-zA-Z0-9_-]{1,100}"))) { "Geçersiz proxy istek kimliği" }
+      requestControls.computeIfAbsent(it) { RequestControl() }
+    }
+    try {
     var lastEx: Throwable? = null
     val headers: JSONObject? = headersJson?.takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() }
     for (attempt in 0 until 3) {
+      if (control?.cancelled?.get() == true) return out.put("ok", false).put("status", 0).put("body", "").put("error", "CANCELLED")
       val sel = select() ?: break
       var conn: HttpURLConnection? = null
       try {
@@ -760,11 +783,11 @@ object ScanProxyPool {
             setRequestProperty("Accept", "application/json")
           }
           sel.basicHeader?.let { setRequestProperty("Proxy-Authorization", it) }
-          if (!body.isNullOrEmpty() && requestMethod == "POST") {
-            doOutput = true
-            outputStream.use { os -> os.write(body.toByteArray(Charsets.UTF_8)) }
-          }
+          if (!body.isNullOrEmpty() && requestMethod == "POST") doOutput = true
         }
+        control?.connection?.set(conn)
+        if (control?.cancelled?.get() == true) throw java.io.InterruptedIOException("CANCELLED")
+        if (!body.isNullOrEmpty() && conn!!.requestMethod == "POST") conn!!.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
         val code = conn!!.responseCode
         val stream = if (code in 200..399) conn!!.inputStream else conn!!.errorStream
         val respBody = stream?.bufferedReader()?.use { it.readText() } ?: ""
@@ -774,11 +797,13 @@ object ScanProxyPool {
         return out.put("ok", code in 200..299).put("status", code).put("body", respBody).put("headers", respHeaders)
           .put("proxy", sel.entry.host + ":" + sel.entry.port)
       } catch (t: Throwable) {
+        if (control?.cancelled?.get() == true) return out.put("ok", false).put("status", 0).put("body", "").put("error", "CANCELLED")
         lastEx = t
         reportResult(context, sel.entry.key, if (classify(t) == Fault.UNKNOWN) Fault.PROXY else classify(t))
-      } finally { runCatching { conn?.disconnect() }; release(sel) }
+      } finally { control?.connection?.set(null); runCatching { conn?.disconnect() }; release(sel) }
     }
     return out.put("ok", false).put("status", 0).put("body", "").put("error", lastEx?.message ?: "proxy yok")
+    } finally { if (requestId != null && control != null) requestControls.remove(requestId, control) }
   }
 
   // Authenticator (SOCKS5 + HTTP proxy auth)

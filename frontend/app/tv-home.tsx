@@ -36,6 +36,7 @@ import {
   Image,
   ActivityIndicator,
   BackHandler,
+  Alert,
   useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -43,6 +44,10 @@ import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { useParental } from "@/src/store/ParentalContext";
+import { useProfiles } from "@/src/store/ProfileContext";
+import { categoryAccess } from "@/src/player/categoryAccess";
+import { resolveLivePlayback } from "@/src/player/resolveLivePlayback";
+import type { PlaybackRequest } from "@/src/player/v2/types";
 import { isAdultContent } from "@/src/utils/adult";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
@@ -100,7 +105,10 @@ export default function TvHomeScreen() {
 export function TvHomeContent() {
   const router = useRouter();
   const { colors } = useTheme();
-  const { settings: parental } = useParental();
+  const { settings: parental, isCategoryLocked, isUnlockedInSession } = useParental();
+  const { activeProfile } = useProfiles();
+  const openScopeRef = useRef("");
+  const accessCategory = (group?: string | null) => categoryAccess(group, !!activeProfile.isKids, isCategoryLocked, isUnlockedInSession);
   const { tvPreview, isTv } = useTv();
   const { width: screenW } = useWindowDimensions();
   /**
@@ -115,6 +123,7 @@ export function TvHomeContent() {
     playlists, activePlaylist, setActivePlaylist, isLoading, ensureHeavyLoaded,
     favorites, toggleFavorite, isFavorite, addToRecent, recent,
   } = usePlaylists();
+  openScopeRef.current = JSON.stringify([activeProfile.id, activePlaylist?.id || ""]);
   const recentRef = useRef<string[]>(recent || []);
   recentRef.current = recent || [];
 
@@ -133,7 +142,7 @@ export function TvHomeContent() {
   const [nativeItems, setNativeItems] = useState<any[]>([]);
   const [nativeHasMore, setNativeHasMore] = useState(false);
   const nativeOffsetRef = useRef(0);
-  const nativeLoadRef = useRef(false);
+  const nativeLoadRef = useRef<number | null>(null);
   const nativeGenerationRef = useRef(0);
   const nativeMode = !!activePlaylist?.id && KizilkanNativeCore.available;
 
@@ -239,9 +248,9 @@ export function TvHomeContent() {
   }, [nativeMode, activePlaylist?.id, tab]);
 
   const loadNativePage = useCallback(async (reset: boolean) => {
-    if (!nativeMode || !activePlaylist?.id || nativeLoadRef.current) return;
+    if (!nativeMode || !activePlaylist?.id || (!reset && nativeLoadRef.current !== null)) return;
     const generation = reset ? ++nativeGenerationRef.current : nativeGenerationRef.current;
-    nativeLoadRef.current = true;
+    nativeLoadRef.current = generation;
     const id = activePlaylist.id;
     try {
       if (reset) { nativeOffsetRef.current = 0; setNativeItems([]); setNativeHasMore(false); }
@@ -284,12 +293,12 @@ export function TvHomeContent() {
       if (generation === nativeGenerationRef.current) setNativeHasMore(false);
       void recordDiagnostic("database", "TV_HOME_NATIVE_QUERY_FAILED", { playlistId:id, kind:tab, group:selectedCat, reset, error:String(e?.message || e) });
     } finally {
-      nativeLoadRef.current = false;
+      if (nativeLoadRef.current === generation) nativeLoadRef.current = null;
     }
   }, [nativeMode, activePlaylist?.id, tab, selectedCat, search, favorites, parental.adultHidden]);
 
   useEffect(() => {
-    if (!nativeMode) { setNativeItems([]); nativeOffsetRef.current = 0; return; }
+    if (!nativeMode) { nativeGenerationRef.current += 1; nativeLoadRef.current = null; setNativeItems([]); nativeOffsetRef.current = 0; setNativeHasMore(false); return; }
     void loadNativePage(true);
   }, [nativeMode, activePlaylist?.id, tab, selectedCat, search, parental.adultHidden, loadNativePage]);
   // v18.2.0: "Son izlenenler" açıkken yeni kanal izlenince liste güncellenir
@@ -304,17 +313,17 @@ export function TvHomeContent() {
   /** Aktif listedeki, seçili sekmeye ait görünür/native sayfa öğeleri. */
   const baseList = useMemo(() => {
     if (!activePlaylist) return [] as any[];
-    if (nativeMode) return nativeItems;
+    if (nativeMode) return nativeItems.filter(x => accessCategory(x.group) !== "blocked");
     let list:any[];
     if (tab === "vod") list = (activePlaylist.vod || []) as any[];
     else if (tab === "series") list = (activePlaylist.series || []) as any[];
     else list = (activePlaylist.channels || []) as any[];
-    return parental.adultHidden ? list.filter(x => !isAdultContent(x)) : list;
-  }, [activePlaylist, nativeMode, nativeItems, tab, parental.adultHidden]);
+    return list.filter(x => (!parental.adultHidden || !isAdultContent(x)) && accessCategory(x.group) !== "blocked");
+  }, [activePlaylist, nativeMode, nativeItems, tab, parental.adultHidden, activeProfile.isKids, isCategoryLocked, isUnlockedInSession]);
 
   /** Kategoriler + sayıları (tek geçiş — büyük listelerde hızlı). */
   const categories = useMemo(() => {
-    if (nativeMode) return nativeCategories.slice().sort((a,b)=>a.name.localeCompare(b.name, "tr"));
+    if (nativeMode) return nativeCategories.filter(x => accessCategory(x.name) !== "blocked").sort((a,b)=>a.name.localeCompare(b.name, "tr"));
     const counts = new Map<string, number>();
     for (const it of baseList) {
       const g = it.group || "Diğer";
@@ -323,7 +332,7 @@ export function TvHomeContent() {
     return Array.from(counts.entries())
       .sort((a, b) => a[0].localeCompare(b[0], "tr"))
       .map(([name, count]) => ({ name, count }));
-  }, [baseList, nativeMode, nativeCategories]);
+  }, [baseList, nativeMode, nativeCategories, activeProfile.isKids, isCategoryLocked, isUnlockedInSession]);
 
   /** Sol sütunun nihai içeriği (liste ağacı veya düz kategoriler). */
   /**
@@ -486,18 +495,20 @@ export function TvHomeContent() {
     nativeWindowNonceRef.current = req.nonce;
     let cancelled = false;
     let settled = false;
+    const generation = ++nativeGenerationRef.current;
+    nativeLoadRef.current = generation;
     (async () => {
       try {
         const group = selectedCat === ALL ? "__all__" : selectedCat;
         const pos = await KizilkanNativeCore.getPlaybackNeighbors(activePlaylist.id, targetKind, targetId, { group, search: search.trim(), wrap: false });
-        if (cancelled) return;
+        if (cancelled || generation !== nativeGenerationRef.current) return;
         if (!pos?.found) {
           void recordDiagnostic("navigation", "FOCUS_RESTORE_SKIP", { surface: "tv-home", kind: targetKind, itemId: targetId, group, reason: "not-found-in-room" }, { stage: "focus-restore", outcome: "skipped" });
           return;
         }
         const offset = Math.max(0, Number(pos.position || 0) - (targetKind === "live" ? 50 : 24));
         const page = await KizilkanNativeCore.queryItems<any>(activePlaylist.id, targetKind, { group, search: search.trim(), offset, limit: targetKind === "live" ? 120 : 80 });
-        if (cancelled) return;
+        if (cancelled || generation !== nativeGenerationRef.current) return;
         nativeOffsetRef.current = offset + (page.items?.length || 0);
         setNativeItems(page.items || []);
         setNativeHasMore(!!page.hasMore);
@@ -505,6 +516,7 @@ export function TvHomeContent() {
       } catch (e:any) {
         void recordDiagnostic("navigation", "TV_HOME_RETURN_RESTORE_FAILED", { playlistId: activePlaylist.id, kind: targetKind, itemId: targetId, error: String(e?.message || e) });
       } finally {
+        if (nativeLoadRef.current === generation) nativeLoadRef.current = null;
         if (!cancelled) settled = true;
       }
     })();
@@ -523,7 +535,11 @@ export function TvHomeContent() {
   }, [returnFocus.restoreRequest?.nonce, sideItems, selectedCat, centerSideIndex]);
 
   const openItem = useCallback((item: any) => {
+    const access = categoryAccess(item.group, !!activeProfile.isKids, isCategoryLocked, isUnlockedInSession);
+    if (access === "blocked") { Alert.alert("Ebeveyn Kontrolü", "Bu kategori çocuk profilinde açılamaz."); return; }
+    if (access === "pin") { router.push({ pathname: "/pin-entry", params: { category: String(item.group) } }); return; }
     void (async () => {
+      const ownerScope = openScopeRef.current;
       haptic.light();
       const navScopeKey = (selectedCat === FAV || selectedCat === RECENT) && activePlaylist?.id
         ? await savePlayerNavigationScope({
@@ -531,6 +547,7 @@ export function TvHomeContent() {
             scopeId: `${selectedCat === RECENT ? "recent" : "favorites"}:${search.trim() || "all"}`, ids: channels.map((x:any) => x.id),
           })
         : undefined;
+      if (ownerScope !== openScopeRef.current) return;
       const navGroup = (selectedCat === FAV || selectedCat === RECENT) ? "__all__" : (selectedCat === ALL ? "__all__" : selectedCat);
       if (tab === "live") {
         // v9.8.0: Önizlemeyi TAM oynatıcıya geçmeden ANINDA durdur; böylece yeni
@@ -545,7 +562,7 @@ export function TvHomeContent() {
         router.push({ pathname: "/detail", params: { type: tab, id: item.id, navOrigin: "tv-home", navGroup, navSearch: (selectedCat === FAV || selectedCat === RECENT) ? "" : search, navScopeKey, focusKey: `tv-home:${tab}:${item.id}` } });
       }
     })();
-  }, [tab, addToRecent, router, selectedCat, activePlaylist?.id, search, channels, returnFocus.remember]);
+  }, [tab, addToRecent, router, selectedCat, activePlaylist?.id, search, channels, returnFocus.remember, activeProfile.isKids, isCategoryLocked, isUnlockedInSession]);
 
   /**
    * ══════════════════════════════════════════════════════════════════════
@@ -743,6 +760,9 @@ export function TvHomeContent() {
                     setOpenPlaylists(prev => ({ ...prev, [item.id]: !prev[item.id] }));
                     setSelectedCat(ALL);
                   } else {
+                    const access = accessCategory(item.name);
+                    if (access === "blocked") return;
+                    if (access === "pin") { router.push({ pathname: "/pin-entry", params: { category: item.name } }); return; }
                     setSelectedCat(item.name);
                   }
                   haptic.soft();
@@ -780,7 +800,7 @@ export function TvHomeContent() {
                   odaklıyken. Çözülene kadar üstteki logo/isim görünür; oynamaya
                   başlayınca video onların üstünü kaplar. */}
               {tab === "live" && highlighted?.url ? (
-                <LivePreview channel={highlighted} isTv={isTv} playlist={activePlaylist} active={screenFocused} />
+                <LivePreview channel={highlighted} isTv={isTv} playlist={activePlaylist} active={screenFocused && accessCategory(highlighted.group) === "allowed"} />
               ) : null}
             </View>
           )}
@@ -1104,6 +1124,7 @@ function LivePreview({
    */
   const [phase, setPhase] = useState<"idle" | "loading" | "ready" | "failed">("idle");
   const [url, setUrl] = useState<string | null>(null);
+  const [previewRequest, setPreviewRequest] = useState<PlaybackRequest | null>(null);
   const debRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aliveRef = useRef(true);
   const resolveGenerationRef = useRef(0);
@@ -1122,30 +1143,24 @@ function LivePreview({
     const generation = ++resolveGenerationRef.current;
     // Ekran odakta değilse (player üstte) önizleme OYNAMAZ — çift ses/yüzey
     // çakışmasını önler.
-    if (!active) { setUrl(null); setPhase("idle"); return; }
+    if (!active) { setUrl(null); setPreviewRequest(null); setPhase("idle"); return; }
     if (!channel?.url) { setUrl(null); setPhase("idle"); return; }
     // Yeni odakta önce mevcut oynatmayı bırak (kaynağı boşalt), sonra debounce.
     setUrl(null);
+    setPreviewRequest(null);
     setPhase("loading");
     debRef.current = setTimeout(async () => {
       const startedAt = Date.now();
       const stillMine = () => aliveRef.current && resolveGenerationRef.current === generation;
 
       /** Tek denemelik çözümleme. forceFresh: bayat adres yerine taze iste. */
-      const attempt = async (forceFresh: boolean): Promise<string> => {
-        if (playlist?.source === "stalker") {
-          const { stalkerResolveStream, stalkerCredsFromPlaylist } = await import("@/src/utils/stalker");
-          const cred = stalkerCredsFromPlaylist(playlist);
-          const { url: resolved } = await stalkerResolveStream(cred, null, String(channel.url), forceFresh ? { forceFresh: true } : undefined);
-          return resolved;
-        }
-        return String(channel.url);
-      };
+      const attempt = async (forceFresh: boolean): Promise<PlaybackRequest> =>
+        (await resolveLivePlayback(playlist, channel, { forceFresh, allowItem: () => stillMine() })).request;
 
       try {
         const resolved = await attempt(false);
         if (!stillMine()) return;
-        setUrl(resolved); setPhase("ready");
+        setUrl(resolved.url); setPreviewRequest(resolved); setPhase("ready");
         void recordDiagnostic("player", "TV_PREVIEW_RESOLVE_OK", {
           channelId: String(channel?.id || ""), playlistId: String(playlist?.id || ""),
           elapsedMs: Date.now() - startedAt, retried: false,
@@ -1159,7 +1174,7 @@ function LivePreview({
           if (!stillMine()) return;
           const resolved = await attempt(true);
           if (!stillMine()) return;
-          setUrl(resolved); setPhase("ready");
+          setUrl(resolved.url); setPreviewRequest(resolved); setPhase("ready");
           void recordDiagnostic("player", "TV_PREVIEW_RESOLVE_OK", {
             channelId: String(channel?.id || ""), playlistId: String(playlist?.id || ""),
             elapsedMs: Date.now() - startedAt, retried: true,
@@ -1179,7 +1194,8 @@ function LivePreview({
     return () => { resolveGenerationRef.current += 1; if (debRef.current) clearTimeout(debRef.current); };
   }, [channel?.id, channel?.url, playlist?.id, playlist?.source, active]);
 
-  const player = useVideoPlayer(url ?? null, (p) => { p.loop = false; p.play(); });
+  const mediaSource = useMemo(() => previewRequest ? { uri: previewRequest.url, headers: previewRequest.headers, contentType: previewRequest.contentType === "auto" ? undefined : previewRequest.contentType } : null, [previewRequest]);
+  const player = useVideoPlayer(mediaSource, (p) => { p.loop = false; p.play(); });
 
   useEffect(() => {
     if (player && url) { try { player.play(); } catch {} }

@@ -1,5 +1,11 @@
 import { storage } from '@/src/utils/storage';
+import type { StorageItemValue } from './storage/storage-base';
 import { bigStore } from '@/src/utils/storage/bigStore';
+import { KizilkanNativeCore } from '@/modules/kizilkan-native-core';
+import { inspectBackupLists, planSelectedRestore, type SelectedRestorePlan } from './backupSelection';
+import { backupRestoreSessionId, backupRestoreStageId, commitSelectedPlaylistRestore, commitBackupRestoreTransaction, type BackupHeavy, type RestoreMetadataPatch, type RestoreMapping } from './backupRestoreTransaction';
+export { inspectBackupLists } from './backupSelection';
+export type { BackupListEntry } from './backupSelection';
 
 /**
  * GPT KIZILKAN Player — Backup v2
@@ -42,6 +48,13 @@ const PROFILE_PREFIXED = [
   'kizilkan.recent.',
   'kizilkan.searchHistory.',
   'kizilkan.watchlist.',
+  'kizilkan.progress.',
+  'kizilkan.hiddenItems.',
+  'kizilkan.hiddenGroups.',
+  'kizilkan.watched.',
+  'kizilkan.seriesLast.',
+  'kizilkan.player.startLast.',
+  'kizilkan.libraryLegacyOwner.',
 ];
 
 const metaKey = (pid: string) => `kizilkan.playlists.meta.${pid}`;
@@ -73,7 +86,7 @@ export interface BackupPayload {
   version: string;
   createdAt: string;
   appName: string;
-  data: Record<string, string>;
+  data: Record<string, StorageItemValue>;
   playlists?: BackupPlaylistBundle;
   summary?: BackupSummary;
 }
@@ -86,28 +99,29 @@ export interface RestoreResult {
   warnings: string[];
 }
 
-function parseArray(raw: string): any[] {
+function parseArray(raw: unknown): any[] {
   if (!raw) return [];
+  if(typeof raw!=='string')throw new Error('Yedek liste kaydı metin biçiminde değil.');
   try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if(!Array.isArray(parsed))throw new Error('Yedek liste kaydı dizi biçiminde değil.');return parsed;
   } catch {
-    return [];
+    throw new Error('Yedek liste kaydı bozuk; mevcut veri korunuyor.');
   }
 }
 
 async function getProfileIds(): Promise<string[]> {
   const ids = new Set<string>(['default']);
-  const rawProfiles = await storage.getItem<string>('kizilkan.profiles', '');
+  const rawProfiles = await storage.getItemStrict<string>('kizilkan.profiles', '');
   for (const p of parseArray(rawProfiles || '')) {
     if (p?.id) ids.add(String(p.id));
   }
   return Array.from(ids);
 }
 
-async function collectKey(data: Record<string, string>, key: string): Promise<void> {
-  const value = await storage.getItem<string>(key, '');
-  if (value) data[key] = value;
+async function collectKey(data: BackupPayload['data'], key: string): Promise<void> {
+  const value = await storage.getItemStrict<StorageItemValue>(key, null);
+  if (value !== null) data[key] = value;
 }
 
 export type BackupScope = 'quick' | 'personal' | 'full';
@@ -118,7 +132,7 @@ const PLAYLIST_BASE_KEYS = new Set([
 
 /** v15.2.13: Ağır katalogları JS belleğine almadan küçük/stream yedek başlığı üretir. */
 export async function createBackupMetadata(scope: BackupScope = 'quick'): Promise<BackupPayload> {
-  const data: Record<string, string> = {};
+  const data: BackupPayload['data'] = {};
   const warnings: string[] = [];
   const includePlaylists = scope !== 'personal';
 
@@ -135,8 +149,8 @@ export async function createBackupMetadata(scope: BackupScope = 'quick'): Promis
     for (const prefix of PROFILE_PREFIXED) await collectKey(data, prefix + pid);
     if (!includePlaylists) continue;
     const mk = metaKey(pid); const ak = activeKey(pid);
-    const metadata = (await storage.getItem<string>(mk, '')) || '';
-    const activeId = (await storage.getItem<string>(ak, '')) || '';
+    const metadata = (await storage.getItemStrict<string>(mk, '')) || '';
+    const activeId = (await storage.getItemStrict<string>(ak, '')) || '';
     if (metadata) data[mk] = metadata;
     if (activeId) data[ak] = activeId;
     const playlistIds = parseArray(metadata).map((m:any)=>String(m?.id || '').trim()).filter(Boolean);
@@ -157,8 +171,69 @@ export function backupPlaylistIds(payload: BackupPayload): string[] {
   return Array.from(out);
 }
 
+export type SelectedBackupRestoreOptions = { selectedKeys: string[]; targetProfileId: string; authorizedProfileId?: string; signal?: AbortSignal; onProgress?: (message: string) => void };
+
+export async function prepareSelectedBackupRestore(payload: BackupPayload, opts: SelectedBackupRestoreOptions, sessionId: string): Promise<SelectedRestorePlan> {
+  if (!isKizilkanBackup(payload)) throw new Error('Bu bir KIZILKAN PLAYER ELITE yedek dosyası değil.');
+  const current = await createBackupMetadata('quick');
+  const targetProfile = parseArray(current.data['kizilkan.profiles'] || '').find(profile => String(profile.id) === opts.targetProfileId);
+  if (targetProfile?.hasPin && opts.authorizedProfileId !== opts.targetProfileId) throw new Error('PIN korumalı hedef profile önce giriş yapın.');
+  const inventory = KizilkanNativeCore.available ? await KizilkanNativeCore.getSnapshotInventory() : [];
+  return planSelectedRestore(payload, opts.selectedKeys, current, opts.targetProfileId, sessionId, inventory.map(row => String(row.playlistId)));
+}
+
+export function setRestoredCatalogCounts(item: { metadata: Record<string, any> }, counts: { channels: number; vod: number; series: number }, indexed: boolean) {
+  Object.assign(item.metadata, { channelsCount: counts.channels, vodCount: counts.vod, seriesCount: counts.series,
+    catalogLocalState: counts.channels + counts.vod + counts.series ? 'ready' : 'empty', catalogExpectedCounts: counts,
+    catalogRevision: Date.now(), catalogRecovery: { state: 'ready', completedAt: Date.now() },
+    catalogSync: { roomVerified: indexed, initialSyncState: 'ready', updatedAt: new Date().toISOString() } });
+}
+
+/** Import selected definitions/catalogues into an existing profile without replacing settings or unselected lists. */
+export async function restoreSelectedBackup(payload: BackupPayload, opts: SelectedBackupRestoreOptions): Promise<RestoreResult> {
+  const sessionId = backupRestoreSessionId();
+  const plan = await prepareSelectedBackupRestore(payload, opts, sessionId);
+  const legacy = parseArray(payload.data['kizilkan.playlists'] || '');
+  const heavyFor = (id: string): BackupHeavy | null => {
+    const value = payload.playlists?.heavy?.[id] || legacy.find(value => String(value?.id) === id);
+    if (!value) return null;
+    if (!Array.isArray(value.channels) || !Array.isArray(value.vod || []) || !Array.isArray(value.series || [])) throw new Error('Yedek katalog dizileri bozuk.');
+    return { channels: value.channels, vod: value.vod || [], series: value.series || [] };
+  };
+  const withCatalogue = plan.items.some(item => heavyFor(item.sourceId));
+  if (withCatalogue && plan.items.some(item => !heavyFor(item.sourceId))) throw new Error('Seçilen listelerden birinin tam kataloğu yedekte eksik.');
+  if (!withCatalogue && String(payload.version).startsWith('2.0') && payload.playlists) throw new Error('Tam JSON yedeğinde seçilen kataloglar bulunamadı.');
+  await commitSelectedPlaylistRestore(plan, sessionId, async mappings => {
+    for (let i = 0; i < plan.items.length; i++) {
+      if (opts.signal?.aborted) throw new Error('Geri yükleme durduruldu.');
+      const item = plan.items[i];
+      opts.onProgress?.(`${i + 1}/${plan.items.length} · ${String(item.metadata.name || 'Liste')} hazırlanıyor`);
+      if (withCatalogue) {
+        const heavy = heavyFor(item.sourceId)!;
+        if (!(await bigStore.write(mappings[i].stageId!, heavy))) throw new Error('Seçilen katalog staging alanına yazılamadı.');
+        const expected = { channels: heavy.channels.length, vod: heavy.vod.length, series: heavy.series.length };
+        if (KizilkanNativeCore.available) {
+          const actual = await KizilkanNativeCore.getPlaylistSummaryVerified(mappings[i].stageId!);
+          if (!actual?.roomIndexed || actual.channels !== expected.channels || actual.vod !== expected.vod || actual.series !== expected.series) throw new Error('Seçilen katalog kayıt sayısı doğrulanamadı.');
+        }
+        setRestoredCatalogCounts(item, expected, KizilkanNativeCore.available);
+      } else {
+        const summary = KizilkanNativeCore.available && await KizilkanNativeCore.hasPlaylistIndex(item.targetId) ? await KizilkanNativeCore.getPlaylistSummaryVerified(item.targetId) : null;
+        const existing = !KizilkanNativeCore.available ? await bigStore.read<BackupHeavy | null>(item.targetId, null) : null;
+        const expected = { channels: Number(item.metadata.channelsCount || 0), vod: Number(item.metadata.vodCount || 0), series: Number(item.metadata.seriesCount || 0) };
+        const counts = { channels: Number(summary?.channels || existing?.channels.length || 0), vod: Number(summary?.vod || existing?.vod.length || 0), series: Number(summary?.series || existing?.series.length || 0) };
+        Object.assign(item.metadata, { channelsCount: counts.channels, vodCount: counts.vod, seriesCount: counts.series, catalogExpectedCounts: expected,
+          catalogLocalState: summary || existing ? counts.channels + counts.vod + counts.series ? 'ready' : 'empty' : 'missing' });
+        delete item.metadata.catalogSync; delete item.metadata.catalogRecovery;
+      }
+    }
+  }, { catalog: withCatalogue, signal: opts.signal });
+  return { restored: 3, profiles: 0, playlists: plan.items.length, heavyPlaylists: withCatalogue ? plan.items.length : 0,
+    warnings: withCatalogue ? [] : ['Hızlı yedekte katalog bulunmaz. Yeni eklenen listelerin içerikleri seçildiğinde kaynaktan alınır.'], };
+}
+
 export async function createBackup(): Promise<BackupPayload> {
-  const data: Record<string, string> = {};
+  const data: BackupPayload['data'] = {};
   const warnings: string[] = [];
 
   for (const key of BASE_KEYS) await collectKey(data, key);
@@ -175,8 +250,8 @@ export async function createBackup(): Promise<BackupPayload> {
 
     const mk = metaKey(pid);
     const ak = activeKey(pid);
-    const metadata = (await storage.getItem<string>(mk, '')) || '';
-    const activeId = (await storage.getItem<string>(ak, '')) || '';
+    const metadata = (await storage.getItemStrict<string>(mk, '')) || '';
+    const activeId = (await storage.getItemStrict<string>(ak, '')) || '';
 
     // Preserve the actual storage keys as well; this makes v2 easy to inspect
     // and keeps restore compatible with PlaylistContext's exact schema.
@@ -243,174 +318,110 @@ export async function createBackup(): Promise<BackupPayload> {
   };
 }
 
-async function clearCurrentPlaylistState(profileIds: string[], removeHeavy = true): Promise<void> {
-  const ids = new Set<string>();
-  for (const pid of profileIds) {
-    const raw = (await storage.getItem<string>(metaKey(pid), '')) || '';
-    for (const meta of parseArray(raw)) {
-      if (meta?.id) ids.add(String(meta.id));
-    }
-    await storage.removeItem(metaKey(pid));
-    await storage.removeItem(activeKey(pid));
-  }
-  if (removeHeavy) for (const id of ids) await bigStore.remove(id);
-}
-
 export function isKizilkanBackup(payload: any): boolean {
   return payload?.appName === 'KIZILKAN PLAYER' || payload?.appName === 'GPT KIZILKAN PLAYER' || payload?.appName === 'KIZILKAN PLAYER ELITE';
 }
 
-/**
- * v15.2.14: Tam yedek commit/rollback için backup'ın yönettiği metadata
- * namespace'ini önce kesin olarak temizler, sonra snapshot'ı uygular. Böylece
- * restore sırasında eklenmiş yeni profil/favori/recent anahtarları rollback
- * sonrasında cihazda yetim kalmaz. Ağır Room verisine dokunmaz.
- */
+/** Build an explicit KV patch so its previous values can be recovered after a process death. */
+export async function buildBackupMetadataPatch(payload: BackupPayload, exact = false): Promise<RestoreMetadataPatch> {
+  if (!payload?.data || typeof payload.data !== 'object' || Array.isArray(payload.data)) throw new Error('Geçersiz yedek dosyası');
+  if (!isKizilkanBackup(payload)) throw new Error('Bu bir KIZILKAN PLAYER ELITE yedek dosyası değil');
+  for(const [key,value]of Object.entries(payload.data)){
+    if(!(value===null||typeof value==='string'||typeof value==='boolean'||(typeof value==='number'&&Number.isFinite(value))))throw new Error('Yedekte desteklenmeyen ayar değeri var.');
+    if(['kizilkan.profiles','kizilkan.parental','kizilkan.playlists','kizilkan.playlists.meta','kizilkan.activeProfileId','kizilkan.activePlaylistId','kizilkan.recoveryCode'].includes(key)||key.startsWith('kizilkan.playlists.meta.')||key.startsWith('kizilkan.activePlaylistId.'))if(typeof value!=='string')throw new Error('Yedekte hesap veya kilit bilgisi yanlış biçimde.');
+  }
+  if(Object.prototype.hasOwnProperty.call(payload.data,'kizilkan.profiles')){
+    const list=parseArray(payload.data['kizilkan.profiles']);
+    if(list.some(p=>!p||typeof p!=='object'||Array.isArray(p)||typeof p.id!=='string'||!p.id||typeof p.name!=='string'||(p.pin!==undefined&&p.pin!==null&&typeof p.pin!=='string'))||new Set(list.map(p=>p.id)).size!==list.length)throw new Error('Yedekte profil bilgisi geçersiz.');
+  }
+  if(Object.prototype.hasOwnProperty.call(payload.data,'kizilkan.parental')){
+    let parental:any;try{parental=JSON.parse(String(payload.data['kizilkan.parental']));}catch{throw new Error('Yedekte ebeveyn bilgisi bozuk.');}
+    if(!parental||typeof parental!=='object'||Array.isArray(parental)||typeof parental.enabled!=='boolean'||typeof parental.pin!=='string'||!Array.isArray(parental.lockedCategories)||parental.lockedCategories.some((g:unknown)=>typeof g!=='string'))throw new Error('Yedekte ebeveyn bilgisi geçersiz.');
+  }
+  if (payload.playlists) inspectBackupLists(payload);
+  const profiles = new Set([...await getProfileIds(), 'default', ...parseArray(payload.data['kizilkan.profiles'] || '').map(p => String(p?.id || '')).filter(Boolean), ...Object.keys(payload.playlists?.profiles || {})]);
+  const patch: RestoreMetadataPatch = {};
+  if (exact) for (const key of BASE_KEYS) patch[key] = null;
+  for (const pid of profiles) {
+    if (exact) for (const prefix of PROFILE_PREFIXED) patch[prefix + pid] = null;
+    if (exact || payload.playlists) { patch[metaKey(pid)] = null; patch[activeKey(pid)] = null; }
+  }
+  for (const [key, value] of Object.entries(payload.data)) {
+    // A backup cannot replace the journal which protects its own application.
+    if ((typeof value === 'string' || typeof value==='boolean' || (typeof value==='number'&&Number.isFinite(value))) && key.startsWith('kizilkan.') && key !== 'kizilkan.backup.restoreJournal.v1') patch[key] = value;
+  }
+  for (const [pid, profile] of Object.entries(payload.playlists?.profiles || {})) {
+    patch[metaKey(pid)] = profile.metadata;
+    patch[activeKey(pid)] = profile.activeId || null;
+  }
+  return patch;
+}
+
+export function backupRestoreResult(payload: BackupPayload, patch: RestoreMetadataPatch, heavyPlaylists = 0, warnings: string[] = []): RestoreResult {
+  return { restored: Object.values(patch).filter(value => value !== null).length, profiles: parseArray(payload.data['kizilkan.profiles'] || '').length,
+    playlists: payload.playlists ? backupPlaylistIds(payload).length : parseArray(payload.data['kizilkan.playlists'] || '').length, heavyPlaylists, warnings };
+}
+
+/** Update every profile reference to a shared catalogue using verified local counts. */
+export function updateBackupCatalogCounts(payload: BackupPayload, patch: RestoreMetadataPatch, id: string, counts: { channels: number; vod: number; series: number }, local: 'ready' | 'empty' | 'missing') {
+  for (const [pid, profile] of Object.entries(payload.playlists?.profiles || {})) {
+    if (!profile.playlistIds.includes(id)) continue;
+    const metas = parseArray(String(patch[metaKey(pid)] || profile.metadata));
+    for (const metadata of metas) if (String(metadata.id) === id) {
+      if (local === 'missing') {
+        metadata.catalogExpectedCounts = { channels: Number(metadata.channelsCount || 0), vod: Number(metadata.vodCount || 0), series: Number(metadata.seriesCount || 0) };
+        Object.assign(metadata, { channelsCount: 0, vodCount: 0, seriesCount: 0, catalogLocalState: 'missing' });
+        delete metadata.catalogSync; delete metadata.catalogRecovery;
+      } else setRestoredCatalogCounts({ metadata }, counts, KizilkanNativeCore.available);
+    }
+    patch[metaKey(pid)] = JSON.stringify(metas);
+  }
+}
+
+/** Exact managed metadata replacement; catalogues are untouched, with a durable KV journal. */
 export async function restoreBackupMetadataExact(payload: BackupPayload): Promise<RestoreResult> {
-  if (!payload?.data || typeof payload.data !== 'object') throw new Error('Geçersiz yedek dosyası');
-  if (!isKizilkanBackup(payload)) throw new Error('Bu bir KIZILKAN PLAYER ELITE yedek dosyası değil');
-
-  const incomingProfiles = parseArray(payload.data['kizilkan.profiles'] || '');
-  const incomingProfileIds = new Set<string>(['default']);
-  for (const p of incomingProfiles) if (p?.id) incomingProfileIds.add(String(p.id));
-  const currentProfileIds = await getProfileIds();
-  const allProfileIds = new Set<string>([
-    ...currentProfileIds,
-    ...incomingProfileIds,
-    ...Object.keys(payload.playlists?.profiles || {}),
-  ]);
-
-  // Backup formatının yönettiği bütün bilinen anahtarları önce kaldır. Bu işlem
-  // bigStore/Room kataloglarını silmez; atomik heavy swap native tarafta yönetilir.
-  for (const key of BASE_KEYS) {
-    const ok = await storage.removeItem(key);
-    if (!ok) throw new Error(`Yedek metadata temizlenemedi: ${key}`);
-  }
-  for (const pid of allProfileIds) {
-    for (const prefix of PROFILE_PREFIXED) {
-      const ok = await storage.removeItem(prefix + pid);
-      if (!ok) throw new Error(`Profil metadata temizlenemedi: ${prefix + pid}`);
-    }
-    for (const key of [metaKey(pid), activeKey(pid)]) {
-      const ok = await storage.removeItem(key);
-      if (!ok) throw new Error(`Playlist metadata temizlenemedi: ${key}`);
-    }
-  }
-
-  let restored = 0;
-  for (const [key, value] of Object.entries(payload.data)) {
-    if (typeof value !== 'string' || !key.startsWith('kizilkan.')) continue;
-    const ok = await storage.setItem(key, value);
-    if (!ok) throw new Error(`Yedek geri yüklenirken kayıt yazılamadı: ${key}`);
-    restored++;
-  }
-  return {
-    restored,
-    profiles: incomingProfiles.length,
-    playlists: payload.playlists ? backupPlaylistIds(payload).length : (payload.data['kizilkan.playlists'] ? parseArray(payload.data['kizilkan.playlists']).length : 0),
-    heavyPlaylists: 0,
-    warnings: [],
-  };
+  const patch = await buildBackupMetadataPatch(payload, true);
+  await commitBackupRestoreTransaction(backupRestoreSessionId(), [], () => patch, async () => {});
+  return backupRestoreResult(payload, patch);
 }
 
-export async function restoreBackupMetadata(payload: BackupPayload, opts?: { preserveHeavy?: boolean }): Promise<RestoreResult> {
-  if (!payload?.data || typeof payload.data !== 'object') throw new Error('Geçersiz yedek dosyası');
-  if (!isKizilkanBackup(payload)) throw new Error('Bu bir KIZILKAN PLAYER ELITE yedek dosyası değil');
-  let restored = 0;
-  const incomingProfiles = parseArray(payload.data['kizilkan.profiles'] || '');
-  const incomingProfileIds = new Set<string>(['default']);
-  for (const p of incomingProfiles) if (p?.id) incomingProfileIds.add(String(p.id));
-  const currentProfileIds = await getProfileIds();
-  if (payload.playlists) {
-    const allProfileIds = new Set<string>([...currentProfileIds, ...incomingProfileIds, ...Object.keys(payload.playlists.profiles || {})]);
-    await clearCurrentPlaylistState(Array.from(allProfileIds), !opts?.preserveHeavy);
-  }
-  for (const [key, value] of Object.entries(payload.data)) {
-    if (typeof value !== 'string' || !key.startsWith('kizilkan.')) continue;
-    const ok = await storage.setItem(key, value);
-    if (!ok) throw new Error(`Yedek geri yüklenirken kayıt yazılamadı: ${key}`);
-    restored++;
-  }
-  return {
-    restored, profiles: incomingProfiles.length,
-    playlists: payload.playlists ? backupPlaylistIds(payload).length : (payload.data['kizilkan.playlists'] ? parseArray(payload.data['kizilkan.playlists']).length : 0),
-    heavyPlaylists: 0, warnings: [],
-  };
+/** Legacy device restore semantics: replace playlist layout, merge incoming profile/settings keys. */
+export async function restoreBackupMetadata(payload: BackupPayload, opts?: { preserveHeavy?: boolean; signal?: AbortSignal }): Promise<RestoreResult> {
+  const patch = await buildBackupMetadataPatch(payload);
+  const current = await createBackupMetadata('quick');
+  const mappings = payload.playlists && !opts?.preserveHeavy ? [...new Set([...backupPlaylistIds(current), ...backupPlaylistIds(payload)])].map(targetId => ({ targetId, stageId: null })) : [];
+  await commitBackupRestoreTransaction(backupRestoreSessionId(), mappings, () => patch, async () => {
+    for (const id of backupPlaylistIds(payload)) {
+      const summary = opts?.preserveHeavy && KizilkanNativeCore.available && await KizilkanNativeCore.hasPlaylistIndex(id) ? await KizilkanNativeCore.getPlaylistSummaryVerified(id) : null;
+      const legacy = opts?.preserveHeavy && !KizilkanNativeCore.available ? await bigStore.read<BackupHeavy | null>(id, null) : null;
+      const counts = { channels: Number(summary?.channels || legacy?.channels.length || 0), vod: Number(summary?.vod || legacy?.vod.length || 0), series: Number(summary?.series || legacy?.series.length || 0) };
+      updateBackupCatalogCounts(payload, patch, id, counts, summary || legacy ? counts.channels + counts.vod + counts.series ? 'ready' : 'empty' : 'missing');
+    }
+  }, opts);
+  return backupRestoreResult(payload, patch, 0, payload.playlists ? ['Hızlı yedek katalog içermez; listeler seçildiğinde içerikleri kaynaktan alınır.'] : []);
 }
 
-export async function restoreBackup(payload: BackupPayload): Promise<RestoreResult> {
-  if (!payload?.data || typeof payload.data !== 'object') {
-    throw new Error('Geçersiz yedek dosyası');
-  }
-  if (!isKizilkanBackup(payload)) {
-    throw new Error('Bu bir KIZILKAN PLAYER ELITE yedek dosyası değil');
-  }
-
-  let restored = 0;
-  let restoredHeavy = 0;
-  const warnings: string[] = [];
-
-  const incomingProfiles = parseArray(payload.data['kizilkan.profiles'] || '');
-  const incomingProfileIds = new Set<string>(['default']);
-  for (const p of incomingProfiles) if (p?.id) incomingProfileIds.add(String(p.id));
-
-  const currentProfileIds = await getProfileIds();
-
-  // v2 backup is an exact playlist snapshot. Clear only playlist state before
-  // restoring so stale lists cannot survive beside the backup contents.
-  if (payload.playlists) {
-    const allProfileIds = new Set<string>([
-      ...currentProfileIds,
-      ...incomingProfileIds,
-      ...Object.keys(payload.playlists.profiles || {}),
-    ]);
-    await clearCurrentPlaylistState(Array.from(allProfileIds));
-  }
-
-  for (const [key, value] of Object.entries(payload.data)) {
-    if (typeof value !== 'string') continue;
-    if (!key.startsWith('kizilkan.')) continue;
-    const ok = await storage.setItem(key, value);
-    if (!ok) throw new Error(`Yedek geri yüklenirken kayıt yazılamadı: ${key}`);
-    restored++;
-  }
-
-  if (payload.playlists) {
-    for (const [id, heavy] of Object.entries(payload.playlists.heavy || {})) {
-      const ok = await bigStore.write(id, {
-        channels: Array.isArray(heavy?.channels) ? heavy.channels : [],
-        vod: Array.isArray(heavy?.vod) ? heavy.vod : [],
-        series: Array.isArray(heavy?.series) ? heavy.series : [],
-      });
-      if (!ok) throw new Error(`Playlist içeriği geri yüklenemedi: ${id}`);
-      restoredHeavy++;
+/** Full JSON device restore stages all incoming catalogue files before replacing live data. */
+export async function restoreBackup(payload: BackupPayload, opts?: { signal?: AbortSignal }): Promise<RestoreResult> {
+  const patch = await buildBackupMetadataPatch(payload);
+  const current = await createBackupMetadata('quick');
+  const incomingIds = new Set(backupPlaylistIds(payload));
+  if (payload.playlists && (Object.keys(payload.playlists.heavy || {}).length !== incomingIds.size || [...incomingIds].some(id => !payload.playlists!.heavy[id]))) throw new Error('Playlist geri yükleme eksik: metadata/katalog seti uyuşmuyor.');
+  const sessionId = backupRestoreSessionId();
+  const mappings: RestoreMapping[] = payload.playlists ? [...new Set([...backupPlaylistIds(current), ...incomingIds])].map(targetId => ({ targetId, stageId: incomingIds.has(targetId) ? backupRestoreStageId(sessionId, targetId) : null })) : [];
+  await commitBackupRestoreTransaction(sessionId, mappings, () => patch, async () => {
+    for (const mapping of mappings) if (mapping.stageId) {
+      if (opts?.signal?.aborted) throw new Error('Geri yükleme durduruldu.');
+      const value = payload.playlists!.heavy[mapping.targetId];
+      if (!Array.isArray(value.channels) || !Array.isArray(value.vod) || !Array.isArray(value.series)) throw new Error('Yedek katalog dizileri bozuk.');
+      if (!(await bigStore.write(mapping.stageId, value))) throw new Error('Playlist staging yazılamadı.');
+      const counts = { channels: value.channels.length, vod: value.vod.length, series: value.series.length };
+      if (KizilkanNativeCore.available) {
+        const actual = await KizilkanNativeCore.getPlaylistSummaryVerified(mapping.stageId);
+        if (!actual?.roomIndexed || actual.channels !== counts.channels || actual.vod !== counts.vod || actual.series !== counts.series) throw new Error('Playlist staging kayıt sayısı doğrulanamadı.');
+      }
+      updateBackupCatalogCounts(payload, patch, mapping.targetId, counts, counts.channels + counts.vod + counts.series ? 'ready' : 'empty');
     }
-
-    const expectedIds = new Set<string>();
-    for (const profile of Object.values(payload.playlists.profiles || {})) {
-      for (const id of profile.playlistIds || []) expectedIds.add(id);
-    }
-    if (restoredHeavy !== expectedIds.size) {
-      throw new Error(
-        `Playlist geri yükleme eksik: ${expectedIds.size} listeden ${restoredHeavy} ağır veri dosyası yazıldı.`
-      );
-    }
-  } else {
-    // Old v1 backup: it can restore profiles/favorites/settings, but modern
-    // profile-scoped playlist files were never included in that format.
-    const hasLegacyPlaylist = !!payload.data['kizilkan.playlists'];
-    if (!hasLegacyPlaylist) {
-      warnings.push('Bu eski yedek dosyasında playlist hesapları/içerikleri bulunmuyor. Profil ve diğer ayarlar geri yüklendi.');
-    }
-  }
-
-  return {
-    restored,
-    profiles: incomingProfiles.length,
-    playlists: payload.playlists
-      ? new Set(Object.values(payload.playlists.profiles).flatMap(p => p.playlistIds || [])).size
-      : (payload.data['kizilkan.playlists'] ? parseArray(payload.data['kizilkan.playlists']).length : 0),
-    heavyPlaylists: restoredHeavy,
-    warnings,
-  };
+  }, opts);
+  return backupRestoreResult(payload, patch, incomingIds.size, !payload.playlists && !payload.data['kizilkan.playlists'] ? ['Bu eski yedek dosyasında playlist hesapları/içerikleri bulunmuyor. Profil ve diğer ayarlar geri yüklendi.'] : []);
 }

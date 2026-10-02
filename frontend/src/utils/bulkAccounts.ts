@@ -201,7 +201,9 @@ function strictServer(v: string): boolean {
 }
 
 function fromHeaderless(values: string[], row: number): BulkAccountInput | null {
-  const vals = values.map(v => v.trim()).filter((v, i, a) => !(i === a.length - 1 && !v));
+  // An empty fourth locator still belongs to the documented name|user|password|locator row.
+  // Removing it shifts the name into username and silently changes the credentials.
+  const vals = values.map(v => v.trim());
   if (vals.length < 2) return null;
 
   let name = "", username = "", password = "", locator = "";

@@ -20,7 +20,7 @@ need(/const playbackPlaylist = directFileSession \? undefined : activePlaylist;/
   'playbackPlaylist yerel dosyada liste başlıklarını taşımamalı');
 const direct = src.split('\n').filter(l => /activePlaylist\?\.source/.test(l) && !/const playlistSource/.test(l) && !/activePlaylistSource:/.test(l));
 need(direct.length === 0, 'oynatma kararlarında korumasız activePlaylist?.source kaldı:\n  ' + direct.map(s => s.trim().slice(0, 140)).join('\n  '));
-need(/if \(!channel\?\.url \|\| playlistSource !== "stalker"\)/.test(src), 'Stalker çözüm efekti playlistSource ile korunmuyor');
+need(/if \(!channel\?\.url \|\| playlistSource !== "stalker"(?: \|\| !channelAllowed)?\)/.test(src), 'Stalker çözüm efekti playlistSource ile korunmuyor');
 need(/const playUrl = playlistSource === "stalker"/.test(src), 'playUrl playlistSource ile seçilmiyor');
 need(/playlist: playbackPlaylist,/.test(src), 'buildPlaybackRequest playbackPlaylist almıyor');
 need(/LOCAL_MEDIA_SOURCE_ROUTED/.test(src), 'LOCAL_MEDIA_SOURCE_ROUTED telemetrisi yok');

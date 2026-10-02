@@ -158,6 +158,7 @@ internal class CastBridgeServer(private val context: Context, private val timesh
    * kadar bekler (en fazla timeoutMs), sonra yerel HLS adresini proxy olarak kaydeder.
    * Önceki canlı köprü kaydedicileri durdurulur (tek bağlantı kuralı).
    */
+  @Synchronized
   fun startLiveHls(url: String, headersJson: String, timeoutMs: Long): Map<String, Any> {
     stopLiveRecorders()
     val started = SystemClock.elapsedRealtime()

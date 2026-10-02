@@ -268,6 +268,9 @@ export interface Playlist {
   channelsCount?: number;
   vodCount?: number;
   seriesCount?: number;
+  /** Actual local content availability; empty is a successfully verified empty catalogue. */
+  catalogLocalState?: 'ready' | 'empty' | 'missing' | 'unverified';
+  catalogExpectedCounts?: { channels: number; vod: number; series: number };
   epgUrl?: string;
   createdAt: string;
 }

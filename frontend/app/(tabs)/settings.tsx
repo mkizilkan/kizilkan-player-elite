@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from "react";
+import { playlistExpiryText, playlistProtectionText, playlistCatalogStateText, playlistIsExpired } from '@/src/utils/accountCard';
+import { accountExpiryMs } from '@/src/utils/accountExpiry';
 import {
   View,
   Text,
@@ -1135,6 +1137,7 @@ export default function SettingsTab() {
                       {pl.channelsCount ?? pl.channels.length} kanal{(pl.vodCount ?? pl.vod?.length ?? 0) ? ` • ${pl.vodCount ?? pl.vod?.length ?? 0} film` : ""}{(pl.seriesCount ?? pl.series?.length ?? 0) ? ` • ${pl.seriesCount ?? pl.series?.length ?? 0} dizi` : ""}
                     </Text>
                   </View>
+                  {playlistCatalogStateText(pl) && <Text style={[styles.plMeta, { color: colors.onSurfaceTertiary }]}>{playlistCatalogStateText(pl)}</Text>}
                   {pl.serverCodeBinding && (
                     <Text style={[styles.plMeta, { color: colors.onSurfaceTertiary }]} numberOfLines={1}>
                       Panel: {pl.serverCodeBinding.panelName} • Sunucu kodu: {pl.serverCodeBinding.code}
@@ -1150,21 +1153,9 @@ export default function SettingsTab() {
                     if (!acc) return null;
                     const parts: string[] = [];
 
-                    // Bitiş tarihi: Xtream saniye damgası, Stalker düz metin
-                    const exp = acc.exp_date || acc.tariff_expired_date;
-                    if (exp) {
-                      const ts = Number(exp);
-                      if (Number.isFinite(ts) && ts > 0) {
-                        const d = new Date(ts * 1000);
-                        const kalan = Math.ceil((d.getTime() - Date.now()) / 86400000);
-                        parts.push(
-                          `${d.toLocaleDateString("tr-TR", { day: "2-digit", month: "short", year: "numeric" })}` +
-                            (kalan > 0 ? ` (${kalan} gün)` : " (SÜRESİ DOLDU)")
-                        );
-                      } else {
-                        parts.push(String(exp));
-                      }
-                    }
+                    parts.push(playlistExpiryText(pl));
+                    const protection = playlistProtectionText(pl);
+                    if (protection) parts.push(protection);
                     if (acc.max_connections) parts.push(`${acc.max_connections} kullanıcı`);
                     if (parts.length === 0) return null;
 
@@ -1856,31 +1847,15 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
   const isXtream = playlist.source === "xtream";
   const isStalker = playlist.source === "stalker";
 
-  const formatExpiry = () => {
-    if (isXtream && acc.exp_date) {
-      const ts = Number(acc.exp_date);
-      if (!Number.isFinite(ts) || ts <= 0) return "Süresiz";
-      return new Date(ts * 1000).toLocaleDateString("tr-TR", { day: "2-digit", month: "long", year: "numeric" });
-    }
-    if (isStalker && acc.tariff_expired_date) return String(acc.tariff_expired_date);
-    return "—";
-  };
-
-  const daysLeft = () => {
-    if (isXtream && acc.exp_date) {
-      const ts = Number(acc.exp_date);
-      if (!Number.isFinite(ts) || ts <= 0) return null;
-      const diff = ts * 1000 - Date.now();
-      return Math.ceil(diff / (1000 * 60 * 60 * 24));
-    }
-    return null;
-  };
+  const expiryAt = accountExpiryMs(acc);
+  const formatExpiry = () => expiryAt === null ? 'Bilinmiyor / sınırsız' : new Date(expiryAt).toLocaleDateString('tr-TR', { day: '2-digit', month: 'long', year: 'numeric' });
+  const daysLeft = () => expiryAt === null ? null : Math.ceil((expiryAt - Date.now()) / 86400000);
 
   const d = daysLeft();
   const normalizedStatus = String(acc.status ?? "").trim().toLowerCase();
   const explicitlyActive = ["active", "1", "true", "enabled"].includes(normalizedStatus);
   const explicitlyInactive = ["disabled", "blocked", "expired", "inactive", "0", "false"].includes(normalizedStatus);
-  const isActive = explicitlyActive ? true : explicitlyInactive ? false : (isXtream ? (d === null || d > 0) : true);
+  const isActive = !playlistIsExpired(playlist) && !explicitlyInactive;
 
   return (
     <View style={[cardStyles.card, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]} testID="account-info-card">
@@ -1898,6 +1873,7 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
       <View style={cardStyles.grid}>
         <InfoField label="Kullanıcı" value={acc.username || acc.mac || "—"} />
         <InfoField label="Bitiş Tarihi" value={formatExpiry()} />
+        {isStalker && <InfoField label="Koruma (son gözlem)" value={playlistProtectionText(playlist) || 'Belirlenemedi'} />}
         {d !== null && (
           <InfoField label="Kalan Gün" value={d > 0 ? `${d} gün` : "Süresi doldu"} accent={d > 0 && d < 15 ? "warning" : "normal"} />
         )}

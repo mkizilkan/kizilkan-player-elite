@@ -1,4 +1,6 @@
-import {withCatalogLock,freshnessDue} from "@/src/utils/catalogOperations";
+import {withCatalogLock,freshnessDue,beginCatalogRestore,isCatalogRestoreActive,isCatalogRestoreWriting} from "@/src/utils/catalogOperations";
+import { libraryItemKey, libraryScopePrefix, libraryScopedIds } from '@/src/utils/libraryScope';
+import { claimLibraryLegacyOwner } from '@/src/utils/libraryLegacyOwner';
 import {refreshPlaylistContent,type CatalogKind,type RefreshProgress,type IncrementalCatalogDelivery} from "@/src/utils/refreshPlaylist";
 /**
  * KIZILKAN PLAYER — Oynatma Listesi Deposu (Context)
@@ -52,6 +54,8 @@ import { useProfiles } from './ProfileContext';
 import { scheduleAdultFlags } from '@/src/utils/adult';
 import { KizilkanNativeCore, type NativePlaylistSummary } from '@/modules/kizilkan-native-core';
 import { beginFlightRecorderTrace, markTask, recordDiagnostic, recordFlightRecorderStage } from '@/src/utils/diagnostics';
+import { notifyProfileDataReload, registerProfileDataDrain, drainProfileDataWrites } from '@/src/utils/profileDataReload';
+import { protectPin } from '@/src/utils/pinProtection';
 
 /**
  * v5.7.0 — LİSTELER ARTIK PROFİLE ÖZEL
@@ -98,9 +102,9 @@ function fromMeta(meta: PlaylistMeta, heavy?: { channels?: any[]; vod?: any[]; s
     channels: heavy?.channels || [],
     vod: heavy?.vod || [],
     series: heavy?.series || [],
-    channelsCount: channelsCount ?? heavy?.channels?.length ?? 0,
-    vodCount: vodCount ?? heavy?.vod?.length ?? 0,
-    seriesCount: seriesCount ?? heavy?.series?.length ?? 0,
+    channelsCount: heavy?.channels?.length ?? channelsCount ?? 0,
+    vodCount: heavy?.vod?.length ?? vodCount ?? 0,
+    seriesCount: heavy?.series?.length ?? seriesCount ?? 0,
   };
 }
 
@@ -128,7 +132,10 @@ interface PlaylistContextValue {
   isLoading: boolean;
   /** Hangi profilin playlist metadata'sı gerçekten yüklenmiş durumda. */
   loadedProfileId: string | null;
+  loadError: string | null;
   nativeSummary: NativePlaylistSummary | null;
+  beginExternalRestore: () => Promise<() => void>;
+  reloadAfterRestore: () => Promise<void>;
   ensureHeavyLoaded: (id?: string) => Promise<Playlist | null>;
   addPlaylist: (p: Playlist) => Promise<void>;
   addPreparedPlaylist: (p: Playlist) => Promise<void>;
@@ -186,8 +193,14 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { playlistsRef.current = playlists; }, [playlists]);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [recent, setRecent] = useState<string[]>([]);
+  const auxRaw = useRef<{pid:string;scope:string;owner:string|null;favorites:string[];recent:string[]}>({pid:'',scope:'',owner:null,favorites:[],recent:[]});
+  const auxWrites = useRef<Promise<unknown>>(Promise.resolve());
+  useEffect(()=>registerProfileDataDrain(()=>auxWrites.current),[]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError,setLoadError]=useState<string|null>(null);
   const [nativeSummary, setNativeSummary] = useState<NativePlaylistSummary | null>(null);
+  const [reloadRevision, setReloadRevision] = useState(0);
+  const reloadWaiters = useRef<Array<{resolve:()=>void;reject:(e:Error)=>void}>>([]);
   /**
    * v16.4.0 — LİSTE ONARIM DURUMU
    * heavyLoading   : içerik indirilirken arayüz "yükleniyor" gösterir.
@@ -245,9 +258,13 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   // activeProfile değiştiği anda effect henüz başlamamış olsa bile tüketiciler
   // eski profil listesini "hazır" sanmasın.
   const [loadedProfileId, setLoadedProfileId] = useState<string | null>(null);
+  const metadataReadyPid=useRef<string|null>(null);
+  const assertMetadataReady=useCallback(()=>{if(metadataReadyPid.current!==currentPid())throw new Error('Liste bilgileri güvenle yüklenemedi; katalog değiştirilmedi.');},[]);
   // GPT ELITE v12.0.0: profil değişimleri üst üste gelirse eski async yükleme
   // yeni profil state'ini ezmesin. Her yükleme kendi generation kimliğini taşır.
   const profileLoadGeneration = useRef(0);
+  const profileLoadQueue=useRef<Promise<unknown>>(Promise.resolve());
+  useEffect(()=>registerProfileDataDrain(()=>profileLoadQueue.current),[]);
   const auxLoadGeneration = useRef(0);
   // v15.2.19: aktif playlist geçişleri üst üste gelirse eski summary/disk yazımı
   // yeni seçimi ezmesin.
@@ -259,6 +276,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   // ilk geçişin AYNI Promise'ine join olur. Böylece `await setActivePlaylist(id)`
   // gerçekten Room verify + activeKey publish tamamlanana kadar bekler.
   const activeSwitchInFlight = useRef<Map<string, Promise<void>>>(new Map());
+  useEffect(()=>registerProfileDataDrain(()=>Promise.allSettled(Array.from(activeSwitchInFlight.current.values()))),[]);
 
   // Hangi liste id'lerinin ağır verisi belleğe yüklendi (tekrar okumayı önler)
   const loadedHeavy = useRef<Set<string>>(new Set());
@@ -269,12 +287,15 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   // --- Açılış: metadata oku (+ gerekirse eski veriyi migrate et) -----------
   useEffect(() => {
     const generation = ++profileLoadGeneration.current;
+    metadataReadyPid.current=null;
     activeSwitchGeneration.current += 1;
     const requestedPid = activeProfile?.id || 'default';
-    (async () => {
+    let loadFailure:Error|null=null;
+    profileLoadQueue.current=(async () => {
       try {
         // PROFİL DEĞİŞİMİ: önceki profilin listesi ekranda kalmasın.
         setIsLoading(true);
+        setLoadError(null);
         setLoadedProfileId(null);
         setPlaylists([]);
         setActiveId(null);
@@ -289,72 +310,87 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
          */
         loadedHeavy.current.clear();
 
-        // 1) Eski tek-anahtar formatı var mı? Varsa migrate et.
-        const legacyRaw = await storage.getItem<string>(LEGACY_KEY, '');
-        if (legacyRaw) {
-          try {
-            const legacyList: Playlist[] = JSON.parse(legacyRaw);
-            if (Array.isArray(legacyList) && legacyList.length > 0) {
-              // Her listenin ağır verisini dosyaya yaz, metadata'yı topla.
-              const metas: PlaylistMeta[] = [];
-              for (const p of legacyList) {
-                await bigStore.write(p.id, {
-                  channels: p.channels || [],
-                  vod: p.vod || [],
-                  series: p.series || [],
-                });
-                metas.push(toMeta(p));
-              }
-              // En eski (tek blob) veriyi ORTAK anahtara yaz; aşağıdaki taşıma
-              // adımı bunu aktif profile aktaracak.
-              await storage.setItem(GLOBAL_META_KEY, JSON.stringify(metas));
+        await commitQueue.current;
+        const pid=requestedPid;
+        let metaRaw='', aid='';
+        await withCatalogLock('__legacy-metadata-migration',async()=>{
+          const owns=()=>profileLoadGeneration.current===generation&&currentPid()===pid;
+          if(!owns())return;
+          const legacyRaw=await storage.getItemStrict<string>(LEGACY_KEY,'');
+          if(legacyRaw){
+            let legacyList:Playlist[];
+            try{legacyList=JSON.parse(legacyRaw);}catch{throw new Error('Eski liste kaydı okunamadı; kaynak korunuyor.');}
+            if(!Array.isArray(legacyList))throw new Error('Eski liste kaydı geçersiz; kaynak korunuyor.');
+            const migrated:PlaylistMeta[]=[];
+            for(const p of legacyList){
+              if(!owns())return;
+              if(!(await bigStore.exists(p.id)) && !(await bigStore.write(p.id,{channels:p.channels||[],vod:p.vod||[],series:p.series||[]})))throw new Error('Eski katalog taşınamadı; kaynak korunuyor.');
+              migrated.push(toMeta(p));
             }
-          } catch (e) {
-            console.warn('[Playlist] legacy migrate parse hatası', e);
+            const globalRaw=await storage.getItemStrict<string>(GLOBAL_META_KEY,'');
+            const currentGlobal:PlaylistMeta[]=globalRaw?JSON.parse(globalRaw):[];
+            if(!Array.isArray(currentGlobal))throw new Error('Ortak liste kaydı geçersiz.');
+            const merged=[...currentGlobal,...migrated.filter(p=>!currentGlobal.some(x=>x.id===p.id))];
+            if(!owns())return;
+            if(!(await storage.setItem(GLOBAL_META_KEY,JSON.stringify(merged))))throw new Error('Eski liste bilgisi taşınamadı; kaynak korunuyor.');
+            if(!(await storage.removeItem(LEGACY_KEY)))throw new Error('Eski liste taşıması tamamlandı; kaynak işareti temizlenemedi.');
           }
-          // Eski anahtarı temizle (bir daha migrate etmesin).
-          await storage.removeItem(LEGACY_KEY);
-        }
-
-        // 2) PROFİLE ÖZEL metadata'yı oku.
-        // v6.0.0: Henüz gerçek profil yoksa (ilk kurulum, welcome sürüyor)
-        // taşıma yapma; yanlışlıkla 'default' altına yazmasın.
-        const pid = requestedPid;
-        const realProfile = !!activeProfile?.id && activeProfile.id !== 'default';
-        let metaRaw = await storage.getItem<string>(metaKey(pid), '');
-        let aid = await storage.getItem<string>(activeKey(pid), '');
-
-        // TAŞIMA: bu profilde veri yoksa ve ORTAK (eski) veri varsa, mevcut
-        // listeler bu profile aktarılır. Böylece güncelleme sonrası kimse
-        // listesini kaybetmez. Taşıma yalnızca BİR KEZ olur.
-        // TAŞIMA YALNIZCA BİR KEZ, TEK PROFİLE (v5.9.0 düzeltmesi)
-        // ESKİ HATA: ortak anahtar silinmediği için HER YENİ PROFİL aynı
-        // listeyi devralıyordu -> "listeler profillerle karışıyor".
-        // YENİ: taşıma bir bayrakla işaretleniyor; sadece ilk profil devralır,
-        // sonraki profiller BOŞ başlar (kullanıcının istediği davranış).
-        if (!metaRaw && realProfile) {
-          const migratedTo = await storage.getItem<string>(MIGRATED_KEY, '');
-          if (!migratedTo) {
-            const globalMeta = await storage.getItem<string>(GLOBAL_META_KEY, '');
-            if (globalMeta) {
-              await storage.setItem(metaKey(pid), globalMeta);
-              const globalActive = await storage.getItem<string>(GLOBAL_ACTIVE_KEY, '');
-              if (globalActive) await storage.setItem(activeKey(pid), globalActive);
-              metaRaw = globalMeta;
-              aid = globalActive || '';
-              // Bayrağı koy: başka hiçbir profil bu listeyi devralmasın.
-              await storage.setItem(MIGRATED_KEY, pid);
-              // Ortak anahtarları temizle (bir daha kullanılmayacak).
-              await storage.removeItem(GLOBAL_META_KEY);
-              await storage.removeItem(GLOBAL_ACTIVE_KEY);
+          if(!owns())return;
+          metaRaw=(await storage.getItemStrict<string>(metaKey(pid),''))||'';
+          aid=(await storage.getItemStrict<string>(activeKey(pid),''))||'';
+          const realProfile=!!activeProfile?.id&&activeProfile.id!=='default';
+          if(realProfile){
+            const migratedTo=await storage.getItemStrict<string>(MIGRATED_KEY,'');
+            const globalMeta=await storage.getItemStrict<string>(GLOBAL_META_KEY,'');
+            if(globalMeta&&((!metaRaw&&!migratedTo)||migratedTo===pid)){
+              if(!owns())return;
+              // Claim first; a failed write keeps the source and only this profile may retry.
+              if(!migratedTo && !(await storage.setItem(MIGRATED_KEY,pid)))throw new Error('Liste taşıma sahipliği kaydedilemedi.');
+              if(!metaRaw && !(await storage.setItem(metaKey(pid),globalMeta)))throw new Error('Profil listeleri taşınamadı; ortak kaynak korunuyor.');
+              const globalActive=await storage.getItemStrict<string>(GLOBAL_ACTIVE_KEY,'');
+              if(!aid&&globalActive && !(await storage.setItem(activeKey(pid),globalActive)))throw new Error('Aktif liste taşınamadı; ortak kaynak korunuyor.');
+              metaRaw=metaRaw||globalMeta;aid=aid||globalActive||'';
+              if(!(await storage.removeItem(GLOBAL_META_KEY)) || !(await storage.removeItem(GLOBAL_ACTIVE_KEY)))throw new Error('Liste taşıması tamamlandı; ortak kaynak temizlenemedi.');
             }
           }
-        }
+        });
+        if(profileLoadGeneration.current!==generation||currentPid()!==requestedPid)return;
 
         let metas: PlaylistMeta[] = [];
-        try { if (metaRaw) metas = JSON.parse(metaRaw); } catch {}
+        try { if (metaRaw) metas = JSON.parse(metaRaw); } catch { throw new Error('Liste bilgisi okunamadı; mevcut kayıt korunuyor.'); }
+        if(!Array.isArray(metas))throw new Error('Liste bilgisi geçersiz; mevcut kayıt korunuyor.');
 
-        const initial: Playlist[] = (metas || []).map(m => fromMeta(m));
+        let initial: Playlist[] = (Array.isArray(metas) ? metas : []).map(m => fromMeta(m));
+        const protectedInitial=await Promise.all(initial.map(async entry=>entry.pin?{...entry,pin:await protectPin(entry.pin)}:entry));
+        const pinsChanged=protectedInitial.some((entry,i)=>entry.pin!==initial[i].pin);
+        initial=protectedInitial;
+        if(profileLoadGeneration.current!==generation||currentPid()!==requestedPid||isCatalogRestoreActive())return;
+        if(pinsChanged && !KizilkanNativeCore.available){
+          await runExclusive(async()=>{
+            if(profileLoadGeneration.current!==generation||currentPid()!==requestedPid||isCatalogRestoreActive())return;
+            if(!(await storage.setItem(metaKey(requestedPid),JSON.stringify(initial.map(toMeta)))))throw new Error('Liste PIN koruması kaydedilemedi.');
+          },true);
+        }
+        if (KizilkanNativeCore.available) {
+          // Counts come from real Room rows, never from intentionally empty JS arrays.
+          const verified: Playlist[] = [];
+          for (const entry of initial) {
+            if (profileLoadGeneration.current !== generation || currentPid() !== requestedPid || isCatalogRestoreActive()) return;
+            try {
+              const summary = await KizilkanNativeCore.getPlaylistSummaryVerified(entry.id);
+              if (!summary?.roomIndexed) throw new Error('Katalog indeksi bulunamadı.');
+              const total = (summary.channels ?? 0) + (summary.vod ?? 0) + (summary.series ?? 0);
+              verified.push({ ...entry, channelsCount: summary.channels, vodCount: summary.vod, seriesCount: summary.series,
+                catalogLocalState: total > 0 ? 'ready' : entry.catalogLocalState === 'empty' ? 'empty' : 'missing' });
+            } catch {
+              verified.push({ ...entry, catalogExpectedCounts: entry.catalogExpectedCounts || { channels: entry.channelsCount || 0, vod: entry.vodCount || 0, series: entry.seriesCount || 0 },
+                channelsCount: 0, vodCount: 0, seriesCount: 0, catalogLocalState: 'missing' });
+            }
+          }
+          initial = verified;
+          if (profileLoadGeneration.current !== generation || currentPid() !== requestedPid || isCatalogRestoreActive()) return;
+          if (!(await storage.setItem(metaKey(requestedPid), JSON.stringify(initial.map(toMeta))))) throw new Error('Doğrulanan liste sayaçları kaydedilemedi.');
+        }
         if (profileLoadGeneration.current !== generation || currentPid() !== requestedPid) return;
         playlistsRef.current = initial;
         setPlaylists(initial);
@@ -374,8 +410,8 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
             const inv = await KizilkanNativeCore.getSnapshotInventory();
             const metaIds = new Set((metas || []).map((m: any) => String(m.id)));
             const orphans = inv.filter(sn => !metaIds.has(String(sn.playlistId)));
-            const migratedFlag = await storage.getItem<string>(MIGRATED_KEY, '');
-            const globalMetaLeft = await storage.getItem<string>(GLOBAL_META_KEY, '');
+            const migratedFlag = await storage.getItemStrict<string>(MIGRATED_KEY, '');
+            const globalMetaLeft = await storage.getItemStrict<string>(GLOBAL_META_KEY, '');
             void recordDiagnostic('database', 'ORPHAN_SNAPSHOT_AUDIT', {
               profileId: requestedPid,
               metaPlaylists: metaIds.size,
@@ -411,13 +447,17 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         }
       } catch (e) {
         console.warn('[Playlist] açılış yükleme hatası', e);
+        loadFailure=e instanceof Error?e:new Error(String(e));
       } finally {
         // currentPid() ref'i her render güncel profile bakar. Eğer effect çalışırken
         // profil tekrar değiştiyse eski yüklemeyi hazır ilan etme.
         const nowPid = currentPid();
         if (profileLoadGeneration.current === generation && nowPid === requestedPid) {
-          setLoadedProfileId(requestedPid);
+          metadataReadyPid.current=loadFailure?null:requestedPid;
+          setLoadedProfileId(loadFailure?null:requestedPid);
+          setLoadError(loadFailure?.message||null);
           setIsLoading(false);
+          for (const waiter of reloadWaiters.current.splice(0)) {if(loadFailure)waiter.reject(loadFailure);else waiter.resolve();}
         }
       }
     })();
@@ -426,7 +466,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     // kendi listeleri okunmalı. Bağımlılık boş olduğu için eskiden önceki
     // profilin listesi ekranda kalıyordu.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProfile?.id]);
+  }, [activeProfile?.id, reloadRevision]);
 
   // --- Aktif liste: v15.2 Native Core warm-up -------------------------------
   const ensureHeavyLoadedRef = useRef<(id?: string) => Promise<Playlist | null>>(async () => null);
@@ -476,9 +516,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         hydrated = {
           ...p,
           channels: heavy.channels || [], vod: heavy.vod || [], series: heavy.series || [],
-          channelsCount: heavy.channels?.length || p.channelsCount || 0,
-          vodCount: heavy.vod?.length || p.vodCount || 0,
-          seriesCount: heavy.series?.length || p.seriesCount || 0,
+          channelsCount: heavy.channels?.length ?? 0,
+          vodCount: heavy.vod?.length ?? 0,
+          seriesCount: heavy.series?.length ?? 0,
         };
         return hydrated;
       });
@@ -499,25 +539,33 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   // --- Favoriler + son izlenenler (profile göre) ----------------------------
   useEffect(() => {
     const generation = ++auxLoadGeneration.current;
+    auxRaw.current={pid:'',scope:'',owner:null,favorites:[],recent:[]};
     const requestedPid = profileId;
     setFavorites([]);
     setRecent([]);
     (async () => {
+      await auxWrites.current.catch(() => undefined);
       const favKey = FAV_KEY_PREFIX + requestedPid;
       const recKey = REC_KEY_PREFIX + requestedPid;
-      const [fav, rec] = await Promise.all([
-        storage.getItem<string>(favKey, ''),
-        storage.getItem<string>(recKey, ''),
+      const [fav, rec, legacyOwner] = await Promise.all([
+        storage.getItemStrict<string>(favKey, ''),
+        storage.getItemStrict<string>(recKey, ''),
+        storage.getItemStrict<string>(`kizilkan.libraryLegacyOwner.${requestedPid}`, ''),
       ]);
       if (auxLoadGeneration.current !== generation || currentPid() !== requestedPid) return;
       let favList: string[] = [];
       let recList: string[] = [];
-      try { if (fav) favList = JSON.parse(fav); } catch {}
-      try { if (rec) recList = JSON.parse(rec); } catch {}
-      setFavorites(favList);
-      setRecent(recList);
-    })();
-  }, [profileId]);
+      const ids=(raw:string|null):string[]=>{let parsed:unknown;try{parsed=raw?JSON.parse(raw):[];}catch{throw new Error('Kişisel liste kaydı bozuk; kaynak korunuyor.');}if(!Array.isArray(parsed)||parsed.some(id=>typeof id!=='string'))throw new Error('Kişisel liste biçimi geçersiz; kaynak korunuyor.');return parsed;};
+      favList=ids(fav);recList=ids(rec);
+      const scope = activeId || '';
+      if (auxLoadGeneration.current !== generation || isCatalogRestoreActive()) return;
+      const owner = legacyOwner || await claimLibraryLegacyOwner(requestedPid, scope);
+      if (auxLoadGeneration.current !== generation || currentPid() !== requestedPid || activeIdRef.current !== activeId || isCatalogRestoreActive()) return;
+      auxRaw.current = {pid:requestedPid,scope,owner,favorites:favList,recent:recList};
+      setFavorites(libraryScopedIds(favList, scope, owner));
+      setRecent(libraryScopedIds(recList, scope, owner));
+    })().catch((e:any)=>void recordDiagnostic('database','PERSONAL_LIST_LOAD_FAILED',{message:String(e?.message||e)}));
+  }, [profileId, activeId, reloadRevision]);
 
   /** Metadata'yı AsyncStorage'a yazar (hafif, limitsiz güvenli). */
   /**
@@ -549,23 +597,32 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   const lastNativeDiffRef = useRef<Map<string, any>>(new Map());
 
   /** Tüm meta yazmalarını sıraya alır; eşzamanlı çağrılar birbirini ezmez. */
-  const runExclusive = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
-    const next = commitQueue.current.then(task, task);
+  const runExclusive = useCallback(<T,>(task: () => Promise<T>, duringLoad=false): Promise<T> => {
+    const expectedProfile = currentPid();
+    const ownedTask = () => {
+      if (currentPid() !== expectedProfile) throw new Error('Sıradaki liste işlemi profil değiştiği için durduruldu.');
+      if(!duringLoad)assertMetadataReady();
+      return task();
+    };
+    const next = commitQueue.current.then(ownedTask, ownedTask);
     // Zincirin hata yüzünden kopmasını engelle (sonraki işler yine çalışsın).
     commitQueue.current = next.then(() => undefined, () => undefined);
     return next;
-  }, []);
+  }, [assertMetadataReady]);
 
-  const persistMeta = useCallback(async (list: Playlist[], opts?: { allowRemoval?: string[] }) => {
+  const persistMeta = useCallback(async (list: Playlist[], opts?: { allowRemoval?: string[]; expectedProfile?: string }) => {
+    if (isCatalogRestoreWriting()) throw new Error('Yedek geri yüklenirken eski liste bilgisi yazılamaz.');
     const pid = currentPid();
+    if (opts?.expectedProfile && opts.expectedProfile !== pid) throw new Error('İşlem sırasında profil değişti.');
     const key = metaKey(pid);
-    let metas = list.map(toMeta);
+    let metas = await Promise.all(list.map(async entry=>{const meta=toMeta(entry);return meta.pin?{...meta,pin:await protectPin(meta.pin)}:meta;}));
 
     // --- SİLME KORUMASI ---
     try {
-      const rawExisting = await storage.getItem<string>(key, '');
+      const rawExisting = await storage.getItemStrict<string>(key, '');
       if (rawExisting) {
         const existing: PlaylistMeta[] = JSON.parse(rawExisting) || [];
+        if(!Array.isArray(existing))throw new Error('Mevcut liste kaydı geçersiz.');
         if (Array.isArray(existing) && existing.length > 0) {
           const nextIds = new Set(metas.map(m => m.id));
           const allowed = new Set(opts?.allowRemoval || []);
@@ -586,10 +643,11 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         }
       }
     } catch (e: any) {
-      // Koruma okuması başarısızsa yazmayı engelleme; yalnız kaydet.
       void recordDiagnostic('database', 'PLAYLIST_DELETION_GUARD_ERROR', { error: String(e?.message || e) });
+      throw new Error('Mevcut liste bilgisi doğrulanamadı; kaynak korunarak yazma durduruldu.');
     }
 
+    if(isCatalogRestoreWriting() || (opts?.expectedProfile && currentPid()!==opts.expectedProfile))throw new Error('Liste yazımı sırasında hedef değişti.');
     const ok = await storage.setItem(key, JSON.stringify(metas));
     if (!ok) {
       throw new Error('Liste bilgisi kaydedilemedi (meta yazma hatası).');
@@ -605,7 +663,40 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const addPlaylist = useCallback(async (p: Playlist) => runExclusive(async () => {
+  const publishMetadata = useCallback((expectedProfile:string, change:(current:Playlist[])=>Playlist[], opts?:{allowRemoval?:string[]}):Promise<Playlist[]> => runExclusive(async()=>{
+    if(currentPid()!==expectedProfile)throw new Error('Liste kaydedilirken profil değişti.');
+    const next=change(playlistsRef.current);
+    await persistMeta(next,{...opts,expectedProfile});
+    if(currentPid()===expectedProfile){playlistsRef.current=next;setPlaylists(next);}
+    return next;
+  }),[persistMeta,runExclusive]);
+
+  const beginExternalRestore = useCallback(async (): Promise<() => void> => {
+    if (loadedProfileId !== currentPid()) throw new Error('Liste bilgileri yüklenirken geri yükleme başlatılamaz.');
+    activeSwitchGeneration.current += 1;
+    profileLoadGeneration.current += 1;
+    auxLoadGeneration.current += 1;
+    const repair = repairLifecycleRef.current;
+    try { repair?.controller?.abort(); repair?.wake?.(); } catch {}
+    const release = await beginCatalogRestore();
+    try {
+      await commitQueue.current.catch(() => undefined);
+      await activeSwitchWriteQueue.current.catch(() => undefined);
+      await drainProfileDataWrites();
+      metadataReadyPid.current=null;
+    } catch (e) { release(); throw e; }
+    void recordDiagnostic('database', 'PLAYLIST_EXTERNAL_RESTORE_BEGIN', {});
+    return release;
+  }, [loadedProfileId]);
+
+  const reloadAfterRestore = useCallback((): Promise<void> => {
+    if (isCatalogRestoreActive()) return Promise.reject(new Error('Geri yükleme kilidi bırakılmadan yeniden yükleme yapılamaz.'));
+    notifyProfileDataReload();
+    return new Promise((resolve,reject) => { reloadWaiters.current.push({resolve,reject}); setReloadRevision(v => v + 1); });
+  }, []);
+
+  const addPlaylist = useCallback(async (p: Playlist) => withCatalogLock(p.id, () => runExclusive(async () => {
+    const requestedProfile = currentPid();
     // v17.3.2: Ekleme artık SIRAYA alınır. Eskiden iki ekleme çakışınca her biri
     // kendi (bayat) listesini yazıyor ve biri diğerini siliyordu.
     // GPT ELITE v12.6.0: +18 analizi kayıt kritik yolunda senkron yapılmaz.
@@ -634,9 +725,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       if (!summary?.roomIndexed) throw new Error('Playlist Room/SQLite indeksine alınamadı.');
       normalizedP = {
         ...p, channels: [], vod: [], series: [],
-        channelsCount: p.channels?.length || Number(summary.channels || 0),
-        vodCount: p.vod?.length || Number(summary.vod || 0),
-        seriesCount: p.series?.length || Number(summary.series || 0),
+        channelsCount: Number(summary.channels ?? 0),
+        vodCount: Number(summary.vod ?? 0),
+        seriesCount: Number(summary.series ?? 0),
       };
       loadedHeavy.current.delete(p.id);
     } else {
@@ -645,28 +736,29 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       };
       loadedHeavy.current.add(p.id);
     }
+    if (currentPid() !== requestedProfile) throw new Error('Liste eklenirken profil değişti.');
+    normalizedP.catalogLocalState = ((normalizedP.channelsCount ?? 0) + (normalizedP.vodCount ?? 0) + (normalizedP.seriesCount ?? 0)) > 0 ? 'ready' : 'empty';
     const current = playlistsRef.current;
     if (normalizedP.manualOrder == null) {
       const maxOrder = current.reduce((m, pl) => Math.max(m, Number(pl.manualOrder ?? -1)), -1);
       normalizedP = { ...normalizedP, manualOrder: maxOrder + 1 };
     }
     const next = [...current.filter(pl => pl.id !== p.id), normalizedP];
-    playlistsRef.current = next;
-    setPlaylists(next);
 
     // 3) Metadata'yı yaz. Ref önce güncellendiği için arka arkaya eklemelerde
     // bir önceki playlist kaybolmaz.
-    await persistMeta(next);
+    await persistMeta(next, { expectedProfile: requestedProfile });
+    if(currentPid()===requestedProfile){playlistsRef.current=next;setPlaylists(next);}
 
     // 4) Aktif yap.
-    await storage.setItem(activeKey(currentPid()), p.id);
-    setActiveId(p.id);
+    if (!(await storage.setItem(activeKey(requestedProfile), p.id))) throw new Error('Aktif liste kaydedilemedi.');
+    if (currentPid() === requestedProfile) setActiveId(p.id);
 
     // Native Core modunda 50-100 bin öğeyi fire-and-forget JS closure'unda
     // tutup +18 pre-scan yapma; bu hem heap'i hem event-loop'u yeniden şişirir.
     // isAdultContent gerektiğinde lazy hesaplar. Web/legacy yolunda eski preload korunur.
     if (!KizilkanNativeCore.available) scheduleAdultFlags(p.channels, p.vod, p.series);
-  }), [persistMeta, runExclusive]);
+  })), [persistMeta, runExclusive]);
 
   /**
    * v15.2.2-RC1: Native foreground importer ağır dosyayı + Room indeksini zaten
@@ -674,50 +766,59 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
    * Yalnız metadata/state kaydedilir; legacy ekran tam veriyi isterse
    * ensureHeavyLoaded -> Native Core/Room üzerinden hydrate eder.
    */
-  const addPreparedPlaylist = useCallback(async (p: Playlist) => runExclusive(async () => {
+  const addPreparedPlaylist = useCallback(async (p: Playlist) => withCatalogLock(p.id, () => runExclusive(async () => {
+    const requestedProfile = currentPid();
     // v17.3.2: Native içe aktarma yolu da sıraya alınır (addPlaylist ile aynı risk).
-    const summary = KizilkanNativeCore.available ? await KizilkanNativeCore.getPlaylistSummary(p.id) : null;
+    const summary = KizilkanNativeCore.available ? await KizilkanNativeCore.getPlaylistSummaryVerified(p.id) : null;
     if (!summary?.roomIndexed) throw new Error('Native playlist indeksi doğrulanamadı.');
     const normalizedP: Playlist = {
       ...p,
       channels: [], vod: [], series: [],
-      channelsCount: Number(summary.channels || p.channelsCount || 0),
-      vodCount: Number(summary.vod || p.vodCount || 0),
-      seriesCount: Number(summary.series || p.seriesCount || 0),
+      channelsCount: Number(summary.channels ?? 0),
+      vodCount: Number(summary.vod ?? 0),
+      seriesCount: Number(summary.series ?? 0),
+      catalogLocalState: ((summary.channels ?? 0) + (summary.vod ?? 0) + (summary.series ?? 0)) > 0 ? 'ready' : 'empty',
     };
+    if (currentPid() !== requestedProfile) throw new Error('Liste eklenirken profil değişti.');
     const current = playlistsRef.current;
     const withOrder: Playlist = normalizedP.manualOrder == null
       ? { ...normalizedP, manualOrder: current.reduce((m, pl) => Math.max(m, Number(pl.manualOrder ?? -1)), -1) + 1 }
       : normalizedP;
     const next = [...current.filter(pl => pl.id !== p.id), withOrder];
-    playlistsRef.current = next;
-    setPlaylists(next);
     loadedHeavy.current.delete(p.id);
-    await persistMeta(next);
-    await storage.setItem(activeKey(currentPid()), p.id);
-    setActiveId(p.id);
-  }), [persistMeta, runExclusive]);
+    await persistMeta(next, { expectedProfile: requestedProfile });
+    if(currentPid()===requestedProfile){playlistsRef.current=next;setPlaylists(next);}
+    if (!(await storage.setItem(activeKey(requestedProfile), p.id))) throw new Error('Aktif liste kaydedilemedi.');
+    if (currentPid() === requestedProfile) setActiveId(p.id);
+  })), [persistMeta, runExclusive]);
 
-  const removePlaylist = useCallback(async (id: string) => runExclusive(async () => {
+  const removePlaylist = useCallback(async (id: string) => withCatalogLock(id, () => runExclusive(async () => {
+    const requestedProfile = currentPid();
     // v17.3.2: Bu MEŞRU bir silme; allowRemoval ile bildirilir. Bildirilmezse
     // silme koruması listeyi geri ekler ve kullanıcı "silinmiyor" derdi.
     const current = playlistsRef.current;
     const next = current.filter(pl => pl.id !== id);
-    playlistsRef.current = next;
-    setPlaylists(next);
-    await persistMeta(next, { allowRemoval: [id] });
-    await bigStore.remove(id);
+    await persistMeta(next, { allowRemoval: [id], expectedProfile: requestedProfile });
+    if(currentPid()===requestedProfile){playlistsRef.current=next;setPlaylists(next);}
+    const rawProfiles=await storage.getItemStrict<string>('kizilkan.profiles','');
+    let shared=false;
+    try{
+      const owners=JSON.parse(rawProfiles||'[]');
+      for(const other of owners){if(other.id===requestedProfile)continue;const raw=await storage.getItemStrict<string>(metaKey(other.id),'');if(JSON.parse(raw||'[]').some((pl:any)=>pl.id===id)){shared=true;break;}}
+    }catch{shared=true;void recordDiagnostic('database','PLAYLIST_OWNERSHIP_UNVERIFIED',{});}
+    if(!shared && !(await bigStore.remove(id)))throw new Error('Liste kaldırıldı; katalog dosyası temizlenemedi.');
     loadedHeavy.current.delete(id);
-    if (activeId === id) {
+    if (activeIdRef.current === id && currentPid() === requestedProfile) {
       const newActive = next[0]?.id || null;
-      setActiveId(newActive);
-      const pid2 = currentPid();
-      if (newActive) await storage.setItem(activeKey(pid2), newActive);
-      else await storage.removeItem(activeKey(pid2));
+      const pid2 = requestedProfile;
+      const ok=newActive?await storage.setItem(activeKey(pid2),newActive):await storage.removeItem(activeKey(pid2));
+      if(!ok)throw new Error('Liste kaldırıldı; aktif seçim kaydedilemedi.');
+      if(currentPid()===requestedProfile){activeIdRef.current=newActive;setActiveId(newActive);setNativeSummary(null);}
     }
-  }), [persistMeta, activeId, runExclusive]);
+  })), [persistMeta, activeId, runExclusive]);
 
   const commitPlaylistUpdate = useCallback(async (id: string, patch: Partial<Playlist>) => {
+    assertMetadataReady();
     const requestedProfile=currentPid();
     const initial = playlistsRef.current;
     const target = initial.find(pl => pl.id === id);
@@ -782,6 +883,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           channelsCount: Number(committedSummary.channels ?? merged.channelsCount ?? 0),
           vodCount: Number(committedSummary.vod ?? merged.vodCount ?? 0),
           seriesCount: Number(committedSummary.series ?? merged.seriesCount ?? 0),
+          catalogLocalState: ((committedSummary.channels ?? 0) + (committedSummary.vod ?? 0) + (committedSummary.series ?? 0)) > 0 ? 'ready' : 'empty',
         }));
         loadedHeavy.current.delete(id);
         void recordDiagnostic('database', 'CATALOG_INCREMENTAL_SYNC_V2', {
@@ -801,19 +903,15 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           void recordDiagnostic('database', 'PLAYLIST_COMMIT_FAILED', { playlistId: id, stage: 'bigStore.write' });
           throw new Error('Liste içeriği güncellenemedi.');
         }
-        published = merged;
+        published = { ...merged, catalogLocalState: merged.channelsCount + (merged.vodCount ?? 0) + (merged.seriesCount ?? 0) > 0 ? 'ready' : 'empty' };
         loadedHeavy.current.add(id);
       }
 
       // Commit sürerken başka playlist güncellenmiş olabilir. En güncel ref'i
       // taban al ve yalnız hedef playlist'i atomik biçimde değiştir.
       if(currentPid()!==requestedProfile)return;
-      const latestBase = playlistsRef.current;
-      const next = latestBase.map(pl => pl.id === id ? { ...pl, ...published } : pl);
-      playlistsRef.current = next;
-      setPlaylists(next);
+      await publishMetadata(requestedProfile,current=>current.map(pl=>pl.id===id?{...pl,...published}:pl));
       if(activeIdRef.current===id&&committedSummary)setNativeSummary(committedSummary);
-      await persistMeta(next);
 
       void recordDiagnostic('database', 'PLAYLIST_COMMIT_READY', {
         playlistId: id,
@@ -829,42 +927,46 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     }
 
     // Metadata-only güncelleme ağır store transaction gerektirmez.
-    const next = playlistsRef.current.map(pl => pl.id === id ? ({ ...pl, ...patch } as Playlist) : pl);
-    playlistsRef.current = next;
-    setPlaylists(next);
-    await persistMeta(next);
+    await publishMetadata(requestedProfile,current=>current.map(pl=>pl.id===id?({...pl,...patch} as Playlist):pl));
     } finally {
       finishTask();
     }
-  }, [persistMeta, activeId]);
+  }, [publishMetadata, activeId, assertMetadataReady]);
 
-  const updatePlaylist=useCallback((id:string,patch:Partial<Playlist>)=>withCatalogLock(id,()=>commitPlaylistUpdate(id,patch)),[commitPlaylistUpdate]);
+  const updatePlaylist=useCallback((id:string,patch:Partial<Playlist>)=>{
+    const pid=currentPid();
+    return withCatalogLock(id,()=>{
+      if(currentPid()!==pid)throw new Error('Liste güncellenirken profil değişti.');
+      return commitPlaylistUpdate(id,patch);
+    });
+  },[commitPlaylistUpdate,assertMetadataReady]);
 
   const cleanupPlaylistContent=useCallback(async(id:string,kinds:Array<CatalogKind|'epg'>):Promise<number>=>{
     const pid=currentPid();
     return withCatalogLock(id,async()=>{
+      assertMetadataReady();
       if(currentPid()!==pid||!playlistsRef.current.some(p=>p.id===id))throw new Error('Temizlik hedefi değişti.');
       const result=await KizilkanNativeCore.executePlaylistContentCleanup(id,{live:kinds.includes('live'),vod:kinds.includes('vod'),series:kinds.includes('series'),epg:kinds.includes('epg')});
       if(!result?.after)throw new Error('Temizlik sonucu doğrulanamadı.');
       if(currentPid()!==pid)return result.deletedTotal;
       const after=result.after;loadedHeavy.current.delete(id);
-      const next=playlistsRef.current.map(p=>p.id===id?fromMeta(toMeta({...p,
+      const next=await publishMetadata(pid,current=>current.map(p=>p.id===id?fromMeta(toMeta({...p,
         channels:[],vod:[],series:[],channelsCount:after.live,vodCount:after.vod,seriesCount:after.series,
+        catalogLocalState:after.live+after.vod+after.series>0?'ready':'empty',
         catalogRevision:Date.now(),cleanedKinds:Array.from(new Set([...(p.cleanedKinds||[]),...kinds])),
         catalogSync:{...p.catalogSync,...(kinds.includes('live')?{liveFingerprint:undefined}:{}),...(kinds.includes('vod')?{vodFingerprint:undefined}:{}),...(kinds.includes('series')?{seriesFingerprint:undefined}:{})},
-      })):p);
-      playlistsRef.current=next;setPlaylists(next);
+      })):p));
       if(activeIdRef.current===id)setNativeSummary({id,channels:after.live,vod:after.vod,series:after.series,roomIndexed:true});
-      await persistMeta(next);
       if(kinds.includes('epg'))await storage.setItem('kizilkan.epg.meta.'+id,JSON.stringify({url:next.find(p=>p.id===id)?.epgUrl||'',fetchedAt:Date.now(),cleaned:true}));
       return result.deletedTotal;
     });
-  },[persistMeta]);
+  },[publishMetadata,assertMetadataReady]);
 
   const refreshPlaylistKinds=useCallback(async(id:string,kinds:Array<CatalogKind|'epg'>,progress?:(p:RefreshProgress)=>void,valid:()=>boolean=()=>true,forceUnconditional=false)=>{
     const pid=currentPid();
     return withCatalogLock(id,async()=>{
-      const owns=()=>currentPid()===pid&&valid()&&playlistsRef.current.some(p=>p.id===id);
+      assertMetadataReady();
+      const owns=()=>metadataReadyPid.current===pid&&currentPid()===pid&&valid()&&playlistsRef.current.some(p=>p.id===id);
       if(!owns())return;
       const pl=playlistsRef.current.find(p=>p.id===id)!;
       const catalogKinds=kinds.filter((k):k is CatalogKind=>k!=='epg');
@@ -915,7 +1017,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       }
       progress?.({phase:'done',message:'Seçilen içerikler güncellendi.'});
     });
-  },[commitPlaylistUpdate]);
+  },[commitPlaylistUpdate,assertMetadataReady]);
 
   useEffect(()=>{
     if(!activeId||loadedProfileId!==profileId)return;
@@ -954,7 +1056,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
    * Room kind'larını atomik değiştirir. Her kind sonrası snapshot doğrulanır;
    * metadata yalnız doğrulanmış canonical sayılardan publish edilir.
    */
-  const enrichPlaylistMedia = useCallback(async (id: string, patch: { vod?: Playlist["vod"]; series?: Playlist["series"] }) => {
+  const enrichPlaylistMedia = useCallback(async (id: string, patch: { vod?: Playlist["vod"]; series?: Playlist["series"] }) => withCatalogLock(id, async () => {
+    assertMetadataReady();
+    const requestedProfile = currentPid();
     const finishTask = markTask('room:mag-enrichment', { playlistId: id });
     const startedAt = Date.now();
     try {
@@ -977,13 +1081,14 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         });
         const summary = sync?.summary || null;
         if (!sync?.roomVerified || !summary?.roomIndexed) throw new Error('MAG VOD/Series tek transaction Room commit doğrulanamadı.');
-        const latest = playlistsRef.current;
-        const next = latest.map(pl => pl.id === id ? ({
+        if (currentPid() !== requestedProfile) throw new Error('Zenginleştirme sırasında profil değişti.');
+        await publishMetadata(requestedProfile,current=>current.map(pl => pl.id === id ? ({
           ...pl,
           channels: [], vod: [], series: [],
-          channelsCount: Number(summary.channels || pl.channelsCount || 0),
+          channelsCount: Number(summary.channels ?? 0),
           vodCount: Number(summary.vod || 0),
           seriesCount: Number(summary.series || 0),
+          catalogLocalState:((summary.channels??0)+(summary.vod??0)+(summary.series??0))>0?'ready':'empty',
           catalogSync: {
             ...(pl.catalogSync || {}),
             ...(sync.fingerprints.live ? { liveFingerprint: sync.fingerprints.live } : {}),
@@ -991,12 +1096,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
             ...(sync.fingerprints.series ? { seriesFingerprint: sync.fingerprints.series } : {}),
             lastChangedKinds: sync.changedKinds, lastSkippedKinds: sync.skippedKinds, lastRepairedKinds: sync.repairedKinds || [], snapshotRecovered: !!sync.snapshotRecovered, snapshotRecoveryState: sync.snapshotRecoveryState || "SNAPSHOT_READY", roomVerified: true, updatedAt: new Date().toISOString(),
           },
-        } as Playlist) : pl);
-        playlistsRef.current = next;
-        setPlaylists(next);
+        } as Playlist) : pl));
         loadedHeavy.current.delete(id);
         if (activeId === id && summary) setNativeSummary(summary);
-        await persistMeta(next);
         void recordDiagnostic('database', 'MAG_ENRICH_ROOM_OK', {
           playlistId: id,
           elapsedMs: Date.now() - startedAt,
@@ -1011,7 +1113,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       // update yolunu kullanmak güvenlidir.
       const hydrated = await ensureHeavyLoaded(id);
       if (!hydrated) throw new Error('MAG enrichment için legacy playlist yüklenemedi.');
-      await updatePlaylist(id, {
+      await commitPlaylistUpdate(id, {
         ...(patch.vod ? { vod: patch.vod } : {}),
         ...(patch.series ? { series: patch.series } : {}),
       });
@@ -1022,7 +1124,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     } finally {
       finishTask();
     }
-  }, [activeId, ensureHeavyLoaded, persistMeta, updatePlaylist]);
+  }), [activeId, ensureHeavyLoaded, publishMetadata, commitPlaylistUpdate, assertMetadataReady]);
 
   /**
    * v17.9.10 — TEK MERKEZİ BOŞ-KABUK ONARIM MOTORU
@@ -1212,6 +1314,8 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   },[updatePlaylist]);
 
   const setActivePlaylist = useCallback(async (id: string) => {
+    if (isCatalogRestoreActive()) throw new Error('Yedek yüklenirken liste seçilemez.');
+    const requestedProfile = currentPid();
     const existing = activeSwitchInFlight.current.get(id);
     if (existing) {
       void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_SINGLEFLIGHT_JOIN', { playlistId: id, reason: 'same-target-in-flight' });
@@ -1237,12 +1341,13 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       void recordFlightRecorderStage(traceId, 'roomVerify', { playlistId: id, generation }, 'started');
       try {
         try {
-          verifiedSummary = await KizilkanNativeCore.getPlaylistSummary(id);
+          verifiedSummary = await KizilkanNativeCore.getPlaylistSummaryVerified(id);
         } catch (firstError: any) {
           void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_INDEX_RECOVERY', {
             playlistId: id, generation, error: String(firstError?.message || firstError),
           });
-          verifiedSummary = await KizilkanNativeCore.warmPlaylist(id);
+          await KizilkanNativeCore.warmPlaylist(id);
+          verifiedSummary = await KizilkanNativeCore.getPlaylistSummaryVerified(id);
         }
         if (activeSwitchGeneration.current !== generation) {
           void recordDiagnostic('catalog', 'PLAYLIST_SWITCH_STALE_DISCARDED', { playlistId: id, stage: 'verify' });
@@ -1271,7 +1376,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           throw new Error('Playlist katalog onarımı tamamlanmamış; güvenli yeniden onarım gerekiyor.');
         }
         const verifiedTotal = (verifiedSummary.channels || 0) + (verifiedSummary.vod || 0) + (verifiedSummary.series || 0);
-        if (verifiedTotal === 0) {
+        if (verifiedTotal === 0 && shellState?.catalogLocalState !== 'empty') {
           // v17.5.0: `target` bu kapsamda tanımlı DEĞİL (CI yakaladı: TS2304).
           // Aşağıdaki onarım kodunun kullandığı kaynağın aynısını kullanıyoruz.
           const shell = playlistsRef.current.find(pl => pl.id === id);
@@ -1331,36 +1436,34 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
 
     if (activeSwitchGeneration.current !== generation) return;
 
-    // v15.2.3: önceki listelerde legacy ekranların hydrate ettiği dev diziler
-    // RAM'de birikmesin. Hedef liste hariç hepsini metadata-only forma sıkıştır.
-    if (KizilkanNativeCore.available) {
-      const compacted = playlistsRef.current.map(pl => pl.id === id ? pl : fromMeta(toMeta(pl)));
-      playlistsRef.current = compacted;
-      setPlaylists(compacted);
-      for (const loadedId of Array.from(loadedHeavy.current)) if (loadedId !== id) loadedHeavy.current.delete(loadedId);
-    }
-
-    setActiveId(id);
-    setNativeSummary(verifiedSummary);
-    const key = activeKey(currentPid());
+    const usedAt = new Date().toISOString();
+    const selectionPatch:Partial<Playlist>={lastUsedAt:usedAt,...(verifiedSummary?.roomIndexed?{
+      channelsCount:verifiedSummary.channels??0,vodCount:verifiedSummary.vod??0,seriesCount:verifiedSummary.series??0,
+      catalogLocalState:((verifiedSummary.channels??0)+(verifiedSummary.vod??0)+(verifiedSummary.series??0))>0?'ready':'empty',
+    }: {})};
+    await publishMetadata(requestedProfile,current=>{
+      if(activeSwitchGeneration.current!==generation || isCatalogRestoreActive())throw new Error('Liste seçimi daha yeni bir işlemle değişti.');
+      return current.map(pl=>pl.id===id?{...pl,...selectionPatch}:pl);
+    });
+    const key = activeKey(requestedProfile);
     const persist = activeSwitchWriteQueue.current = activeSwitchWriteQueue.current
       .catch(() => {})
       .then(async () => {
-        await storage.setItem(key, id);
+        if (currentPid() !== requestedProfile || activeSwitchGeneration.current !== generation || isCatalogRestoreActive()) return;
+        if (!(await storage.setItem(key, id))) throw new Error('Aktif liste seçimi kaydedilemedi.');
       });
     await persist;
-    if (activeSwitchGeneration.current === generation) {
-      const usedAt = new Date().toISOString();
-      const latest = playlistsRef.current;
-      const nextUsed = latest.map(pl => pl.id === id ? { ...pl, lastUsedAt: usedAt } : pl);
-      playlistsRef.current = nextUsed;
-      setPlaylists(nextUsed);
-      await persistMeta(nextUsed);
-    }
-    if (activeSwitchGeneration.current !== generation) {
+    if (currentPid() !== requestedProfile || activeSwitchGeneration.current !== generation || isCatalogRestoreActive()) {
       void recordDiagnostic('navigation', 'PLAYLIST_SWITCH_STALE_DISCARDED', { fromPlaylistId: previousId || '', toPlaylistId: id, stage: 'persisted' });
       return;
     }
+    const published = playlistsRef.current.map(pl => pl.id === id ? { ...pl, ...selectionPatch } : KizilkanNativeCore.available ? fromMeta(toMeta(pl)) : pl);
+    playlistsRef.current = published;
+    setPlaylists(published);
+    if (KizilkanNativeCore.available) for (const loadedId of Array.from(loadedHeavy.current)) if (loadedId !== id) loadedHeavy.current.delete(loadedId);
+    activeIdRef.current = id;
+    setActiveId(id);
+    setNativeSummary(verifiedSummary);
 
     void recordDiagnostic('navigation', 'PLAYLIST_SWITCH', { fromPlaylistId: previousId || '', toPlaylistId: id, nativeCore: KizilkanNativeCore.available, generation }, { traceId, stage: 'roomVerify', outcome: 'success' });
     void recordFlightRecorderStage(traceId, 'roomVerify', { playlistId: id, generation, activePublished: true }, 'success');
@@ -1383,29 +1486,35 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     } finally {
       if (activeSwitchInFlight.current.get(id) === operation) activeSwitchInFlight.current.delete(id);
     }
-  }, [activeId, persistMeta, repairMissingPlaylist]);
+  }, [activeId, publishMetadata, repairMissingPlaylist]);
   activatePlaylistRef.current = setActivePlaylist;
 
-  const toggleFavorite = useCallback(async (channelId: string) => {
-    const next = favorites.includes(channelId)
-      ? favorites.filter(x => x !== channelId)
-      : [...favorites, channelId];
-    setFavorites(next);
-    await storage.setItem(FAV_KEY_PREFIX + profileId, JSON.stringify(next));
-  }, [favorites, profileId]);
+  const mutateAux = useCallback((field:'favorites'|'recent', edit:(ids:string[])=>string[]):Promise<void> => {
+    const pid=profileId, scope=activeId||'';
+    if(isCatalogRestoreActive())return Promise.reject(new Error('Yedek yüklenirken kişisel kayıt değiştirilemez.'));
+    const operation=auxWrites.current.catch(()=>undefined).then(async()=>{
+      const state=auxRaw.current;
+      if(!scope||currentPid()!==pid||activeIdRef.current!==scope||state.pid!==pid||state.scope!==scope)throw new Error('Kişisel kayıt hedefi değişti veya yükleniyor.');
+      const visible=libraryScopedIds(state[field],scope,state.owner);
+      const updated=edit(visible);
+      const prefix=libraryScopePrefix(scope);
+      const keep=state[field].filter(id=>!id.startsWith(prefix)&&!(state.owner===scope&&!id.startsWith('@list:')));
+      const next=[...keep,...updated.map(id=>libraryItemKey(scope,id))];
+      if(!(await storage.setItem((field==='favorites'?FAV_KEY_PREFIX:REC_KEY_PREFIX)+pid,JSON.stringify(next))))throw new Error('Kişisel kayıt kaydedilemedi.');
+      if(currentPid()===pid&&activeIdRef.current===scope&&auxRaw.current===state){
+        auxRaw.current={...state,[field]:next};
+        if(field==='favorites')setFavorites(updated);else setRecent(updated);
+      }
+    });
+    auxWrites.current=operation.catch(()=>undefined);return operation;
+  },[profileId,activeId]);
+  const toggleFavorite = useCallback((channelId:string)=>mutateAux('favorites',ids=>ids.includes(channelId)?ids.filter(x=>x!==channelId):[...ids,channelId]),[mutateAux]);
 
   const isFavorite = useCallback((channelId: string) => favorites.includes(channelId), [favorites]);
 
-  const addToRecent = useCallback(async (channelId: string) => {
-    const next = [channelId, ...recent.filter(x => x !== channelId)].slice(0, 30);
-    setRecent(next);
-    await storage.setItem(REC_KEY_PREFIX + profileId, JSON.stringify(next));
-  }, [recent, profileId]);
+  const addToRecent = useCallback((channelId:string)=>mutateAux('recent',ids=>[channelId,...ids.filter(x=>x!==channelId)].slice(0,30)),[mutateAux]);
 
-  const clearRecent = useCallback(async () => {
-    setRecent([]);
-    await storage.setItem(REC_KEY_PREFIX + profileId, JSON.stringify([]));
-  }, [profileId]);
+  const clearRecent = useCallback(()=>mutateAux('recent',()=>[]),[mutateAux]);
 
   const activePlaylist = playlists.find(p => p.id === activeId) || null;
 
@@ -1413,8 +1522,8 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     <PlaylistContext.Provider
       value={{
         playlists, activePlaylist, favorites, recent,
-        isLoading: isLoading || loadedProfileId !== profileId,
-        loadedProfileId,nativeSummary,ensureHeavyLoaded,cleanupPlaylistContent,refreshPlaylistKinds,freshnessStatus,
+        isLoading: isLoading || (!loadError && loadedProfileId !== profileId),
+        loadedProfileId,loadError,nativeSummary,beginExternalRestore,reloadAfterRestore,ensureHeavyLoaded,cleanupPlaylistContent,refreshPlaylistKinds,freshnessStatus,
         addPlaylist, addPreparedPlaylist, enrichPlaylistMedia, removePlaylist, updatePlaylist, setActivePlaylist,
         toggleFavorite, isFavorite, addToRecent, clearRecent,
         heavyLoading, repairProgress, repairFailedId,

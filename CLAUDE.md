@@ -180,7 +180,26 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.2 RC1 — dal `v18.7.2-rc1-multimac-ux`)
+## 9. Mevcut durum (v18.7.3 RC1 — dal `v18.7.3-rc1-gpt-audit`)
+
+Kullanıcı, kaynak incelemesindeki tüm bulguların uygulanmasını onayladı. MAG exact/fallback/all,
+koruma gözlemi, sonuç seçimi, kategorili TXT ve boyutu sınırlı giriş; seçmeli yedek merge/journal;
+gerçek Room sayımı ve empty/missing ayrımı; profil/liste sahipliği; player/Cast/kayıt/TV;
+native tarama checkpoint/probe; PIN ve şifreli Android yedeği; bozuk kayıtta erişimi kapalı
+tutma ve eski Android kısayol yazıcısı düzeltmeleri uygulandı.
+Ayrıntı: `AI-DEVIR-v18.7.3.md`, `GPT-TESPIT-VE-ONERILER.md`, `GPT-OPUS-GUNCELLEME-DEVRI.md`,
+`GPT-S01-NATIVE-TARAMA-DEVIR.md`. Final test/commit/manuel CI/APK kaydı bu devirlerde güncellenir.
+OnePlus 7 Pro'ya 18.7.3-dev / 180703, DEV verileri korunarak kuruldu; görünür UI kontrolü
+ekran kilidinin açılmasını bekliyor. Build/fixture sonucu cihaz kabulü sayılmaz. Tarihî timeshift donması
+tamamen çözüldü diye yazma. Hesap kimlik bilgileri ve kurtarma verisi mevcut uygulamaya özel
+depoda tutulur; tüm DB şifreli değildir.
+
+**Her güncellemede zorunlu:** Opus'a iletilecek `GPT-OPUS-GUNCELLEME-DEVRI.md` dosyasına
+tarih/sürüm/taban/dal/commit; her dosyada nerede, neyin ve neden değiştiği; bulgu ID'si;
+gerçek test ve sonuçlar; kalan cihaz senaryoları; manuel Actions run ve APK bağlantılarını
+ayrıntılı ekle. Kullanıcı dosyayı iletecek.
+
+### Önceki sürümler ve korunacak cihaz gözlemleri
 
 **v18.7.1:** v18.7.0 her açılışta çöküyordu (kısayol dinleyicisi Activity yapıcısında `applicationContext`
 istiyordu). Düzeltme + kalıcı kapı. Cihazda doğrulandı (OnePlus 7 Pro, adb). Ayrıntı `AI-DEVIR-v18.7.1.md`.

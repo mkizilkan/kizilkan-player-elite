@@ -1,4 +1,20 @@
-# v17.9.10 RC1 GÜNCEL DEVİR
+# v18.7.3 RC1 GÜNCEL DEVİR — 2 Ekim 2026
+
+Bu bölüm aşağıdaki tarihî başlıklardan üstündür. Güncel sürüm **18.7.3 / 180703 /
+GPT ELITE v18.7.3 RC1**, dal `v18.7.3-rc1-gpt-audit`, taban `4240f6cc`.
+Kullanıcının onayladığı genel kod incelemesi bulguları ve MAG/yedek talepleri bu sürümde uygulanır.
+Güncel teknik devir `AI-DEVIR-v18.7.3.md`; tespit/çözüm tablosu `GPT-TESPIT-VE-ONERILER.md`;
+dosya bazlı Opus kaydı `GPT-OPUS-GUNCELLEME-DEVRI.md`; native tarama `GPT-S01-NATIVE-TARAMA-DEVIR.md`.
+Test/commit/manuel CI/APK ve çalıştırılmayan cihaz senaryolarının son durumu bu belgelerde tutulur.
+OnePlus 7 Pro (GM1910) bağlıdır. 18.7.3-dev / 180703 DEV APK, mevcut DEV verileri
+korunarak kuruldu; açılış işlemi çalışıyor. Ekran kilidi nedeniyle görünür UI kontrolü
+henüz tamamlanmadı. Geçmiş cihaz gözlemleri bu sürümün kabul testi sayılmaz.
+Her güncellemede Opus dosyasını ayrıntılı yaz. Kaynak veya cihaz kanıtı olmadan hatasız/stabil
+olduğu iddiasında bulunma.
+
+---
+
+# v17.9.10 RC1 GEÇMİŞ DEVİR
 
 En güncel teknik devir: `AI-DEVIR-v17.9.10.md`
 

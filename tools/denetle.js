@@ -41,6 +41,18 @@ if (process.cwd() !== PROJECT_ROOT) process.chdir(PROJECT_ROOT);
 // TypeScript artık tools/_ts.js ile taşınabilir şekilde çözülür (sabit yol yok).
 
 const CHECKS = [
+  ["test-storage-strict-runtime.js", "v18.7.3 native/web strict storage read and source preservation", ""],
+  ["test-pin-entry-runtime.js", "v18.7.3 PIN entry length/scope/error/busy behavior", ""],
+  ["test-encrypted-backup-ui.js", "v18.7.3 encrypted backup export/import/abort/cache ownership", ""],
+  ["test-backup-security-runtime.js", "v18.7.3 PIN crypto/backup integrity/cancel contracts", ""],
+  ["test-checkdeps-references.js", "v18.7.3 dependency checker property/reference behavior", ""],
+  ["test-panel-scan-runtime.js", "v18.7.3 panel scan checkpoint/parser/worker contracts", ""],
+  ["test-mag-bulk-runtime.js", "v18.7.3 MAC scope/protection/cancel/export behavior", ""],
+  ["test-backup-selection.js", "v18.7.3 targeted restore selection/identity behavior", ""],
+  ["test-backup-restore.js", "v18.7.3 staged restore/process recovery/fault behavior", ""],
+  ["test-player-regressions.js", "v18.7.3 player ownership/headers/record/Cast/TV behavior", ""],
+  ["test-library-runtime.js", "v18.7.3 library profile/list ownership and persistence behavior", ""],
+  ["test-profile-catalog-regressions.js", "v18.7.3 profile/catalog zero/fault/restore race behavior", ""],
   ["check-v17102-timeshift-release.js", "v17.10.2 app-owned live timeshift / catch-up hard-gate", ""],
   ["check-v17102-surgical-release.js", "v17.10.2 surgical hard-gate", ""],
   ["check-v17100-platform-hardening.js", "v17.10.0 platform/recovery/focus/cast hard-gate", ""],
@@ -183,4 +195,3 @@ console.log(
     : `\n❌ ${failed} DENETİM BAŞARISIZ — düzeltmeden paketleme`
 );
 process.exit(failed === 0 ? 0 : 1);
-

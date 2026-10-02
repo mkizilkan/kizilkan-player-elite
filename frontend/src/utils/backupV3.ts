@@ -2,9 +2,11 @@ import { File, Paths } from 'expo-file-system';
 import { KizilkanNativeCore } from '@/modules/kizilkan-native-core';
 import { bigStore } from '@/src/utils/storage/bigStore';
 import {
-  backupPlaylistIds, createBackupMetadata, restoreBackupMetadataExact,
-  type BackupPayload, type RestoreResult,
+  backupPlaylistIds, createBackupMetadata, buildBackupMetadataPatch, backupRestoreResult, updateBackupCatalogCounts,
+  prepareSelectedBackupRestore, setRestoredCatalogCounts, inspectBackupLists, isKizilkanBackup,
+  type BackupPayload, type RestoreResult, type SelectedBackupRestoreOptions,
 } from '@/src/utils/backup';
+import { backupRestoreSessionId, backupRestoreStageId, commitSelectedPlaylistRestore, commitBackupRestoreTransaction } from './backupRestoreTransaction';
 
 const MAGIC = 'KIZILKAN_BACKUP_V3';
 const PAGE = 200;
@@ -101,116 +103,142 @@ async function readLines(file: File, onLine: (line:string)=>Promise<void>): Prom
   } finally { h.close(); }
 }
 
-export async function restoreFullBackupV3(asset: { uri:string; name?:string }, opts?: { onProgress?:ProgressFn }): Promise<RestoreResult> {
-  if (!KizilkanNativeCore.available) throw new Error('Tam v3 yedek geri yükleme Android Native Core gerektirir.');
+/** Read just the metadata header for selection; no catalogue or live database writes. */
+export async function previewFullBackupV3(asset: { uri: string; name?: string }): Promise<BackupPayload> {
   const file = new File(asset as any);
-  // v15.2.14: Canlı Room snapshot'ına dosya okunurken ASLA yazma. Her playlist
-  // session'a özel bir stage ID altında tamamen indekslenir. Ancak header/end,
-  // metadata playlist seti ve bütün playlist-end kayıtları doğrulandıktan sonra
-  // tek native transaction ile canlı ID'lere swap edilir.
-  const currentMeta = await createBackupMetadata('quick');
-  const previousIds = new Set(backupPlaylistIds(currentMeta));
-  const sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`;
-  const stageIdFor = (id:string) => `__kzb_stage_${sessionId}_${id}`;
-  let metadata: BackupPayload | null = null;
-  let headerSeen = false, endSeen = false;
-  const begun = new Set<string>();
-  const finished = new Set<string>();
-  const itemCounts = new Map<string, number>();
-  let chunks = 0;
-  let swapApplied = false;
-  let metadataApplied = false;
-  let swapTargets: string[] = [];
+  const handle = file.open();
+  if (typeof TextDecoder === 'undefined') { handle.close(); throw new Error('Bu cihaz UTF-8 yedek okumayı desteklemiyor.'); }
+  const decoder = new TextDecoder('utf-8');
+  let text = '';
   try {
-    await readLines(file, async (line) => {
-      let rec:any; try { rec=JSON.parse(line); } catch { throw new Error('Tam yedek satırı bozuk/eksik.'); }
+    while ((handle.offset ?? 0) < (handle.size ?? file.size)) {
+      const chunk = handle.readBytes(Math.min(READ_CHUNK, (handle.size ?? file.size) - (handle.offset ?? 0)));
+      if (!chunk.length) break;
+      text += decoder.decode(chunk, { stream: true });
+      const newline = text.indexOf('\n');
+      if (newline >= 0) { text = text.slice(0, newline); break; }
+      if (text.length > 16 * 1024 * 1024) throw new Error('Yedek metadata başlığı izin verilen boyutu aşıyor.');
+    }
+    let header: any;
+    try { header = JSON.parse(text.trim()); } catch { throw new Error('Tam yedek başlığı bozuk.'); }
+    if (header?.magic !== MAGIC || header.version !== 3 || !isKizilkanBackup(header.metadata)) throw new Error('Bu geçerli bir KIZILKAN tam yedeği değil.');
+    inspectBackupLists(header.metadata);
+    return header.metadata;
+  } finally { handle.close(); }
+}
+
+async function restoreSelectedFullBackupV3(asset: { uri: string; name?: string }, opts: SelectedBackupRestoreOptions & { onProgressDetail?: ProgressFn }): Promise<RestoreResult> {
+  if (!KizilkanNativeCore.available) throw new Error('Tam v3 yedek geri yükleme Android Native Core gerektirir.');
+  const metadata = await previewFullBackupV3(asset);
+  const sessionId = backupRestoreSessionId();
+  const plan = await prepareSelectedBackupRestore(metadata, opts, sessionId);
+  const wanted = new Map(plan.items.map(item => [item.sourceId, item]));
+  const declaredIds = new Set(backupPlaylistIds(metadata));
+  const begun = new Set<string>(), finished = new Set<string>();
+  const counts = new Map<string, number>();
+  let headerSeen = false, endSeen = false, chunks = 0;
+  await commitSelectedPlaylistRestore(plan, sessionId, async mappings => {
+    const stages = new Map(plan.items.map((item, index) => [item.sourceId, mappings[index].stageId!]));
+    await readLines(new File(asset as any), async line => {
+      if (opts.signal?.aborted) throw new Error('Geri yükleme durduruldu.');
+      let rec: any;
+      try { rec = JSON.parse(line); } catch { throw new Error('Tam yedek satırı bozuk/eksik.'); }
       if (!headerSeen) {
-        if (rec?.magic !== MAGIC || rec?.version !== 3 || !rec?.metadata) throw new Error('Bu geçerli bir KIZILKAN tam yedeği değil.');
-        metadata = rec.metadata; headerSeen = true; return;
+        if (rec?.magic !== MAGIC || rec.version !== 3 || JSON.stringify(rec.metadata) !== JSON.stringify(metadata)) throw new Error('Yedek başlığı önizleme sonrası değişti.');
+        headerSeen = true; return;
       }
-      if (endSeen) throw new Error('Tam yedek son kaydından sonra beklenmeyen veri var.');
-      if (rec?.type === 'playlist-start') {
-        const id=String(rec.playlistId||''); if (!id) throw new Error('Yedekte playlist kimliği eksik.');
-        if (id.startsWith('__kzb_')) throw new Error(`Yedekte ayrılmış playlist kimliği kullanılmış: ${id}`);
-        if (begun.has(id)) throw new Error(`Yedekte playlist birden fazla başlatılmış: ${id}`);
-        const stageId=stageIdFor(id);
-        if (!(await KizilkanNativeCore.beginChunkedPlaylistImport(stageId))) throw new Error(`Playlist staging başlatılamadı: ${id}`);
-        begun.add(id); itemCounts.set(id, 0); return;
-      }
-      if (rec?.type === 'chunk') {
-        const id=String(rec.playlistId||''); const kind=rec.kind as 'live'|'vod'|'series';
-        if (!begun.has(id) || finished.has(id) || !['live','vod','series'].includes(kind) || !Array.isArray(rec.items)) throw new Error('Yedek chunk sözleşmesi bozuk.');
-        const stageId=stageIdFor(id);
-        const written=await KizilkanNativeCore.appendPlaylistChunk(stageId, kind, JSON.stringify(rec.items));
-        if (written !== rec.items.length) throw new Error(`Playlist chunk eksik yazıldı: ${id}/${kind} ${written}/${rec.items.length}`);
-        itemCounts.set(id, (itemCounts.get(id) || 0) + written);
-        chunks++;
-        opts?.onProgress?.({ phase:'restore-stage', current:chunks, total:0, message:`${id} · ${kind} staging` });
-        return;
-      }
-      if (rec?.type === 'playlist-end') {
-        const id=String(rec.playlistId||'');
-        if (!begun.has(id) || finished.has(id)) throw new Error(`Playlist bitiş sırası bozuk: ${id}`);
-        const stageId=stageIdFor(id);
-        const summary=await KizilkanNativeCore.finishChunkedPlaylistImport(stageId);
-        if (!summary?.roomIndexed) throw new Error(`Playlist Room staging doğrulaması başarısız: ${id}`);
-        const stagedTotal=Number(summary.channels||0)+Number(summary.vod||0)+Number(summary.series||0);
-        if (stagedTotal !== (itemCounts.get(id) || 0)) throw new Error(`Playlist staging sayaç doğrulaması başarısız: ${id} ${stagedTotal}/${itemCounts.get(id) || 0}`);
-        finished.add(id); return;
-      }
-      if (rec?.type === 'end') {
-        if (endSeen) throw new Error('Tam yedekte birden fazla son kayıt var.');
-        endSeen=true;
-        const declaredPlaylists=Number(rec?.playlists);
-        const declaredItems=Number(rec?.items);
-        if (Number.isFinite(declaredPlaylists) && declaredPlaylists !== finished.size) throw new Error(`Tam yedek playlist sayacı uyuşmuyor: ${declaredPlaylists}/${finished.size}`);
-        const actualItems=Array.from(itemCounts.values()).reduce((a,b)=>a+b,0);
-        if (Number.isFinite(declaredItems) && declaredItems !== actualItems) throw new Error(`Tam yedek item sayacı uyuşmuyor: ${declaredItems}/${actualItems}`);
-        return;
-      }
-      throw new Error(`Tam yedekte bilinmeyen kayıt tipi: ${String(rec?.type || 'yok')}`);
+      if (endSeen) throw new Error('Tam yedek son kaydından sonra veri var.');
+      const id = String(rec.playlistId || '');
+      if (rec.type === 'playlist-start') {
+        if (!id || !declaredIds.has(id) || begun.has(id)) throw new Error('Tam yedek liste başlangıcı geçersiz.');
+        begun.add(id); counts.set(id, 0);
+        if (wanted.has(id) && !(await KizilkanNativeCore.beginChunkedPlaylistImport(stages.get(id)!))) throw new Error('Seçilen liste staging başlatılamadı.');
+      } else if (rec.type === 'chunk') {
+        if (!begun.has(id) || finished.has(id) || !['live', 'vod', 'series'].includes(rec.kind) || !Array.isArray(rec.items) || rec.items.some((item: any) => !item || typeof item !== 'object' || Array.isArray(item) || !item.id)) throw new Error('Tam yedek katalog parçası geçersiz.');
+        counts.set(id, (counts.get(id) || 0) + rec.items.length);
+        if (wanted.has(id)) {
+          const written = await KizilkanNativeCore.appendPlaylistChunk(stages.get(id)!, rec.kind, JSON.stringify(rec.items));
+          if (written !== rec.items.length) throw new Error('Seçilen katalog parçası eksik yazıldı.');
+          chunks++;
+          const message = `${String(wanted.get(id)!.metadata.name || 'Liste')} · ${rec.kind} · ${counts.get(id)} kayıt`;
+          opts.onProgress?.(message); opts.onProgressDetail?.({ phase: 'restore-stage', current: chunks, total: 0, message });
+        }
+      } else if (rec.type === 'playlist-end') {
+        if (!begun.has(id) || finished.has(id)) throw new Error('Tam yedek liste bitişi geçersiz.');
+        if (wanted.has(id)) {
+          const finishedSummary = await KizilkanNativeCore.finishChunkedPlaylistImport(stages.get(id)!);
+          const summary = finishedSummary?.roomIndexed ? await KizilkanNativeCore.getPlaylistSummaryVerified(stages.get(id)!) : null;
+          if (!summary?.roomIndexed || Number(summary.channels || 0) + Number(summary.vod || 0) + Number(summary.series || 0) !== counts.get(id)) throw new Error('Seçilen Room kataloğu doğrulanamadı.');
+          setRestoredCatalogCounts(wanted.get(id)!, { channels: Number(summary.channels || 0), vod: Number(summary.vod || 0), series: Number(summary.series || 0) }, true);
+        }
+        finished.add(id);
+      } else if (rec.type === 'end') {
+        const total = [...counts.values()].reduce((a, b) => a + b, 0);
+        if (!Number.isInteger(rec.playlists) || !Number.isInteger(rec.items) || rec.playlists !== finished.size || rec.items !== total) throw new Error('Tam yedek toplam sayaçları uyuşmuyor.');
+        endSeen = true;
+      } else throw new Error('Tam yedekte bilinmeyen kayıt tipi.');
     });
-    if (!headerSeen || !metadata || !endSeen) throw new Error('Tam yedek tamamlanmamış; son doğrulama kaydı yok.');
-    if (begun.size !== finished.size) throw new Error(`Tam yedek eksik: ${begun.size} playlist başladı, ${finished.size} tamamlandı.`);
-    const incomingIds = new Set(backupPlaylistIds(metadata));
-    if (incomingIds.size !== begun.size || Array.from(incomingIds).some(id=>!finished.has(id))) {
-      throw new Error(`Tam yedek metadata/katalog seti uyuşmuyor: metadata=${incomingIds.size}, katalog=${finished.size}`);
-    }
+    if (!headerSeen || !endSeen || begun.size !== finished.size || declaredIds.size !== finished.size || [...declaredIds].some(id => !finished.has(id))) throw new Error('Tam yedek tamamlanmamış veya metadata/katalog seti uyuşmuyor.');
+    opts.onProgress?.('Seçilen listeler doğrulandı; geri yükleniyor');
+  }, { catalog: true, signal: opts.signal });
+  return { restored: 3, profiles: 0, playlists: plan.items.length, heavyPlaylists: plan.items.length, warnings: [] };
+}
 
-    // Hem gelen hem de snapshot'ta artık bulunmaması gereken eski playlistleri
-    // aynı native transaction'ın hedef setine koy. stageId=null -> güvenli silme.
-    swapTargets = Array.from(new Set([...previousIds, ...incomingIds]));
-    const mappings = swapTargets.map(targetId => ({ targetId, stageId: incomingIds.has(targetId) ? stageIdFor(targetId) : null }));
-    opts?.onProgress?.({ phase:'restore-commit', current:0, total:swapTargets.length, message:'Doğrulanan yedek atomik olarak uygulanıyor' });
-    if (!(await KizilkanNativeCore.applyAtomicPlaylistRestore(sessionId, mappings))) throw new Error('Atomik Room restore swap başlatılamadı.');
-    swapApplied = true;
-
-    metadataApplied = true; // restoreBackupMetadata kısmi yazarsa catch eski metadata'yı geri koyabilsin.
-    const base = await restoreBackupMetadataExact(metadata);
-    if (!(await KizilkanNativeCore.finalizeAtomicPlaylistRestore(sessionId, swapTargets))) throw new Error('Atomik restore finalize edilemedi.');
-    swapApplied = false; // rollback alanları artık bilerek temizlendi.
-    // Snapshot'ta bulunmayan eski playlistlerin olası legacy JSON dosyalarını da
-    // yalnız başarıdan SONRA temizle; Room zaten finalize sırasında kaldırıldı.
-    for (const oldId of previousIds) if (!incomingIds.has(oldId)) { try { await bigStore.remove(oldId); } catch {} }
-    opts?.onProgress?.({ phase:'restore-done', current:swapTargets.length, total:swapTargets.length, message:'Tam yedek doğrulandı ve uygulandı' });
-    return { ...base, heavyPlaylists: finished.size };
-  } catch (e) {
-    // Dosya parse/staging sırasında yalnız geçici ID'leri temizle. Swap başladıysa
-    // native rollback eski Room + EPG snapshot'ını transaction ile geri getirir.
-    if (swapApplied) {
-      try { await KizilkanNativeCore.rollbackAtomicPlaylistRestore(sessionId, swapTargets); } catch (rollbackError) {
-        console.error('[BackupV3] Room rollback başarısız', rollbackError);
+export async function restoreFullBackupV3(asset: { uri:string; name?:string }, opts?: { onProgress?:ProgressFn; selectedKeys?: string[]; targetProfileId?: string; authorizedProfileId?: string; signal?: AbortSignal }): Promise<RestoreResult> {
+  if (opts?.selectedKeys) return restoreSelectedFullBackupV3(asset, { selectedKeys: opts.selectedKeys, targetProfileId: opts.targetProfileId || '', authorizedProfileId: opts.authorizedProfileId, signal: opts.signal, onProgressDetail: opts.onProgress });
+  if (!KizilkanNativeCore.available) throw new Error('Tam v3 yedek geri yükleme Android Native Core gerektirir.');
+  const metadata = await previewFullBackupV3(asset);
+  const patch = await buildBackupMetadataPatch(metadata, true);
+  const current = await createBackupMetadata('quick');
+  const incomingIds = new Set(backupPlaylistIds(metadata));
+  const sessionId = backupRestoreSessionId();
+  const mappings = [...new Set([...backupPlaylistIds(current), ...incomingIds])].map(targetId => ({ targetId, stageId: incomingIds.has(targetId) ? backupRestoreStageId(sessionId, targetId) : null }));
+  const stages = new Map(mappings.filter(mapping => mapping.stageId).map(mapping => [mapping.targetId, mapping.stageId!]));
+  const begun = new Set<string>(), finished = new Set<string>();
+  const counts = new Map<string, number>();
+  let headerSeen = false, endSeen = false, chunks = 0;
+  // The journal is durable before any temporary catalogue is created. Only a
+  // fully validated file can reach the native live swap and metadata commit.
+  await commitBackupRestoreTransaction(sessionId, mappings, () => patch, async () => {
+    await readLines(new File(asset as any), async line => {
+      aborted(opts?.signal);
+      let rec: any;
+      try { rec = JSON.parse(line); } catch { throw new Error('Tam yedek satırı bozuk/eksik.'); }
+      if (!headerSeen) {
+        if (rec?.magic !== MAGIC || rec.version !== 3 || JSON.stringify(rec.metadata) !== JSON.stringify(metadata)) throw new Error('Yedek başlığı önizleme sonrası değişti.');
+        headerSeen = true; return;
       }
-      try { if (metadataApplied) await restoreBackupMetadataExact(currentMeta); } catch (metaRollbackError) {
-        console.error('[BackupV3] metadata rollback başarısız', metaRollbackError);
-      }
-    }
-    for (const id of begun) {
-      try { await KizilkanNativeCore.cancelChunkedPlaylistImport(stageIdFor(id)); } catch {}
-      try { await KizilkanNativeCore.removePlaylistIndex(stageIdFor(id)); } catch {}
-    }
-    throw e;
-  }
+      if (endSeen) throw new Error('Tam yedek son kaydından sonra veri var.');
+      const id = String(rec.playlistId || '');
+      if (rec.type === 'playlist-start') {
+        if (!incomingIds.has(id) || begun.has(id)) throw new Error('Tam yedek liste başlangıcı geçersiz.');
+        begun.add(id); counts.set(id, 0);
+        if (!(await KizilkanNativeCore.beginChunkedPlaylistImport(stages.get(id)!))) throw new Error('Liste staging başlatılamadı.');
+      } else if (rec.type === 'chunk') {
+        if (!begun.has(id) || finished.has(id) || !['live', 'vod', 'series'].includes(rec.kind) || !Array.isArray(rec.items) || rec.items.some((item: any) => !item || typeof item !== 'object' || Array.isArray(item) || !item.id)) throw new Error('Tam yedek katalog parçası geçersiz.');
+        const written = await KizilkanNativeCore.appendPlaylistChunk(stages.get(id)!, rec.kind, JSON.stringify(rec.items));
+        if (written !== rec.items.length) throw new Error('Katalog parçası eksik yazıldı.');
+        counts.set(id, (counts.get(id) || 0) + written); chunks++;
+        opts?.onProgress?.({ phase: 'restore-stage', current: chunks, total: 0, message: id + ' · ' + rec.kind + ' staging' });
+      } else if (rec.type === 'playlist-end') {
+        if (!begun.has(id) || finished.has(id)) throw new Error('Tam yedek liste bitişi geçersiz.');
+        const indexed = await KizilkanNativeCore.finishChunkedPlaylistImport(stages.get(id)!);
+        const actual = indexed?.roomIndexed ? await KizilkanNativeCore.getPlaylistSummaryVerified(stages.get(id)!) : null;
+        const verifiedCounts = { channels: Number(actual?.channels || 0), vod: Number(actual?.vod || 0), series: Number(actual?.series || 0) };
+        if (!actual?.roomIndexed || verifiedCounts.channels + verifiedCounts.vod + verifiedCounts.series !== counts.get(id)) throw new Error('Room staging kayıt sayısı doğrulanamadı.');
+        updateBackupCatalogCounts(metadata, patch, id, verifiedCounts, verifiedCounts.channels + verifiedCounts.vod + verifiedCounts.series ? 'ready' : 'empty');
+        finished.add(id);
+      } else if (rec.type === 'end') {
+        const total = [...counts.values()].reduce((a, b) => a + b, 0);
+        if (!Number.isInteger(rec.playlists) || !Number.isInteger(rec.items) || rec.playlists !== finished.size || rec.items !== total) throw new Error('Tam yedek toplam sayaçları uyuşmuyor.');
+        endSeen = true;
+      } else throw new Error('Tam yedekte bilinmeyen kayıt tipi.');
+    });
+    if (!headerSeen || !endSeen || begun.size !== finished.size || incomingIds.size !== finished.size || [...incomingIds].some(id => !finished.has(id))) throw new Error('Tam yedek tamamlanmamış veya metadata/katalog seti uyuşmuyor.');
+    opts?.onProgress?.({ phase: 'restore-commit', current: 0, total: mappings.length, message: 'Doğrulanan yedek atomik olarak uygulanıyor' });
+  }, { signal: opts?.signal });
+  opts?.onProgress?.({ phase: 'restore-done', current: mappings.length, total: mappings.length, message: 'Tam yedek doğrulandı ve uygulandı' });
+  return backupRestoreResult(metadata, patch, finished.size);
 }
 
 export function isFullBackupV3Name(name?:string) { return String(name || '').toLowerCase().endsWith('.kzb'); }

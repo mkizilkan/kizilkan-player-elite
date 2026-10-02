@@ -178,6 +178,16 @@ export async function saveLocalProgress(id: string, current: number, duration: n
   await writeJson(PROGRESS_KEY, Object.fromEntries(entries));
 }
 
+/** Migration must not discard its source record when the destination write fails. */
+export async function saveLocalProgressChecked(id: string, current: number, duration: number): Promise<void> {
+  if (!isLocalMediaId(id) || !(duration > 0)) throw new Error("Geçersiz yerel medya ilerleme kaydı.");
+  const map = await loadLocalProgressMap();
+  if (current / duration >= 0.95) delete map[id];
+  else map[id] = { current, duration, updatedAt: Date.now() };
+  const entries = Object.entries(map).sort((a, b) => b[1].updatedAt - a[1].updatedAt).slice(0, PROGRESS_MAX);
+  if (!(await storage.setItem(PROGRESS_KEY, JSON.stringify(Object.fromEntries(entries))))) throw new Error("Yerel medya ilerlemesi kaydedilemedi.");
+}
+
 export async function loadLocalInfoCache(): Promise<Record<string, LocalInfoLite>> {
   const map = await readJson<Record<string, LocalInfoLite>>(INFO_KEY, {});
   return map && typeof map === "object" ? map : {};

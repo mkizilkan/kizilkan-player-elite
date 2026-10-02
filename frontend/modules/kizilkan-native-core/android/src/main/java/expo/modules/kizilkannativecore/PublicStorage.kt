@@ -9,6 +9,7 @@ import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import java.io.File
+import java.security.MessageDigest
 
 /**
  * KIZILKAN PLAYER v18.6.0 — Kullanıcının dosya yöneticisinde GÖREBİLDİĞİ yere yazma.
@@ -71,9 +72,8 @@ object PublicStorage {
   /** Yazım bitti: dosyayı görünür yap. */
   fun finish(context: Context, uri: Uri) {
     if (Build.VERSION.SDK_INT >= 29 && uri.authority == MediaStore.AUTHORITY) {
-      runCatching {
-        context.contentResolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
-      }
+      val changed = context.contentResolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+      if (changed != 1) throw IllegalStateException("Dosya görünür yapılamadı: MediaStore güncellemesi $changed")
     }
   }
 
@@ -92,8 +92,52 @@ object PublicStorage {
       context.contentResolver.openOutputStream(t.uri, "wt")?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
         ?: throw IllegalStateException("Yazma akışı açılamadı")
       // Doğrula: geri oku, bayt eşit mi.
-      val back = context.contentResolver.openInputStream(t.uri)?.use { it.readBytes() } ?: ByteArray(0)
-      if (back.size != text.toByteArray(Charsets.UTF_8).size) throw IllegalStateException("Yazım doğrulanamadı (${back.size} bayt)")
+      val expected = text.toByteArray(Charsets.UTF_8)
+      val back = context.contentResolver.openInputStream(t.uri)?.use { it.readBytes() }
+        ?: throw IllegalStateException("Yazılan dosya doğrulama için açılamadı")
+      if (!back.contentEquals(expected)) throw IllegalStateException("Yazım doğrulanamadı (${back.size}/${expected.size} bayt)")
+      finish(context, t.uri)
+      return t
+    } catch (e: Throwable) {
+      delete(context, t.uri)
+      throw e
+    }
+  }
+
+  /** Kayıt staging dosyasını SAF/MediaStore'a sabit bellekle aktar; kaynak doğrulanana kadar korunur. */
+  fun copyFile(context: Context, sourcePath: String, subdir: String, displayName: String, mime: String, treeUri: String?): Target {
+    val sourceUri = Uri.parse(sourcePath)
+    val source = File(if (sourceUri.scheme == "file") sourceUri.path ?: "" else sourcePath)
+    require(source.isFile && source.length() > 0) { "Kayıt dosyası bulunamadı veya boş" }
+    val t = create(context, subdir, displayName, mime, treeUri)
+    try {
+      val expected = MessageDigest.getInstance("SHA-256")
+      var written = 0L
+      source.inputStream().use { input ->
+        context.contentResolver.openOutputStream(t.uri, "wt")?.use { output ->
+          val buffer = ByteArray(64 * 1024)
+          while (true) {
+            val n = input.read(buffer)
+            if (n < 0) break
+            output.write(buffer, 0, n)
+            expected.update(buffer, 0, n)
+            written += n
+          }
+          output.flush()
+        } ?: throw IllegalStateException("Kayıt hedefi açılamadı")
+      }
+      val actual = MessageDigest.getInstance("SHA-256")
+      var verified = 0L
+      context.contentResolver.openInputStream(t.uri)?.use { input ->
+        val buffer = ByteArray(64 * 1024)
+        while (true) {
+          val n = input.read(buffer)
+          if (n < 0) break
+          actual.update(buffer, 0, n)
+          verified += n
+        }
+      } ?: throw IllegalStateException("Kayıt doğrulama için açılamadı")
+      check(written == verified && written > 0 && expected.digest().contentEquals(actual.digest())) { "Kayıt aktarımı doğrulanamadı" }
       finish(context, t.uri)
       return t
     } catch (e: Throwable) {

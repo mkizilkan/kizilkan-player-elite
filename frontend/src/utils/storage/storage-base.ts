@@ -29,10 +29,23 @@ export abstract class StorageBase {
     }
   }
 
+  /** Critical metadata reads distinguish an absent key from corrupt/unreadable data. */
+  protected retrieveStrict<Fallback extends StorageItemValue>(raw: string | null, fallback: Fallback): Fallback | null {
+    if (raw === null) return fallback;
+    if (typeof raw !== "string") throw new Error("Yerel kayıt veri tipi geçersiz.");
+    let value: unknown;
+    try { value = JSON.parse(raw); }
+    catch { throw new Error("Yerel kayıt biçimi bozuk."); }
+    const primitive = value === null || typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value));
+    if (!primitive || (fallback !== null && typeof value !== typeof fallback) || (fallback !== null && value === null)) throw new Error("Yerel kayıt veri tipi geçersiz.");
+    return value as Fallback | null;
+  }
+
   abstract getItem<Fallback extends StorageItemValue>(
     key: string,
     fallback: Fallback,
   ): Promise<Fallback | null>;
+  abstract getItemStrict<Fallback extends StorageItemValue>(key: string, fallback: Fallback): Promise<Fallback | null>;
   abstract setItem<Value extends StorageItemValue>(
     key: string,
     value: Value,

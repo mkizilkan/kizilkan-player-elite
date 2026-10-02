@@ -37,6 +37,8 @@ import java.text.Normalizer
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.CancellationException
 
 /**
  * KIZILKAN Native Data Core — Room/SQLite Phase 1
@@ -46,6 +48,7 @@ import java.util.concurrent.atomic.AtomicLong
  * üzerinde indeksli çalışır ve React'e yalnız görünen sayfa döner.
  */
 class KizilkanNativeCoreModule : Module() {
+  private val backupCryptoCancelled = ConcurrentHashMap<String, AtomicBoolean>()
   private val liveTimeshiftManager by lazy { LiveTimeshiftManager(context()) }
   // v18.1.0 — yerel medya: tek sorguda SAF klasör listesi + kapak/süre bilgisi.
   private val localMediaLibrary by lazy { LocalMediaLibrary(context()) }
@@ -174,6 +177,7 @@ class KizilkanNativeCoreModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("KizilkanNativeCore")
+    OnDestroy { backupCryptoCancelled.values.forEach { it.set(true) }; backupCryptoCancelled.clear() }
 
     // v16.13.8 — Native MAG exact-wire transport.
     // JS'nin "göndermek istediği" başlıklar yerine OkHttp Request'in gerçekten
@@ -678,6 +682,18 @@ class KizilkanNativeCoreModule : Module() {
       rollbackAtomicPlaylistRestore(sessionId, targetIdsJson)
     }
 
+    AsyncFunction("getAtomicPlaylistRestoreState") { sessionId: String ->
+      atomicPlaylistRestoreState(sessionId)
+    }
+    AsyncFunction("clearAtomicPlaylistRestoreState") { sessionId: String ->
+      val db = database()
+      db.runInTransaction {
+        if (atomicPlaylistRestoreState(sessionId) == "applied") throw IllegalStateException("Uygulanan restore günlüğü finalize edilmeden temizlenemez")
+        db.snapshotDao().delete(restoreJournalId(sessionId))
+      }
+      true
+    }
+
     // v15.2.4: M3U URL/Dosya yolu da ağır JS parse + dev array üretmez.
     // Metin native worker'da parse edilir ve doğrudan Room canonical store'a girer.
     AsyncFunction("importM3uText") { id: String, text: String ->
@@ -875,6 +891,53 @@ class KizilkanNativeCoreModule : Module() {
       val t = PublicStorage.writeText(context(), subdir, fileName, mime, text, treeUri.ifBlank { null })
       mapOf("ok" to true, "uri" to t.uri.toString(), "path" to t.displayPath)
     }
+    AsyncFunction("copyFileToPublicStorage") { sourcePath: String, subdir: String, fileName: String, mime: String, treeUri: String ->
+      val t = PublicStorage.copyFile(context(), sourcePath, subdir, fileName, mime, treeUri.ifBlank { null })
+      mapOf("ok" to true, "uri" to t.uri.toString(), "path" to t.displayPath)
+    }
+    AsyncFunction("hashPin") { pin: String -> BackupCrypto.hashPin(pin) }.runOnQueue(appContext.backgroundCoroutineScope)
+    AsyncFunction("verifyProtectedPin") { pin: String, encoded: String -> BackupCrypto.verifyPin(pin, encoded) }.runOnQueue(appContext.backgroundCoroutineScope)
+    // A synchronous flag can interrupt a crypto worker without waiting behind its I/O.
+    Function("cancelBackupCrypto") { jobId: String ->
+      require(jobId.matches(Regex("[a-zA-Z0-9_-]{1,100}")))
+      val flag=backupCryptoCancelled.computeIfAbsent(jobId) { AtomicBoolean(false) };flag.set(true)
+      // Covers cancel-before-async-registration without retaining abandoned IDs forever.
+      android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ backupCryptoCancelled.remove(jobId,flag) },120000L)
+    }
+    AsyncFunction("encryptBackupFile") { inputUri: String, outputPath: String, password: String, jobId: String ->
+      require(jobId.matches(Regex("[a-zA-Z0-9_-]{1,100}")))
+      val cancelled=backupCryptoCancelled.computeIfAbsent(jobId) { AtomicBoolean(false) }
+      var target:File?=null
+      try {
+      if(cancelled.get())throw CancellationException("İşlem iptal edildi")
+      val sourceUri = android.net.Uri.parse(inputUri)
+      val source = File(if (sourceUri.scheme == "file") sourceUri.path ?: "" else inputUri)
+      require(source.isFile) { "Yedek kaynak dosyası bulunamadı" }
+      val outputFile = privateBackupTarget(outputPath);target=outputFile
+      source.inputStream().use { input -> outputFile.outputStream().use { output -> BackupCrypto.encrypt(input, output, source.length(), password) { cancelled.get() } } }
+      if(cancelled.get())throw CancellationException("İşlem iptal edildi")
+      mapOf("ok" to true, "uri" to android.net.Uri.fromFile(outputFile).toString())
+      } catch (e: Throwable) { target?.delete(); throw e }
+      finally { backupCryptoCancelled.remove(jobId,cancelled) }
+    }.runOnQueue(appContext.backgroundCoroutineScope)
+    AsyncFunction("decryptBackupFile") { inputUri: String, outputPath: String, password: String, jobId: String ->
+      require(jobId.matches(Regex("[a-zA-Z0-9_-]{1,100}")))
+      val cancelled=backupCryptoCancelled.computeIfAbsent(jobId) { AtomicBoolean(false) }
+      var target:File?=null
+      try {
+        if(cancelled.get())throw CancellationException("İşlem iptal edildi")
+        val outputFile = privateBackupTarget(outputPath);target=outputFile
+        context().contentResolver.openInputStream(android.net.Uri.parse(inputUri))?.use { input ->
+          outputFile.outputStream().use { output -> BackupCrypto.decrypt(input, output, password) { cancelled.get() } }
+        } ?: throw IllegalStateException("Şifreli yedek açılamadı")
+        if(cancelled.get())throw CancellationException("İşlem iptal edildi")
+        val prefix=ByteArray(128)
+        val read=outputFile.inputStream().use { it.read(prefix) }
+        val kind=if(read>0 && String(prefix,0,read,Charsets.UTF_8).contains("KIZILKAN_BACKUP_V3"))"full" else "json"
+        mapOf("ok" to true, "uri" to android.net.Uri.fromFile(outputFile).toString(), "kind" to kind)
+      } catch (e: Throwable) { target?.delete(); if(e is CancellationException)throw e;throw IllegalStateException("Parola yanlış veya şifreli yedek bozuk", e) }
+      finally { backupCryptoCancelled.remove(jobId,cancelled) }
+    }.runOnQueue(appContext.backgroundCoroutineScope)
     // v18.6.0: tüketmeden bak (telemetri: kısayol geldi ama kullanıcı henüz profil/PIN'de).
     // v18.7.0: kutu boşsa son çare olarak o anki Activity isteği de yakalanır ("late").
     Function("peekPendingShortcut") {
@@ -956,6 +1019,20 @@ class KizilkanNativeCoreModule : Module() {
     AsyncFunction("getPlaylistSummary") { id: String ->
       val result = ensureIndexed(id)
       summary(result.snapshot, cacheHit = result.cacheHit)
+    }
+
+    AsyncFunction("getPlaylistSummaryVerified") { id: String ->
+      val indexed = ensureIndexed(id)
+      val db = database()
+      var verified = indexed.snapshot
+      db.runInTransaction {
+        val live = db.mediaDao().count(id, "live")
+        val vod = db.mediaDao().count(id, "vod")
+        val series = db.mediaDao().count(id, "series")
+        verified = (db.snapshotDao().get(id) ?: indexed.snapshot).copy(channelsCount = live, vodCount = vod, seriesCount = series)
+        db.snapshotDao().put(verified)
+      }
+      summary(verified, cacheHit = indexed.cacheHit)
     }
 
     AsyncFunction("getCategories") { id: String, kind: String ->
@@ -1411,6 +1488,16 @@ class KizilkanNativeCoreModule : Module() {
   private fun restoreRollbackId(sessionId: String, targetId: String): String =
     "__kzb_rollback_${sessionId}_${targetId}"
 
+  private fun restoreJournalId(sessionId: String): String {
+    require(sessionId.matches(Regex("[a-zA-Z0-9_-]{1,100}"))) { "Geçersiz restore sessionId" }
+    return "__kzb_journal_$sessionId"
+  }
+
+  private fun atomicPlaylistRestoreState(sessionId: String): String {
+    val marker = database().snapshotDao().get(restoreJournalId(sessionId)) ?: return "none"
+    return if (marker.sourceStamp == -3L) "finalized" else "applied"
+  }
+
   /**
    * Room içindeki bir playlist'i kopyalamadan yeniden adlandırır. Hedef önceden
    * temizlenir; bütün çağrılar dışarıdaki runInTransaction içinde yapılmalıdır.
@@ -1440,18 +1527,24 @@ class KizilkanNativeCoreModule : Module() {
       ?: throw IllegalArgumentException("Restore mapping JSON array değil")
     val mappings = ArrayList<Pair<String, String?>>(arr.length())
     val db = database()
+    val journalId = restoreJournalId(sessionId)
+    val targets = HashSet<String>()
+    val stages = HashSet<String>()
     for (i in 0 until arr.length()) {
       val obj = arr.optJSONObject(i) ?: throw IllegalArgumentException("Restore mapping nesne değil: $i")
       val targetId = obj.optString("targetId", "").trim()
       val stageId = if (obj.isNull("stageId")) null else obj.optString("stageId", "").trim().ifEmpty { null }
       if (targetId.isEmpty()) throw IllegalArgumentException("Restore targetId eksik: $i")
       if (targetId.startsWith("__kzb_")) throw IllegalArgumentException("Restore targetId ayrılmış namespace kullanıyor: $targetId")
+      require(targets.add(targetId)) { "Restore targetId tekrarlandı: $targetId" }
+      if (stageId != null) require(stageId.startsWith("__kzb_stage_") && stages.add(stageId)) { "Geçersiz/tekrarlanan staging ID: $stageId" }
       if (stageId != null && db.snapshotDao().get(stageId) == null) {
         throw IllegalStateException("Restore staging Room snapshot bulunamadı: $targetId")
       }
       mappings.add(targetId to stageId)
     }
     db.runInTransaction {
+      check(db.snapshotDao().get(journalId) == null) { "Restore session zaten uygulanmış" }
       for ((targetId, stageId) in mappings) {
         val rollbackId = restoreRollbackId(sessionId, targetId)
         // Önce geçmiş yarım session kalıntısı varsa temizle.
@@ -1462,6 +1555,7 @@ class KizilkanNativeCoreModule : Module() {
         movePlaylistRows(db, targetId, rollbackId)
         if (stageId != null) movePlaylistRows(db, stageId, targetId)
       }
+      db.snapshotDao().put(PlaylistSnapshotEntity(journalId, -2L, 0L, 0, 0, 0, System.currentTimeMillis(), 0L))
     }
     for ((targetId, stageId) in mappings) {
       invalidated.remove(targetId); telemetry.remove(targetId)
@@ -1476,12 +1570,15 @@ class KizilkanNativeCoreModule : Module() {
     val ids = (0 until arr.length()).map { arr.optString(it, "").trim() }.filter { it.isNotEmpty() }
     val db = database()
     db.runInTransaction {
+      val journal = db.snapshotDao().get(restoreJournalId(sessionId))
+        ?: throw IllegalStateException("Restore uygulama günlüğü bulunamadı")
       for (targetId in ids) {
         val rollbackId = restoreRollbackId(sessionId, targetId)
         db.mediaDao().deletePlaylist(rollbackId)
         db.epgDao().deletePlaylist(rollbackId)
         db.snapshotDao().delete(rollbackId)
       }
+      db.snapshotDao().put(journal.copy(sourceStamp = -3L))
     }
     return true
   }
@@ -1492,6 +1589,9 @@ class KizilkanNativeCoreModule : Module() {
     val ids = (0 until arr.length()).map { arr.optString(it, "").trim() }.filter { it.isNotEmpty() }
     val db = database()
     db.runInTransaction {
+      // Idempotent recovery: never delete live targets if swap was not committed,
+      // or if the rollback copies have already been finalized.
+      if (atomicPlaylistRestoreState(sessionId) != "applied") return@runInTransaction
       for (targetId in ids) {
         val rollbackId = restoreRollbackId(sessionId, targetId)
         // Yeni restore edilmiş target'ı kaldır. Eski snapshot varsa geri taşı.
@@ -1500,6 +1600,7 @@ class KizilkanNativeCoreModule : Module() {
         db.snapshotDao().delete(targetId)
         movePlaylistRows(db, rollbackId, targetId)
       }
+      db.snapshotDao().delete(restoreJournalId(sessionId))
     }
     for (targetId in ids) invalidated.remove(targetId)
     return true
@@ -2077,6 +2178,15 @@ class KizilkanNativeCoreModule : Module() {
   private fun updateTelemetry(id: String, patch: Map<String, Any>) {
     telemetry[id] = (telemetry[id] ?: emptyMap()) + patch
   }
+  private fun privateBackupTarget(raw: String): File {
+    val uri=android.net.Uri.parse(raw)
+    val target=File(if(uri.scheme=="file")uri.path ?: "" else raw).canonicalFile
+    val ctx=context()
+    require(listOf(ctx.cacheDir,ctx.filesDir).any { target.path.startsWith(it.canonicalPath + File.separator) }) { "Yedek geçici dosyası uygulama içinde olmalı" }
+    require(!target.exists()) { "Yedek geçici dosyası zaten var" }
+    target.parentFile?.mkdirs()
+    return target
+  }
   private fun parseM3uToRoot(raw: String): JSONObject {
     val channels = JSONArray()
     val vod = JSONArray()
@@ -2112,7 +2222,25 @@ class KizilkanNativeCoreModule : Module() {
         val value = line.substringAfter(':', "").trim()
         val key = value.substringBefore('=', "").trim().lowercase(Locale.ROOT)
         val v = value.substringAfter('=', "")
-        if (key.isNotEmpty()) (pending?.optJSONObject("headers") ?: JSONObject().also { pending?.put("headers", it) }).put(key, v)
+        val normalized = when (key) {
+          "http-user-agent", "user-agent" -> "User-Agent"
+          "http-referrer", "http-referer", "referer", "referrer" -> "Referer"
+          "http-origin", "origin" -> "Origin"
+          "http-cookie", "cookie" -> "Cookie"
+          "http-authorization", "authorization" -> "Authorization"
+          else -> null
+        }
+        if (normalized != null) (pending?.optJSONObject("headers") ?: JSONObject().also { pending?.put("headers", it) }).put(normalized, v)
+        if (key == "inputstream.adaptive.stream_headers" || key == "inputstream.adaptive.manifest_headers") {
+          val headers = pending?.optJSONObject("headers") ?: JSONObject().also { pending?.put("headers", it) }
+          for (part in v.split('&')) {
+            val headerName = part.substringBefore('=', "").trim()
+            if (headerName.isNotEmpty() && part.contains('=')) {
+              val headerValue = runCatching { java.net.URLDecoder.decode(part.substringAfter('='), "UTF-8") }.getOrDefault(part.substringAfter('='))
+              headers.put(headerName, headerValue)
+            }
+          }
+        }
       } else if (!line.startsWith('#')) {
         val obj = pending ?: JSONObject().apply {
           put("id", ""); put("name", line.substringAfterLast('/').ifBlank { "Kanal" }); put("group", "Genel")
@@ -2129,11 +2257,13 @@ class KizilkanNativeCoreModule : Module() {
           "vod" -> vod.put(JSONObject().apply {
             put("id", "vod-$stable"); put("name", name); put("group", obj.optString("group", "Genel")); put("poster", obj.opt("logo"))
             put("url", line); put("container_ext", ext ?: "mp4"); put("stream_id", JSONObject.NULL)
+            put("headers", obj.optJSONObject("headers") ?: JSONObject())
             for (k in listOf("year","rating","rating_5based","plot","cast","director","genre")) put(k, JSONObject.NULL)
           })
           "series" -> series.put(JSONObject().apply {
             put("id", "ser-$stable"); put("name", name); put("group", obj.optString("group", "Genel")); put("poster", obj.opt("logo")); put("series_id", JSONObject.NULL)
             put("url", line); put("container_ext", ext ?: JSONObject.NULL)
+            put("headers", obj.optJSONObject("headers") ?: JSONObject())
             for (k in listOf("year","rating","rating_5based","plot","cast","director","genre")) put(k, JSONObject.NULL)
           })
           else -> { obj.put("id", stable); channels.put(obj) }

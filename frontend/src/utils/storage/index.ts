@@ -8,7 +8,8 @@
 // Namespaces: general KV -> getItem/setItem/removeItem (AsyncStorage);
 //             tokens/secrets -> secureGet/secureSet/secureRemove (Keychain).
 // Values are auto JSON-serialized (string|number|boolean|null) in this implementation — never JSON.stringify/parse yourself.
-// Helpers NEVER throw: a miss returns `fallback`, a failed write returns `false` (failures are SILENT).
+// Legacy getItem/secure* helpers return fallbacks; writes return false on failure.
+// Critical metadata must use getItemStrict: absent keys return fallback, unreadable/corrupt data throws.
 // 
 // Use async/await for all storage operations.
 //
@@ -23,6 +24,14 @@ import * as SecureStore from "expo-secure-store";
 import { AssertNoExtras, StorageBase, StorageItemValue } from "./storage-base";
 
 export class Storage extends StorageBase {
+  /** Missing keys retain fallback compatibility; I/O, outer JSON and type failures throw safely. */
+  async getItemStrict<Fallback extends StorageItemValue>(key: string, fallback: Fallback): Promise<Fallback | null> {
+    let raw: string | null;
+    try { raw = await AsyncStorage.getItem(key); }
+    catch { throw new Error("Yerel kayıt okunamadı."); }
+    return this.retrieveStrict(raw, fallback);
+  }
+
   // General KV — backed by AsyncStorage.
   // `fallback` is required and returned on any miss/parse error — a missing key looks identical to a stored `null`.
   async getItem<Fallback extends StorageItemValue>(

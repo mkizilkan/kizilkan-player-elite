@@ -45,7 +45,8 @@ need('frontend/src/player/PlayerHost.tsx', 'VLC HW+SW video-output timeout', 'VL
 need('frontend/src/store/PlaylistContext.tsx', 'PLAYLIST_COMMIT_START', 'playlist commit başlangıç telemetrisi');
 need('frontend/src/store/PlaylistContext.tsx', 'PLAYLIST_COMMIT_READY', 'playlist commit hazır telemetrisi');
 need('frontend/src/store/PlaylistContext.tsx', 'PLAYLIST_SWITCH_INDEX_RECOVERY', 'playlist index recovery');
-order('frontend/src/store/PlaylistContext.tsx', 'const ok = await bigStore.write(id, {', 'setPlaylists(next);', 'canonical write React publish öncesi olmalı');
+order('frontend/src/store/PlaylistContext.tsx', 'const ok = await bigStore.write(id, {', 'await publishMetadata(requestedProfile', 'canonical write React publish öncesi olmalı');
+order('frontend/src/store/PlaylistContext.tsx', 'await persistMeta(next,{...opts,expectedProfile});', 'setPlaylists(next);', 'metadata helper kalıcı yazımdan sonra yayınlamalı');
 
 // P0 main-thread stall: no 50k AsyncStorage rewrite per event
 need('frontend/src/utils/diagnostics.ts', 'MAX_JS_FALLBACK_EVENTS = 5000', 'bounded JS fallback cache');

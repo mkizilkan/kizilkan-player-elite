@@ -197,13 +197,27 @@ export const PanelScan = {
     headers: Record<string, string>,
     body: string,
     timeoutMs: number,
+    signal?: AbortSignal,
   ): Promise<{ ok: boolean; status: number; body: string; headers?: Record<string, string>; proxy?: string; error?: string }> => {
     if (!native?.proxiedRequest) return { ok: false, status: 0, body: "", error: "native-unavailable" };
-    try { return JSON.parse(await native.proxiedRequest(url, method, JSON.stringify(headers || {}), body || "", timeoutMs)); }
+    if (signal?.aborted) return { ok: false, status: 0, body: "", error: "CANCELLED" };
+    const requestId = `mag_${Date.now()}_${++proxyRequestSequence}`;
+    const stop = () => { void Promise.resolve(native.cancelProxiedRequest?.(requestId)).catch(() => {}); };
+    if (signal && !native.proxiedRequestCancelable) return { ok: false, status: 0, body: "", error: "native-cancellation-unavailable" };
+    signal?.addEventListener("abort", stop, { once: true });
+    try {
+      if (signal?.aborted) return { ok: false, status: 0, body: "", error: "CANCELLED" };
+      const raw = signal
+        ? await native.proxiedRequestCancelable(requestId, url, method, JSON.stringify(headers || {}), body || "", timeoutMs)
+        : await native.proxiedRequest(url, method, JSON.stringify(headers || {}), body || "", timeoutMs);
+      return signal?.aborted ? { ok: false, status: 0, body: "", error: "CANCELLED" } : JSON.parse(raw);
+    }
     catch (e: any) { return { ok: false, status: 0, body: "", error: String(e?.message || e) }; }
+    finally { signal?.removeEventListener("abort", stop); }
   },
 };
 
+let proxyRequestSequence = 0;
 function emptyProxyStatus(err: string): NativeScanProxyStatus {
   return { enabled: false, candidates: 0, pool: 0, dead: 0, alive: 0, poolTested: false, testPhase: "idle", exhausted: false, total: 0, working: 0, lastError: err };
 }

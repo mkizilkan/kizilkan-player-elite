@@ -45,7 +45,7 @@ need(fs.existsSync(path.join(root, NC + 'PublicStorage.kt')), 'PublicStorage.kt 
 
 // Kayıt (3 motor)
 need(!/Kayıt için VLC gerekiyor/.test(player), 'kayıt hâlâ yalnız VLC');
-need(/mpvRef\.current\?\.startRecord\(path\)/.test(player) && /stream-record/.test(mpvView) && /startRecord:/.test(mpvIdx), 'MPV kaydı yok');
+need(/(?:mpvRef\.current|mpvHandle)\?\.startRecord\(path\)/.test(player) && /stream-record/.test(mpvView) && /startRecord:/.test(mpvIdx), 'MPV kaydı yok');
 need(/liveTimeshiftStartRecord\(/.test(player) && /fun startRecord\(id: String, path: String\)/.test(ts) && /teeWrite\(packet\)/.test(ts), 'Media3 canlı (tee) kaydı yok');
 need(/recordForcesTimeshift\)/.test(player), 'kayıt zaman kaydırmayı zorunlu açmıyor');
 need(/reason: "record-vod"/.test(player), 'film/dizi kaydı indirme motoruna bağlı değil');
