@@ -184,7 +184,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="build-${{ github.run_number }}"
-          gh release create "$TAG" "artifacts/${{ steps.apk.outputs.name }}" --title "KIZILKAN PLAYER ELITE v${{ steps.apk.outputs.version }} (build ${{ github.run_number }})" --notes "Yeni Mimari: ${NEW_ARCH} · Build tipi: ${BUILD_TYPE}"
+          gh release create "$TAG" "artifacts/${{ steps.apk.outputs.name }}" --target "$GITHUB_SHA" --title "KIZILKAN PLAYER ELITE v${{ steps.apk.outputs.version }} (build ${{ github.run_number }})" --notes "Yeni Mimari: ${NEW_ARCH} · Build tipi: ${BUILD_TYPE}"
       - name: Hata gunlugu (build patlarsa)
         if: failure()
         run: |

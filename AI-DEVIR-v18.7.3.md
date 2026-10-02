@@ -54,6 +54,8 @@ Komutlar `node tools/<dosya>` biçimindedir. Ayrı dal workflow push filtresinde
 
 ADB cihazı `c3a4097e`, **OnePlus 7 Pro / GM1910**. Mevcut 18.7.2-dev kaldırılmadan/veri silinmeden `install -r` ile **18.7.3-dev / 180703** olarak güncellendi. PID 27529 canlı kaldı, ilgili PID logunda crash/JS error eşleşmesi 0. Telefon kilitli/dozing olduğundan görünür uygulama ekranı kabulü bekliyor; henüz tamamlandı denmez.
 
+E13 araç düzeltmesi **`5757920a5a2430c77a9316d8b02f7efb945bb99f`** commit'iyle aynı dala push edildi; uygulama kodu 096fddfe ile aynı. [Son manuel CI 36984915544](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/36984915544), 2 Ekim **11:35:36** başlangıç: Linux denetle ve tam TypeScript PASS, final release APK bu yazımda derleniyor. Kullanıcıya DEV kurulumunun tamamlandığı ve telefonu çıkarabileceği bildirildi.
+
 Runtime fixture'ları gerçek kaynakları Android/I/O sınırları taklit edilerek veya JVM/localhost/SQLite ile çalıştırır; TV/Cast/SAF/codec/Android JSI için gerçek cihaz kanıtı değildir. Derleme ve süreç başlangıcı bütün ürün akışlarının cihaz kabulü değildir. Tarihî timeshift donmasının bittiği kanıtlanmadı.
 
 ## Sonraki Opus oturumu

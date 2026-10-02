@@ -190,7 +190,7 @@ tutma ve eski Android kısayol yazıcısı düzeltmeleri uygulandı.
 Ayrıntı: `AI-DEVIR-v18.7.3.md`, `GPT-TESPIT-VE-ONERILER.md`, `GPT-OPUS-GUNCELLEME-DEVRI.md`,
 `GPT-S01-NATIVE-TARAMA-DEVIR.md`. Final test/commit/manuel CI/APK kaydı bu devirlerde güncellenir.
 OnePlus 7 Pro'ya 18.7.3-dev / 180703, DEV verileri korunarak kuruldu; görünür UI kontrolü
-ekran kilidinin açılmasını bekliyor. Build/fixture sonucu cihaz kabulü sayılmaz. Tarihî timeshift donması
+ekran kilidi nedeniyle yapılamadı. Kullanıcı telefonu çıkarabilir. Build/fixture sonucu cihaz kabulü sayılmaz. Tarihî timeshift donması
 tamamen çözüldü diye yazma. Hesap kimlik bilgileri ve kurtarma verisi mevcut uygulamaya özel
 depoda tutulur; tüm DB şifreli değildir.
 

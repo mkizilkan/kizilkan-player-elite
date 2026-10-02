@@ -6,9 +6,9 @@ Kullanıcının onayladığı genel kod incelemesi bulguları ve MAG/yedek talep
 Güncel teknik devir `AI-DEVIR-v18.7.3.md`; tespit/çözüm tablosu `GPT-TESPIT-VE-ONERILER.md`;
 dosya bazlı Opus kaydı `GPT-OPUS-GUNCELLEME-DEVRI.md`; native tarama `GPT-S01-NATIVE-TARAMA-DEVIR.md`.
 Test/commit/manuel CI/APK ve çalıştırılmayan cihaz senaryolarının son durumu bu belgelerde tutulur.
-OnePlus 7 Pro (GM1910) bağlıdır. 18.7.3-dev / 180703 DEV APK, mevcut DEV verileri
+OnePlus 7 Pro (GM1910) üzerinde 18.7.3-dev / 180703 DEV APK, mevcut DEV verileri
 korunarak kuruldu; açılış işlemi çalışıyor. Ekran kilidi nedeniyle görünür UI kontrolü
-henüz tamamlanmadı. Geçmiş cihaz gözlemleri bu sürümün kabul testi sayılmaz.
+yapılamadı. Kullanıcıya kurulumun bittiği ve telefonu çıkarabileceği bildirildi. Geçmiş cihaz gözlemleri bu sürümün kabul testi sayılmaz.
 Her güncellemede Opus dosyasını ayrıntılı yaz. Kaynak veya cihaz kanıtı olmadan hatasız/stabil
 olduğu iddiasında bulunma.
 

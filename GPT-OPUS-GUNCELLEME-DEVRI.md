@@ -204,6 +204,8 @@ Kaynak commit'i **`096fddfeccb7a9dd1b6e46cfceec30a408653926`**, 95 dosya. `git p
 
 Yerel DEV APK: `frontend/android/app/build/outputs/apk/debug/app-debug.apk`; SHA-256 **`94cbf3e951b4db93d1e0cd531b3bf998f0129ef3d31b8eec7ab8e6202fb19ae1`**. Yerel paketin derlenmesinden sonra yalnız test altyapısı ve dokümantasyon değişti; uygulama kodu yerel DEV paketiyle aynıdır. DEV paketi Metro kapalıyken çalışan gömülü JS içerir.
 
+Aynı DEV APK, kullanıcıya sürümlü dosya olarak verilmek için `frontend/android/app/build/outputs/apk/debug/KIZILKAN-PLAYER-ELITE-DEV-v18.7.3.apk` adına kopyalandı; SHA-256 eşleşti. Üretilmiş APK/log/cihaz ekranı Git'e eklenmedi.
+
 ADB'de `c3a4097e` seri numaralı **OnePlus 7 Pro / GM1910** bağlıdır. Cihazdaki **18.7.2-dev**, kullanıcı verileri korunarak **18.7.3-dev / 180703** olarak güncellendi; uygulama kaldırılmadı/veri silinmedi. PID 27529 canlı ve ilgili PID logunda crash/JS error eşleşmesi 0. Telefon kilitli/dozing olduğu için görünür uygulama ekranı kabulü henüz tamamlanmadı. TV focus, 1000 MAC kaydırma, SAF provider, Cast receiver, canlı AES/HW decoder ve ilgili Android JSI/Room senaryoları için gerçek cihaz kanıtı henüz yok. Tarihî timeshift donması tamamen çözüldü iddiası yok.
 
 Final bekleyen işler: kilit nedeniyle görünür DEV ekranı kabulü ve yeni manuel release Actions sonucu/APK bağlantısı. Kullanıcı telefonu çıkarmak zorunda olduğu için kurulum tamamlandıktan sonra telefonun artık gerekli olmadığı bildirildi. Release CI paketi ve ürünün cihaz kabul senaryoları ayrı kaydedilecek; henüz yapılmayan CI/ekran kabulü başarılı diye işaretlenmedi.
@@ -221,6 +223,25 @@ Final bekleyen işler: kilit nedeniyle görünür DEV ekranı kabulü ve yeni ma
 | `tools/denetle.js` | Yukarıdaki negatif test yeni zorunlu kapıdır. | Eski kapılar kaldırılmadı veya gevşetilmedi. |
 
 İki düzeltilmiş gate ve yeni negatif test ayrı çalıştırıldı: PASS. Root/frontend/tools çalışma dizinlerinde 6/6 kontrol PASS. Bütün denetle tekrar çalıştırıldı: **111 kapı PASS / exit 0**, tam proje TypeScript kapıları dahil. Yeni manuel run kaydı aşağıya eklenecek. `git diff 096fddfe -- frontend` boş: application kodu ilk DEV paketi ile aynıdır. İlk CI APK aşamasına ulaşmadığından üretilmiş başarısız bir release APK yoktur; 18.7.3 uygulama sürümü korunur.
+
+### Son manuel release işi
+
+- Build kaynak commit'i: **`5757920a5a2430c77a9316d8b02f7efb945bb99f`**; ayrı dal push başarılı. Bu commit yalnız test altyapısı ve ayrıntılı devirleri güncelledi; `frontend` uygulama kaynakları **096fddfe** ile aynı.
+- [Run 36984915544](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/36984915544), **2 Ekim 2026 11:35:36 Europe/Istanbul**, `workflow_dispatch`; new_architecture=true, build_type=release, make_release=true.
+- Linux denetle ve ayrı tam TypeScript kapısı PASS; Expo prebuild ve imza hazırlığı geçti. Bu yazımda Gradle/APK işi sürüyor. Final MPV, paket/sürüm/imza, artifact ve release sonucu henüz tamamlanmadı.
+- Son dağıtım sonucu ve APK bağlantısı bu bölüme gerçek çıktıyla eklenecek. Daha sonraki yalnız dokümantasyon commit'i, bu APK'nın kaynak commit'i sayılmaz.
+
+### 2 Ekim — ayrı dal release etiketi (E14)
+
+Kaynak incelemesinde `gh release create` komutunun hedef commit vermediği bulundu. [Resmî CLI belgesi](https://cli.github.com/manual/gh_release_create) ve kurulu CLI yardımı, yeni etiketin bu durumda varsayılan daldan oluşturulduğunu doğruladı. Eski release API metadata'sında build-121 hedefi `main` görülüyordu; eski release/etiketler değiştirilmedi.
+
+| Yer / işlem | Değişiklik ve kanıt |
+|---|---|
+| `.github/workflows/build-apk.yml` release komutu | Sonraki işler için `--target "$GITHUB_SHA"` eklendi. Push filtresi, manuel inputlar, imza ve APK kapıları aynı. |
+| `tools/check-v16144-ci-hardening.js` | Gerçek release komutunun build SHA hedefini taşıdığı doğrulanır; hedef yok veya `main` olduğunda kontrolün reddettiği iki negatif örnek eklendi. Ayrı gate PASS; ardından TypeScript exit 0 ve tam denetle **111 kapı PASS / exit 0**. |
+| Devam eden run 36984915544 / build 123 | Workflow bu düzeltmeden önceki 5757920a kaynaklarını kullanır. Henüz olmayan yeni `refs/tags/build-123`, GitHub refs API ile **5757920a5a2430c77a9316d8b02f7efb945bb99f** commit'inde oluşturuldu. API dönüşünde ref/type=commit/SHA doğrulandı; böylece mevcut run da doğru tag üzerinde release oluşturabilir. |
+
+Bu düzeltme uygulama/native kodunu değiştirmez ve yeni APK derlemesi tetiklemez. Devam eden APK'nın kaynak commit'i 5757920a'dır; sonradan gelen workflow/rapor commit'i APK kaynağı diye gösterilmez. Final tag SHA, release asset ve imza/sürüm kapıları iş tamamlandığında tekrar okunacak.
 
 ### Opus sonraki her güncellemede
 
