@@ -42,6 +42,7 @@ if (process.cwd() !== PROJECT_ROOT) process.chdir(PROJECT_ROOT);
 
 const CHECKS = [
   ["test-mag-action-ownership.js", "v18.7.4 MAG add/export action ownership and profile ABA", ""],
+  ["check-v18705-release.js", "v18.7.5 Media3 audio-state telemetry (evidence before fix)", ""],
   ["test-mag-portal-discovery.js", "v18.7.4 MAC-free portal discovery/path/protection/cancel", ""],
   ["test-mag-account-validation.js", "v18.7.4 real Stalker account/access/date validation", ""],
   ["test-timeshift-onpause-ownership.js", "v18.7.4 pause intent lifecycle/source ownership", ""],

@@ -1649,6 +1649,30 @@ export default function PlayerHost() {
       }, 80);
     };
 
+    /**
+     * v18.7.5 — MEDIA3 SES DURUMU TELEMETRİSİ (kanıt toplama; cihaz: "bazen Media3'te ses gelmiyor").
+     * Kök neden henüz KANITLANMADI. Ses parçası yalnız readyToPlay/sourceLoad anında (liste doluysa)
+     * seçiliyor; liste GEÇ dolarsa açık seçim yapılmayabilir. Bu telemetri, bir sonraki "ses yok"
+     * anını kanıtla yakalamak için her aşamada parça sayısını/seçili parçayı/uygulanıp uygulanmadığını
+     * yazar. Düzeltme, telemetri nedeni doğruladıktan SONRA yapılacak (kör düzeltme yok).
+     */
+    const emitMedia3Audio = (stage: string) => {
+      try {
+        const at = (player as any).availableAudioTracks || [];
+        const active = (player as any).audioTrack;
+        void recordDiagnostic("player", "MEDIA3_AUDIO_STATE", {
+          stage, channelId: String(channel?.id || ""), source: playlistSource,
+          audioCount: Array.isArray(at) ? at.length : -1,
+          activeAudioId: active ? String(active.id ?? "") : "",
+          activeAudioLabel: active ? String(active.label ?? active.language ?? "") : "",
+          hasActiveAudio: !!active,
+          // ŞÜPHE: parça var ama hiçbiri aktif değil → sessizlik adayı.
+          suspectSilent: Array.isArray(at) && at.length > 0 && !active,
+          expectsVideo: playbackRequest?.expectsVideo !== false,
+        }, { sessionId: playerDiagnosticSessionRef.current, stage: "media3-audio" });
+      } catch {}
+    };
+
     const statusSub = player.addListener("statusChange", (event: any) => {
       if (!stillMine()) return;
       if (event?.status) {
@@ -1847,6 +1871,7 @@ export default function PlayerHost() {
               try { (player as any).audioTrack = at[0]; setSelectedAudio(at[0]); } catch {}
             }
           }
+          emitMedia3Audio("readyToPlay");
           if (Array.isArray(st)) setSubtitleTracks(st);
           const vs = (player as any).videoSize || (player as any).naturalSize || {};
           const duration = Number((player as any).duration || 0);
@@ -1868,6 +1893,7 @@ export default function PlayerHost() {
         if (at.length > 0 && !(player as any).audioTrack) {
           try { (player as any).audioTrack = at[0]; setSelectedAudio(at[0]); } catch {}
         }
+        emitMedia3Audio("sourceLoad");
       } catch {}
     });
 
@@ -1887,6 +1913,9 @@ export default function PlayerHost() {
           firstFrameSeenRef.current = true;   // v16.2.0
           recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
           recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
+          // v18.7.5: ilk kareden ~1,2 sn sonra ses durumu — asıl "ses yok" kanıtı burada yakalanır
+          // (parça listesi erken boş olup geç dolan akışlarda bu anda hâlâ aktif ses yoksa suspectSilent).
+          setTimeout(() => { if (stillMine()) emitMedia3Audio("post-first-frame"); }, 1200);
         }
       }
     });
@@ -4050,6 +4079,8 @@ export default function PlayerHost() {
       engine: profile.engine,
       firstFrameMs,
       totalFromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current),
+      // v18.7.5: ilk-kareyi timeshift moduyla etiketle (Kapalı vs Her zaman ilk-kare kıyası için).
+      timeshiftMode: liveTimeshiftModeRef.current,
     }, { sessionId: playerDiagnosticSessionRef.current });
   }, [channel?.id, playlistSource, activePlaylist?.id, activeProfile?.id, sessionKind, playbackCandidates, playbackUrlIndex, preferredHost]);
 

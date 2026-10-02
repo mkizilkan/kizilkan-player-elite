@@ -180,7 +180,24 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.4 RC1 — dal `v18.7.4-rc1-mac-discovery`)
+## 9. Mevcut durum (v18.7.5 RC1 — dal `v18.7.5-rc1-media3-audio-telemetry`)
+
+**v18.7.5 (bu sürüm, yalnız TELEMETRİ):** (1) Media3 "bazen ses yok" için `MEDIA3_AUDIO_STATE`
+(readyToPlay/sourceLoad/ilk-kare sonrası; `suspectSilent` = parça var ama aktif yok). (2) `FIRST_FRAME`
+olayına `timeshiftMode` etiketi (Kapalı vs Her zaman ilk-kare kıyası). Kök neden kanıtlanınca düzeltme
+v18.7.6'da yapılacak. Ayrıntı `AI-DEVIR-v18.7.5.md`. Kapı `check-v18705-release.js`.
+Ölçümler (etiketsiz): media3 ilk-kare 1414–2269 ms, mpv 2269–3976 ms; uygulama soğuk açılış ~2,5 sn,
+sıcak ~0,04–0,25 sn. **"Çöktü" sanılan durum:** `am force-stop` ile açılış ölçümü uygulamayı kapatıp
+açar → ekranda tekrarlayan çökme gibi görünür; gerçek çökme DEĞİL. Cihazda kapatıp-açan komut öncesi
+kullanıcıya haber ver.
+
+**v18.7.4:** GPT'nin çoklu-MAC keşif/doğrulama + timeshift onPause sahiplik çalışması; Opus 3 kırık kapıyı
+(expo/fetch mock, requestScope iptal→CANCELLED, eksik action-ownership testi) düzeltip bitirdi; cihazda
+çökmeden açıldı. Rapor "PlaylistContext M174-13 değişti" demiş ama dosya değişmemiş (uygulanmadı).
+Ayrıntı `AI-DEVIR-v18.7.4.md`. **Tuzak:** exact endpoint yolu `expo/fetch` kullanır → VM test harness'i
+`expo/fetch`'i mock'lamalı; requestScope iptali CANCELLED, yaşam döngüsü kurtarması BACKGROUND_PAUSE.
+
+## (eski) v18.7.4 durumu
 
 Kullanıcının gerçek MAC ekran görüntüleri ve bağlı DEV logları sonrasında yeni patch:
 MAC'siz tek host/API keşfi → otomatik veya manuel tek endpoint seçimi → exact API üzerinde
