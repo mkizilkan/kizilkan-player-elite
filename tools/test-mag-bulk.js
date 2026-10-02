@@ -71,7 +71,7 @@ pass++;
 {
   const noPort = M.portalDiscoveryCandidates({ raw: 'x', host: 'http://p.example.com', hasPort: false });
   assert.ok(noPort.length > 40, 'geniş port listesi denenmeli');
-  assert.ok(noPort.every(u => u.startsWith('http://p.example.com:')));
+  assert.ok(noPort.every(u => /^https?:\/\/p\.example\.com:/.test(u)));
   // v18.7.2: 8080 + /c/ EN ÖNDE; /c/ tüm portlarda süpürülür (yol-öncelikli), sonra /portal.php.
   assert.equal(noPort[0], 'http://p.example.com:8080/c/');
   const nPorts = M.MAG_DISCOVERY_PORTS.length;

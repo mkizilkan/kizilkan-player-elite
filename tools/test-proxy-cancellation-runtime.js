@@ -76,6 +76,7 @@ ${moduleQueues}
   private fun AsyncFunction(name: String, body: (String, Int) -> String) = register(name) { body(it[0] as String, it[1] as Int) }
   private fun AsyncFunction(name: String, body: (String, String, String, String, Int) -> String) = register(name) { body(it[0] as String, it[1] as String, it[2] as String, it[3] as String, it[4] as Int) }
   private fun AsyncFunction(name: String, body: (String, String, String, String, String, Int) -> String) = register(name) { body(it[0] as String, it[1] as String, it[2] as String, it[3] as String, it[4] as String, it[5] as Int) }
+  private fun AsyncFunction(name: String, body: (String, String, String, String, String, Int, Int) -> String) = register(name) { body(it[0] as String, it[1] as String, it[2] as String, it[3] as String, it[4] as String, it[5] as Int, it[6] as Int) }
   private fun AsyncFunction(name: String, body: (String) -> Boolean) = register(name) { body(it[0] as String) }
   private fun OnDestroy(body: () -> Unit) { cleanup = body }
   fun destroy() = cleanup()
@@ -121,6 +122,50 @@ object ProxyCancellationFixture {
       val pre = JSONObject(module.calls.getValue("proxiedRequestCancelable").call("pre_fixture", "http://127.0.0.1:" + server.localPort + "/never", "GET", "{}", "", 5000).get(500, TimeUnit.MILLISECONDS) as String)
       check(pre.optString("error") == "CANCELLED" && ScanProxyPool.selected.get() == before) { "cancel-before-start opened a provider connection" }
       println("PASS: actual Kotlin cancel-before-start opens no provider connection")
+      fun bodyFixture(text: String, declared: Boolean, bounded: Boolean, cap: Int = 65536): JSONObject {
+        val local = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
+        val worker = Executors.newSingleThreadExecutor()
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        val task = worker.submit {
+          local.accept().use { client ->
+            val reader = client.getInputStream().bufferedReader()
+            while (true) { val line = reader.readLine() ?: break; if (line.isEmpty()) break }
+            val output = client.getOutputStream()
+            val framing = if (declared) "Content-Length: " + bytes.size else "Transfer-Encoding: chunked"
+            try {
+              output.write(("HTTP/1.1 200 OK\\r\\n" + framing + "\\r\\nConnection: close\\r\\n\\r\\n").toByteArray())
+              if (declared) output.write(bytes) else {
+                output.write((bytes.size.toString(16) + "\\r\\n").toByteArray()); output.write(bytes); output.write("\\r\\n0\\r\\n\\r\\n".toByteArray())
+              }
+              output.flush()
+            } catch (_: Throwable) {}
+          }
+        }
+        try {
+          val target = "http://127.0.0.1:" + local.localPort + "/body"
+          val request = if (bounded) module.calls.getValue("proxiedRequestBoundedCancelable").call("bounded_fixture", target, "GET", "{}", "", 2000, cap)
+            else module.calls.getValue("proxiedRequestCancelable").call("unbounded_fixture", target, "GET", "{}", "", 2000)
+          return JSONObject(request.get(2500, TimeUnit.MILLISECONDS) as String)
+        } finally { local.close(); worker.shutdownNow(); runCatching { task.get(2, TimeUnit.SECONDS) } }
+      }
+      val beforeBoundedFaults = ScanProxyPool.faults.size
+      val beforeBoundedLeases = ScanProxyPool.selected.get()
+      for (declared in listOf(true, false)) {
+        val over = bodyFixture("x".repeat(65537), declared, true)
+        check(over.optString("error") == "BODY_LIMIT" && over.optString("body").isEmpty()) { "bounded body returned unsafe success: " + over }
+      }
+      val unicode = bodyFixture("ğ".repeat(32769), false, true)
+      check(unicode.optString("error") == "BODY_LIMIT") { "cap counted chars instead of UTF-8 bytes" }
+      check(ScanProxyPool.faults.size == beforeBoundedFaults) { "oversized provider response damaged proxy health" }
+      check(ScanProxyPool.selected.get() - beforeBoundedLeases == 3) { "body-limit failure retried different proxies" }
+      check(ScanProxyPool.selected.get() == ScanProxyPool.released.get()) { "body-limit leaked proxy lease" }
+      val exact = bodyFixture("x".repeat(65536), false, true)
+      check(exact.optBoolean("ok") && exact.optString("body").length == 65536) { "exactly bounded body was rejected" }
+      val legacy = bodyFixture("x".repeat(70000), true, false)
+      check(legacy.optBoolean("ok") && legacy.optString("body").length == 70000) { "opt-in cap changed existing catalog requests" }
+      val larger = bodyFixture("x".repeat(70000), false, true, 1048576)
+      check(larger.optBoolean("ok") && larger.optString("body").length == 70000) { "1 MiB opt-in cap was silently clamped to 64 KiB" }
+      println("PASS: actual Kotlin bounded discovery Content-Length/chunked/UTF-8 cap; one lease/no proxy fault; caller cap/exact limit/legacy request preserved")
     } finally {
       module.destroy(); io.cancel(); modules.cancel(); moduleDispatcher.close(); server.close(); serverWorker.shutdownNow(); runCatching { serverJob.get(2, TimeUnit.SECONDS) }
     }
@@ -133,8 +178,8 @@ try {
   fs.writeFileSync(file, code, 'utf8');
   fs.mkdirSync(classes);
   const classpath = [stdlib, annotations, json, coroutines].join(path.delimiter);
-  execFileSync('java', ['-cp', compilerClasspath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect', '-classpath', classpath, '-d', classes, file], { timeout: 60000, windowsHide: true, stdio: 'pipe' });
-  const output = execFileSync('java', ['-cp', [classes, classpath].join(path.delimiter), 'expo.modules.panelscan.ProxyCancellationFixture'], { encoding: 'utf8', timeout: 15000, windowsHide: true });
+  execFileSync('java', ['-cp', compilerClasspath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect', '-classpath', classpath, '-d', classes, file], { timeout: 120000, windowsHide: true, stdio: 'pipe' });
+  const output = execFileSync('java', ['-Djdk.net.unixdomain.tmpdir=' + root, '-Dfile.encoding=UTF-8', '-cp', [classes, classpath].join(path.delimiter), 'expo.modules.panelscan.ProxyCancellationFixture'], { encoding: 'utf8', timeout: 20000, windowsHide: true });
   console.log(output.trim());
 } finally {
   const target = path.resolve(temp);

@@ -26,6 +26,7 @@ async function testStalker() {
       if(id==='@/src/utils/diagnostics') return { recordDiagnostic: async()=>{}, markTask:()=>()=>{} };
       if(id==='@/src/utils/storage') return { storage:{getItem:async(k,f)=>store.has(k)?store.get(k):f,getItemStrict:async(k,f)=>strictValue(store.get(k),f,store.has(k)),setItem:async(k,v)=>{store.set(k,v);return true;},removeItem:async(k)=>{store.delete(k);return true;}} };
       if(id==='@/modules/kizilkan-native-core') return { KizilkanNativeCore:{ available:false, magExactRequest:async()=>null } };
+      if (id === '@/src/utils/accountExpiry') return require('./_account-expiry-runtime')();
       return require(id);
     };
     const box={module:{exports:{}},exports:{},require:req,console,URL,URLSearchParams,AbortController,setTimeout,clearTimeout,fetch:fetchImpl};

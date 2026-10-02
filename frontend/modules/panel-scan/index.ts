@@ -198,16 +198,21 @@ export const PanelScan = {
     body: string,
     timeoutMs: number,
     signal?: AbortSignal,
+    maxBodyBytes?: number,
   ): Promise<{ ok: boolean; status: number; body: string; headers?: Record<string, string>; proxy?: string; error?: string }> => {
     if (!native?.proxiedRequest) return { ok: false, status: 0, body: "", error: "native-unavailable" };
     if (signal?.aborted) return { ok: false, status: 0, body: "", error: "CANCELLED" };
     const requestId = `mag_${Date.now()}_${++proxyRequestSequence}`;
+    if (maxBodyBytes !== undefined && (!Number.isInteger(maxBodyBytes) || maxBodyBytes < 1 || maxBodyBytes > 1048576)) return { ok: false, status: 0, body: "", error: "invalid-body-limit" };
+    if (maxBodyBytes !== undefined && !native.proxiedRequestBoundedCancelable) return { ok: false, status: 0, body: "", error: "native-body-limit-unavailable" };
     const stop = () => { void Promise.resolve(native.cancelProxiedRequest?.(requestId)).catch(() => {}); };
-    if (signal && !native.proxiedRequestCancelable) return { ok: false, status: 0, body: "", error: "native-cancellation-unavailable" };
+    if (signal && maxBodyBytes === undefined && !native.proxiedRequestCancelable) return { ok: false, status: 0, body: "", error: "native-cancellation-unavailable" };
     signal?.addEventListener("abort", stop, { once: true });
     try {
       if (signal?.aborted) return { ok: false, status: 0, body: "", error: "CANCELLED" };
-      const raw = signal
+      const raw = maxBodyBytes !== undefined
+        ? await native.proxiedRequestBoundedCancelable(requestId, url, method, JSON.stringify(headers || {}), body || "", timeoutMs, maxBodyBytes)
+        : signal
         ? await native.proxiedRequestCancelable(requestId, url, method, JSON.stringify(headers || {}), body || "", timeoutMs)
         : await native.proxiedRequest(url, method, JSON.stringify(headers || {}), body || "", timeoutMs);
       return signal?.aborted ? { ok: false, status: 0, body: "", error: "CANCELLED" } : JSON.parse(raw);

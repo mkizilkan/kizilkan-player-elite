@@ -88,6 +88,7 @@ function load(fetchImpl) {
     }};
     if (id === 'expo-crypto') return { CryptoDigestAlgorithm: { MD5:'MD5', SHA1:'SHA1', SHA256:'SHA256' }, digestStringAsync: async (_a, v) => ('abc123' + v).padEnd(64, '0').slice(0,64) };
     if(id==='@/modules/kizilkan-native-core') return { KizilkanNativeCore:{ available:false, magExactRequest:async()=>null } };
+      if (id === '@/src/utils/accountExpiry') return require('./_account-expiry-runtime')();
       return require(id);
   };
   const box = { module:{exports:{}}, exports:{}, require:req, console, URL, URLSearchParams, AbortController, setTimeout, clearTimeout, fetch:fetchImpl };

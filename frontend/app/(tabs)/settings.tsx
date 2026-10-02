@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { playlistExpiryText, playlistProtectionText, playlistCatalogStateText, playlistIsExpired } from '@/src/utils/accountCard';
 import { accountExpiryMs } from '@/src/utils/accountExpiry';
 import {
@@ -61,7 +61,31 @@ export default function SettingsTab() {
   const [startLastChannel, setStartLastChannel] = useState(false);
   // v17.10.3: canlı zaman kaydırma modu (varsayılan "Duraklatınca")
   const [timeshiftMode, setTimeshiftMode] = useState<LiveTimeshiftMode>("onPause");
-  useEffect(() => { void loadLiveTimeshiftMode().then(setTimeshiftMode); }, []);
+  const [timeshiftSaving, setTimeshiftSaving] = useState(false);
+  const timeshiftSavePendingRef = useRef(false);
+  const timeshiftSettingsOwnerRef = useRef(0);
+  useEffect(() => {
+    const owner = ++timeshiftSettingsOwnerRef.current;
+    void loadLiveTimeshiftMode().then(mode => {
+      if (timeshiftSettingsOwnerRef.current === owner) setTimeshiftMode(mode);
+    });
+    return () => { timeshiftSettingsOwnerRef.current++; };
+  }, []);
+  const changeLiveTimeshiftMode = async (mode: LiveTimeshiftMode) => {
+    if (timeshiftSavePendingRef.current) return;
+    timeshiftSavePendingRef.current = true;
+    const owner = ++timeshiftSettingsOwnerRef.current;
+    setTimeshiftSaving(true);
+    try {
+      await saveLiveTimeshiftMode(mode);
+      if (timeshiftSettingsOwnerRef.current === owner) setTimeshiftMode(mode);
+    } catch {
+      if (timeshiftSettingsOwnerRef.current === owner) Alert.alert("Ayar kaydedilemedi", "Canlı zaman kaydırma seçimi kaydedilemedi. Tekrar deneyin.");
+    } finally {
+      timeshiftSavePendingRef.current = false;
+      if (timeshiftSettingsOwnerRef.current === owner) setTimeshiftSaving(false);
+    }
+  };
   const [coloredRemoteMap, setColoredRemoteMap] = useState<ColoredRemoteMap>(DEFAULT_COLORED_REMOTE_MAP);
 
   // Parental PIN modal
@@ -945,7 +969,8 @@ export default function SettingsTab() {
                   <FocusButton
                     key={opt.value}
                     testID={`timeshift-mode-${opt.value}`}
-                    onPress={async () => { setTimeshiftMode(opt.value); await saveLiveTimeshiftMode(opt.value); }}
+                    disabled={timeshiftSaving}
+                    onPress={() => void changeLiveTimeshiftMode(opt.value)}
                     style={{flex:1,alignItems:"center",paddingVertical:10,borderRadius:RADIUS.sm,borderWidth:1,
                       borderColor:active?colors.brandPrimary:colors.border,
                       backgroundColor:active?colors.brandPrimary:colors.surfaceTertiary}}

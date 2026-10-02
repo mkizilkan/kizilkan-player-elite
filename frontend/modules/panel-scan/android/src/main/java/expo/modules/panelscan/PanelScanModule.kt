@@ -89,6 +89,10 @@ class PanelScanModule : Module() {
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
       ScanProxyPool.proxiedRequest(context, url, method, headersJson.ifBlank { null }, body.ifBlank { null }, timeoutMs.coerceIn(2000, 30000), requestId).toString()
     }.runOnQueue(appContext.backgroundCoroutineScope)
+    AsyncFunction("proxiedRequestBoundedCancelable") { requestId: String, url: String, method: String, headersJson: String, body: String, timeoutMs: Int, maxBodyBytes: Int ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.proxiedRequest(context, url, method, headersJson.ifBlank { null }, body.ifBlank { null }, timeoutMs.coerceIn(2000, 30000), requestId, maxBodyBytes).toString()
+    }.runOnQueue(appContext.backgroundCoroutineScope)
     AsyncFunction("cancelProxiedRequest") { requestId: String -> ScanProxyPool.cancelProxiedRequest(requestId) }
       .runOnQueue(proxyCancelScope)
 

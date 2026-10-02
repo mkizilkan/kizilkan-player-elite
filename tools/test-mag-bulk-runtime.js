@@ -8,12 +8,22 @@ const compile = value => ts.transpileModule(value, { compilerOptions: { module: 
 const json = value => JSON.parse(JSON.stringify(value));
 const response = (body, status = 200, headers = {}) => ({ ok: status >= 200 && status < 300, status, headers: { get: key => headers[key.toLowerCase()] || '' }, text: async () => typeof body === 'string' ? body : JSON.stringify(body) });
 function environment(overrides = {}) {
+  // Boundary stubs for orchestration/export tests; account proof itself has a separate real-module suite.
+  const fakeStalker = overrides['@/src/utils/stalker'];
+  if (fakeStalker && !fakeStalker.stalkerVerifyAccount) fakeStalker.stalkerVerifyAccount = async (_cred, _session, profile) => ({
+    state: 'verified', accountInfo: fakeStalker.normalizeStalkerAccountInfo(profile), evidence: ['fixture-account-access'], liveCount: 1,
+  });
+  if (fakeStalker && !overrides['@/src/utils/magPortalDiscovery']) overrides['@/src/utils/magPortalDiscovery'] = {
+    discoverMagHosts: async hosts => hosts.map(host => report(host, host.host)),
+  };
   const cache = new Map(), storage = new Map();
   const mocks = {
     '@/src/utils/diagnostics': { recordDiagnostic: async () => {}, markTask: () => () => {} },
     '@/src/utils/storage': { storage: { getItem: async (key, fallback) => storage.get(key) ?? fallback, setItem: async (key, value) => { storage.set(key, value); return true; }, removeItem: async key => { storage.delete(key); return true; } } },
     '@/modules/kizilkan-native-core': { KizilkanNativeCore: { available: false } },
     'expo-crypto': { CryptoDigestAlgorithm: { MD5: 'md5', SHA1: 'sha1', SHA256: 'sha256' }, digestStringAsync: async (algorithm, value) => crypto.createHash(algorithm).update(value).digest('hex') },
+    // v18.7.4: exact endpoint yolu Expo native fetch kullanır; harness'te sağlanan fetch'e bağla.
+    'expo/fetch': { fetch: (...args) => { if (typeof overrides.fetch !== 'function') throw new Error('expo/fetch not provided'); return overrides.fetch(...args); } },
     ...overrides,
   };
   function req(id) {
@@ -33,6 +43,9 @@ const portal = 'http://portal.example.com:80/custom/portal.php';
 const mac = index => `00:1A:79:00:00:${index.toString(16).padStart(2, '0').toUpperCase()}`;
 const job = index => ({ hostRaw: portal, portal, mac: mac(index), hasPort: true, explicitPort: '80', hasPath: true });
 const account = (endpoint, status = 'Active') => ({ session: { endpoint, token: 'fixture' }, profile: { status, expire_billing_date: '2030-01-01', login: 'owner' } });
+const report = (host, endpoint) => ({ host, probes: 1, state: endpoint ? 'ready' : 'not-found', candidates: endpoint ? [{
+  endpoint, httpStatus: 200, confidence: 'api', selectable: true, evidence: ['fixture-api'], elapsedMs: 10,
+}] : [] });
 const modules = environment();
 const model = modules.load('src/utils/magBulk.ts');
 const expiry = modules.load('src/utils/accountExpiry.ts');
@@ -52,30 +65,33 @@ async function scopeAndIdentity() {
   const fake = {
     stalkerLogin: async cred => { policies.push(cred.endpointPolicy); return account(cred.portal); },
     normalizeStalkerAccountInfo: profile => ({ status: profile.status, tariff_expired_date: profile.expire_billing_date }),
-    discoverMagPortal: async () => { discovers++; return { endpoint: portal }; },
   };
-  const runner = environment({ '@/src/utils/stalker': fake }).load('src/utils/magBulkScan.ts');
-  for (const scope of ['exact', 'fallback']) assert.equal((await runner.runMagBulkScan([job(1)], { scope }))[0].category, 'valid');
-  assert.equal(discovers, 0); assert.deepEqual(policies, ['exact', 'exact']);
-  await runner.runMagBulkScan([job(1)], { scope: 'all' }); assert.equal(discovers, 1);
+  const runner = environment({ '@/src/utils/stalker': fake, '@/src/utils/magPortalDiscovery': {
+    discoverMagHosts: async hosts => { discovers++; return hosts.map(host => report(host, host.host)); },
+  } }).load('src/utils/magBulkScan.ts');
+  for (const scope of ['exact', 'fallback', 'all']) assert.equal((await runner.runMagBulkScan([job(1), job(2)], { scope }))[0].category, 'valid');
+  assert.equal(discovers, 3, 'discovery once per run/host rather than once per MAC');
+  assert.deepEqual(policies, Array(6).fill('exact'));
   groups++;
 }
 async function negativeAndSingleFlight() {
-  let discoveries = 0, activeDiscoveries = 0, maxActive = 0;
+  let discoveries = 0, logins = 0;
   const fake = {
-    stalkerLogin: async cred => { if (!cred.portal.includes(':8080/')) throw new Error('exact endpoint missing'); return account(cred.portal); },
+    stalkerLogin: async cred => { logins++; if (cred.mac === mac(1)) throw new Error('Authorization failed.'); return account(cred.portal); },
     normalizeStalkerAccountInfo: profile => ({ status: profile.status }),
-    discoverMagPortal: async cred => {
-      discoveries++; activeDiscoveries++; maxActive = Math.max(maxActive, activeDiscoveries);
-      await new Promise(resolve => setTimeout(resolve, 3)); activeDiscoveries--;
-      return cred.mac === mac(1) ? null : { endpoint: 'http://portal.example.com:8080/portal.php' };
-    },
   };
-  const runner = environment({ '@/src/utils/stalker': fake }).load('src/utils/magBulkScan.ts');
-  const results = await runner.runMagBulkScan([job(1), job(2), job(3)], { scope: 'fallback', concurrency: 3 });
-  assert.equal(results.find(r => r.mac === mac(1)).category, 'no-portal');
-  assert.equal(results.filter(r => r.category === 'valid').length, 2);
-  assert.equal(discoveries, 2); assert.equal(maxActive, 1);
+  const failed = environment({ '@/src/utils/stalker': fake, '@/src/utils/magPortalDiscovery': {
+    discoverMagHosts: async hosts => { discoveries++; return hosts.map(host => report(host, null)); },
+  } }).load('src/utils/magBulkScan.ts');
+  const noPortal = await failed.runMagBulkScan([job(1), job(2), job(3)], { scope: 'all', concurrency: 3 });
+  assert.ok(noPortal.every(r => r.category === 'no-portal')); assert.equal(discoveries, 1); assert.equal(logins, 0);
+  const selectedEndpoint = 'http://portal.example.com:8080/portal.php';
+  const successful = environment({ '@/src/utils/stalker': fake, '@/src/utils/magPortalDiscovery': {
+    discoverMagHosts: async hosts => { discoveries++; return hosts.map(host => report(host, selectedEndpoint)); },
+  } }).load('src/utils/magBulkScan.ts');
+  const results = await successful.runMagBulkScan([job(1), job(2), job(3)], { scope: 'all', concurrency: 3 });
+  assert.equal(results.find(r => r.mac === mac(1)).category, 'blocked'); assert.equal(results.filter(r => r.category === 'valid').length, 2);
+  assert.equal(discoveries, 2); assert.ok(results.every(r => r.portal === selectedEndpoint));
   groups++;
 }
 async function cancellationAndParallel() {
@@ -126,7 +142,9 @@ async function realExactScopeAndExpiry() {
   const calls = [];
   const env = environment({ fetch: async url => {
     calls.push(url); const action = new URL(url).searchParams.get('action');
-    return response(action === 'handshake' ? { js: { token: 'fixture' } } : { js: { login: 'owner', expire_billing_date: '2030-01-01' } });
+    return response(action === 'handshake' ? { js: { token: 'fixture' } } : action === 'get_ordered_list'
+      ? { js: { data: [{ id: '17', name: 'Haber', cmd: 'ffmpeg http://stream.example.com/live.ts' }], total_items: 1 } }
+      : { js: { id: 17, login: 'owner', expire_billing_date: '2030-01-01' } });
   } });
   const result = await env.load('src/utils/magBulkScan.ts').runMagBulkScan([job(1)], { scope: 'exact' });
   assert.equal(result[0].category, 'valid'); assert.equal(result[0].expiry, '2030-01-01');
@@ -190,6 +208,8 @@ async function selectedActionsAndArchive() {
   const values = {
     selectedResults: selected, selectedValid: selected, validResults: [...selected, { ...job(2), category: 'valid' }], playlists: [],
     busyRef: { current: false }, profileRef: { current: 'owner' }, mountedRef: { current: true }, actionAbortRef: { current: null },
+    // v18.7.4 sahiplik/ABA kapsamı: callback bu serbest değişkenlere kapanıyor.
+    profileEpoch: 0, profileEpochRef: { current: 0 }, resetProfileEpochRef: { current: 0 }, actionRunRef: { current: 0 }, runRef: { current: 0 },
     setSaving() {}, setAdding() {}, setActionProgress() {}, useProxy: false,
     createMagRequestGate: () => ({}), formatAccountExpiry: expiry.formatAccountExpiry, formatMagArchiveTxt: model.formatMagArchiveTxt,
     magIdentity: model.magAccountIdentity, stableId: (_prefix, identity) => identity,
@@ -209,6 +229,70 @@ async function selectedActionsAndArchive() {
   assert.deepEqual(added.map(item => item.stalkerMac), [mac(1), mac(3)]); assert.ok(added.every(item => item.accountInfo.extra.magProtection.state === 'not_observed'));
   groups++;
 }
+async function portalChoiceAndUnverified() {
+  const first = portal, second = 'http://portal.example.com:80/second/portal.php';
+  let logins = [], selected = false;
+  const fake = {
+    stalkerLogin: async cred => { assert.ok(selected); logins.push(cred.portal); return account(cred.portal); },
+    stalkerVerifyAccount: async () => ({ state: 'unverified', accountInfo: {}, evidence: ['no-account-proof'], liveCount: 0 }),
+  };
+  const env = environment({ '@/src/utils/stalker': fake, '@/src/utils/magPortalDiscovery': {
+    discoverMagHosts: async hosts => hosts.map(host => ({ ...report(host, first), candidates: [...report(host, first).candidates, ...report(host, second).candidates] })),
+  } });
+  const runner = env.load('src/utils/magBulkScan.ts');
+  const results = await runner.runMagBulkScan([job(1), job(2)], { selectPortals: async reports => { assert.equal(logins.length, 0); selected = true; return { [reports[0].host.host]: second }; } });
+  assert.deepEqual(logins, [second, second]); assert.ok(results.every(r => r.category === 'unverified'));
+  await assert.rejects(runner.runMagBulkScan([job(1)], { selectPortals: async () => ({ [portal]: 'http://foreign.example.com/portal.php' }) }), /Seçilen API/);
+  const controller = new AbortController(); logins = [];
+  const pending = runner.runMagBulkScan([job(1)], { control: { signal: controller.signal }, selectPortals: async () => { controller.abort(); return new Promise(() => {}); } });
+  assert.equal((await pending).length, 0); assert.equal(logins.length, 0);
+  groups++;
+}
+async function terminalDiscoveryStopsAccountStage() {
+  const otherPortal = 'http://other.example.com:8080/portal.php';
+  const otherJob = { ...job(3), portal: otherPortal, hostRaw: otherPortal, explicitPort: '8080' };
+  for (const state of ['protected', 'error']) {
+    const logins = [], verifications = [];
+    const protection = { state: 'present', kind: 'captcha', endpoint: portal + '/challenge', stage: 'portal-discovery',
+      evidence: ['captcha-widget'], observedAt: '2026-10-02', transport: 'direct' };
+    const fake = {
+      stalkerLogin: async cred => { logins.push(cred.portal); return account(cred.portal); },
+      stalkerVerifyAccount: async cred => { verifications.push(cred.portal); return { state: 'verified', accountInfo: {}, evidence: ['fixture-account-access'], liveCount: 1 }; },
+    };
+    const runner = environment({ '@/src/utils/stalker': fake, '@/src/utils/magPortalDiscovery': {
+      discoverMagHosts: async hosts => hosts.map(host => host.host === otherPortal ? report(host, otherPortal) : ({
+        ...report(host, portal), state, message: 'Host discovery stopped after an earlier API response',
+        candidates: [...report(host, portal).candidates, ...(state === 'protected' ? [{
+          endpoint: portal + '/challenge', confidence: 'protected', selectable: false, httpStatus: 403,
+          evidence: ['captcha-widget'], elapsedMs: 5, protection,
+        }] : [])],
+      })),
+    } }).load('src/utils/magBulkScan.ts');
+    const input = [job(1), job(2)];
+    for (const manual of [false, true]) {
+      let selectionCalls = 0;
+      const results = await runner.runMagBulkScan(input, manual ? { selectPortals: async () => { selectionCalls++; return { [portal]: portal }; } } : {});
+      assert.equal(results.length, 2); assert.ok(results.every(r => r.category === state));
+      assert.equal(logins.length, 0); assert.equal(verifications.length, 0);
+      assert.equal(selectionCalls, 0, 'terminal-only reports must not enter a manual selection wait');
+      if (state === 'protected') assert.ok(results.every(r => r.protection.kind === 'captcha'), 'discovery protection evidence survives the account result');
+    }
+    await assert.rejects(runner.runMagBulkScan([...input, otherJob], {
+      selectPortals: async () => ({ [otherPortal]: otherPortal, [portal]: portal }),
+    }), /Seçilen API/, 'a manual choice must not reactivate an earlier candidate from a terminal host');
+    assert.equal(logins.length, 0); assert.equal(verifications.length, 0);
+    const mixed = await runner.runMagBulkScan([...input, otherJob], {
+      selectPortals: async () => ({ [otherPortal]: otherPortal }),
+    });
+    assert.equal(mixed.length, 3); assert.equal(mixed.filter(r => r.category === state).length, 2);
+    assert.equal(mixed.find(r => r.portal === otherPortal).category, 'valid');
+    assert.deepEqual(logins, [otherPortal]); assert.deepEqual(verifications, [otherPortal]);
+    const skipped = await runner.runMagBulkScan([otherJob], { selectPortals: async () => ({}) });
+    assert.equal(skipped.length, 0, 'manual omission of a ready host still skips that host');
+    assert.deepEqual(logins, [otherPortal]);
+  }
+  groups++;
+}
 async function nativeProxyCancel() {
   let activeId, finish, cancelledId;
   const native = {
@@ -224,6 +308,6 @@ async function nativeProxyCancel() {
   groups++;
 }
 (async () => {
-  await scopeAndIdentity(); await negativeAndSingleFlight(); await cancellationAndParallel(); await protectionAndRates(); await realExactScopeAndExpiry(); await terminalCatalogProtectionAndQueuedArchive(); await selectedActionsAndArchive(); await nativeProxyCancel();
+  await scopeAndIdentity(); await negativeAndSingleFlight(); await cancellationAndParallel(); await protectionAndRates(); await realExactScopeAndExpiry(); await terminalCatalogProtectionAndQueuedArchive(); await selectedActionsAndArchive(); await portalChoiceAndUnverified(); await terminalDiscoveryStopsAccountStage(); await nativeProxyCancel();
   console.log(`PASS: MAG kapsam/yarış/iptal/koruma/seçim/TXT/proxy — ${groups} davranış grubu`);
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -254,3 +254,29 @@ Telefonda yalnız kurulum/sürüm, canlı süreç, JSI/MPV yükleme ve PID hata 
 ### Opus sonraki her güncellemede
 
 Yeni tarih/sürüm bölümü ekle: taban/dal/commit; her dosyanın fonksiyon/bölgesi; bulgu ID'si ve önce/sonra davranışı; gerçek komut/sonuç; çalıştırılmayan cihaz senaryosu; manuel run ve APK bağlantısı. Eski PASS yeni değişimin kanıtı değildir. Fixture sınırlarını belirt; kullanıcı verisini silme. Kullanıcı bu dosyayı Opus'a iletecek; başka sohbet/servise mesaj izni varsayma.
+
+
+# 02.10.2026 — v18.7.4 RC1 MAC/player düzeltme devri
+
+Taban `fbbe2d7d`; dal `v18.7.4-rc1-mac-discovery`. Önceki dağıtım18.7.3/build123. Kullanıcı port/yol keşfinin MAC başına tekrarlanmasını, sahte hesap/bitiş tarihini ve onPause ilk açılış gecikmesini bildirdi. Ayrıntılı kanıt/yapılan/sonuç tablosu: [GPT-v18.7.4-MAC-PLAYER-RAPORU.md](GPT-v18.7.4-MAC-PLAYER-RAPORU.md).
+
+## Dosya bazında uygulama
+
+- `frontend/src/utils/magPortalDiscovery.ts`: MAC'siz raw HTTP/proxy keşif, same-origin/kurulum yolu, bounded body/redirect/timeout, portal/API kanıtı ve aday sonuçları.
+- `frontend/src/utils/magBulkScan.ts`: keşif önce, seçili endpoint sonra; negatif host sonucu bütün MAC'ler için yeniden kullanılabilir; manuel seçim/cancel; gerçek hesap validator.
+- `frontend/src/utils/magBulk.ts`: HTTPS web portlarında doğru şema, kullanıcı açık port/şema önceliği.
+- `frontend/app/mag-bulk.tsx`: iki aşama, bounded portal listesi, manuel/auto seçim, unverified kart, tekrar doğrulanmadan playlist shell oluşturmayı reddetme, bozuk TXT tarihi.
+- `frontend/src/utils/stalker.ts`: token/profil/ret/MAC/endpoint/örnek erişim doğrulaması; bounded scoped req; normal profile-unsupported catalogue fallback korunur.
+- `frontend/src/utils/accountExpiry.ts`: uygulama genelinde aynı deterministik tarih sözleşmesi.
+- `frontend/modules/panel-scan/index.ts`, `PanelScanModule.kt`, `ScanProxyPool.kt`: yeni opt-in bounded-cancellable proxy isteği; eski katalog API'si varsayılanları korunur.
+- `frontend/src/player/PlayerHost.tsx`, `timeshiftPauseOwnership.ts`, `timeshiftMode.ts`, ayarlar ekranı: pause ve ayar yükleme sahipliği, geç native sonuç temizliği, PREPARE kanıtı; tek upstream kuralı korunur.
+- Yeni runtime kapıları: `test-mag-portal-discovery.js`, `test-mag-account-validation.js`, `test-timeshift-onpause-ownership.js`. Mevcut bulk/proxy regresyonları genişletildi.
+- Eski Stalker VM kapıları `_account-expiry-runtime.js` ile gerçek parser'ı yükler; parser taklidi veya assertion kaldırma yok. v18.7.0/v18.7.2 kapıları yeni keşif orkestrasyonunu denetler; `denetle.js` yeni kapıları çalıştırır.
+- `app.json` ve `package.json`: beş sürüm alanı18.7.4 /180704 /RC1; yeni bağımlılık veya lockfile değişimi yok.
+
+## Doğrulama ve dağıtım kaydı
+
+Son genel denetim, TypeScript, Android derlemesi, DEV kurulumu ve manuel GitHub çalışma sonucu aşağıya gerçek çıktılarıyla eklenecek. İlk genel denetimde eski VM harness'lerinin yeni parser importunu çözemediği3 yer ve geçici native fixture profil adı hatası görüldü; aynı assertion'lar korunarak düzeltildi. Bu ilk başarısız koşu final başarı olarak sunulmaz.
+
+
+Opus için koruma şartları: kaynak/Room/kalıcı PlayerHost mimarisi değişmedi. Hesap analizi video açılabilirliği garantisi değildir. Korumayı atlatma yok. Native bodycap yalnız opt-in; eski büyük katalog API'sini genel sınıra bağlamayın. Pause-owner dış isteğe aittir; motor fallback/seek ile yeni kullanıcı isteğini karıştırmayın. Ham cihaz logları ve hesap bilgileri ignored `.expo/gpt-evidence-20261002` alanında; GitHub'a alınmaz. PlayStore/asıl paket18.7.3 kurulumuna bu DEV veri deposu dokunmaz. Uninstall/pm clear yapılmaz.

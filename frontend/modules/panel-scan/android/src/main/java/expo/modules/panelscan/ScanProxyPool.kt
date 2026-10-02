@@ -757,7 +757,10 @@ object ScanProxyPool {
     return true
   }
 
-  fun proxiedRequest(context: Context, url: String, method: String, headersJson: String?, body: String?, timeoutMs: Int, requestId: String? = null): JSONObject {
+  private class BodyLimitExceeded : java.io.IOException("BODY_LIMIT")
+
+  fun proxiedRequest(context: Context, url: String, method: String, headersJson: String?, body: String?, timeoutMs: Int, requestId: String? = null, maxBodyBytes: Int? = null): JSONObject {
+    require(maxBodyBytes == null || maxBodyBytes in 1..1048576) { "Geçersiz yanıt gövde sınırı" }
     val out = JSONObject()
     val control = requestId?.let {
       require(it.matches(Regex("[a-zA-Z0-9_-]{1,100}"))) { "Geçersiz proxy istek kimliği" }
@@ -789,8 +792,22 @@ object ScanProxyPool {
         if (control?.cancelled?.get() == true) throw java.io.InterruptedIOException("CANCELLED")
         if (!body.isNullOrEmpty() && conn!!.requestMethod == "POST") conn!!.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
         val code = conn!!.responseCode
+        if (maxBodyBytes != null && conn!!.contentLengthLong > maxBodyBytes.toLong()) throw BodyLimitExceeded()
         val stream = if (code in 200..399) conn!!.inputStream else conn!!.errorStream
-        val respBody = stream?.bufferedReader()?.use { it.readText() } ?: ""
+        val respBody = if (maxBodyBytes == null) stream?.bufferedReader()?.use { it.readText() } ?: ""
+          else stream?.use { input ->
+            val output = java.io.ByteArrayOutputStream(minOf(maxBodyBytes, 4096))
+            val buffer = ByteArray(4096)
+            while (true) {
+              if (control?.cancelled?.get() == true) throw java.io.InterruptedIOException("CANCELLED")
+              // Read at most one byte beyond the limit, even without Content-Length.
+              val read = input.read(buffer, 0, minOf(buffer.size, maxBodyBytes - output.size() + 1))
+              if (read < 0) break
+              if (output.size() + read > maxBodyBytes) throw BodyLimitExceeded()
+              output.write(buffer, 0, read)
+            }
+            output.toString(Charsets.UTF_8.name())
+          } ?: ""
         val respHeaders = JSONObject()
         conn!!.headerFields?.forEach { (k, v) -> if (k != null) respHeaders.put(k, v.joinToString(", ")) }
         reportResult(context, sel.entry.key, Fault.TARGET)
@@ -798,6 +815,7 @@ object ScanProxyPool {
           .put("proxy", sel.entry.host + ":" + sel.entry.port)
       } catch (t: Throwable) {
         if (control?.cancelled?.get() == true) return out.put("ok", false).put("status", 0).put("body", "").put("error", "CANCELLED")
+        if (t is BodyLimitExceeded) return out.put("ok", false).put("status", 0).put("body", "").put("error", "BODY_LIMIT")
         lastEx = t
         reportResult(context, sel.entry.key, if (classify(t) == Fault.UNKNOWN) Fault.PROXY else classify(t))
       } finally { control?.connection?.set(null); runCatching { conn?.disconnect() }; release(sel) }

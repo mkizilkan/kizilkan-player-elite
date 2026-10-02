@@ -147,3 +147,8 @@ Bu belge önce salt okunur incelemede bulunanları kaydeder. Kullanıcı sonras�
 ## Opus'a her güncellemede aktarılacak kayıt
 
 Her sürümde `GPT-OPUS-GUNCELLEME-DEVRI.md` güncellenir. Taban/dal/commit/sürüm; her dosyada ne değişti, neden, hangi bulguya karşılık geldi; gerçekten çalıştırılmış testin komutu/sonucu; çalıştırılmamış cihaz senaryoları; açık maddeler; manuel CI run ve APK bağlantısı yazılır. Özellik yok, test geçti veya sorun çözüldü iddiası kaynak/çıktı olmadan eklenmez. Hassas değerler belgelenmez.
+
+
+## 02.10.2026 cihaz sonrası MAC/player ek bulguları
+
+M174-01–09 / P174-01–03 için ayrıntılı mevcut durum → çözüm → sonuç, dosya ve test tablosu [GPT-v18.7.4-MAC-PLAYER-RAPORU.md](GPT-v18.7.4-MAC-PLAYER-RAPORU.md) içinde. Önceki18.7.3 testleri gerçek portal/cihaz kabulünün yerine sayılmaz; bu rapor cihaz geri bildiriminin kanıtlanan yeni köklerini ayırır.

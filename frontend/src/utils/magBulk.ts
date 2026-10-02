@@ -226,7 +226,8 @@ export function portalDiscoveryCandidates(entry: MagHostEntry, options: { allPor
   const seen = new Set<string>();
   const add = (port: string, p: string) => {
     const authority = port ? `${u.hostname}:${port}` : u.hostname;
-    const full = `${scheme}://${authority}${p.startsWith("/") ? p : "/" + p}`;
+    const candidateScheme = port === givenPort ? scheme : ["443", "8443", "2053", "2083", "2087", "2096"].includes(port) ? "https" : "http";
+    const full = `${candidateScheme}://${authority}${p.startsWith("/") ? p : "/" + p}`;
     const norm = full.replace(/\/+$/, "");
     if (!seen.has(norm)) { seen.add(norm); out.push(full); }
   };

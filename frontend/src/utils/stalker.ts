@@ -28,6 +28,7 @@ import type { AccountInfo, Channel, Playlist, SeriesItem, VodItem } from "@/src/
 import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
 import { storage } from "@/src/utils/storage";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
+import { parseAccountExpiryMs } from "@/src/utils/accountExpiry";
 
 const startDiagnosticTask = (label: string, meta: Record<string, any> = {}) =>
   typeof markTask === "function" ? markTask(label, meta) : (() => {});
@@ -89,6 +90,7 @@ export type StalkerRequestScope = {
   onRateLimit?: (url: string, retryAfterMs: number) => void;
 };
 const scopedHeaders = new WeakMap<object, StalkerRequestScope>();
+const exactEndpointHeaders = new WeakSet<object>();
 type RequestScopeRuntime = { controller: AbortController; terminalError?: any };
 const requestScopeRuntimes = new WeakMap<StalkerRequestScope, RequestScopeRuntime>();
 function requestScopeRuntime(scope: StalkerRequestScope): RequestScopeRuntime {
@@ -97,12 +99,22 @@ function requestScopeRuntime(scope: StalkerRequestScope): RequestScopeRuntime {
   return runtime;
 }
 function scopeCancelledError(): any { const error: any = new Error("İşlem iptal edildi"); error.kind = "CANCELLED"; return error; }
+/**
+ * v18.7.4 — Handshake iptal türü: AÇIK kullanıcı/iş iptali (requestScope var) → CANCELLED;
+ * AppState yaşam döngüsü kurtarması (requestScope yok, yalnız recovery signal'i) → BACKGROUND_PAUSE.
+ * Eskiden her ikisi de BACKGROUND_PAUSE atıyordu; çoklu-MAC/kullanıcı iptali CANCELLED beklenir.
+ */
+function handshakeAbortError(cred: StalkerCreds): any {
+  if (cred.requestScope) return scopeCancelledError();
+  const e: any = new Error("MAG recovery background nedeniyle duraklatıldı"); e.kind = "BACKGROUND_PAUSE"; return e;
+}
 function checkScopeRuntime(runtime?: RequestScopeRuntime): void {
   if (runtime?.terminalError) throw runtime.terminalError;
   if (runtime?.controller.signal.aborted) throw scopeCancelledError();
 }
 function withRequestScope(cred: StalkerCreds, headers: Record<string, string>): Record<string, string> {
   if (cred.requestScope) scopedHeaders.set(headers, cred.requestScope);
+  if (cred.endpointPolicy === "exact") exactEndpointHeaders.add(headers);
   return headers;
 }
 
@@ -136,7 +148,7 @@ export function observeMagProtection(input: {
 }
 
 function terminalMagError(error: any): boolean {
-  return ["CANCELLED", "BACKGROUND_PAUSE", "MAG_RATE_LIMIT", "MAG_PROTECTION"].includes(String(error?.kind || ""));
+  return ["CANCELLED", "BACKGROUND_PAUSE", "MAG_RATE_LIMIT", "MAG_PROTECTION", "MAG_ENDPOINT_BOUNDARY"].includes(String(error?.kind || ""));
 }
 
 export function stalkerCredsFromPlaylist(pl: Pick<Playlist, "stalkerPortal" | "stalkerMac" | "stalkerSerial" | "stalkerTimezoneMode" | "stalkerTimezone" | "stalkerPortalTimezone">): StalkerCreds {
@@ -770,7 +782,7 @@ function playbackHeadersFor(cred: StalkerCreds, ses: StalkerSession, playbackUrl
   return out;
 }
 
-type ReqOptions = { timeoutMs?: number; signal?: AbortSignal; allowNon2xxParsed?: (parsed:any, status:number)=>boolean; postForm?: boolean };
+type ReqOptions = { timeoutMs?: number; timeoutCapMs?: number; maxResponseBytes?: number; exactEndpoint?: boolean; signal?: AbortSignal; allowNon2xxParsed?: (parsed:any, status:number)=>boolean; postForm?: boolean };
 
 /**
  * v18.7.0 — ÇOKLU MAC TARAMASINDA PROXY YÖNLENDİRME (host kapsamlı).
@@ -849,6 +861,7 @@ function magPcapShapeParity(nr:any, requestMeta:{action:string;type:string}) {
 async function req(url: string, headers: Record<string, string>, options: number | ReqOptions = 20000): Promise<any> {
   const opts:ReqOptions=typeof options === "number" ? {timeoutMs:options} : (options || {});
   const scope = scopedHeaders.get(headers);
+  const exactEndpoint = opts.exactEndpoint || exactEndpointHeaders.has(headers);
   const runtime = scope ? requestScopeRuntime(scope) : undefined;
   const parentSignal = opts.signal || scope?.signal;
   checkScopeRuntime(runtime);
@@ -861,7 +874,7 @@ async function req(url: string, headers: Record<string, string>, options: number
   finally { parentSignal?.removeEventListener("abort", cancelScope); }
   checkScopeRuntime(runtime);
   if (parentSignal?.aborted) { const e: any = new Error("İşlem iptal edildi"); e.kind = "CANCELLED"; throw e; }
-  const timeoutMs=scope?.timeoutMs ?? opts.timeoutMs ?? 20000;
+  const timeoutMs=Math.min(scope?.timeoutMs ?? opts.timeoutMs ?? 20000, opts.timeoutCapMs ?? Number.POSITIVE_INFINITY);
   const c = new AbortController();
   const abortFromParent=()=>c.abort();
   const abortFromScope=()=>c.abort();
@@ -890,7 +903,72 @@ async function req(url: string, headers: Record<string, string>, options: number
       && headers["User-Agent"] === MAG320_UA
       && /timezone=Europe%2FParis/i.test(String(headers.Cookie || ""));
     const proxyRoute = scope ? scope.transport === "proxy" : magProxyHosts.size > 0 && magProxyHosts.has(hostnameOf(requestMeta.host));
-    if (proxyRoute) {
+    if (exactEndpoint) {
+      // RN's XMLHttpRequest fetch ignores redirect options. Expo's installed
+      // native fetch disables OkHttp redirects in manual mode; no unsafe fallback.
+      const exactFetch = proxyRoute ? null : (await import("expo/fetch")).fetch;
+      const panel = proxyRoute ? (await import("@/modules/panel-scan")).PanelScan : null;
+      let target = url, method = "GET", body = "";
+      const hdrs = { ...headers };
+      if (opts.postForm) {
+        const parsed = new URL(url); target = parsed.origin + parsed.pathname;
+        method = "POST"; body = parsed.searchParams.toString();
+        hdrs["Content-Type"] = "application/x-www-form-urlencoded";
+      }
+      const sameApi = (next: string): boolean => {
+        try {
+          const original = new URL(url), candidate = new URL(next);
+          return !candidate.username && !candidate.password && original.origin === candidate.origin
+            && original.pathname.replace(/\/+$/, "") === candidate.pathname.replace(/\/+$/, "");
+        } catch { return false; }
+      };
+      const stop = (reason: string): never => {
+        const error: any = new Error("Seçilen portal API sınırı dışındaki yönlendirme engellendi.");
+        error.kind = "MAG_ENDPOINT_BOUNDARY";
+        void recordDiagnostic("mag", "STALKER_ENDPOINT_BOUNDARY", { ...requestMeta, reason });
+        if (runtime) { runtime.terminalError = error; runtime.controller.abort(); }
+        throw error;
+      };
+      for (let hop = 0; ; hop++) {
+        checkScopeRuntime(runtime);
+        if (c.signal.aborted) throw scopeCancelledError();
+        if (panel) {
+          const pr = await panel.proxiedRequest(target, method, hdrs, body, timeoutMs, c.signal, opts.maxResponseBytes);
+          if (!(pr.status > 0)) {
+            const error: any = new Error("Sınırlandırılmış proxy isteği tamamlanamadı.");
+            error.kind = c.signal.aborted ? parentSignal?.aborted ? "CANCELLED" : "TIMEOUT"
+              : pr.error === "BODY_LIMIT" ? "RESPONSE_TOO_LARGE" : "PROXY";
+            throw error;
+          }
+          const map = new Map(Object.entries(pr.headers || {}).map(([key, value]) => [key.toLowerCase(), String(value)]));
+          res = { status: pr.status, ok: pr.status >= 200 && pr.status < 300, url: target, redirected: false,
+            headers: { get: (name: string) => map.get(name.toLowerCase()) || "" }, text: async () => String(pr.body || "") };
+        } else {
+          res = await exactFetch!(target, { method, headers: hdrs, ...(method === "POST" ? { body } : {}), signal: c.signal, redirect: "manual", credentials: "omit" });
+        }
+        const discard = async () => { try { await res.body?.cancel(); } catch {} };
+        if (!sameApi(String(res.url || target))) { await discard(); stop("response-endpoint-mismatch"); }
+        const isRedirect = [301, 302, 303, 307, 308].includes(Number(res.status));
+        if (!isRedirect) {
+          if (res.redirected || res.type === "opaqueredirect") { await discard(); stop("transport-followed-redirect"); }
+          break;
+        }
+        const location = String(res.headers?.get?.("location") || "");
+        let next: URL;
+        try { next = new URL(location, target); } catch { await discard(); stop("invalid-redirect-location"); }
+        if (!location || !sameApi(next!.toString())) { await discard(); stop("redirect-endpoint-mismatch"); }
+        const original = new URL(url);
+        for (const key of ["type", "action"]) {
+          const expected = original.searchParams.get(key), changed = next!.searchParams.get(key);
+          if (expected !== changed && (method !== "POST" || changed !== null)) { await discard(); stop("redirect-operation-mismatch"); }
+        }
+        if (hop >= 3) { await discard(); stop("redirect-hop-limit"); }
+        await discard();
+        next!.hash = "";
+        target = next!.toString();
+        await scope?.beforeRequest?.(target, c.signal);
+      }
+    } else if (proxyRoute) {
       // v18.7.0: çoklu-MAC taraması — istek native proxy havuzundan (bkz. setMagProxyRouting).
       const { PanelScan } = await import("@/modules/panel-scan");
       let target = url, method = "GET", body = "";
@@ -900,10 +978,11 @@ async function req(url: string, headers: Record<string, string>, options: number
         target = u.origin + u.pathname; body = u.searchParams.toString(); method = "POST";
         hdrs["Content-Type"] = "application/x-www-form-urlencoded";
       }
-      const pr = await PanelScan.proxiedRequest(target, method, hdrs, body, timeoutMs, c.signal);
+      const pr = await PanelScan.proxiedRequest(target, method, hdrs, body, timeoutMs, c.signal, opts.maxResponseBytes);
       if (!(pr.status > 0)) {
         const err: any = new Error(`Proxy isteği başarısız: ${pr.error || "proxy yok"}`);
-        err.kind = c.signal.aborted ? parentSignal?.aborted ? "CANCELLED" : "TIMEOUT" : "PROXY";
+        err.kind = c.signal.aborted ? parentSignal?.aborted ? "CANCELLED" : "TIMEOUT"
+          : pr.error === "BODY_LIMIT" ? "RESPONSE_TOO_LARGE" : "PROXY";
         void recordDiagnostic("mag", "MAG_PROXY_WIRE_FAILED", { ...requestMeta, elapsedMs: Date.now() - startedAt, error: String(pr.error || "").slice(0, 120) });
         throw err;
       }
@@ -989,6 +1068,10 @@ async function req(url: string, headers: Record<string, string>, options: number
     const finalUrl=String((res as any).url||url);
     const redirected=!!(res as any).redirected;
     const text=await res.text();
+    if (opts.maxResponseBytes && exceedsUtf8Limit(text, opts.maxResponseBytes)) {
+      const error: any = new Error("Hesap doğrulama yanıtı güvenli örnek sınırını aştı.");
+      error.kind = "RESPONSE_TOO_LARGE"; throw error;
+    }
     const decoded=parseStalkerBody(text);
     const responseHeaders: Record<string, string> = {};
     for (const name of ["content-type", "cf-mitigated", "retry-after"]) responseHeaders[name] = String(res.headers?.get?.(name) || "");
@@ -1216,9 +1299,9 @@ async function handshakeAttempt(
   let lastErr:any=null;
   for (const variant of variantsForProfile(compatProfile, learnedVariant)) {
     try {
-      if (signal?.aborted) { const e:any=new Error("MAG recovery background nedeniyle duraklatıldı"); e.kind="BACKGROUND_PAUSE"; throw e; }
+      if (signal?.aborted) throw handshakeAbortError(cred);
       await paceHandshakeAttempt(guard);
-      if (signal?.aborted) { const e:any=new Error("MAG recovery background nedeniyle duraklatıldı"); e.kind="BACKGROUND_PAUSE"; throw e; }
+      if (signal?.aborted) throw handshakeAbortError(cred);
       const hdrs=headersFor(cred,undefined,endpoint,compatProfile);
       void recordDiagnostic("mag","STALKER_HANDSHAKE_TRY",{
         endpoint, compatProfile, variant: variant.label,
@@ -1236,7 +1319,8 @@ async function handshakeAttempt(
         hdrs,
         {timeoutMs, postForm: !!variant.post, signal} as any,
       );
-      const token=String(data?.js?.token||"").trim();
+      const rawToken = data?.js?.token;
+      const token=typeof rawToken === "string" ? rawToken.trim() : "";
       if (token) {
         void recordDiagnostic("mag","STALKER_HANDSHAKE_VARIANT_OK",{endpoint,compatProfile,variant:variant.label,attempt:guard.networkAttempts});
         return {token,endpoint,random:primitiveString(data?.js?.random),compatProfile,handshakeVariant:variant.label} as StalkerSession;
@@ -1354,7 +1438,7 @@ async function stalkerHandshakeInternal(cred: StalkerCreds, signal?: AbortSignal
     });
 
     for (let ei=0; ei<plan.length; ei++) {
-      if (signal?.aborted) { const e:any=new Error("MAG recovery background nedeniyle duraklatıldı"); e.kind="BACKGROUND_PAUSE"; throw e; }
+      if (signal?.aborted) throw handshakeAbortError(cred);
       const endpoint=plan[ei], label=endpointPath(endpoint), attemptAt=Date.now();
       void recordDiagnostic("catalog","STALKER_ENDPOINT_ATTEMPT",{endpoint,path:label,index:ei});
       let endpointRejected=false;
@@ -1567,8 +1651,7 @@ function profilePayload(data:any): any {
   const js=data?.js;
   if (!js || typeof js !== "object" || Array.isArray(js)) return null;
   // "{}" veya yalnız protokol zarfı cihaz kimliğini doğrulamaz.
-  const meaningfulKeys=["id","mac","login","status","blocked","tariff_plan","expire_billing_date","phone","name","stb_type"];
-  return meaningfulKeys.some(k => js[k] !== undefined && js[k] !== null && String(js[k]) !== "") ? js : null;
+  return hasAccountIdentity(js) || accountDenial(js) !== null ? js : null;
 }
 
 /**
@@ -1705,22 +1788,231 @@ export async function stalkerChannels(cred: StalkerCreds, ses: StalkerSession, s
 
 function primitiveString(v: any): string | undefined {
   if (v === null || v === undefined || v === "") return undefined;
-  return String(v);
+  return typeof v === "string" || typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v)) ? String(v) : undefined;
+}
+
+/** Count without allocating another response-sized byte buffer. */
+function exceedsUtf8Limit(text: string, limit: number): boolean {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x80) bytes++;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) { bytes += 4; i++; }
+    else bytes += 3;
+    if (bytes > limit) return true;
+  }
+  return false;
+}
+
+function portalFlag(value: unknown): boolean | null {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  if (typeof value !== "string") return null;
+  const text = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(text)) return true;
+  if (["0", "false", "no", "off"].includes(text)) return false;
+  return null;
+}
+function accountRecord(value: unknown): Record<string, any> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : null;
+}
+function positiveAccountId(value: unknown): boolean {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value > 0;
+  if (typeof value !== "string" || !value.trim()) return false;
+  const text = value.trim();
+  return /^\d+$/.test(text) ? Number.isSafeInteger(Number(text)) && Number(text) > 0 : /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(text)
+    && !/^(?:true|false|null|undefined|anonymous|unknown|none)$/i.test(text);
+}
+function hasAccountIdentity(value: unknown): boolean {
+  const p = accountRecord(value);
+  if (!p) return false;
+  return [p.id, p.account_id, p.account_number].some(positiveAccountId)
+    || [p.login, p.username].some(name => typeof name === "string" && !!name.trim() && !/^(?:0|true|false|null|undefined|anonymous|unknown|none)$/i.test(name.trim()));
+}
+function accountDenial(value: unknown): "blocked" | "expired" | null {
+  const p = accountRecord(value);
+  if (!p) return null;
+  const status = String(primitiveString(p.status) || "").trim().toLowerCase();
+  const error = [p.error, p.message].filter(text => typeof text === "string").join(" ").toLowerCase();
+  if ([p.blocked, p.banned, p.disabled].some(flag => portalFlag(flag) === true)
+    || [p.active, p.enabled, p.auth, p.authorized].some(flag => portalFlag(flag) === false)
+    || /^(?:0|false)$/.test(status) || /\b(?:blocked|banned|disabled|inactive|deactivated|unauthorized)\b/.test(status)
+    || /authorization failed|not authorized|unauthori[sz]ed|invalid (?:mac|token)|access denied/.test(error)) return "blocked";
+  if ([p.expired, p.is_expired].some(flag => portalFlag(flag) === true) || /\b(?:expired|expiration|süresi doldu)\b/.test(status)) return "expired";
+  return null;
 }
 
 /** Portal get_profile yanıtını uygulama içi sabit tipe çevirir. */
 export function normalizeStalkerAccountInfo(profile: any): AccountInfo {
-  const p = profile && typeof profile === "object" ? profile : {};
-  const blocked = p.blocked === true || p.blocked === 1 || p.blocked === "1";
-  const inactive = p.active === false || p.active === 0 || p.active === "0";
+  const p = accountRecord(profile) || {};
+  const denied = accountDenial(p);
+  const inactive = [p.active, p.enabled].some(value => portalFlag(value) === false);
+  const expiry = [p.tariff_expired_date, p.expire_billing_date, p.exp_billing_date, p.expiration_date, p.exp_date, p.end_date]
+    .map(primitiveString).find(value => value !== undefined && parseAccountExpiryMs(value) !== null);
   return {
     username: primitiveString(p.login || p.username),
-    status: blocked ? "blocked" : primitiveString(p.status) || (inactive ? "inactive" : p.active != null || p.blocked != null ? "Active" : undefined),
+    status: denied === "blocked" ? (inactive ? "inactive" : "blocked") : denied === "expired" ? "expired"
+      : primitiveString(p.status) || (portalFlag(p.active) === true || portalFlag(p.enabled) === true ? "Active" : undefined),
     mac: primitiveString(p.mac),
     phone: primitiveString(p.phone),
     tariff_plan: primitiveString(p.tariff_plan || p.tariff_plan_name),
-    tariff_expired_date: primitiveString(p.tariff_expired_date || p.expire_billing_date || p.exp_billing_date || p.expiration_date || p.exp_date) || null,
+    tariff_expired_date: expiry || null,
   };
+}
+
+export type StalkerAccountVerification = {
+  state: "verified" | "unverified" | "blocked" | "expired";
+  accountInfo: AccountInfo;
+  evidence: string[];
+  /** Valid live rows in the sampled page, never the full channel count. */
+  liveCount: number;
+  accessKind?: "live" | "vod" | "series";
+  sampledItems?: number;
+  message?: string;
+};
+
+function accountMatchesMac(value: unknown, mac: string): boolean {
+  const p = accountRecord(value);
+  if (!p) return true;
+  for (const field of ["mac", "mac_address", "stb_mac"]) {
+    if (p[field] == null || p[field] === "") continue;
+    if (typeof p[field] !== "string" || !/^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$|^[0-9a-f]{12}$/i.test(p[field].trim())
+      || normalizeMac(p[field]) !== mac) return false;
+  }
+  return true;
+}
+
+function validAccountSample(value: unknown, kind: "live" | "vod" | "series"): boolean {
+  const row = accountRecord(value);
+  if (!row || accountDenial(row)) return false;
+  const id = row.id ?? row.ch_id ?? row.movie_id ?? row.series_id;
+  const name = row.name ?? row.title;
+  if (!positiveAccountId(id) || typeof name !== "string" || !name.trim()) return false;
+  // Series catalogue access is established by a named series; its episodes have
+  // separate commands. Live/VOD rows additionally need a usable portal command.
+  if (kind === "series") return true;
+  const command = row.cmd ?? row.url;
+  if (typeof command !== "string" || !command.trim() || /[\r\n\x00]/.test(command)) return false;
+  const target = command.trim().replace(/^(?:ffmpeg|ffrt|auto)\s+/i, "");
+  if (/^\/(?:[^\s]+)$/.test(target) && !target.startsWith("//")) return true;
+  if (!/^(?:https?|rtsp|rtmp|udp):\/\/[^\s]+$/i.test(target)) return false;
+  try { return !!new URL(target).hostname; } catch { return false; }
+}
+
+/**
+ * Account proof for bulk results. It reuses the supplied session and exact
+ * endpoint; it never discovers endpoints, generates MACs or downloads a full
+ * catalogue/stream. At most one main-info and six first-page requests are made.
+ */
+export async function stalkerVerifyAccount(
+  cred: StalkerCreds,
+  ses: StalkerSession,
+  profile: any = ses.profile,
+  opts: { signal?: AbortSignal } = {},
+): Promise<StalkerAccountVerification> {
+  const evidence: string[] = [];
+  let info = normalizeStalkerAccountInfo(profile);
+  let requests = 0;
+  const finish = (state: StalkerAccountVerification["state"], code: string, extra: Partial<StalkerAccountVerification> = {}): StalkerAccountVerification => {
+    evidence.push(code);
+    const result: StalkerAccountVerification = { state, accountInfo: info, evidence: [...evidence], liveCount: 0, ...extra };
+    void recordDiagnostic("mag", "STALKER_ACCOUNT_VERIFIED", { state, evidence: result.evidence, requests, accessKind: result.accessKind, sampledItems: result.sampledItems || 0 });
+    return result;
+  };
+  const signals = [opts.signal, cred.requestScope?.signal].filter((value, index, all): value is AbortSignal => !!value && all.indexOf(value) === index);
+  if (cred.requestScope) checkScopeRuntime(requestScopeRuntime(cred.requestScope));
+  if (signals.some(signal => signal.aborted)) throw scopeCancelledError();
+  if (typeof cred.mac !== "string" || !/^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$|^[0-9a-f]{12}$/i.test(cred.mac.trim())) return finish("unverified", "invalid-supplied-mac");
+  const mac = normalizeMac(cred.mac);
+  if (!accountMatchesMac(profile, mac)) { info = {}; return finish("unverified", "profile-mac-mismatch"); }
+  try {
+    const endpoint = new URL(ses.endpoint);
+    if (!/^https?:$/.test(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) return finish("unverified", "invalid-session-endpoint");
+    const supplied = new URL(/^https?:\/\//i.test(cred.portal) ? cred.portal : `http://${cred.portal}`);
+    if (supplied.search || supplied.hash || supplied.username || supplied.password
+      || `${supplied.origin}${supplied.pathname.replace(/\/+$/, "")}` !== `${endpoint.origin}${endpoint.pathname.replace(/\/+$/, "")}`) {
+      return finish("unverified", "session-endpoint-mismatch");
+    }
+  } catch { return finish("unverified", "invalid-session-endpoint"); }
+  if (typeof ses.token !== "string" || !ses.token.trim()) return finish("unverified", "invalid-session-token");
+  const classify = (value: unknown): "blocked" | "expired" | null => accountDenial(value)
+    || ((parseAccountExpiryMs(normalizeStalkerAccountInfo(value).tariff_expired_date) ?? Infinity) <= Date.now() ? "expired" : null);
+  const initialDenial = classify(profile);
+  if (initialDenial) return finish(initialDenial, `profile-${initialDenial}`);
+  const mergeInfo = (value: unknown) => {
+    const next = normalizeStalkerAccountInfo(value);
+    for (const [key, field] of Object.entries(next)) {
+      if (field !== undefined && field !== null && field !== "") (info as any)[key] = field;
+    }
+  };
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  for (const signal of signals) signal.addEventListener("abort", abort, { once: true });
+  const started = Date.now(), budgetMs = 20_000;
+  let budgetExpired = false;
+  const timer = setTimeout(() => { budgetExpired = true; controller.abort(); }, budgetMs);
+  const probe = async (params: Record<string, string>): Promise<any> => {
+    if (controller.signal.aborted) throw scopeCancelledError();
+    const remaining = budgetMs - (Date.now() - started);
+    if (remaining <= 0) { budgetExpired = true; controller.abort(); throw scopeCancelledError(); }
+    requests++;
+    const pending = req(buildUrl(ses.endpoint, params), headersFor(cred, ses.token, ses.endpoint, ses.compatProfile), {
+      timeoutMs: 6000, timeoutCapMs: Math.min(6000, remaining), maxResponseBytes: 1_048_576, exactEndpoint: true, signal: controller.signal,
+    });
+    let cancel: () => void = () => {};
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      cancel = () => reject(scopeCancelledError());
+      controller.signal.addEventListener("abort", cancel, { once: true });
+      if (controller.signal.aborted) cancel();
+    });
+    try { return await Promise.race([pending, cancelled]); }
+    finally { controller.signal.removeEventListener("abort", cancel); }
+  };
+  const nonterminal = (error: any, stage: string): StalkerAccountVerification | null => {
+    if (signals.some(signal => signal.aborted) || (!budgetExpired && terminalMagError(error))) throw error;
+    if (budgetExpired) return finish("unverified", "verification-time-budget");
+    if (error?.kind === "RESPONSE_TOO_LARGE") return finish("unverified", "response-size-limit");
+    if (/authorization failed|not authorized|unauthori[sz]ed|invalid (?:mac|token)|access denied/i.test(String(error?.snippet || ""))) return finish("blocked", `${stage}-explicit-auth-denial`);
+    evidence.push(`${stage}-unavailable`);
+    return null;
+  };
+  try {
+    let main: Record<string, any> | null = null;
+    try {
+      const data = await probe({ type: "account_info", action: "get_main_info" });
+      main = accountRecord(data?.js);
+      if (!accountMatchesMac(main, mac)) { info = {}; return finish("unverified", "main-info-mac-mismatch"); }
+      const denied = classify(main);
+      if (denied) { mergeInfo(main); return finish(denied, `main-info-${denied}`); }
+      if (hasAccountIdentity(main)) evidence.push("main-info-account-identity");
+      else evidence.push("main-info-no-account-identity");
+    } catch (error) { const stop = nonterminal(error, "main-info"); if (stop) return stop; }
+    const p = accountRecord(profile);
+    if (hasAccountIdentity(p)) evidence.push("profile-account-identity");
+    if (!hasAccountIdentity(p) && !hasAccountIdentity(main)) return finish("unverified", "missing-account-identity");
+    // Keep useful profile fields when this optional endpoint omits them. The
+    // account proof still requires a positive identity and actual list access.
+    mergeInfo(main);
+    for (const [type, kind] of [["itv", "live"], ["vod", "vod"], ["series", "series"]] as const) {
+      for (const page of [0, 1]) {
+        try {
+          const data = await probe({ type, action: "get_ordered_list", p: String(page), ...(type === "itv" ? { genre: "*" } : { category: "*" }) });
+          const denied = classify(accountRecord(data?.js));
+          if (denied) return finish(denied, `${kind}-explicit-${denied}`);
+          if (!isExplicitListShape(data)) { evidence.push(`${kind}-unusable-page`); continue; }
+          const rows = rowsFromListShape(data).slice(0, 128);
+          const count = rows.filter(row => validAccountSample(row, kind)).length;
+          if (count > 0) return finish("verified", `${kind}-accessible-sample`, { accessKind: kind, sampledItems: count, liveCount: kind === "live" ? count : 0 });
+          evidence.push(`${kind}-no-valid-sample`);
+        } catch (error) { const stop = nonterminal(error, kind); if (stop) return stop; }
+      }
+    }
+    return finish("unverified", "no-accessible-catalogue-sample");
+  } finally {
+    clearTimeout(timer);
+    for (const signal of signals) signal.removeEventListener("abort", abort);
+  }
 }
 
 type StalkerMediaType = "itv" | "vod" | "series";

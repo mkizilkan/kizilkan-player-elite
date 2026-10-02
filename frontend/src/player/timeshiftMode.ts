@@ -38,5 +38,7 @@ export async function loadLiveTimeshiftMode(): Promise<LiveTimeshiftMode> {
 }
 
 export async function saveLiveTimeshiftMode(mode: LiveTimeshiftMode): Promise<void> {
-  try { await storage.setItem(LIVE_TIMESHIFT_MODE_KEY, normalizeLiveTimeshiftMode(mode)); } catch { /* ayar yazılamazsa varsayılan geçerli */ }
+  if (await storage.setItem(LIVE_TIMESHIFT_MODE_KEY, normalizeLiveTimeshiftMode(mode)) === false) {
+    throw new Error("Canlı zaman kaydırma ayarı kaydedilemedi.");
+  }
 }

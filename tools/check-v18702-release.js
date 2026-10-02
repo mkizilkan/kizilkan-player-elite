@@ -15,6 +15,7 @@ const bulk = rd('frontend/src/utils/magBulk.ts');
 const scan = rd('frontend/src/utils/magBulkScan.ts');
 const stalker = rd('frontend/src/utils/stalker.ts');
 const add = rd('frontend/app/add-playlist.tsx');
+const discovery = rd('frontend/src/utils/magPortalDiscovery.ts');
 const app = JSON.parse(rd('frontend/app.json'));
 
 // Sürüm (ileri uyumlu)
@@ -36,7 +37,7 @@ need(/YOL-ÖNCELİKLİ SÜPÜRME/.test(bulk), 'B: akıllı aday sıralaması yok
 need(/8081, 8082, 8083/.test(bulk) && /25462, 25463/.test(bulk) && /9090/.test(bulk), 'B: geniş port listesi eksik');
 
 // C — canlı bilgilendirme
-need(/onStage\?:/.test(scan) && /Portal aranıyor ·/.test(scan) && /Portal bulundu:/.test(scan), 'C: keşif canlı bilgilendirme yok');
+need(/onStage\?:/.test(scan) && /Portal keşfi ·/.test(discovery) && /onPortalDiscovery/.test(scan), 'C: keşif canlı bilgilendirme yok');
 need(/stageMsg/.test(ui), 'C: ekranda canlı satır yok');
 
 // D — analiz modları + elle paralel sayı

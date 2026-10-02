@@ -79,7 +79,7 @@ need(/export async function discoverMagPortal/.test(stalker), 'P6: portal keşif
 need(/export function setMagProxyRouting/.test(stalker) && /magProxyHosts/.test(stalker), 'P6: MAG proxy yönlendirme yok');
 need(/fun proxiedRequest/.test(proxyPool) && /instanceFollowRedirects = false/.test(proxyPool), 'P6: başlık taşıyan proxy isteği yok');
 need(/AsyncFunction\("proxiedRequest"\)/.test(psModule) && /proxiedRequest:/.test(psIndex), 'P6: proxiedRequest köprüsü yok');
-need(/export async function runMagBulkScan/.test(magScan) && /discoverMagPortal/.test(magScan), 'P6: tarama orkestratörü yok');
+need(/export async function runMagBulkScan/.test(magScan) && /discoverMagHosts/.test(magScan) && /stalkerVerifyAccount/.test(magScan), 'P6: tarama orkestratörü yok');
 need(/mag-bulk/.test(layout), 'P6: mag-bulk ekranı Stack\'e kayıtlı değil');
 need(/runMagBulkScan/.test(magUi) && /Çoklu MAC/.test(magUi), 'P6: çoklu-MAC ekranı yok');
 need(/stalker-bulk-btn/.test(rd('frontend/app/add-playlist.tsx')), 'P6: MAG bölümünde çoklu-MAC girişi yok');

@@ -180,7 +180,20 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.3 RC1 — dal `v18.7.3-rc1-gpt-audit`)
+## 9. Mevcut durum (v18.7.4 RC1 — dal `v18.7.4-rc1-mac-discovery`)
+
+Kullanıcının gerçek MAC ekran görüntüleri ve bağlı DEV logları sonrasında yeni patch:
+MAC'siz tek host/API keşfi → otomatik veya manuel tek endpoint seçimi → exact API üzerinde
+hesap kimliği ve sınırlı katalog erişimi doğrulaması. HTTP 200/token/genel cihaz profili
+tek başına geçerli hesap değildir. Bitiş yılı 0002 ve bozuk tarihler bilinmiyor kabul edilir.
+onPause eski pause işareti ve gecikmiş always ayarı yarışları kaynak/fixture ile kanıtlanıp
+düzeltildi. Tüm ilk görüntü gecikmelerinin giderildiği henüz cihazda kanıtlanmadı.
+Taban `fbbe2d7d`; ayrıntı `AI-DEVIR-v18.7.4.md`, `GPT-v18.7.4-MAC-PLAYER-RAPORU.md`
+ve `GPT-OPUS-GUNCELLEME-DEVRI.md`. Native PanelScan Kotlin derlemesi geçti. Son ek bağımsız
+bulgular sonrası final denetim, DEV APK/kurulum, ayrı dal push ve manuel Actions sonuçları
+bu belgelerde gerçek çıktılarla güncellenir. Henüz üretilmemiş APK'yı tamamlandı sayma.
+
+### Önceki tamamlanmış dağıtım: v18.7.3
 
 Kullanıcı, kaynak incelemesindeki tüm bulguların uygulanmasını onayladı. MAG exact/fallback/all,
 koruma gözlemi, sonuç seçimi, kategorili TXT ve boyutu sınırlı giriş; seçmeli yedek merge/journal;

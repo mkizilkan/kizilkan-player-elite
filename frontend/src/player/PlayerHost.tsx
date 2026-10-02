@@ -77,6 +77,7 @@ import { createFlightRecorderChildTrace, getCurrentFlightRecorderTrace, markTask
 import { storage } from "@/src/utils/storage";
 import { alternateHostUrls, isSourceRetryKind, loadPreferredHost, rememberWorkingHost, originOf } from "@/src/player/hostFailover";
 import { LIVE_TIMESHIFT_MODE_DEFAULT, loadLiveTimeshiftMode, type LiveTimeshiftMode } from "@/src/player/timeshiftMode";
+import { TimeshiftPauseOwnership } from "@/src/player/timeshiftPauseOwnership";
 import { isLocalMediaId, loadLocalQueue, saveLocalProgress, writeLocalPayload, type LocalQueueItem } from "@/src/utils/localMedia";
 import { loadBackgroundPlayback } from "@/src/player/backgroundPlayback";
 import { startNativeDownload } from "@/src/utils/nativeDownloads";
@@ -460,12 +461,26 @@ export default function PlayerHost() {
   // v17.10.2 — provider DVR olmasa da app-owned disk rolling timeshift.
   const [liveTimeshift, setLiveTimeshift] = useState<LiveTimeshiftState>(EMPTY_LIVE_TIMESHIFT);
   const liveTimeshiftGenerationRef = useRef(0);
-  const [liveTimeshiftMode, setLiveTimeshiftMode] = useState<LiveTimeshiftMode>(LIVE_TIMESHIFT_MODE_DEFAULT);
+  const [loadedLiveTimeshiftMode, setLiveTimeshiftMode] = useState<LiveTimeshiftMode>(LIVE_TIMESHIFT_MODE_DEFAULT);
+  const [liveTimeshiftModeLoadedOwner, setLiveTimeshiftModeLoadedOwner] = useState("");
+  const liveTimeshiftModeLoadOwnershipRef = useRef<TimeshiftPauseOwnership | null>(null);
+  if (!liveTimeshiftModeLoadOwnershipRef.current) liveTimeshiftModeLoadOwnershipRef.current = new TimeshiftPauseOwnership();
+  const liveTimeshiftModeLoadOwner = liveTimeshiftModeLoadOwnershipRef.current.update({
+    source, visible, profileId: String(activeProfile.id), playlistId: String(activePlaylist?.id || ""),
+    channelId: String(params.id || ""), requestIdentity: "timeshift-mode-setting", mode: "setting-load",
+  });
+  const liveTimeshiftModeReady = !!liveTimeshiftModeLoadOwner && liveTimeshiftModeLoadedOwner === liveTimeshiftModeLoadOwner;
+  // A persistent host may still hold a previous "always" value while the next
+  // request reads its setting. Only an owned result can enable the recorder.
+  const liveTimeshiftMode = liveTimeshiftModeReady ? loadedLiveTimeshiftMode : LIVE_TIMESHIFT_MODE_DEFAULT;
   /** v18.0.0: telemetri kapanışlarında güncel mod (effect bağımlılığı eklemeden). */
   const liveTimeshiftModeRef = useRef<LiveTimeshiftMode>(LIVE_TIMESHIFT_MODE_DEFAULT);
   liveTimeshiftModeRef.current = liveTimeshiftMode;
-  /** "onPause" modunda duraklatmayla devreye alınan kanal+adres anahtarı. */
+  /** "onPause" intent is owned by one external play request and its upstream headers. */
   const [liveTimeshiftArmKey, setLiveTimeshiftArmKey] = useState("");
+  const liveTimeshiftPauseOwnershipRef = useRef<TimeshiftPauseOwnership | null>(null);
+  if (!liveTimeshiftPauseOwnershipRef.current) liveTimeshiftPauseOwnershipRef.current = new TimeshiftPauseOwnership();
+  const liveTimeshiftPauseOwnerRef = useRef("");
   /** Duraklatmayla devreye alındı: tampon hazır olunca OYNATMA, başa sar ve duraklat. */
   const liveTimeshiftStartPausedRef = useRef(false);
 
@@ -1014,25 +1029,45 @@ export default function PlayerHost() {
     return { ...basePlaybackRequest, url: candidate, contentType } as typeof basePlaybackRequest;
   }, [basePlaybackRequest, playbackCandidates, playbackUrlIndex]);
 
-  // v17.10.3: mod her oynatıcı açılışında ayardan okunur (Ayarlar'da değişirse sonraki açılışta geçerli).
+  // Reload for a new external request/profile/list; stale async settings cannot
+  // enable a recorder or overwrite a newer request's selected mode.
   useEffect(() => {
-    if (!visible) return;
+    if (!liveTimeshiftModeLoadOwner) return;
     let alive = true;
-    void loadLiveTimeshiftMode().then(m => { if (alive) setLiveTimeshiftMode(m); });
+    void loadLiveTimeshiftMode().catch(() => LIVE_TIMESHIFT_MODE_DEFAULT).then(mode => {
+      if (!alive || !liveTimeshiftModeLoadOwnershipRef.current?.owns(liveTimeshiftModeLoadOwner)) return;
+      setLiveTimeshiftMode(mode);
+      setLiveTimeshiftModeLoadedOwner(liveTimeshiftModeLoadOwner);
+    });
     return () => { alive = false; };
-  }, [visible]);
+  }, [liveTimeshiftModeLoadOwner]);
 
-  /** Bu kanal+adres için duraklatmayla devreye alındı mı? (kanal değişince kendiliğinden düşer) */
-  const liveTimeshiftCurrentArmKey = `${String(channel?.id || "")}|${String(playbackRequest?.url || "")}`;
+  // PlayerContext changes source identity for every open/zap, including reopening the
+  // same channel. Engine retry, seek and go-live keep that external request identity.
+  const liveTimeshiftCurrentArmKey = liveTimeshiftPauseOwnershipRef.current.update({
+    source, visible, profileId: String(activeProfile.id), playlistId: String(activePlaylist?.id || ""),
+    channelId: String(channel?.id || ""), requestIdentity: playbackSourceIdentity(playbackRequest), mode: liveTimeshiftMode,
+  });
+  if (liveTimeshiftPauseOwnerRef.current !== liveTimeshiftCurrentArmKey) {
+    liveTimeshiftPauseOwnerRef.current = liveTimeshiftCurrentArmKey;
+    liveTimeshiftStartPausedRef.current = false;
+  }
   const liveTimeshiftArmedByPause = liveTimeshiftMode === "onPause" && !!liveTimeshiftArmKey && liveTimeshiftArmKey === liveTimeshiftCurrentArmKey;
-  // Kanal değişince "duraklatılmış başlat" bayrağı başka kanala sızmasın.
-  useEffect(() => { liveTimeshiftStartPausedRef.current = false; castResumePendingRef.current = 0; castRemotePositionRef.current = 0; }, [activePlaylist?.id, channel?.id]);
+  useEffect(() => {
+    setLiveTimeshiftArmKey(previous => previous === liveTimeshiftCurrentArmKey ? previous : "");
+  }, [liveTimeshiftCurrentArmKey]);
+  useEffect(() => { castResumePendingRef.current = 0; castRemotePositionRef.current = 0; }, [activePlaylist?.id, channel?.id]);
 
   const liveTimeshiftEligible = !!(
-    visible && sessionKind === "live" && !castSession && !castDetachLocal && Platform.OS === "android" && KizilkanNativeCore.available &&
+    liveTimeshiftModeReady && visible && sessionKind === "live" && !castSession && !castDetachLocal && Platform.OS === "android" && KizilkanNativeCore.available &&
     playbackRequest?.url && /^https?:\/\//i.test(String(playbackRequest.url)) &&
     (liveTimeshiftMode === "always" || liveTimeshiftArmedByPause || recordForcesTimeshift)
   );
+  const liveTimeshiftPrepareContextRef = useRef({ timeshiftMode: liveTimeshiftMode, armedByPause: false, recordForced: false, pauseOwner: "" });
+  liveTimeshiftPrepareContextRef.current = {
+    timeshiftMode: liveTimeshiftMode, armedByPause: liveTimeshiftArmedByPause,
+    recordForced: recordForcesTimeshift, pauseOwner: liveTimeshiftCurrentArmKey,
+  };
   /**
    * v17.10.3 — ÇİFT BAĞLANTI DÜZELTMESİ. Effect eskiden playbackRequest?.headers
    * NESNESİNE bağlıydı; içerik aynı kalsa bile nesne yenilenince effect yeniden
@@ -1040,9 +1075,9 @@ export default function PlayerHost() {
    * saniyede iki LIVE_TIMESHIFT_PREPARE). Artık içerikten türeyen anahtar kullanılır.
    */
   const liveTimeshiftHeadersKey = useMemo(() => {
-    try { return JSON.stringify(playbackRequest?.headers || {}); } catch { return ""; }
-  }, [playbackRequest?.headers]);
-  const liveTimeshiftRequestKey = JSON.stringify([activeProfile?.id || "", activePlaylist?.id || "", playbackSourceIdentity(playbackRequest)]);
+    return playbackSourceIdentity(playbackRequest);
+  }, [playbackRequest]);
+  const liveTimeshiftRequestKey = JSON.stringify([liveTimeshiftCurrentArmKey, activeProfile?.id || "", activePlaylist?.id || "", playbackSourceIdentity(playbackRequest)]);
   const liveTimeshiftRequestOwnerRef = useRef("");
   const liveTimeshiftMatches = !!playbackRequest?.url && liveTimeshift.upstreamUrl === playbackRequest.url && liveTimeshiftRequestOwnerRef.current === liveTimeshiftRequestKey;
   const liveTimeshiftReady = liveTimeshiftEligible && liveTimeshiftMatches && liveTimeshift.phase === "ready" && !!liveTimeshift.localUrl;
@@ -1054,6 +1089,8 @@ export default function PlayerHost() {
     let cancelled = false;
     let sessionId = "";
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    const stillOwnsRequest = () => !cancelled && generation === liveTimeshiftGenerationRef.current
+      && !!liveTimeshiftPauseOwnershipRef.current?.owns(liveTimeshiftCurrentArmKey);
 
     if (!liveTimeshiftEligible || !upstreamUrl) {
       liveTimeshiftRequestOwnerRef.current = "";
@@ -1066,20 +1103,21 @@ export default function PlayerHost() {
     const startedAt = Date.now();
     void recordDiagnostic("player", "LIVE_TIMESHIFT_PREPARE", {
       channelId: String(channel?.id || ""), candidateIndex: playbackUrlIndex, maxWindowSeconds: LIVE_TIMESHIFT_WINDOW_SECONDS, maxBytes: LIVE_TIMESHIFT_MAX_BYTES,
+      ...liveTimeshiftPrepareContextRef.current,
     }, { sessionId: playerDiagnosticSessionRef.current, stage: "timeshift", outcome: "started" });
 
     const failOpen = async (reason: string) => {
       if (sessionId) await KizilkanNativeCore.stopLiveTimeshift(sessionId).catch(() => false);
-      if (cancelled || generation !== liveTimeshiftGenerationRef.current) return;
+      if (!stillOwnsRequest()) return;
       setLiveTimeshift({ phase: "bypass", upstreamUrl, sessionId: "", localUrl: "", mode: "", windowSeconds: 0, diskBytes: 0, error: reason });
       setRecoveryMessage(null);
       void recordDiagnostic("player", "LIVE_TIMESHIFT_BYPASS", { channelId: String(channel?.id || ""), reason, elapsedMs: Date.now() - startedAt }, { sessionId: playerDiagnosticSessionRef.current, stage: "timeshift", outcome: "fallback" });
     };
 
     const pollReady = async () => {
-      if (!sessionId || cancelled || generation !== liveTimeshiftGenerationRef.current) return;
+      if (!sessionId || !stillOwnsRequest()) return;
       const status = await KizilkanNativeCore.getLiveTimeshiftStatus(sessionId).catch(() => null);
-      if (cancelled || generation !== liveTimeshiftGenerationRef.current) return;
+      if (!stillOwnsRequest()) return;
       const ready = !!status?.ready && !!status?.running && !!status?.localUrl;
       if (ready) {
         setLiveTimeshift({
@@ -1112,12 +1150,12 @@ export default function PlayerHost() {
       // The persistent Media3 object must relinquish its previous upstream
       // before the recorder opens the single account connection.
       await releaseLocalSourceRef.current();
-      if (cancelled || generation !== liveTimeshiftGenerationRef.current) return null;
+      if (!stillOwnsRequest()) return null;
       return KizilkanNativeCore.startLiveTimeshift(
         upstreamUrl, playbackRequest?.headers || {}, LIVE_TIMESHIFT_WINDOW_SECONDS, LIVE_TIMESHIFT_MAX_BYTES,
       );
     })().then(async initial => {
-      if (cancelled || generation !== liveTimeshiftGenerationRef.current) {
+      if (!stillOwnsRequest()) {
         const orphan = String(initial?.sessionId || "");
         if (orphan) await KizilkanNativeCore.stopLiveTimeshift(orphan).catch(() => false);
         return;
@@ -1151,7 +1189,7 @@ export default function PlayerHost() {
         }, { sessionId: playerDiagnosticSessionRef.current, stage: "timeshift", outcome: "stopped" });
       }
     };
-  }, [liveTimeshiftEligible, playbackRequest?.url, liveTimeshiftHeadersKey, channel?.id, playbackUrlIndex, activePlaylist?.id, activeProfile?.id]);
+  }, [liveTimeshiftEligible, playbackRequest?.url, liveTimeshiftHeadersKey, channel?.id, playbackUrlIndex, activePlaylist?.id, activeProfile?.id, liveTimeshiftCurrentArmKey]);
 
   // Engine traffic is gated until the local rolling window is ready. This avoids
   // downloading the same live stream twice. Unsupported formats fail open to the
@@ -3171,10 +3209,11 @@ export default function PlayerHost() {
      * anından oynar. Aşağıdaki normal duraklatma kodu yine çalışır.
      */
     if (sessionKind === "live" && isPlaying && liveTimeshiftMode === "onPause" && !liveTimeshiftArmedByPause
-        && !castSession && Platform.OS === "android" && KizilkanNativeCore.available) {
+        && !castSession && Platform.OS === "android" && KizilkanNativeCore.available
+        && liveTimeshiftPauseOwnershipRef.current?.owns(liveTimeshiftCurrentArmKey)) {
       liveTimeshiftStartPausedRef.current = true;
       setLiveTimeshiftArmKey(liveTimeshiftCurrentArmKey);
-      void recordDiagnostic("player", "LIVE_TIMESHIFT_ARM_ON_PAUSE", { channelId: String(channel?.id || "") },
+      void recordDiagnostic("player", "LIVE_TIMESHIFT_ARM_ON_PAUSE", { channelId: String(channel?.id || ""), pauseOwner: liveTimeshiftCurrentArmKey },
         { sessionId: playerDiagnosticSessionRef.current, stage: "timeshift", outcome: "started" });
     }
     if (v2Profile.engine === "mpv") {

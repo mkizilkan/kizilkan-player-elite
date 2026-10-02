@@ -1,4 +1,18 @@
-# v18.7.3 RC1 GÜNCEL DEVİR — 2 Ekim 2026
+# v18.7.4 RC1 GÜNCEL DEVİR — 2 Ekim 2026
+
+Bu bölüm aşağıdaki tarihî başlıklardan üstündür. Güncel çalışma sürümü **18.7.4 / 180704 /
+GPT ELITE v18.7.4 RC1**, dal `v18.7.4-rc1-mac-discovery`, taban `fbbe2d7d`.
+MAC'siz portal/API keşfi, tek endpoint seçimi, gerçek hesap/katalog erişimi doğrulaması,
+bozuk bitiş tarihi ve onPause sahiplik/ayar yarışları düzeltildi. Ayrıntılı kanıt ve önce/sonra
+tablosu `GPT-v18.7.4-MAC-PLAYER-RAPORU.md`; teknik devir `AI-DEVIR-v18.7.4.md`;
+dosya bazında Opus kaydı `GPT-OPUS-GUNCELLEME-DEVRI.md`.
+Native Kotlin kontrolü geçti. Son bağımsız bulgular sonrası final test/DEV kurulum/push/manuel
+Actions sonuçları bu belgelerde güncellenecek. Gerçek hesap/video erişimi fixture başarısı
+ile kanıtlanmış sayılmaz. Uygulama verileri silinmez; ham hesap/log verisi Git'e alınmaz.
+
+---
+
+# v18.7.3 RC1 GEÇMİŞ DEVİR — 2 Ekim 2026
 
 Bu bölüm aşağıdaki tarihî başlıklardan üstündür. Güncel sürüm **18.7.3 / 180703 /
 GPT ELITE v18.7.3 RC1**, dal `v18.7.3-rc1-gpt-audit`, taban `4240f6cc`.

@@ -65,7 +65,8 @@ function load(fetchImpl) {
       removeItem: async (k) => { memory.delete(k); return true; },
     }};
     if (id === 'expo-crypto') return { CryptoDigestAlgorithm: { MD5:'MD5', SHA1:'SHA1', SHA256:'SHA256' }, digestStringAsync: async (_a, v) => ('abc123' + v).padEnd(64, '0').slice(0,64) };
-    return require(id);
+    if (id === '@/src/utils/accountExpiry') return require('./_account-expiry-runtime')();
+      return require(id);
   };
   const fastSetTimeout = (fn, ms, ...args) => ms <= 6000 ? setTimeout(fn, 0, ...args) : setTimeout(fn, ms, ...args);
   const box = { module:{exports:{}}, exports:{}, require:req, console, URL, URLSearchParams, AbortController, setTimeout:fastSetTimeout, clearTimeout, fetch:fetchImpl };

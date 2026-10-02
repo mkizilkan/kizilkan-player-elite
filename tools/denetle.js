@@ -41,6 +41,10 @@ if (process.cwd() !== PROJECT_ROOT) process.chdir(PROJECT_ROOT);
 // TypeScript artık tools/_ts.js ile taşınabilir şekilde çözülür (sabit yol yok).
 
 const CHECKS = [
+  ["test-mag-action-ownership.js", "v18.7.4 MAG add/export action ownership and profile ABA", ""],
+  ["test-mag-portal-discovery.js", "v18.7.4 MAC-free portal discovery/path/protection/cancel", ""],
+  ["test-mag-account-validation.js", "v18.7.4 real Stalker account/access/date validation", ""],
+  ["test-timeshift-onpause-ownership.js", "v18.7.4 pause intent lifecycle/source ownership", ""],
   ["test-typescript-semantic-fixtures.js", "v18.7.3 semantic fixture diagnostics/path/negative regression", ""],
   ["test-storage-strict-runtime.js", "v18.7.3 native/web strict storage read and source preservation", ""],
   ["test-pin-entry-runtime.js", "v18.7.3 PIN entry length/scope/error/busy behavior", ""],
