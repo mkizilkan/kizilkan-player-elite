@@ -186,7 +186,7 @@ Tam Kotlin yolları `frontend/modules/<modül>/android/src/main/java/expo/module
 | `node tools/test-proxy-cancellation-runtime.js` | Gerçek Kotlin pool/registration ile yavaş HTTP/pre-cancel/heartbeat PASS. |
 | `node tools/test-backup-security-runtime.js` | Gerçek WebCrypto/Node PBKDF ve native wrapper sözleşmeleri PASS. |
 | `node tools/test-backup-security-runtime.js --native` | Doğrudan BackupCrypto.kt, 600k: 9 native grup ve iki yönlü PIN uyumu PASS; Unicode parola, kısa/uzun input, cancel, tamper. |
-| TypeScript/denetle | Son kaynakla TypeScript exit 0; denetle 110 kapı PASS / exit 0. |
+| TypeScript/denetle | Son uygulama kaynaklarıyla TypeScript exit 0; E13 araç düzeltmesi sonrası denetle 111 kapı PASS / exit 0. |
 | Expo Android prebuild `--no-install` | Başarılı. |
 | Üç native `compileReleaseKotlin` | BUILD SUCCESSFUL, 5m40s. |
 | Yerel DEV APK + release Kotlin modülleri — önceki tur | Tam `assembleDebug` BUILD SUCCESSFUL, 6m17s; release APK değildir. Üç `compileReleaseKotlin` modül kontrolü ayrıca başarılı. |
@@ -198,11 +198,29 @@ Windows JDK 17 Unix socket geçici yolu için `JAVA_TOOL_OPTIONS=-Djdk.net.unixd
 
 ### Final dağıtım kaydı
 
-Henüz kaynak commit'i/push/manuel Actions run yapılmadı. Workflow `build-apk.yml`, workflow_dispatch: new_architecture=true/build_type=release/make_release=true. Bu dal push filtresinde değil; otomatik build eklenmedi. Final komutlar, commit, run/APK sonucu aşağıya gerçek değerlerle eklenecek.
+Kaynak commit'i **`096fddfeccb7a9dd1b6e46cfceec30a408653926`**, 95 dosya. `git push -u origin v18.7.3-rc1-gpt-audit` başarılı. Ana dal değiştirilmedi. Workflow `build-apk.yml`, **workflow_dispatch**: new_architecture=true/build_type=release/make_release=true. Bu dal push filtresinde değil; otomatik build eklenmedi.
+
+İlk manuel run **36983481175**, başlangıç **2 Ekim 2026 11:20:33 Europe/Istanbul**: [Actions kaydı](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/36983481175). Run kaynak SHA'sı yukarıdaki commit ile aynı. **Denetle'de tek eski semantik fixture başarısız oldu; APK derlemesi başlamadı ve release üretilmedi.** Tam uygulama TypeScript kapısı denetle içinde geçti. Aşağıdaki araç düzeltmesinden sonra son kaynak ayrıca doğrulanıp yeniden manuel tetiklenecek.
+
+Yerel DEV APK: `frontend/android/app/build/outputs/apk/debug/app-debug.apk`; SHA-256 **`94cbf3e951b4db93d1e0cd531b3bf998f0129ef3d31b8eec7ab8e6202fb19ae1`**. Yerel paketin derlenmesinden sonra yalnız test altyapısı ve dokümantasyon değişti; uygulama kodu yerel DEV paketiyle aynıdır. DEV paketi Metro kapalıyken çalışan gömülü JS içerir.
 
 ADB'de `c3a4097e` seri numaralı **OnePlus 7 Pro / GM1910** bağlıdır. Cihazdaki **18.7.2-dev**, kullanıcı verileri korunarak **18.7.3-dev / 180703** olarak güncellendi; uygulama kaldırılmadı/veri silinmedi. PID 27529 canlı ve ilgili PID logunda crash/JS error eşleşmesi 0. Telefon kilitli/dozing olduğu için görünür uygulama ekranı kabulü henüz tamamlanmadı. TV focus, 1000 MAC kaydırma, SAF provider, Cast receiver, canlı AES/HW decoder ve ilgili Android JSI/Room senaryoları için gerçek cihaz kanıtı henüz yok. Tarihî timeshift donması tamamen çözüldü iddiası yok.
 
-Final bekleyen işler: cihaz kilidi açıldıktan sonra görünür DEV ekranı/açılış kabulü; commit/push; manuel release Actions run ve APK bağlantısı. Release CI paketi ve ürünün cihaz kabul senaryoları ayrı kaydedilecek. Bu alanlar root'un gerçek çıktılarıyla tamamlanacak; henüz yapılmayan CI/ekran kabulü başarılı diye işaretlenmedi.
+Final bekleyen işler: kilit nedeniyle görünür DEV ekranı kabulü ve yeni manuel release Actions sonucu/APK bağlantısı. Kullanıcı telefonu çıkarmak zorunda olduğu için kurulum tamamlandıktan sonra telefonun artık gerekli olmadığı bildirildi. Release CI paketi ve ürünün cihaz kabul senaryoları ayrı kaydedilecek; henüz yapılmayan CI/ekran kabulü başarılı diye işaretlenmedi.
+
+### 2 Ekim — ilk CI'da kanıtlanan araç hatası (E13)
+
+`check-v15220-typescript-semantic.js`, gerçek persist bloğunu ayrı programda derlerken yeni guard'ın `currentPid/requestedProfile/activeSwitchGeneration/generation/isCatalogRestoreActive` bağımlılıklarını fixture'da tanımlamıyordu. Ayrıca bu dosya ve `check-v15221-typescript-media3.js`, diagnostic dosya adını ham `===` ile filtreliyordu. Windows ters slash yolu, TypeScript'in normalleştirilmiş yolu ile eşleşmeyince hatalar eleniyordu; Linux'ta elenmeyip hatalı fixture ortaya çıktı. İlk yerel 110 PASS çıktısında bu iki küçük semantik fixture güvenilir kanıt sayılmaz; bağımsız tam proje TypeScript kontrolü ve diğer testler ayrı geçmiştir. Araçlar gerçek compiler diagnostic'lerini koruyacak ve negatif örneklerle doğrulanacak. Uygulama kodu/DEV APK değişmeyecek; düzeltme yalnız test altyapısındadır.
+
+| Dosya | Uygulanan düzeltme | Doğrulama amacı |
+|---|---|---|
+| `tools/_typescript-semantic-fixture.js` | Gerçek TypeScript compiler host'u ile bellek içinde fixture; yol slash/case eşlemesi yalnız sanal source yüklerken yapılır. **Tüm diagnostics korunur**, `types: []` ile ilgisiz ortam ambient paketleri çıkarılır. | Windows/POSIX dosya adları semantic hatayı eleyemez; standart TypeScript kütüphaneleri gerçektir. |
+| `tools/check-v15220-typescript-semantic.js` | Gerçek persist bloğu, dış guard bağımlılıklarının doğru tipleriyle derlenir. AST ile `await storage.setItem` ve blok sonunda `await persist` korunur. | Promise<boolean> yanlışlıkla Promise<void> kuyruğuna döndürülemez; kalıcı seçim yazımı beklenmeden bitmez. |
+| `tools/check-v15221-typescript-media3.js` | Elle kopyalanmış union yerine gerçek `src/player/v2/types.ts`; gerçek MEDIA3_ERROR engine/decoder/surface ifadeleri AST ile seçilip compiler'a verilir. | Union alanı gerçek source narrowing'i olmadan okunamaz. Eski regex kontrolleri ayrıca korunur. |
+| `tools/test-typescript-semantic-fixtures.js` | Windows ve POSIX yollarında pozitif derleme; tanımsız isim TS2304, yanlış Promise TS2322, yanlış decoder TS2339 ve iki eksik await negatif senaryosu. | Test altyapısının hatayı gerçekten yakaladığı doğrulanır. |
+| `tools/denetle.js` | Yukarıdaki negatif test yeni zorunlu kapıdır. | Eski kapılar kaldırılmadı veya gevşetilmedi. |
+
+İki düzeltilmiş gate ve yeni negatif test ayrı çalıştırıldı: PASS. Root/frontend/tools çalışma dizinlerinde 6/6 kontrol PASS. Bütün denetle tekrar çalıştırıldı: **111 kapı PASS / exit 0**, tam proje TypeScript kapıları dahil. Yeni manuel run kaydı aşağıya eklenecek. `git diff 096fddfe -- frontend` boş: application kodu ilk DEV paketi ile aynıdır. İlk CI APK aşamasına ulaşmadığından üretilmiş başarısız bir release APK yoktur; 18.7.3 uygulama sürümü korunur.
 
 ### Opus sonraki her güncellemede
 

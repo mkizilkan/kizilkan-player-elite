@@ -1,6 +1,6 @@
 # S01 — Native tarama, journal ve hesap ayrıştırma devri
 
-Tarih: 2 Ekim 2026. Dal: `v18.7.3-rc1-gpt-audit`. İncelenen taban `4240f6cc`, hedef `18.7.3`. Bu bölüm aynı sürümde uygulanmak üzere yeniden kaynaktan doğrulanmıştır. Commit/push ve gerçek abonelik taraması yapılmamıştır.
+Tarih: 2 Ekim 2026. Dal: `v18.7.3-rc1-gpt-audit`. İncelenen taban `4240f6cc`, hedef `18.7.3`. Bu bölüm aynı sürümde uygulanmak üzere yeniden kaynaktan doğrulanmıştır. Native kaynaklar **096fddfe** commit'iyle ayrı dala gönderildi. Son test/manuel CI/APK durumu `GPT-OPUS-GUNCELLEME-DEVRI.md` içinde tutulur. Gerçek abonelik taraması yapılmadı.
 
 Önceki tarama incelemesinin doğrulanabilen MAG keşif/cache/cancel/ekleme maddeleri ana rapordaki M01–M08 kapsamındadır. S01'in önceki kısa metni tek tek native bulgu içermiyordu; aşağıdaki native maddeler yeniden kaynaktan ve işlevsel fixture'lardan elde edildi. Depoda `nativeBulkAccounts.ts` adında bir dosya yoktur: native yol `PanelScanService.kt`, JS ayrıştırıcı `bulkAccounts.ts`, UI/köprü `add-playlist.tsx` ve panel-scan modülüdür. `serverCode.ts` ayrıca okundu; bu incelemede o dosyada kanıtlanmış yeni bir hata nedeniyle değişiklik yapılmadı.
 

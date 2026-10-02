@@ -35,7 +35,7 @@ Kalıcı PlayerHost/YOLB, Room'un kanonik kaynak olması, MAG live-first, sını
 
 ## Doğrulama ve dağıtım
 
-Gerçek komut ve sonuçlar [Opus devrinin](GPT-OPUS-GUNCELLEME-DEVRI.md) son kaydında tutulur. Son kaynakla **TypeScript exit 0**, **denetle 110 kapı PASS / exit 0**. Önceki yerel DEV `assembleDebug` 6m17s'de, son kaynakla standalone DEV `assembleDebug` ve üç modül `compileReleaseKotlin` kontrolü 2m22s'de başarılı. Son DEV APK'da MPV'nin dört ABI/native DEX paketlemesi PASS. Bu yerel sonuçlar final release APK değildir; release paket manuel CI'da üretilecek.
+Gerçek komut ve sonuçlar [Opus devrinin](GPT-OPUS-GUNCELLEME-DEVRI.md) son kaydında tutulur. Son kaynakla **TypeScript exit 0**, **E13 araç düzeltmesi sonrası denetle 111 kapı PASS / exit 0**. Önceki yerel DEV `assembleDebug` 6m17s'de, son kaynakla standalone DEV `assembleDebug` ve üç modül `compileReleaseKotlin` kontrolü 2m22s'de başarılı. Son DEV APK'da MPV'nin dört ABI/native DEX paketlemesi PASS. Bu yerel sonuçlar final release APK değildir; release paket manuel CI'da üretilecek.
 
 | Gerçek regresyon komutu | Sonuç |
 |---|---|
@@ -50,7 +50,7 @@ Gerçek komut ve sonuçlar [Opus devrinin](GPT-OPUS-GUNCELLEME-DEVRI.md) son kay
 | `test-backup-security-runtime.js --native` | 9 native grup PASS; iki yönlü PIN uyumu |
 | `test-backup-selection.js` | 7 grup PASS |
 
-Komutlar `node tools/<dosya>` biçimindedir. Ayrı dal workflow push filtresinde değildir; release yalnız manuel `workflow_dispatch` ile başlatılır. Kaynak commit/push, manuel CI run ve release APK bağlantısı henüz bekliyor; root gerçek sonuçları bu kayda ekleyecek.
+Komutlar `node tools/<dosya>` biçimindedir. Ayrı dal workflow push filtresinde değildir; release yalnız manuel `workflow_dispatch` ile başlatılır. Kaynak commit **`096fddfeccb7a9dd1b6e46cfceec30a408653926`** ayrı dala push edildi. [İlk manuel CI 36983481175](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/36983481175), 2 Ekim 11:20:33'te başladı; new_architecture=true/build_type=release/make_release=true. Eski semantik fixture eksik closure değişkenleriyle başarısız oldu; APK derlemesi başlamadı. Windows diagnostic yol filtresi hatayı ilk yerel testte gizliyordu. Ayrıntı Opus devrinin E13 bölümünde; araç düzeltmesi sonrası release ayrıca manuel başlatılacak. Uygulama kodu ve kurulu DEV aynı kalır.
 
 ADB cihazı `c3a4097e`, **OnePlus 7 Pro / GM1910**. Mevcut 18.7.2-dev kaldırılmadan/veri silinmeden `install -r` ile **18.7.3-dev / 180703** olarak güncellendi. PID 27529 canlı kaldı, ilgili PID logunda crash/JS error eşleşmesi 0. Telefon kilitli/dozing olduğundan görünür uygulama ekranı kabulü bekliyor; henüz tamamlandı denmez.
 

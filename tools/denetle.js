@@ -41,6 +41,7 @@ if (process.cwd() !== PROJECT_ROOT) process.chdir(PROJECT_ROOT);
 // TypeScript artık tools/_ts.js ile taşınabilir şekilde çözülür (sabit yol yok).
 
 const CHECKS = [
+  ["test-typescript-semantic-fixtures.js", "v18.7.3 semantic fixture diagnostics/path/negative regression", ""],
   ["test-storage-strict-runtime.js", "v18.7.3 native/web strict storage read and source preservation", ""],
   ["test-pin-entry-runtime.js", "v18.7.3 PIN entry length/scope/error/busy behavior", ""],
   ["test-encrypted-backup-ui.js", "v18.7.3 encrypted backup export/import/abort/cache ownership", ""],
