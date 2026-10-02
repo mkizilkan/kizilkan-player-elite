@@ -191,8 +191,8 @@ Tam Kotlin yolları `frontend/modules/<modül>/android/src/main/java/expo/module
 | Üç native `compileReleaseKotlin` | BUILD SUCCESSFUL, 5m40s. |
 | Yerel DEV APK + release Kotlin modülleri — önceki tur | Tam `assembleDebug` BUILD SUCCESSFUL, 6m17s; release APK değildir. Üç `compileReleaseKotlin` modül kontrolü ayrıca başarılı. |
 | Yerel DEV APK + release Kotlin modülleri — son kaynak | Standalone DEV `assembleDebug` + üç modül `compileReleaseKotlin`: BUILD SUCCESSFUL, 2m22s. DEV APK cihazda `install -r` ile güncellendi. |
-| Son DEV APK MPV paket kontrolü | Dört ABI ve native DEX paketleme PASS; donanım decoder davranışının cihaz kanıtı değildir. Final release APK manuel CI'da üretilecek. |
-| OnePlus 7 Pro / GM1910 ADB kurulumu | `c3a4097e`: install-r Success; 18.7.3-dev / versionCode 180703 doğrulandı. PID 27529 canlı; PID logunda crash/JS error eşleşmesi 0. Görünür ekran kabulü telefon kilidi nedeniyle bekliyor. |
+| Son DEV APK MPV paket kontrolü | Dört ABI ve native DEX paketleme PASS; donanım decoder davranışının cihaz kanıtı değildir. Final release APK aşağıdaki başarılı manuel CI ile üretildi. |
+| OnePlus 7 Pro / GM1910 ADB kurulumu | `c3a4097e`: install-r Success; 18.7.3-dev / versionCode 180703 doğrulandı. PID 27529 canlı; PID logunda crash/JS error eşleşmesi 0. Görünür ekran kabulü telefon kilidi nedeniyle yapılamadı. |
 
 Windows JDK 17 Unix socket geçici yolu için `JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=C:\Projeler\kizilkan-player-elite\frontend\android -Dfile.encoding=UTF-8` kullanıldı. JAVA_OPTS/Gradle property ayarı daemon başlangıcına yetişmedi. JDK 17.0.20, Android SDK `C:\Android\Sdk`. Signing değerlerini yazdırma.
 
@@ -206,13 +206,13 @@ Yerel DEV APK: `frontend/android/app/build/outputs/apk/debug/app-debug.apk`; SHA
 
 Aynı DEV APK, kullanıcıya sürümlü dosya olarak verilmek için `frontend/android/app/build/outputs/apk/debug/KIZILKAN-PLAYER-ELITE-DEV-v18.7.3.apk` adına kopyalandı; SHA-256 eşleşti. Üretilmiş APK/log/cihaz ekranı Git'e eklenmedi.
 
-ADB'de `c3a4097e` seri numaralı **OnePlus 7 Pro / GM1910** bağlıdır. Cihazdaki **18.7.2-dev**, kullanıcı verileri korunarak **18.7.3-dev / 180703** olarak güncellendi; uygulama kaldırılmadı/veri silinmedi. PID 27529 canlı ve ilgili PID logunda crash/JS error eşleşmesi 0. Telefon kilitli/dozing olduğu için görünür uygulama ekranı kabulü henüz tamamlanmadı. TV focus, 1000 MAC kaydırma, SAF provider, Cast receiver, canlı AES/HW decoder ve ilgili Android JSI/Room senaryoları için gerçek cihaz kanıtı henüz yok. Tarihî timeshift donması tamamen çözüldü iddiası yok.
+ADB'de `c3a4097e` seri numaralı **OnePlus 7 Pro / GM1910** kurulum sırasında bağlıydı. Cihazdaki **18.7.2-dev**, kullanıcı verileri korunarak **18.7.3-dev / 180703** olarak güncellendi; uygulama kaldırılmadı/veri silinmedi. PID 27529 canlı ve ilgili PID logunda crash/JS error eşleşmesi 0. Telefon kilitli/dozing olduğu için görünür uygulama ekranı kabulü henüz tamamlanmadı. TV focus, 1000 MAC kaydırma, SAF provider, Cast receiver, canlı AES/HW decoder ve ilgili Android JSI/Room senaryoları için gerçek cihaz kanıtı henüz yok. Tarihî timeshift donması tamamen çözüldü iddiası yok.
 
-Final bekleyen işler: kilit nedeniyle görünür DEV ekranı kabulü ve yeni manuel release Actions sonucu/APK bağlantısı. Kullanıcı telefonu çıkarmak zorunda olduğu için kurulum tamamlandıktan sonra telefonun artık gerekli olmadığı bildirildi. Release CI paketi ve ürünün cihaz kabul senaryoları ayrı kaydedilecek; henüz yapılmayan CI/ekran kabulü başarılı diye işaretlenmedi.
+Telefon kilidi nedeniyle görünür DEV ekranı kabulü yapılmadı. Kullanıcı telefonu çıkarmak zorunda olduğu için kurulum tamamlandıktan sonra telefonun artık gerekli olmadığı bildirildi. Release CI tamamlandı; kesin kayıt aşağıdadır. Ürünün çalıştırılmamış cihaz senaryoları release başarısından ayrı tutulur.
 
 ### 2 Ekim — ilk CI'da kanıtlanan araç hatası (E13)
 
-`check-v15220-typescript-semantic.js`, gerçek persist bloğunu ayrı programda derlerken yeni guard'ın `currentPid/requestedProfile/activeSwitchGeneration/generation/isCatalogRestoreActive` bağımlılıklarını fixture'da tanımlamıyordu. Ayrıca bu dosya ve `check-v15221-typescript-media3.js`, diagnostic dosya adını ham `===` ile filtreliyordu. Windows ters slash yolu, TypeScript'in normalleştirilmiş yolu ile eşleşmeyince hatalar eleniyordu; Linux'ta elenmeyip hatalı fixture ortaya çıktı. İlk yerel 110 PASS çıktısında bu iki küçük semantik fixture güvenilir kanıt sayılmaz; bağımsız tam proje TypeScript kontrolü ve diğer testler ayrı geçmiştir. Araçlar gerçek compiler diagnostic'lerini koruyacak ve negatif örneklerle doğrulanacak. Uygulama kodu/DEV APK değişmeyecek; düzeltme yalnız test altyapısındadır.
+`check-v15220-typescript-semantic.js`, gerçek persist bloğunu ayrı programda derlerken yeni guard'ın `currentPid/requestedProfile/activeSwitchGeneration/generation/isCatalogRestoreActive` bağımlılıklarını fixture'da tanımlamıyordu. Ayrıca bu dosya ve `check-v15221-typescript-media3.js`, diagnostic dosya adını ham `===` ile filtreliyordu. Windows ters slash yolu, TypeScript'in normalleştirilmiş yolu ile eşleşmeyince hatalar eleniyordu; Linux'ta elenmeyip hatalı fixture ortaya çıktı. İlk yerel 110 PASS çıktısında bu iki küçük semantik fixture güvenilir kanıt sayılmaz; bağımsız tam proje TypeScript kontrolü ve diğer testler ayrı geçmiştir. Araçlar gerçek compiler diagnostic'lerini koruyacak biçimde düzeltildi ve negatif örneklerle doğrulandı. Uygulama kodu/DEV APK değişmedi; düzeltme yalnız test altyapısındadır.
 
 | Dosya | Uygulanan düzeltme | Doğrulama amacı |
 |---|---|---|
@@ -222,14 +222,16 @@ Final bekleyen işler: kilit nedeniyle görünür DEV ekranı kabulü ve yeni ma
 | `tools/test-typescript-semantic-fixtures.js` | Windows ve POSIX yollarında pozitif derleme; tanımsız isim TS2304, yanlış Promise TS2322, yanlış decoder TS2339 ve iki eksik await negatif senaryosu. | Test altyapısının hatayı gerçekten yakaladığı doğrulanır. |
 | `tools/denetle.js` | Yukarıdaki negatif test yeni zorunlu kapıdır. | Eski kapılar kaldırılmadı veya gevşetilmedi. |
 
-İki düzeltilmiş gate ve yeni negatif test ayrı çalıştırıldı: PASS. Root/frontend/tools çalışma dizinlerinde 6/6 kontrol PASS. Bütün denetle tekrar çalıştırıldı: **111 kapı PASS / exit 0**, tam proje TypeScript kapıları dahil. Yeni manuel run kaydı aşağıya eklenecek. `git diff 096fddfe -- frontend` boş: application kodu ilk DEV paketi ile aynıdır. İlk CI APK aşamasına ulaşmadığından üretilmiş başarısız bir release APK yoktur; 18.7.3 uygulama sürümü korunur.
+İki düzeltilmiş gate ve yeni negatif test ayrı çalıştırıldı: PASS. Root/frontend/tools çalışma dizinlerinde 6/6 kontrol PASS. Bütün denetle tekrar çalıştırıldı: **111 kapı PASS / exit 0**, tam proje TypeScript kapıları dahil. Başarılı yeni manuel run kaydı aşağıdadır. `git diff 096fddfe -- frontend` boş: application kodu ilk DEV paketi ile aynıdır. İlk CI APK aşamasına ulaşmadığından üretilmiş başarısız bir release APK yoktur; 18.7.3 uygulama sürümü korunur.
 
 ### Son manuel release işi
 
 - Build kaynak commit'i: **`5757920a5a2430c77a9316d8b02f7efb945bb99f`**; ayrı dal push başarılı. Bu commit yalnız test altyapısı ve ayrıntılı devirleri güncelledi; `frontend` uygulama kaynakları **096fddfe** ile aynı.
 - [Run 36984915544](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/36984915544), **2 Ekim 2026 11:35:36 Europe/Istanbul**, `workflow_dispatch`; new_architecture=true, build_type=release, make_release=true.
-- Linux denetle ve ayrı tam TypeScript kapısı PASS; Expo prebuild ve imza hazırlığı geçti. Bu yazımda Gradle/APK işi sürüyor. Final MPV, paket/sürüm/imza, artifact ve release sonucu henüz tamamlanmadı.
-- Son dağıtım sonucu ve APK bağlantısı bu bölüme gerçek çıktıyla eklenecek. Daha sonraki yalnız dokümantasyon commit'i, bu APK'nın kaynak commit'i sayılmaz.
+- **COMPLETED / SUCCESS**: Linux denetle, ayrı tam TypeScript, Expo prebuild, release Gradle, final MPV, paket/sürüm/imza, artifact ve release kapıları geçti. Başlangıç 11:35:36; işin son kaydı **11:54:46**, toplam **19m10s**. Gradle APK adımı **15m20s**.
+- [Release build-123](https://github.com/mkizilkan/kizilkan-player-elite/releases/tag/build-123) / [İmzalı APK](https://github.com/mkizilkan/kizilkan-player-elite/releases/download/build-123/KIZILKAN-PLAYER-ELITE-v18.7.3-build123.apk): **KIZILKAN-PLAYER-ELITE-v18.7.3-build123.apk**, **384.952.783 bayt**. GitHub asset `uploaded`; digest **`sha256:fbbd12c37c03efcf15fbf11509af06a0ac21264a2bc6594eb03d399108773494`**.
+- Gerçek tag ref SHA ve release `target_commitish` **5757920a5a2430c77a9316d8b02f7efb945bb99f** olarak API'den doğrulandı. Paket **com.gpt.kizilkan.player**, versionCode **180703**, sürüm **18.7.3** ve kalıcı beklenen imza CI kapısıyla doğrulandı. Gizli imza değerleri kayda eklenmedi.
+- Release etiket düzeltmesi ve sonraki workflow/gate devri **a7bbfdd83d5a072b56cc9b623406d812ef976cad** commit'iyle aynı dala push edildi. Bu commit yeni APK işi başlatmadı. Daha sonraki yalnız dokümantasyon commit'i de APK'nın kaynak commit'i sayılmaz.
 
 ### 2 Ekim — ayrı dal release etiketi (E14)
 
@@ -241,7 +243,13 @@ Kaynak incelemesinde `gh release create` komutunun hedef commit vermediği bulun
 | `tools/check-v16144-ci-hardening.js` | Gerçek release komutunun build SHA hedefini taşıdığı doğrulanır; hedef yok veya `main` olduğunda kontrolün reddettiği iki negatif örnek eklendi. Ayrı gate PASS; ardından TypeScript exit 0 ve tam denetle **111 kapı PASS / exit 0**. |
 | Devam eden run 36984915544 / build 123 | Workflow bu düzeltmeden önceki 5757920a kaynaklarını kullanır. Henüz olmayan yeni `refs/tags/build-123`, GitHub refs API ile **5757920a5a2430c77a9316d8b02f7efb945bb99f** commit'inde oluşturuldu. API dönüşünde ref/type=commit/SHA doğrulandı; böylece mevcut run da doğru tag üzerinde release oluşturabilir. |
 
-Bu düzeltme uygulama/native kodunu değiştirmez ve yeni APK derlemesi tetiklemez. Devam eden APK'nın kaynak commit'i 5757920a'dır; sonradan gelen workflow/rapor commit'i APK kaynağı diye gösterilmez. Final tag SHA, release asset ve imza/sürüm kapıları iş tamamlandığında tekrar okunacak.
+Bu düzeltme uygulama/native kodunu değiştirmez ve yeni APK derlemesi tetiklemez. APK'nın kaynak commit'i 5757920a'dır; sonradan gelen workflow/rapor commit'i APK kaynağı diye gösterilmez. İş tamamlandıktan sonra tag SHA, asset digest/boyut ve başarılı imza/sürüm kapıları tekrar okundu. Eski komutun release API metadata'sında bıraktığı `main` hedefi, `gh release edit build-123 --target 5757920a5a2430c77a9316d8b02f7efb945bb99f` ile doğru kaynak SHA'sına hizalandı; tag SHA ve asset digest aynı kaldı.
+
+### Tamamlanma ve sonraki cihaz kabulü
+
+Onaylı uygulama/araç düzeltmeleri, ayrıntılı MD kayıtları, yerel standalone DEV APK ve veri koruyan telefon kurulumu; ayrı dal push, manuel release işi ve yayınlanan imzalı APK tamamlandı. İlk CI yardımcı testte durdu, APK üretmedi; araçlar düzeltildikten sonra **tek başarılı release APK** build-123 üretildi. İlk hatalı CI gizlenmedi.
+
+Telefonda yalnız kurulum/sürüm, canlı süreç, JSI/MPV yükleme ve PID hata kaydı doğrulandı; görünür UI ekran kilidi nedeniyle görülmedi. Gerçek abonelikte portal/CAPTCHA/rate-limit, 1000 MAC kaydırma, seçmeli restore süreç öldürme, SAF paylaşım/kayıt, TV odak ve Cast/HLS/codec kabulü cihazda çalıştırılmadı. Derleme ve fixture sonuçları bu senaryoların cihaz kanıtı sayılmaz. Kullanıcıya yeni gerçek cihaz hatası bildirildiğinde kaynak ve log ile doğrula; sonra yeni patch sürümü ve ayrıntılı Opus devriyle ilerle.
 
 ### Opus sonraki her güncellemede
 

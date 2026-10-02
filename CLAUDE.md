@@ -189,6 +189,9 @@ native tarama checkpoint/probe; PIN ve şifreli Android yedeği; bozuk kayıtta 
 tutma ve eski Android kısayol yazıcısı düzeltmeleri uygulandı.
 Ayrıntı: `AI-DEVIR-v18.7.3.md`, `GPT-TESPIT-VE-ONERILER.md`, `GPT-OPUS-GUNCELLEME-DEVRI.md`,
 `GPT-S01-NATIVE-TARAMA-DEVIR.md`. Final test/commit/manuel CI/APK kaydı bu devirlerde güncellenir.
+Son yerel 111 kapı + TypeScript PASS; manuel run **36984915544 SUCCESS**, release **build-123**.
+İmzalı APK kaynak commit'i **5757920a**, uygulama değişiklikleri **096fddfe**;
+sonraki workflow/tag düzeltmesi **a7bbfdd8** ve dokümantasyon commit'leri APK kaynağı değildir.
 OnePlus 7 Pro'ya 18.7.3-dev / 180703, DEV verileri korunarak kuruldu; görünür UI kontrolü
 ekran kilidi nedeniyle yapılamadı. Kullanıcı telefonu çıkarabilir. Build/fixture sonucu cihaz kabulü sayılmaz. Tarihî timeshift donması
 tamamen çözüldü diye yazma. Hesap kimlik bilgileri ve kurtarma verisi mevcut uygulamaya özel
