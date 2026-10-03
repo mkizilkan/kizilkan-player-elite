@@ -28,16 +28,34 @@ export function parseAccountExpiryMs(value: unknown): number | null {
     hour = Number(tr[4] || 0); minute = Number(tr[5] || 0); second = Number(tr[6] || 0);
     localTime = !!tr[4];
   } else {
-    const months = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
-    const english = raw.match(/^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})(?:,?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?)?$/i);
-    if (!english) return null;
-    const monthName = english[1].toLowerCase();
-    month = months.findIndex(name => name === monthName || name.slice(0, 3) === monthName) + 1;
-    day = Number(english[2]); year = Number(english[3]); hour = Number(english[4] || 0);
-    minute = Number(english[5] || 0); second = Number(english[6] || 0); localTime = !!english[4];
-    if (english[7]) {
+    // v18.7.7 (P1): İngilizce "Month D, YYYY [h:mm am/pm]" (ör. "January 8, 2027, 3:45 pm")
+    // VE "D Month YYYY [HH:MM[:SS]]" (ör. "11 May 2027 18:18:00") biçimleri. Ay adı İngilizce
+    // ya da Türkçe (tam/3-harf) olabilir. Kaynak: MAG portalları bitişi bu insan-okur biçimde
+    // ve bazen `phone` alanında gönderiyor (cihaz kanıtı: vip.rxs1 "January 8, 2027").
+    const monthIndex = (raw: string): number => {
+      const n = raw.trim().toLowerCase().replace(/\.$/, '');
+      const en = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+      const tr = ['ocak', 'şubat', 'mart', 'nisan', 'mayıs', 'haziran', 'temmuz', 'ağustos', 'eylül', 'ekim', 'kasım', 'aralık'];
+      const trAbbr = ['oca', 'şub', 'mar', 'nis', 'may', 'haz', 'tem', 'ağu', 'eyl', 'eki', 'kas', 'ara'];
+      let i = en.findIndex(name => name === n || name.slice(0, 3) === n);
+      if (i < 0) i = tr.findIndex(name => name === n);
+      if (i < 0) i = trAbbr.findIndex(name => name === n);
+      return i; // -1 = bulunamadı
+    };
+    const english = raw.match(/^([A-Za-zÇĞİÖŞÜçğıöşü]+)\s+(\d{1,2}),?\s+(\d{4})(?:,?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?)?$/i);
+    const dmy = raw.match(/^(\d{1,2})\s+([A-Za-zÇĞİÖŞÜçğıöşü]+)\.?\s+(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?)?$/i);
+    const m = english || dmy;
+    if (!m) return null;
+    const monthName = english ? english[1] : dmy![2];
+    const mi = monthIndex(monthName);
+    if (mi < 0) return null;
+    month = mi + 1;
+    day = Number(english ? english[2] : dmy![1]);
+    year = Number(m[3]); hour = Number(m[4] || 0);
+    minute = Number(m[5] || 0); second = Number(m[6] || 0); localTime = !!m[4];
+    if (m[7]) {
       if (hour < 1 || hour > 12) return null;
-      hour = hour % 12 + (english[7].toLowerCase() === 'pm' ? 12 : 0);
+      hour = hour % 12 + (m[7].toLowerCase() === 'pm' ? 12 : 0);
     }
   }
   if (year < 1970 || year > 2500 || month < 1 || month > 12 || day < 1 || day > 31

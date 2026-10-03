@@ -42,6 +42,7 @@ if (process.cwd() !== PROJECT_ROOT) process.chdir(PROJECT_ROOT);
 
 const CHECKS = [
   ["test-mag-action-ownership.js", "v18.7.4 MAG add/export action ownership and profile ABA", ""],
+  ["check-v18707-release.js", "v18.7.7 MAG account-card accuracy (phone-expiry, gzip, status 0=active, base64 MAC, password) + engine-switch fresh link + initial-sync freshness skip + load telemetry + progress overlay", ""],
   ["check-v18706-release.js", "v18.7.6 MAG account validation + stale-session recovery + handshake budget + port-first discovery + live results + refresh progress", ""],
   ["check-v18705-release.js", "v18.7.5 Media3 audio-state telemetry (evidence before fix)", ""],
   ["test-mag-portal-discovery.js", "v18.7.4 MAC-free portal discovery/path/protection/cancel", ""],

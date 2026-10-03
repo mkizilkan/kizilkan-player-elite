@@ -143,7 +143,7 @@ interface PlaylistContextValue {
   removePlaylist: (id: string) => Promise<void>;
   cleanupPlaylistContent:(id:string,kinds:Array<CatalogKind|'epg'>)=>Promise<number>;
   refreshPlaylistKinds:(id:string,kinds:Array<CatalogKind|'epg'>,progress?:(p:RefreshProgress)=>void,valid?:()=>boolean)=>Promise<void>;
-  freshnessStatus:{playlistId:string;message:string}|null;
+  freshnessStatus:{playlistId:string;message:string;active?:boolean}|null;
   updatePlaylist: (id: string, patch: Partial<Playlist>) => Promise<void>;
   setActivePlaylist: (id: string) => Promise<void>;
   toggleFavorite: (channelId: string) => Promise<void>;
@@ -188,7 +188,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   const playlistsRef = useRef<Playlist[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeIdRef=useRef(activeId);activeIdRef.current=activeId;
-  const [freshnessStatus,setFreshnessStatus]=useState<{playlistId:string;message:string}|null>(null);
+  const [freshnessStatus,setFreshnessStatus]=useState<{playlistId:string;message:string;active?:boolean}|null>(null);
   const freshnessAttempts=useRef(new Map<string,number>());
   useEffect(() => { playlistsRef.current = playlists; }, [playlists]);
   const [favorites, setFavorites] = useState<string[]>([]);
@@ -1026,12 +1026,20 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     const check=()=>{void(async()=>{
       const pl=playlistsRef.current.find(p=>p.id===id);
       if(!pl||pl.source==='m3u_file'||pl.autoRefreshEnabled===false||!valid())return;
+      // v18.7.7 (P6): İlk senkron (canlı/film/dizi ekleme aşamaları) SÜRERKEN otomatik güncellik
+      // kontrolü o hesabı ATLAR. Cihaz kanıtı: yeni MAG eklerken aynı portal için ikinci katalog
+      // işlemi başlıyor, katalog kilidini tutuyor ve canlı kanalların listeye işlenmesi ~2 dk gecikiyordu.
+      const syncState=pl.catalogSync?.initialSyncState;
+      if(syncState==='pending'||syncState==='live_ready'||syncState==='enriching'){
+        void recordDiagnostic('database','FRESHNESS_SKIP_INITIAL_SYNC',{playlistId:id,syncState});
+        return;
+      }
       const attemptKey=pid+':'+id;
       if(!freshnessDue(freshnessAttempts.current.get(attemptKey)||pl.lastFreshnessCheckAt||0,pl.freshnessMinutes))return;
       freshnessAttempts.current.set(attemptKey,Date.now());
       let kinds=(['live','vod','series'] as CatalogKind[]).filter(k=>pl.cleanedKinds?.includes(k)||(pl.contentSelection?.[k]??true));
       if(!kinds.length)return;
-      setFreshnessStatus({playlistId:id,message:'Güncellik kontrol ediliyor…'});
+      setFreshnessStatus({playlistId:id,message:'Güncellik kontrol ediliyor…',active:true});
       try{
         let missingKinds:CatalogKind[]=[];
         if(KizilkanNativeCore.available){
@@ -1051,10 +1059,10 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           if(typeof p.vodCount==='number'&&p.vod==='saving')parts.push(`Film ${p.vodCount}`);
           if(typeof p.seriesCount==='number'&&p.series==='saving')parts.push(`Dizi ${p.seriesCount}`);
           const detail=parts.length?` · ${parts.join(' • ')}`:'';
-          setFreshnessStatus({playlistId:id,message:(p.message||'Güncelleniyor…')+detail});
+          setFreshnessStatus({playlistId:id,message:(p.message||'Güncelleniyor…')+detail,active:true});
         },valid,missingKinds.length>0);
-        if(valid())setFreshnessStatus({playlistId:id,message:'Yerel katalog güncel.'});
-      }catch{if(valid())setFreshnessStatus({playlistId:id,message:'Sunucuya ulaşılamadı; yerel katalog kullanılabilir.'});}
+        if(valid())setFreshnessStatus({playlistId:id,message:'Yerel katalog güncel.',active:false});
+      }catch{if(valid())setFreshnessStatus({playlistId:id,message:'Sunucuya ulaşılamadı; yerel katalog kullanılabilir.',active:false});}
     })();};
     check();
     const timer=setInterval(check,60_000);

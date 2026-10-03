@@ -1918,6 +1918,8 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
           <>
             {acc.tariff_plan ? <InfoField label="Paket" value={String(acc.tariff_plan)} /> : null}
             {acc.mac ? <InfoField label="MAC" value={String(acc.mac)} /> : null}
+            {/* v18.7.7 (P4): portal kullanıcı adı/şifre döndürürse göster (IPTV Extreme gibi). */}
+            {acc.password ? <InfoField label="Şifre" value={String(acc.password)} /> : null}
             {acc.phone ? <InfoField label="Telefon" value={String(acc.phone)} /> : null}
           </>
         )}

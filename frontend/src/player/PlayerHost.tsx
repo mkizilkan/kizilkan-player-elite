@@ -733,6 +733,9 @@ export default function PlayerHost() {
   // GPT ELITE v14.0.0 — Player V2 session/controller state.
   const sessionGateRef = useRef(new PlaybackSessionGate());
   const sessionStartedAtRef = useRef(Date.now());
+  // v18.7.7 (P7): Media3 kaynağı native'e verildiği an. İlk-kare gecikmesinin KAYNAK ÖNCESİ
+  // (çözümleme/handshake) mi yoksa SONRASI (tampon/ağ) mı olduğunu ayırmak için ölçüm.
+  const media3SourceSetAtRef = useRef(0);
   const playerSelectionStartedAtRef = useRef(Date.now());
   const playerDiagnosticSessionRef = useRef("");
   // v16.14.2 P0: render/native callback ownership. Playlist+channel+session+candidate+engine
@@ -1635,6 +1638,14 @@ export default function PlayerHost() {
       const effectiveKey = effectiveNext.engine === 'media3' ? `media3:${effectiveNext.surface}` : effectiveNext.engine === 'vlc' ? `vlc:${effectiveNext.decoder}` : 'mpv:auto';
       playbackOwnerRef.current = `${String(activePlaylist?.id || '')}|${String(channel?.id || '')}|${sid}|${playbackUrlIndex}|${effectiveKey}`;
       void recordFlightRecorderStage(lifecycleTraceRef.current || getCurrentFlightRecorderTrace(), 'fallback', { fromEngine: v2Profile.engine, toEngine: effectiveNext.engine, reason: reason?.kind || 'manual' }, 'started');
+      // v18.7.7 (P5): Stalker'da motor değişince ESKİ create_link (tek-kullanımlık play_token)
+      // yeni motora taşınmasın — taze create_link iste. Cihaz kanıtı: Media3→MPV geçişinde aynı
+      // play_token tekrar kullanılıp "Failed to open ...play_token" hatası (kanal bazen hiç açılmadı).
+      if (playlistSource === "stalker") {
+        void recordDiagnostic("player", "STALKER_ENGINE_SWITCH_REFRESH", { channelId: String(channel?.id || ""), fromEngine: v2Profile.engine, toEngine: effectiveNext.engine }, { sessionId: playerDiagnosticSessionRef.current });
+        stalkerForceFreshRequestedRef.current = true;
+        setStalkerFreshResolveNonce(n => n + 1);
+      }
       setV2Profile(effectiveNext);
       setUseVLC(effectiveNext.engine === "vlc");
       setVlcAutoSoftware(effectiveNext.engine === "vlc" && effectiveNext.decoder === "sw");
@@ -2750,6 +2761,7 @@ export default function PlayerHost() {
         if (cancelled || owner !== playbackOwnerRef.current) return;
         lastExoUrlRef.current = url;
         lastMedia3IdentityRef.current = sourceIdentity;
+        media3SourceSetAtRef.current = Date.now(); // P7: tampon/ağ süresinin başlangıcı
         if (!startPaused) player.play();
       })().catch((e: any) => {
         if (cancelled || owner !== playbackOwnerRef.current) return;
@@ -4081,6 +4093,9 @@ export default function PlayerHost() {
       totalFromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current),
       // v18.7.5: ilk-kareyi timeshift moduyla etiketle (Kapalı vs Her zaman ilk-kare kıyası için).
       timeshiftMode: liveTimeshiftModeRef.current,
+      // v18.7.7 (P7): kaynak verildikten SONRA geçen süre (tampon/ağ). firstFrameMs ile farkı
+      // = kaynak ÖNCESİ (çözümleme/handshake/motor hazırlığı) süresi. Media3 geç açılma teşhisi.
+      sinceSourceSetMs: profile.engine === "media3" && media3SourceSetAtRef.current ? Math.max(0, Date.now() - media3SourceSetAtRef.current) : undefined,
     }, { sessionId: playerDiagnosticSessionRef.current });
   }, [channel?.id, playlistSource, activePlaylist?.id, activeProfile?.id, sessionKind, playbackCandidates, playbackUrlIndex, preferredHost]);
 

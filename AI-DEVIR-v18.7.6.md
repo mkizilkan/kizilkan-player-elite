@@ -31,8 +31,10 @@ Kullanıcı (Mustafa) onayı: "1 (MAG: C+D1+D2) ile 3 (Tarama: A1–A4+B) berabe
 - `node tools/test-mag-portal-discovery.js` → **PASS, 14 grup** (yeni: port-first paralel reachability).
 - `node tools/test-mag-account-validation.js` → **PASS, 9 grup** (bare device/id:0/blocked:0/name → null korunur).
 - `node tools/denetle.js` → **TÜM DENETİMLER TEMİZ (exit 0)**.
-- `assembleDebug` (DEV) → (sonuç güncellenecek).
+- `assembleDebug` (DEV) → **BUILD SUCCESSFUL** (ilk denemede `packageDebug` geçici dosya kilidiyle düştü; tekrar denemede başarılı). APK: `frontend/android/app/build/outputs/apk/debug/app-debug.apk` · `com.gpt.kizilkan.player.dev` · versionCode 180706 · 18.7.6-dev. Kotlin uyarıları yalnız RN New-Arch deprecation (zararsız). Not: Kotlin+Java+dex sorunsuz derlendi (kod/native sağlam).
+- GitHub Actions (release): dal `v18.7.6-rc1-mag-scan-fixes`, run **37096204888** (manuel dispatch, build_type=release).
 - Kapı: `tools/check-v18706-release.js`; `denetle.js`'e kaydedildi.
+- prebuild sonrası `frontend/package.json` android/ios script'leri geri alındı (yalnız sürüm 18.7.6 kaldı, §7).
 
 ## Cihazda doğrulanacak (kanıt gerek — "build geçti = çalışıyor" DEĞİL)
 1. **D1/hesap:** MAG hesaplarında **bitiş tarihi** görünüyor mu (hem yeni ekleme hem elle güncelleme); `STALKER_ACCOUNT_SNAPSHOT mainInfoOk` logda.

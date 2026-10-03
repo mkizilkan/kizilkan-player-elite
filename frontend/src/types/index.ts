@@ -72,6 +72,8 @@ export interface SeriesItem {
 
 export interface AccountInfo {
   username?: string;
+  /** v18.7.7: Bazı MAG/Stalker portalları hesap şifresini de döndürür (get_main_info). */
+  password?: string;
   status?: string;
   exp_date?: string | null;
   is_trial?: string;

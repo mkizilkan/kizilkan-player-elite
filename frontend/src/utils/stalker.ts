@@ -910,6 +910,10 @@ async function req(url: string, headers: Record<string, string>, options: number
       const panel = proxyRoute ? (await import("@/modules/panel-scan")).PanelScan : null;
       let target = url, method = "GET", body = "";
       const hdrs = { ...headers };
+      // v18.7.7 (P2): OkHttp (expo/fetch altında) Accept-Encoding elle verildiğinde gzip'i
+      // ŞEFFAF AÇMAZ → ham gzip baytları "JSON değil" sayılıyordu (log: HKPREMIUM get_main_info
+      // \x1f\x8b). Başlık kaldırılınca OkHttp gzip'i kendisi ister ve kendisi açar.
+      if (exactFetch) for (const key of Object.keys(hdrs)) if (key.toLowerCase() === "accept-encoding") delete hdrs[key];
       if (opts.postForm) {
         const parsed = new URL(url); target = parsed.origin + parsed.pathname;
         method = "POST"; body = parsed.searchParams.toString();
@@ -1108,8 +1112,13 @@ async function req(url: string, headers: Record<string, string>, options: number
       void recordDiagnostic("mag","STALKER_HTTP_REJECTED",{...requestMeta,status:Number(res.status||0),bodyKind:decoded.bodyKind,snippet:err.snippet});
       throw err;
     }
-    const kind=decoded.bodyKind==="html" ? "HTML" : "NON_JSON";
-    const err:any=new Error(`Portal JSON değil · HTTP ${res.status}${contentType?` · ${contentType.split(";")[0]}`:""}${redirected?" · yönlendirme var":""}`);
+    // v18.7.7 (P2): gövde gzip imzasıyla (1f 8b) başlıyorsa taşıma katmanı sıkıştırmayı
+    // açmamış demektir; bu "portal JSON vermiyor" değil, istemci hatasıdır. Ayrı tür olarak işaretlenir.
+    const gzipUndecoded=/^\u001f\u008b|^\u001f�/.test(String(text||""));
+    const kind=decoded.bodyKind==="html" ? "HTML" : gzipUndecoded ? "GZIP_UNDECODED" : "NON_JSON";
+    const err:any=new Error(gzipUndecoded
+      ? `Portal yanıtı sıkıştırılmış (gzip) geldi ve açılamadı · HTTP ${res.status}`
+      : `Portal JSON değil · HTTP ${res.status}${contentType?` · ${contentType.split(";")[0]}`:""}${redirected?" · yönlendirme var":""}`);
     err.kind=kind; err.status=res.status; err.contentType=contentType; err.finalUrl=finalUrl; err.redirected=redirected; err.bodyKind=decoded.bodyKind; err.observation=observation;
     /**
      * v16.3.0 — GÖVDE ÖRNEĞİ KAYDA EKLENDİ (telemetri boşluğu)
@@ -1882,12 +1891,43 @@ function accountDenial(value: unknown): "blocked" | "expired" | null {
   if (!p) return null;
   const status = String(primitiveString(p.status) || "").trim().toLowerCase();
   const error = [p.error, p.message].filter(text => typeof text === "string").join(" ").toLowerCase();
+  // v18.7.7 (P3): Stalker'da SAYISAL status 0 = AKTİF, 1 = kapalı (kaynak: stalker_portal
+  // launcher_profile.php `status == 1` => off). v18.7.4'teki `/^(?:0|false)$/` kuralı 0'ı
+  // "bloklu" sayıyordu → çalışan hesap "SÜRESİ DOLDU" görünüyordu (cihaz: HKPREMIUM status 0,
+  // katalog çalışıyordu). Sayısal status artık ret sinyali DEĞİL; ret yalnız açık bayraklardan
+  // (blocked/active:false) ve metinsel durumdan gelir.
   if ([p.blocked, p.banned, p.disabled].some(flag => portalFlag(flag) === true)
     || [p.active, p.enabled, p.auth, p.authorized].some(flag => portalFlag(flag) === false)
-    || /^(?:0|false)$/.test(status) || /\b(?:blocked|banned|disabled|inactive|deactivated|unauthorized)\b/.test(status)
+    || /\b(?:blocked|banned|disabled|inactive|deactivated|unauthorized)\b/.test(status)
     || /authorization failed|not authorized|unauthori[sz]ed|invalid (?:mac|token)|access denied/.test(error)) return "blocked";
   if ([p.expired, p.is_expired].some(flag => portalFlag(flag) === true) || /\b(?:expired|expiration|süresi doldu)\b/.test(status)) return "expired";
   return null;
+}
+
+/**
+ * v18.7.7 (P4): Bazı portallar MAC/login'i base64 kodlu gönderir (cihaz: HKPREMIUM
+ * "MDA6MUE6Nzk6MzA6M0E6QTc=" = "00:1A:79:30:3A:A7"). Değer base64 ise ve çözülünce
+ * geçerli bir MAC çıkıyorsa normalize edilmiş MAC'i, aksi halde null döndürür.
+ */
+function base64DecodeAscii(input: string): string | null {
+  const s = input.trim();
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(s) || s.length % 4 !== 0) return null;
+  const T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let bits = 0, acc = 0, out = "";
+  for (const ch of s.replace(/=+$/, "")) {
+    const v = T.indexOf(ch); if (v < 0) return null;
+    acc = (acc << 6) | v; bits += 6;
+    if (bits >= 8) { bits -= 8; const byte = (acc >> bits) & 0xff; if (byte < 9 || byte > 126) return null; out += String.fromCharCode(byte); }
+  }
+  return out;
+}
+function decodeMacIfBase64(raw: string | undefined): string | undefined {
+  if (!raw) return raw;
+  const text = raw.trim();
+  if (/^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$|^[0-9a-f]{12}$/i.test(text)) return text; // zaten MAC
+  const decoded = base64DecodeAscii(text);
+  if (decoded && /^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$|^[0-9a-f]{12}$/i.test(decoded.trim())) return decoded.trim();
+  return raw;
 }
 
 /** Portal get_profile yanıtını uygulama içi sabit tipe çevirir. */
@@ -1895,14 +1935,35 @@ export function normalizeStalkerAccountInfo(profile: any): AccountInfo {
   const p = accountRecord(profile) || {};
   const denied = accountDenial(p);
   const inactive = [p.active, p.enabled].some(value => portalFlag(value) === false);
-  const expiry = [p.tariff_expired_date, p.expire_billing_date, p.exp_billing_date, p.expiration_date, p.exp_date, p.end_date]
+  // v18.7.7 (P1): açık bitiş alanı yoksa SON ÇARE olarak `phone` tarih olarak denenir
+  // (cihaz: vip.rxs1 bitişi `phone`'da "January 8, 2027" gönderiyordu). Telefon böyle
+  // kullanıldıysa aşağıda Telefon alanı olarak GÖSTERİLMEZ.
+  const expiryFields = [p.tariff_expired_date, p.expire_billing_date, p.exp_billing_date, p.expiration_date, p.exp_date, p.end_date]
     .map(primitiveString).find(value => value !== undefined && parseAccountExpiryMs(value) !== null);
+  const phoneRaw = primitiveString(p.phone);
+  const phoneIsExpiry = !expiryFields && !!phoneRaw && parseAccountExpiryMs(phoneRaw) !== null;
+  const expiry = expiryFields || (phoneIsExpiry ? phoneRaw : undefined);
+  // v18.7.7 (P4): MAC/login base64 olabilir → çöz. login base64-MAC ise kullanıcı adı olarak
+  // ham base64 gösterme; gerçek login ayrı alandaysa onu kullan.
+  const mac = decodeMacIfBase64(primitiveString(p.mac));
+  const rawLogin = primitiveString(p.login || p.username);
+  const username = rawLogin ? decodeMacIfBase64(rawLogin) : undefined;
+  const password = primitiveString(p.password || p.pass);
   return {
-    username: primitiveString(p.login || p.username),
+    username,
+    password,
     status: denied === "blocked" ? (inactive ? "inactive" : "blocked") : denied === "expired" ? "expired"
-      : primitiveString(p.status) || (portalFlag(p.active) === true || portalFlag(p.enabled) === true ? "Active" : undefined),
-    mac: primitiveString(p.mac),
-    phone: primitiveString(p.phone),
+      // v18.7.7 (P3): Stalker'da SAYISAL status 0 = AKTİF (kaynak: launcher_profile.php). Açık
+      // aktif bayrağı ya da status "0" → "Active". Anlamlı metinsel durum olduğu gibi gösterilir.
+      // Bare/sinyalsiz kayıt (ör. {blocked:0}) status'u BİLİNMİYOR (undefined) kalır.
+      : (() => {
+          if (portalFlag(p.active) === true || portalFlag(p.enabled) === true) return "Active";
+          const s = primitiveString(p.status);
+          if (s !== undefined && /^0$/.test(s.trim())) return "Active";
+          return s;
+        })(),
+    mac,
+    phone: phoneIsExpiry ? undefined : phoneRaw,
     tariff_plan: primitiveString(p.tariff_plan || p.tariff_plan_name),
     tariff_expired_date: expiry || null,
   };
@@ -1932,7 +1993,9 @@ export async function stalkerAccountSnapshot(
     const data = await req(
       buildUrl(ses.endpoint, { type: "account_info", action: "get_main_info" }),
       headersFor(cred, ses.token, ses.endpoint, ses.compatProfile),
-      { timeoutMs: 6000, maxResponseBytes: 262_144, exactEndpoint: true, signal: opts.signal },
+      // v18.7.7 (P2): exactEndpoint ZORLANMAZ — get_profile ile AYNI taşıma (native OkHttp,
+      // gzip'i açar) kullanılır. Toplu taramada (endpointPolicy exact) başlıklar zaten exact kayıtlı.
+      { timeoutMs: 6000, maxResponseBytes: 262_144, signal: opts.signal },
     );
     const main = accountRecord(data?.js);
     if (main) {

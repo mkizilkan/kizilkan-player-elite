@@ -180,9 +180,26 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.6 RC1 — dal `v18.7.6-rc1-mag-scan-fixes`)
+## 9. Mevcut durum (v18.7.7 RC1 — dal `v18.7.7-rc1-mag-account-fixes`)
 
-**v18.7.6 (bu sürüm — MAG + Tarama düzeltmeleri, kanıtlı):** Kullanıcı onayıyla "1 (MAG) + 3 (Tarama)" beraber.
+**v18.7.7 (bu sürüm — MAG hesap kartı doğruluğu + oynatma/senkron, kanıtlı; PUSH/DERLEME BEKLİYOR):**
+v18.7.6 cihaz testi sonrası 8 düzeltme (P1–P8). Kök neden kanıtları: tanı `...05-13`, cihaz AsyncStorage, IPTV Extreme görüntüleri.
+- **P1 — bitiş `phone`'da geliyor:** vip.rxs1 bitişi `phone:"January 8, 2027..."` alanında; biz telefon sanıyorduk. Artık açık bitiş
+  yoksa phone tarih olarak bitiş sayılır (telefon gösterilmez). `accountExpiry` "D Month YYYY [HH:MM:SS]" + Türkçe ay tanır.
+- **P2 — gzip (önceki oturum + korundu):** `get_main_info` gzip gelip "JSON değil" sayılıyordu. exactEndpoint expo/fetch yolunda
+  elle `Accept-Encoding` kaldırıldı (OkHttp şeffaf açar); snapshot artık exactEndpoint zorlamaz. `GZIP_UNDECODED` telemetrisi.
+- **P3 — status 0 = AKTİF:** Stalker'da sayısal 0 aktiftir (launcher_profile.php). accountDenial'ın 0'ı "bloklu" sayması kaldırıldı
+  → HKPREMIUM artık "SÜRESİ DOLDU" değil "AKTİF". Bare kayıt (ör. {blocked:0}) status'u undefined kalır.
+- **P4 — base64 MAC/login + password:** `MDA6...`=`00:1A:79:...` çözülür; `AccountInfo.password` eklendi, kartta "Şifre".
+- **P5 — motor geçişinde taze create_link:** `switchProfile`'da Stalker için tek-kullanımlık play_token yeni motora taşınmaz
+  (`STALKER_ENGINE_SWITCH_REFRESH`). Media3→MPV'de "Failed to open ...play_token" düzelir.
+- **P6 — ilk senkronda otomatik güncellik atlanır** (`FRESHNESS_SKIP_INITIAL_SYNC`): çift katalog işi + ~2 dk kilit beklemesi biter.
+- **P7 — Media3 geç açılma ÖLÇÜMÜ:** FIRST_FRAME'e `sinceSourceSetMs` (gecikme kaynak öncesi mi sonrası mı). Düzeltme kanıttan sonra.
+- **P8 — ilerleme kutusu:** otomatik güncellemede ORTADA simgeli kutu (freshnessStatus.active).
+- Doğrulama (PC): tsc temiz · denetle TEMİZ (exit 0) · `check-v18707-release.js` PASS · hesap testi 9 grup. **Native/Kotlin değişikliği YOK (tümü TS).**
+  Ayrıntı `AI-DEVIR-v18.7.7.md`. **Push/derleme ve cihaz doğrulaması bekliyor.**
+
+**v18.7.6 (dal `v18.7.6-rc1-mag-scan-fixes`) — MAG + Tarama düzeltmeleri, kanıtlı:** Kullanıcı onayıyla "1 (MAG) + 3 (Tarama)" beraber.
 - **D1 (bitiş "Bilinmiyor") — REGRESYON düzeltmesi:** `profilePayload` v18.7.4'te katı `hasAccountIdentity` yapılınca
   bitiş+MAC taşıyan gerçek profiller "boş" sayılıp bitiş kayboluyordu (v16.14.4–18.7.3 toleranslıydı; `git -S` ile kanıt).
   Yeni `hasDisplayableAccountFields` (gerçek hesap sinyali: pozitif id/login/MAC/bitiş/tarife/telefon; cihaz-tipi/jenerik ad

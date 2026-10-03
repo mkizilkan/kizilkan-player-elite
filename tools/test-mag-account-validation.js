@@ -83,6 +83,13 @@ function dateContract() {
   for (const [value, expected] of valid) assert.equal(dates.parseAccountExpiryMs(value), expected, String(value));
   assert.equal(dates.parseAccountExpiryMs('01.01.2030 13:14:15'), new Date(2030, 0, 1, 13, 14, 15).getTime());
   assert.equal(dates.parseAccountExpiryMs('January 1, 2030 1:14 pm'), new Date(2030, 0, 1, 13, 14).getTime());
+  // v18.7.7 (P1): "D Month YYYY [HH:MM:SS]" (cihaz: "11 May 2027 18:18:00") + Türkçe ay.
+  assert.equal(dates.parseAccountExpiryMs('11 May 2027 18:18:00'), new Date(2027, 4, 11, 18, 18, 0).getTime());
+  // Saatsiz tarihler UTC gün başı sayılır (modül sözleşmesi).
+  assert.equal(dates.parseAccountExpiryMs('8 Ocak 2027'), Date.UTC(2027, 0, 8));
+  assert.equal(dates.parseAccountExpiryMs('20 Ara 2026'), Date.UTC(2026, 11, 20));
+  assert.equal(dates.parseAccountExpiryMs('January 8, 2027, 3:45 pm'), new Date(2027, 0, 8, 15, 45).getTime());
+  assert.equal(dates.parseAccountExpiryMs('garbage month 2027'), null);
   assert.equal(dates.formatAccountExpiry({ tariff_expired_date: '0002-01-01' }), null);
   groups++;
 }
@@ -96,6 +103,22 @@ function flagsAndExpiry() {
   assert.equal(stalker.normalizeStalkerAccountInfo({ expired: true }).status, 'expired');
   assert.equal(stalker.normalizeStalkerAccountInfo({ end_date: '0002-01-01', phone: {} }).tariff_expired_date, null);
   assert.equal(stalker.normalizeStalkerAccountInfo({ expire_billing_date: '0002-01-01', end_date: '2030-01-01' }).tariff_expired_date, '2030-01-01');
+  // v18.7.7 (P1): açık bitiş yoksa phone tarihi bitiş sayılır; phone alanı olarak GÖSTERİLMEZ.
+  {
+    const a = stalker.normalizeStalkerAccountInfo({ mac: '00:1A:79:30:3A:A7', phone: 'January 8, 2027, 3:45 pm' });
+    assert.ok(a.tariff_expired_date && dates.parseAccountExpiryMs(a.tariff_expired_date) !== null, 'phone→bitiş olmalı');
+    assert.equal(a.phone, undefined, 'bitiş olarak kullanılan phone gösterilmemeli');
+    // Gerçek telefon (tarih değil) phone alanında kalır.
+    assert.equal(stalker.normalizeStalkerAccountInfo({ phone: '+90 555 111 2233', end_date: '2030-01-01' }).phone, '+90 555 111 2233');
+  }
+  // v18.7.7 (P3): Stalker'da sayısal status 0 = AKTİF (eskiden "SÜRESİ DOLDU" sanılıyordu).
+  assert.equal(stalker.normalizeStalkerAccountInfo({ status: 0, id: 7, login: 'x' }).status, 'Active');
+  assert.equal(stalker.normalizeStalkerAccountInfo({ status: '0', id: 7 }).status, 'Active');
+  assert.equal(stalker.normalizeStalkerAccountInfo({ status: 0, id: 7 }).status !== 'blocked', true);
+  // v18.7.7 (P4): base64 MAC/login çözülür; password okunur.
+  assert.equal(stalker.normalizeStalkerAccountInfo({ mac: 'MDA6MUE6Nzk6MzA6M0E6QTc=' }).mac, '00:1A:79:30:3A:A7');
+  assert.equal(stalker.normalizeStalkerAccountInfo({ login: 'realuser', password: 's3cret' }).password, 's3cret');
+  assert.equal(stalker.normalizeStalkerAccountInfo({ mac: '00:1A:79:30:3A:A7' }).mac, '00:1A:79:30:3A:A7');
   groups++;
 }
 async function invalidTokensAndProfileFallback() {
