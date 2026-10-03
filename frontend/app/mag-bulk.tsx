@@ -32,6 +32,7 @@ import {
 } from "@/src/utils/magBulk";
 import { chooseMagPortals, createMagRequestGate, runMagBulkScan, type MagScanResult } from "@/src/utils/magBulkScan";
 import { PanelScan } from "@/modules/panel-scan";
+import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import type { MagPortalDiscovery } from "@/src/utils/magPortalDiscovery";
 
 type HostMode = "manual" | "code" | "name" | "all";
@@ -147,6 +148,7 @@ export default function MagBulkScreen() {
       mountedRef.current = false; cancelRef.current = true; runRef.current++; actionRunRef.current++;
       scanAbortRef.current?.abort(); actionAbortRef.current?.abort();
       if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+      try { KizilkanNativeCore.setKeepScreenOn(false); } catch {}
     };
   }, []);
   useEffect(() => {
@@ -204,6 +206,9 @@ export default function MagBulkScreen() {
     resultBufferRef.current = []; setSelected(new Set()); setResultFilter("all");
     setPortalReports([]); setPortalChoices({}); portalChoicesRef.current = {}; setScanPhase("discovery");
     setPaused(false); setScanning(true); setResults([]); setStageMsg("Portal kaynağı hazırlanıyor…"); setProgress({ done: 0, total: 0, current: "" });
+    // v18.7.6 (A2): tarama sürerken ekran/CPU uykuya geçmesin (cihaz uykusu taramayı yarıda
+    // kesiyordu). Ayrı keep-awake paketi yok; native pencere bayrağı kullanılır.
+    try { KizilkanNativeCore.setKeepScreenOn(true); } catch {}
     try {
       const hosts = await resolveHosts();
       if (controller.signal.aborted || run !== runRef.current) return;
@@ -250,6 +255,7 @@ export default function MagBulkScreen() {
       if (run === runRef.current) {
         portalPickerRef.current = null;
         flushResults(); busyRef.current = false; scanAbortRef.current = null;
+        try { KizilkanNativeCore.setKeepScreenOn(false); } catch {}
         if (mountedRef.current) { setScanning(false); setPaused(false); setStageMsg(controller.signal.aborted ? "Analiz iptal edildi. Tamamlanan sonuçlar korunuyor." : ""); }
       }
     }

@@ -147,7 +147,12 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
     reports = await discoverMagHosts(Array.from(uniqueHosts.values()), {
       scope, concurrency, timeoutMs: opts.timeoutMs, useProxy: opts.useProxy, control: opts.control, gate,
       maxCandidatesPerHost: opts.maxCandidatesPerHost,
-      onHost: report => { completedReports.push(report); opts.onPortalDiscovery?.([...completedReports]); },
+      // v18.7.6 (A3): host başına UPSERT — aday bulundukça canlı güncellenir (çift blok yok).
+      onHost: report => {
+        const i = completedReports.findIndex(r => r.host.host === report.host.host);
+        if (i >= 0) completedReports[i] = report; else completedReports.push(report);
+        opts.onPortalDiscovery?.([...completedReports]);
+      },
       onStage: opts.onStage, onProgress: (done, total, current) => opts.onProgress?.(done, total, current),
     });
     checkCancelled(opts.control);

@@ -1405,8 +1405,17 @@ export async function discoverMagPortal(
 }
 
 /** 1) HANDSHAKE — v16.13.10: MAG320 PCAP/Loader Exact varsayılan; MAG254/MAG250 yalnız compatibility fallback. */
+/**
+ * v18.7.6 (bulgu D2): Tek bir handshake çağrısının duvar-saati tavanı. Logda
+ * `mag:handshake` görevi 19 dk yaşamış ve bu sırada JS-thread 212 sn donmuştu.
+ * Sınırlı aday listesine rağmen yavaş/takılı portal + bellek baskısı görevi uzatıyordu.
+ * Bu bütçe aşılırsa net hata atılır; normal handshake <1 sn, keşif birkaç sn sürer.
+ */
+const HANDSHAKE_WALL_BUDGET_MS = 90_000;
 async function stalkerHandshakeInternal(cred: StalkerCreds, signal?: AbortSignal): Promise<StalkerSession> {
   const finishTask=startDiagnosticTask("mag:handshake",{portal:cred.portal});
+  const handshakeStartedAt=Date.now();
+  const overBudget=()=>Date.now()-handshakeStartedAt>HANDSHAKE_WALL_BUDGET_MS;
   const errors:string[]=[];
   const guard:HandshakeAttemptGuard={networkAttempts:0,authRejects:0,lastAttemptAt:0,rejectionFingerprints:new Map()};
   try {
@@ -1439,6 +1448,7 @@ async function stalkerHandshakeInternal(cred: StalkerCreds, signal?: AbortSignal
 
     for (let ei=0; ei<plan.length; ei++) {
       if (signal?.aborted) throw handshakeAbortError(cred);
+      if (overBudget()) { void recordDiagnostic("catalog","STALKER_HANDSHAKE_BUDGET_STOP",{elapsedMs:Date.now()-handshakeStartedAt,triedEndpoints:ei}); break; }
       const endpoint=plan[ei], label=endpointPath(endpoint), attemptAt=Date.now();
       void recordDiagnostic("catalog","STALKER_ENDPOINT_ATTEMPT",{endpoint,path:label,index:ei});
       let endpointRejected=false;
@@ -1455,6 +1465,7 @@ async function stalkerHandshakeInternal(cred: StalkerCreds, signal?: AbortSignal
          * endpointRejected mantığı zaten bunu yapıyor).
          */
         if (pi >= (ei===0 ? profiles.length : 4)) break;
+        if (overBudget()) { void recordDiagnostic("catalog","STALKER_HANDSHAKE_BUDGET_STOP",{elapsedMs:Date.now()-handshakeStartedAt,endpoint,atProfile:pi}); endpointRejected=true; break; }
         const compatProfile=profiles[pi], profileAttemptAt=Date.now();
         void recordDiagnostic("catalog","STALKER_COMPAT_ATTEMPT",{endpoint,path:label,compatProfile,model:compatModel(compatProfile)});
         try {
@@ -1650,8 +1661,10 @@ async function derivedProfileVariants(cred:StalkerCreds, random="", preferredMod
 function profilePayload(data:any): any {
   const js=data?.js;
   if (!js || typeof js !== "object" || Array.isArray(js)) return null;
-  // "{}" veya yalnız protokol zarfı cihaz kimliğini doğrulamaz.
-  return hasAccountIdentity(js) || accountDenial(js) !== null ? js : null;
+  // v18.7.6: "{}" veya yalnız protokol zarfı reddedilir; anlamlı hesap/cihaz alanı
+  // veya açık ret taşıyan profil (bitiş gösterimi için) kabul edilir. Geçerlilik
+  // kanıtı (gerçek hesap mı) bu fonksiyonun işi DEĞİLDİR; o ayrı akıştadır.
+  return hasDisplayableAccountFields(js) || accountDenial(js) !== null ? js : null;
 }
 
 /**
@@ -1691,8 +1704,13 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession, si
   throw new Error("MAG profil doğrulaması başarısız. " + errors.join(" | "));
 }
 
-/** v15.2.23-RC2: büyük MAG katalog döngülerinde JS event-loop'a düzenli kontrol ver. */
-async function stalkerCatalogYield(index: number, every = 80): Promise<void> {
+/**
+ * v15.2.23-RC2: büyük MAG katalog döngülerinde JS event-loop'a düzenli kontrol ver.
+ * v18.7.6 (bulgu D2): aralık 80→32'ye indirildi. Logda ön planda `mag:catalog-vod`
+ * sırasında saniyelerce JS donması + yüksek bellek (PSS ~788MB) vardı; daha sık yield
+ * senkron parçayı küçültüp GC'ye nefes aldırır ve ANR watchdog gecikmesini azaltır.
+ */
+async function stalkerCatalogYield(index: number, every = 32): Promise<void> {
   if (index > 0 && index % every === 0) await new Promise<void>(resolve => setTimeout(resolve, 0));
 }
 
@@ -1830,6 +1848,35 @@ function hasAccountIdentity(value: unknown): boolean {
   return [p.id, p.account_id, p.account_number].some(positiveAccountId)
     || [p.login, p.username].some(name => typeof name === "string" && !!name.trim() && !/^(?:0|true|false|null|undefined|anonymous|unknown|none)$/i.test(name.trim()));
 }
+/**
+ * v18.7.6 — GÖSTERİM kabulü (bitiş/durum okuması). v18.7.4, `profilePayload`'ı katı
+ * `hasAccountIdentity` (pozitif id VEYA gerçek login şartı) yapınca; bitiş+MAC taşıyan
+ * ama id/login'i olmayan GERÇEK profilleri "boş" sayıp bitişi kaybetti (regresyon,
+ * v16.14.4–18.7.3 toleranslıydı). Bu yardımcı o profilleri GÖSTERİM için geri kazanır.
+ *
+ * Ancak yalnız CİHAZ markeri (`stb_type`/jenerik `name`) veya `id:0`/`blocked:0` gibi
+ * boş sinyaller hesap SAYILMAZ (bare device ≠ account). Gerçek hesap/abonelik sinyali
+ * ister: pozitif id, gerçek login, geçerli MAC, ayrıştırılabilir bitiş, gerçek tarife
+ * veya telefon. Hesabın "geçerli" olduğunu KANITLAMAZ (o ayrı akış: get_main_info +
+ * stalkerVerifyAccount); yalnız kart/bitiş gösterimi için profili korur.
+ */
+function hasDisplayableAccountFields(value: unknown): boolean {
+  const p = accountRecord(value);
+  if (!p) return false;
+  if ([p.id, p.account_id, p.account_number].some(positiveAccountId)) return true;
+  if ([p.login, p.username].some(name => typeof name === "string" && !!name.trim()
+    && !/^(?:0|true|false|null|undefined|anonymous|unknown|none)$/i.test(name.trim()))) return true;
+  const mac = primitiveString(p.mac);
+  if (mac && /^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$|^[0-9a-f]{12}$/i.test(mac.trim())) return true;
+  const expiry = [p.tariff_expired_date, p.expire_billing_date, p.exp_billing_date, p.expiration_date, p.exp_date, p.end_date]
+    .map(primitiveString).some(v => v !== undefined && parseAccountExpiryMs(v) !== null);
+  if (expiry) return true;
+  const tariff = primitiveString(p.tariff_plan || p.tariff_plan_name);
+  if (tariff && !/^0$/.test(tariff.trim())) return true;
+  const phone = primitiveString(p.phone);
+  if (phone && !/^0$/.test(phone.trim())) return true;
+  return false;
+}
 function accountDenial(value: unknown): "blocked" | "expired" | null {
   const p = accountRecord(value);
   if (!p) return null;
@@ -1859,6 +1906,57 @@ export function normalizeStalkerAccountInfo(profile: any): AccountInfo {
     tariff_plan: primitiveString(p.tariff_plan || p.tariff_plan_name),
     tariff_expired_date: expiry || null,
   };
+}
+
+/**
+ * v18.7.6 — HESAP API DOĞRULAMASI (Xtream'deki get_account_info karşılığı).
+ * Normal MAG ekleme/yenileme için OTORİTER hesap durumu + bitiş: aynı exact oturumda
+ * TEK bounded `account_info&get_main_info` isteği atar; sonucu profil bilgisiyle
+ * birleştirir (main-info alanları önceliklidir, boşlar profille doldurulur).
+ *
+ * Bu "portal bulundu" ile yetinmez: gerçek hesap yanıtını API'den ister. Ağ/erişim
+ * başarısızsa profildeki bilgiyle zarifçe döner (gösterim bozulmaz) ve mainInfoOk=false
+ * işaretler. Tam katalog/yayın İNDİRMEZ; toplu taramanın katı gate'inin yerini TUTMAZ.
+ */
+export async function stalkerAccountSnapshot(
+  cred: StalkerCreds,
+  ses: StalkerSession,
+  profile: any = ses.profile,
+  opts: { signal?: AbortSignal } = {},
+): Promise<{ info: AccountInfo; mainInfoOk: boolean; source: "main-info" | "profile" | "none" }> {
+  const base = normalizeStalkerAccountInfo(profile);
+  let mainInfoOk = false;
+  let merged: AccountInfo = { ...base };
+  try {
+    if (opts.signal?.aborted) throw scopeCancelledError();
+    const data = await req(
+      buildUrl(ses.endpoint, { type: "account_info", action: "get_main_info" }),
+      headersFor(cred, ses.token, ses.endpoint, ses.compatProfile),
+      { timeoutMs: 6000, maxResponseBytes: 262_144, exactEndpoint: true, signal: opts.signal },
+    );
+    const main = accountRecord(data?.js);
+    if (main) {
+      mainInfoOk = true;
+      const fromMain = normalizeStalkerAccountInfo(main);
+      // main-info otoriterdir; boş alanları profil bilgisi doldurur.
+      for (const key of Object.keys(fromMain) as Array<keyof AccountInfo>) {
+        const value = fromMain[key];
+        if (value !== undefined && value !== null && value !== "") (merged as any)[key] = value;
+      }
+    }
+    void recordDiagnostic("mag", "STALKER_ACCOUNT_SNAPSHOT", {
+      endpoint: ses.endpoint, mainInfoOk,
+      hasExpiry: !!merged.tariff_expired_date, status: merged.status || null,
+    });
+  } catch (e: any) {
+    if (terminalMagError(e)) throw e;
+    void recordDiagnostic("mag", "STALKER_ACCOUNT_SNAPSHOT_FALLBACK", {
+      endpoint: ses.endpoint, message: String(e?.message || e).slice(0, 160),
+      hasExpiry: !!merged.tariff_expired_date,
+    });
+  }
+  const source = mainInfoOk ? "main-info" : (merged.tariff_expired_date || merged.status || merged.username) ? "profile" : "none";
+  return { info: merged, mainInfoOk, source };
 }
 
 export type StalkerAccountVerification = {
@@ -2741,7 +2839,13 @@ export async function stalkerResolveStream(
   } catch (e: any) {
     const message = String(e?.message || e);
     void recordDiagnostic("player", "STALKER_RESOLVE_ERROR", { elapsedMs: Date.now()-started, cacheHit, message, status: e?.status });
-    if (e?.status === 401 || e?.status === 403 || e?.status === 456 || /token|auth/i.test(message)) {
+    // v18.7.6 (bulgu C): Bayat cache oturumu boş create_link üretince ("yayın adresi
+    // vermedi / create_link boş") bu bir auth hatası gibi status/token taşımıyordu →
+    // taze handshake'e DÜŞÜLMÜYOR, kullanıcı kanalı açamıyordu. Artık cacheHit && henüz
+    // yenilenmemişken boş-link de bayat-oturum sinyali sayılır ve BİR KEZ forceFresh denenir.
+    const staleCachedLink = cacheHit && !refreshed && /create_link boş|yayın adresi vermedi/i.test(message);
+    if (e?.status === 401 || e?.status === 403 || e?.status === 456 || /token|auth/i.test(message) || staleCachedLink) {
+      void recordDiagnostic("player", "STALKER_RESOLVE_STALE_RETRY", { elapsedMs: Date.now()-started, reason: staleCachedLink ? "empty-link-cachehit" : "auth", mediaType: parsed.kind });
       invalidateSession(cred);
       const fresh = await stalkerLogin(cred, { forceFresh: true });
       refreshed = true;

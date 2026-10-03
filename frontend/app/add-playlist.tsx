@@ -2614,6 +2614,7 @@ ${pub.path}`, [
           stalkerCategoryPreview,
           normalizeMac,
           normalizeStalkerAccountInfo,
+          stalkerAccountSnapshot,
         } = await import("@/src/utils/stalker");
         const cred = {
           portal: stPortal.trim(),
@@ -2643,6 +2644,16 @@ ${pub.path}`, [
         const { session, profile: prof } = await stLogin(cred);
         const profile = prof || {};
 
+        // v18.7.6: "portal bulundu" yetmez — hesap durumu/bitişi API ile doğrulanır
+        // (Xtream get_account_info karşılığı: account_info&get_main_info). Ağ/erişim
+        // başarısızsa profildeki bilgiyle zarifçe döner (gösterim bozulmaz).
+        setProgress("Hesap bilgileri portaldan doğrulanıyor...");
+        let accountInfo = normalizeStalkerAccountInfo(profile);
+        try {
+          const snapshot = await stalkerAccountSnapshot(cred, session, profile);
+          accountInfo = snapshot.info;
+        } catch { /* terminal olmayan hata: profil bilgisiyle devam */ }
+
         // v16.14.5 P0 — VALIDATION/PERSISTENCE ayrımı. Handshake başarılıysa hesap
         // ağır katalog tamamlanmasını beklemeden atomik olarak kaydedilir.
         const shell: Playlist = {
@@ -2650,7 +2661,7 @@ ${pub.path}`, [
           // v18.7.2: keşif portu bulduysa ÇALIŞAN portal kaydedilir (oynatma da onu kullanır).
           stalkerPortal: cred.portal, stalkerMac: stMac.trim().toUpperCase(),
           stalkerSerial: stSerial.trim() || undefined,
-          accountInfo: normalizeStalkerAccountInfo(profile),
+          accountInfo,
           channels: [], vod: [], series: [],
           catalogSync: { initialSyncState: "pending", roomVerified: true, updatedAt: new Date().toISOString() },
           createdAt: new Date().toISOString(),

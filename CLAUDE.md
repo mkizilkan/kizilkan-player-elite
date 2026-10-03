@@ -180,9 +180,29 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.5 RC1 — dal `v18.7.5-rc1-media3-audio-telemetry`)
+## 9. Mevcut durum (v18.7.6 RC1 — dal `v18.7.6-rc1-mag-scan-fixes`)
 
-**v18.7.5 (bu sürüm, yalnız TELEMETRİ):** (1) Media3 "bazen ses yok" için `MEDIA3_AUDIO_STATE`
+**v18.7.6 (bu sürüm — MAG + Tarama düzeltmeleri, kanıtlı):** Kullanıcı onayıyla "1 (MAG) + 3 (Tarama)" beraber.
+- **D1 (bitiş "Bilinmiyor") — REGRESYON düzeltmesi:** `profilePayload` v18.7.4'te katı `hasAccountIdentity` yapılınca
+  bitiş+MAC taşıyan gerçek profiller "boş" sayılıp bitiş kayboluyordu (v16.14.4–18.7.3 toleranslıydı; `git -S` ile kanıt).
+  Yeni `hasDisplayableAccountFields` (gerçek hesap sinyali: pozitif id/login/MAC/bitiş/tarife/telefon; cihaz-tipi/jenerik ad
+  DEĞİL) ile toleranslı okuma geri. Katı gate toplu taramada korunur (gösterim ≠ doğrulama).
+- **Hesap API doğrulaması (Xtream get_account_info karşılığı):** `stalkerAccountSnapshot` → bounded `get_main_info`;
+  ekleme/yenileme/elle-güncellemede otoriter durum/bitiş; boş sonuç eldeki bitişi EZMEZ. MAG yenileme yaması artık
+  `accountInfo` yazıyor ("elle güncelleyince bile bozulma" nedeni buydu — hiç yazmıyordu).
+- **C (18.7.4'te açılan kanal 18.7.5'te açılmıyor):** bayat cache oturumu boş create_link üretince taze handshake'e
+  düşülmüyordu; artık `cacheHit && boş-link` de forceFresh tetikler (`STALKER_RESOLVE_STALE_RETRY`).
+- **D2 (ANR/donma):** handshake duvar-saati bütçesi `HANDSHAKE_WALL_BUDGET_MS=90s` (log: tek handshake 19 dk +
+  212 sn JS donması); katalog yield 80→32 (GC rahatlaması). Cihazda ANR'nin gerçekten düştüğü DOĞRULANACAK.
+- **A4 (tarama "757 versiyon"):** port-öncelikli keşif + ölü port budama + **PARALEL port erişilebilirliği**
+  (`reachableOpenPorts`, port bilinmeyen keşifte gate'siz paralel; açık portlarda gated/ban-güvenli yol denemesi).
+- **A3:** aday bulundukça canlı yayın (`emitLive` + onHost host-upsert). **A2:** tarama boyunca `setKeepScreenOn`.
+  (Gerçek arka plan/home-tuşu yürütmesi = ayrı iş: MAG taramasını `PanelScanService`'e bağlamak.)
+- **B:** tekli MAC/portal yenilemede gerçek ilerleme `freshnessStatus`'a akar.
+- Doğrulama (PC): tsc temiz · denetle TEMİZ (exit 0) · `check-v18706-release.js` PASS · keşif testi 14 grup · hesap testi 9 grup.
+  **assembleDebug + cihaz doğrulaması bekliyor.** Ayrıntı `AI-DEVIR-v18.7.6.md`. **Build geçti = çalışıyor DEĞİL.**
+
+**v18.7.5 (TELEMETRİ):** (1) Media3 "bazen ses yok" için `MEDIA3_AUDIO_STATE`
 (readyToPlay/sourceLoad/ilk-kare sonrası; `suspectSilent` = parça var ama aktif yok). (2) `FIRST_FRAME`
 olayına `timeshiftMode` etiketi (Kapalı vs Her zaman ilk-kare kıyası). Kök neden kanıtlanınca düzeltme
 v18.7.6'da yapılacak. Ayrıntı `AI-DEVIR-v18.7.5.md`. Kapı `check-v18705-release.js`.

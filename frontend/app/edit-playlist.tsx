@@ -245,12 +245,24 @@ export default function EditPlaylist() {
           throw new Error("Manuel MAG saat dilimi IANA biçiminde olmalı. Örnek: Europe/Istanbul");
         }
         if (reloadContent) {
-          const { stalkerLogin, stalkerCatalog, stalkerCredsFromPlaylist, normalizeStalkerAccountInfo } = await import("@/src/utils/stalker");
+          const { stalkerLogin, stalkerCatalog, stalkerCredsFromPlaylist, normalizeStalkerAccountInfo, stalkerAccountSnapshot } = await import("@/src/utils/stalker");
           const cred = stalkerCredsFromPlaylist({ ...pl, ...patch });
           setProgress("Portal doğrulanıyor...");
           const { session, profile: prof } = await stalkerLogin(cred);
           const profile = prof || {};
-          patch.accountInfo = normalizeStalkerAccountInfo(profile);
+          // v18.7.6: elle güncellemede de hesap API ile doğrulanır; boş sonuç eldeki
+          // bitişi EZMEZ (regresyon: katı profil reddi bitişi siliyordu).
+          setProgress("Hesap bilgileri doğrulanıyor...");
+          let editedAccountInfo: any = normalizeStalkerAccountInfo(profile);
+          try {
+            const snapshot = await stalkerAccountSnapshot(cred, session, profile);
+            const merged: any = { ...(pl.accountInfo || {}) };
+            for (const [key, value] of Object.entries(snapshot.info)) {
+              if (value !== undefined && value !== null && value !== "") merged[key] = value;
+            }
+            editedAccountInfo = merged;
+          } catch { editedAccountInfo = { ...(pl.accountInfo || {}), ...editedAccountInfo }; }
+          patch.accountInfo = editedAccountInfo;
           if (session.portalTimezone) patch.stalkerPortalTimezone = session.portalTimezone;
           setProgress("MAG katalog hazırlığı başlatılıyor...");
           let catalog;

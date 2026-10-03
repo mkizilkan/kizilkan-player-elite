@@ -1,7 +1,8 @@
 /** MAC-independent portal discovery. Results are endpoint hints, never account sessions. */
-import { portalDiscoveryCandidates, type MagHostEntry, type MagDiscoveryScope, MAG_MAX_PARALLEL } from "@/src/utils/magBulk";
+import { portalDiscoveryCandidates, discoveryPortsFor, type MagHostEntry, type MagDiscoveryScope, MAG_MAX_PARALLEL } from "@/src/utils/magBulk";
 import type { MagScanControl } from "@/src/utils/magBulkScan";
 import type { MagProtectionObservation, StalkerRequestScope } from "@/src/utils/stalker";
+import { recordDiagnostic } from "@/src/utils/diagnostics";
 
 export type MagPortalCandidate = {
   endpoint: string; httpStatus: number; confidence: "api" | "fingerprint" | "protected";
@@ -63,6 +64,16 @@ function localGate(control?: MagScanControl): Pick<StalkerRequestScope, "beforeR
 }
 function endpoint(value: string): string | null {
   try { const u = new URL(value); if (!/^https?:$/.test(u.protocol) || u.username || u.password) return null; u.search = ""; u.hash = ""; return u.toString(); } catch { return null; }
+}
+/** v18.7.6: bir adayın portu (port-öncelikli budama için). */
+function portOf(value: string): string {
+  try { const u = new URL(value); return u.port || (u.protocol === "https:" ? "443" : "80"); } catch { return ""; }
+}
+/** Bağlantı reddi / zaman aşımı = port kapalı/filtreli; sunucu yanıtı (bizim fault'larımız) = açık. */
+function isDeadPortError(error: any): boolean {
+  const kind = String(error?.kind || "");
+  if (["CANCELLED", "BODY_LIMIT", "FOREIGN_REDIRECT", "REDIRECT_LIMIT", "PROXY", "HTTP_SERVER"].includes(kind)) return false;
+  return true; // TIMEOUT ve ham ağ hataları: o portta yol denemeye devam etme.
 }
 function basePath(value: string): string {
   let path = new URL(value).pathname.replace(/\/+$/, "");
@@ -152,6 +163,16 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     const entered = endpoint(host.host); if (!entered) return { ...report, state: "error", message: "Geçersiz portal adresi" };
     const seen = new Set<string>(), planned = new Set<string>(), candidates = new Map<string, MagPortalCandidate>(); let lastError = ""; let stop = false;
     const scope = opts.scope || "fallback";
+    // v18.7.6 (bulgu A4): PORT-ÖNCELİKLİ BUDAMA. İlk yol turu her portu bir kez dener;
+    // bağlantı reddi/zaman aşımı alan port "dead" işaretlenir ve sonraki yollarda atlanır.
+    // Böylece ölü portlarda 14 yol boşuna denenmez (kullanıcı: "757 versiyon").
+    const portState = new Map<string, "open" | "dead">();
+    const announceOpenPorts = () => {
+      const open = [...portState.entries()].filter(([, s]) => s === "open").map(([p]) => p);
+      if (open.length) opts.onStage?.(`Portal keşfi · açık portlar: ${open.join(", ")} · yollar deneniyor`);
+    };
+    // v18.7.6 (A3): aday bulundukça raporu CANLI yayınla (kullanıcı anında görsün).
+    const emitLive = () => { report.candidates = [...candidates.values()]; opts.onHost?.({ ...report, candidates: report.candidates }); };
     const raw = async (url: string, base: string, redirects = 0): Promise<Raw> => {
       await pause(opts.control);
       const stage = (requests: number) => { const u = new URL(url); opts.onStage?.(`Portal keşfi · ${u.host}${u.pathname} · aday ${seen.size}/${Math.min(maxCandidates, planned.size)} · ${requests} istek`); };
@@ -210,11 +231,22 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       return null;
     };
     const probe = async (value: string, queue: string[]): Promise<void> => {
-      const target = endpoint(value), key = target?.replace(/\/+$/, ""); if (!target || !key || seen.has(key) || stop || seen.size >= maxCandidates) return; planned.add(key); seen.add(key);
+      const target = endpoint(value), key = target?.replace(/\/+$/, ""); if (!target || !key || seen.has(key) || stop || seen.size >= maxCandidates) return;
+      // v18.7.6: bu portun kapalı olduğu kanıtlandıysa yol denemesini atla.
+      const port = portOf(target);
+      if (port && portState.get(port) === "dead") { void recordDiagnostic("scan", "MAG_DISCOVERY_PORT_SKIP", { port }); return; }
+      planned.add(key); seen.add(key);
       const linked = candidates.get(target);
       if (linked?.confidence === "fingerprint") candidates.set(target, { ...linked, selectable: false, evidence: [...linked.evidence, "api-probe-unconfirmed"] });
-      const base = basePath(target), response = await raw(target, base); let found = inspect(target, response);
-      if (found) { candidates.set(found.endpoint, found); return; }
+      const base = basePath(target);
+      let response: Raw;
+      try { response = await raw(target, base); if (port) { const first = !portState.has(port); portState.set(port, "open"); if (first) announceOpenPorts(); } }
+      catch (error: any) {
+        if (port && isDeadPortError(error) && !portState.has(port)) { portState.set(port, "dead"); void recordDiagnostic("scan", "MAG_DISCOVERY_PORT_DEAD", { port }); }
+        throw error;
+      }
+      let found = inspect(target, response);
+      if (found) { candidates.set(found.endpoint, found); emitLive(); return; }
       if (response.status >= 500) throw fault("HTTP_SERVER", `Portal HTTP ${response.status} döndürdü; API doğrulanamadı`);
       const fingerprint = response.status >= 200 && response.status < 300 ? htmlEvidence(response.body) : [];
       if (fingerprint.length && !/\.php$/i.test(new URL(target).pathname)) {
@@ -233,11 +265,12 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
             if (!seen.has(link.replace(/\/+$/, ""))) candidates.set(link, { endpoint: link, httpStatus: response.status, confidence: "fingerprint", evidence: [...fingerprint, "same-family-api-link"], elapsedMs: response.elapsedMs, selectable: true });
           }
           if (!links.length) candidates.set(target, { endpoint: target, httpStatus: response.status, confidence: "fingerprint", evidence: fingerprint, elapsedMs: response.elapsedMs, selectable: false });
+          emitLive();
         }
       }
       if (stop || response.status === 404 || !/\.php$/i.test(new URL(target).pathname)) return;
       const u = new URL(target); u.search = new URLSearchParams({ type: "stb", action: "handshake", JsHttpRequest: "1-xml" }).toString();
-      found = inspect(target, await raw(u.toString(), base)); if (found) candidates.set(found.endpoint, found);
+      found = inspect(target, await raw(u.toString(), base)); if (found) { candidates.set(found.endpoint, found); emitLive(); }
     };
     const sweep = async (plan: string[]): Promise<void> => {
       for (const value of plan) { const target = endpoint(value); if (target) planned.add(target.replace(/\/+$/, "")); }
@@ -245,8 +278,60 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       for (const target of plan) { if (stop || seen.size >= maxCandidates) break; try { await probe(target, extra); } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED") throw error; lastError = String(error?.message || error).slice(0, 180); if (["PROXY", "FOREIGN_REDIRECT"].includes(error?.kind)) { report.state = "error"; stop = true; } } }
       for (let index = 0; index < extra.length && !stop; index++) { try { await probe(extra[index], extra); } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED") throw error; lastError = String(error?.message || error).slice(0, 180); } }
     };
-    await sweep(scope === "all" ? [entered, ...portalDiscoveryCandidates(host, { allPorts: true })] : family(host));
-    if (!stop && scope === "fallback" && ![...candidates.values()].some(candidate => candidate.selectable)) await sweep(portalDiscoveryCandidates(host, { allPorts: true }));
+    // v18.7.6 — PARALEL PORT ERİŞİLEBİLİRLİK. Çok-portlu keşiften önce portların açık/kapalı
+    // durumu PARALEL ve gate'siz (her port ayrı TCP ucu; portal API'si değil → ban riski yok)
+    // bulunur; sonra yalnız AÇIK portlarda yol/API denemesi yapılır (aralıklı gate korunur).
+    // Böylece 57 portu sırayla 650 ms aralıkla denemek (~37 sn) yerine tek timeout penceresinde
+    // açık portlar bulunur. Hiç açık bulunamazsa eski geniş sweep'e düşülür.
+    const reachProbe = async (portUrl: string, ms: number): Promise<boolean> => {
+      const controller = new AbortController(), parent = opts.control?.signal;
+      const onAbort = () => controller.abort(); parent?.addEventListener("abort", onAbort, { once: true });
+      const timer = setTimeout(() => controller.abort(), ms);
+      try {
+        if (opts.useProxy) {
+          const { PanelScan } = await import("@/modules/panel-scan");
+          const v = await PanelScan.proxiedRequest(portUrl, "GET", { Accept: "*/*" }, "", ms, controller.signal, 1024);
+          return Number(v.status) > 0;
+        }
+        const { fetch: portalFetch } = await import("expo/fetch");
+        const r = await portalFetch(portUrl, { method: "GET", headers: { Accept: "*/*" }, credentials: "omit", redirect: "manual", signal: controller.signal });
+        return Number(r.status) > 0;
+      } catch { return false; } finally { clearTimeout(timer); parent?.removeEventListener("abort", onAbort); }
+    };
+    const reachableOpenPorts = async (): Promise<string[]> => {
+      const ports = discoveryPortsFor(host, { allPorts: true });
+      if (ports.length <= 1) return ports;
+      // Kullanıcı portu açıkça verdiyse paralel ön-tarama YAPMA: "all" kapsamı normal
+      // aralıklı/protection-aware gated sweep ile genişler (ban-güvenli). Paralel reachability
+      // yalnız port BİLİNMEYEN gerçek keşifte devreye girer (asıl yavaş senaryo).
+      if (host.hasPort) return ports;
+      const u0 = new URL(entered), givenPort = u0.port || (u0.protocol === "https:" ? "443" : "80");
+      const reachTimeout = Math.max(1500, Math.min(timeoutMs, 4000));
+      const open: string[] = []; let idx = 0;
+      const limit = Math.min(ports.length, Math.max(6, Math.min(MAG_MAX_PARALLEL, Math.floor(Number(opts.concurrency) || 6))));
+      opts.onStage?.(`Portal keşfi · ${u0.hostname} · ${ports.length} port paralel taranıyor`);
+      const w = async () => {
+        while (true) {
+          await pause(opts.control);
+          const i = idx++; if (i >= ports.length || stop) return;
+          const p = ports[i];
+          if (portState.has(p)) { if (portState.get(p) === "open" && !open.includes(p)) open.push(p); continue; }
+          const scheme = p === givenPort ? u0.protocol.replace(":", "") : ["443", "8443", "2053", "2083", "2087", "2096"].includes(p) ? "https" : "http";
+          const ok = await reachProbe(`${scheme}://${u0.hostname}:${p}/`, reachTimeout);
+          portState.set(p, ok ? "open" : "dead");
+          if (ok) { open.push(p); announceOpenPorts(); }
+        }
+      };
+      await Promise.all(Array.from({ length: limit }, () => w()));
+      check(opts.control);
+      // Açık portları öncelik sırasında tut.
+      const ordered = ports.filter((p: string) => open.includes(p));
+      void recordDiagnostic("scan", "MAG_DISCOVERY_PORT_SCAN", { host: u0.hostname, scanned: ports.length, open: ordered.length, parallel: limit });
+      return ordered.length ? ordered : ports;
+    };
+    const allPortsPlan = async () => portalDiscoveryCandidates(host, { allPorts: true, ports: await reachableOpenPorts() });
+    await sweep(scope === "all" ? [entered, ...(await allPortsPlan())] : family(host));
+    if (!stop && scope === "fallback" && ![...candidates.values()].some(candidate => candidate.selectable)) await sweep(await allPortsPlan());
     report.candidates = [...candidates.values()];
     if (!stop) report.state = report.candidates.some(candidate => candidate.selectable) ? "ready" : lastError ? "error" : "not-found";
     if (lastError && report.state === "error") report.message = lastError;

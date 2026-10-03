@@ -212,16 +212,36 @@ export function parsePortalHosts(text: string): { hosts: MagHostEntry[]; invalid
  * geri kalan port×yol matrisi arkadan gelir. Böylece kısa zaman aşımıyla doğru portal ilk
  * birkaç denemede bulunur. Tekilleştirilir.
  */
-export function portalDiscoveryCandidates(entry: MagHostEntry, options: { allPorts?: boolean } = {}): string[] {
+/**
+ * v18.7.6 — PORT-ÖNCELİKLİ KEŞİF. Bir host için denenecek portları öncelik sırasıyla
+ * verir (verilen port → yaygın portlar). magPortalDiscovery önce bu portların erişilebilir
+ * olanını bulur, SONRA yalnız açık portlarda yolları dener. Böylece 57×14 kartezyen yerine
+ * ~57 port denemesi + (açık port × 14 yol) yapılır (kullanıcı şikâyeti: "757 versiyon").
+ */
+export function discoveryPortsFor(entry: MagHostEntry, options: { allPorts?: boolean } = {}): string[] {
+  let u: URL;
+  try { u = new URL(/^https?:\/\//i.test(entry.host) ? entry.host : "http://" + entry.host); }
+  catch { return []; }
+  const givenPort = entry.explicitPort || u.port || (u.protocol === "https:" ? "443" : "80");
+  return (options.allPorts
+    ? [givenPort, ...MAG_DISCOVERY_PORTS.map(String)]
+    : entry.hasPort ? [givenPort] : MAG_DISCOVERY_PORTS.map(String)).filter((p, i, a) => a.indexOf(p) === i);
+}
+
+export function portalDiscoveryCandidates(entry: MagHostEntry, options: { allPorts?: boolean; ports?: string[] } = {}): string[] {
   let u: URL;
   try { u = new URL(/^https?:\/\//i.test(entry.host) ? entry.host : "http://" + entry.host); }
   catch { return []; }
   const scheme = u.protocol.replace(":", "");
   const userPath = u.pathname.replace(/\/+$/, "");
   const givenPort = entry.explicitPort || u.port || (u.protocol === "https:" ? "443" : "80");
-  const ports = (options.allPorts
-    ? [givenPort, ...MAG_DISCOVERY_PORTS.map(String)]
-    : entry.hasPort ? [givenPort] : MAG_DISCOVERY_PORTS.map(String)).filter((p, i, a) => a.indexOf(p) === i);
+  let ports = discoveryPortsFor(entry, options);
+  // v18.7.6: açık port kümesi verildiyse yalnız onları kullan (sıra korunur).
+  if (options.ports && options.ports.length) {
+    const allow = new Set(options.ports.map(String));
+    const filtered = ports.filter(p => allow.has(p));
+    ports = filtered.length ? filtered : ports;
+  }
   const out: string[] = [];
   const seen = new Set<string>();
   const add = (port: string, p: string) => {

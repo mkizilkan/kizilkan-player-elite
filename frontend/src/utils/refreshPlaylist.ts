@@ -353,11 +353,23 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       if (!pl.stalkerPortal || !pl.stalkerMac) {
         return { ok: false, message: "Portal/MAC bilgisi eksik." };
       }
-      const { stalkerLogin, stalkerCatalog, stalkerCredsFromPlaylist } = await import("@/src/utils/stalker");
+      const { stalkerLogin, stalkerCatalog, stalkerCredsFromPlaylist, stalkerAccountSnapshot } = await import("@/src/utils/stalker");
       const cred = stalkerCredsFromPlaylist(pl);
       onProgress?.({ phase: "login", message: "Portal doğrulanıyor..." });
       if(options?.signal?.aborted){const e:any=new Error('İşlem uygulama arka plana geçtiği için bekletildi.');e.kind='BACKGROUND_PAUSE';throw e;}
-      const { session } = await stalkerLogin(cred, { signal: options?.signal });
+      const { session, profile: stProfile } = await stalkerLogin(cred, { signal: options?.signal });
+      // v18.7.6: yenilemede de hesap durumu/bitişi API ile tazelenir (account_info&get_main_info).
+      // Boş sonuç eldeki iyi bitişi EZMEZ; yeni dolu alanlar öncelikli, boşlar korunur.
+      onProgress?.({ phase: "login", message: "Hesap bilgileri doğrulanıyor..." });
+      let refreshedAccountInfo = pl.accountInfo;
+      try {
+        const snapshot = await stalkerAccountSnapshot(cred, session, stProfile, { signal: options?.signal });
+        const merged: any = { ...(pl.accountInfo || {}) };
+        for (const [key, value] of Object.entries(snapshot.info)) {
+          if (value !== undefined && value !== null && value !== "") merged[key] = value;
+        }
+        refreshedAccountInfo = merged;
+      } catch { /* terminal olmayan hata: mevcut accountInfo korunur */ }
       const magProgress:RefreshProgress={
         phase:'content',message:'MAG katalog hazırlığı başlatılıyor...',
         live:requested.has('live')?'waiting':'skipped',
@@ -431,6 +443,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       const seriesCap = d.seriesNative === 'UNSUPPORTED' && d.seriesFromVod > 0 ? 'vod_fallback' : d.seriesNative === 'UNSUPPORTED' ? 'unsupported_404' : d.seriesNative === 'ERROR' ? 'error' : (seriesCount ? 'supported' : 'empty');
       const endpointShape = (() => { try { return new URL(session.endpoint).pathname || '/'; } catch { return ''; } })();
       const capabilityPatch: Partial<Playlist> = {
+        ...(refreshedAccountInfo ? { accountInfo: refreshedAccountInfo } : {}),
         ...(session.portalTimezone ? { stalkerPortalTimezone: session.portalTimezone } : {}),
         catalogCapabilities: { live:requested.has("live")?liveCap:(pl.catalogCapabilities?.live||"empty"),vod:requested.has("vod")?vodCap:(pl.catalogCapabilities?.vod||"empty"),series:requested.has("series")?seriesCap:(pl.catalogCapabilities?.series||"empty"), updatedAt: new Date().toISOString() },
         magCapabilities: {

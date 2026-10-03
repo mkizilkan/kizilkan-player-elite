@@ -1040,7 +1040,19 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           missingKinds=rows?kinds.filter(k=>rows[k]!==expected[k]):[];
           if(missingKinds.length)kinds=missingKinds;
         }
-        await refreshPlaylistKinds(id,kinds,undefined,valid,missingKinds.length>0);
+        // v18.7.6 (bulgu B): tekli MAC/portal yenilemede gerçek aşama kullanıcıya akar.
+        // Eskiden progress=undefined geçiliyordu → "Güncellik kontrol ediliyor…" sabit
+        // kalıyor, kullanıcı donma sanıyordu. Artık her aşama (hesap doğrulama, kategori
+        // indirme, kayıt) anlık gösterilir.
+        await refreshPlaylistKinds(id,kinds,(p)=>{
+          if(!valid())return;
+          const parts:string[]=[];
+          if(typeof p.liveCount==='number'&&p.live==='saving')parts.push(`Canlı ${p.liveCount}`);
+          if(typeof p.vodCount==='number'&&p.vod==='saving')parts.push(`Film ${p.vodCount}`);
+          if(typeof p.seriesCount==='number'&&p.series==='saving')parts.push(`Dizi ${p.seriesCount}`);
+          const detail=parts.length?` · ${parts.join(' • ')}`:'';
+          setFreshnessStatus({playlistId:id,message:(p.message||'Güncelleniyor…')+detail});
+        },valid,missingKinds.length>0);
         if(valid())setFreshnessStatus({playlistId:id,message:'Yerel katalog güncel.'});
       }catch{if(valid())setFreshnessStatus({playlistId:id,message:'Sunucuya ulaşılamadı; yerel katalog kullanılabilir.'});}
     })();};

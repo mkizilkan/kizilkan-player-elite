@@ -167,5 +167,22 @@ let groups = 0;
     assert.equal((await current.proxiedRequest(portal, 'GET', {}, '', 1000, undefined, 1048577)).error, 'invalid-body-limit');
     console.log('PASS: proxy receives native byte cap; old module fails clearly without direct/unbounded fallback'); groups++;
   }
+  {
+    // v18.7.6: PORT BİLİNMEYEN host → PARALEL port erişilebilirlik; yalnız açık port(lar)da yol denenir.
+    const noPort = { raw: 'portal.example.test', host: 'http://portal.example.test', hasPort: false, hasPath: false };
+    const touchedPorts = new Set(), stages = [];
+    const fetch = async url => {
+      const u = new URL(url); touchedPorts.add(u.port || '80');
+      if (u.port === '8080') return response({ js: { token: 'fixture' } });
+      throw new Error('ECONNREFUSED'); // kapalı port anında reddedilir
+    };
+    const report = (await run(fetch, [noPort], { scope: 'fallback', onStage: text => stages.push(text) }))[0];
+    assert.equal(report.state, 'ready', 'açık portta API bulunmalı');
+    assert.ok(report.candidates.some(c => new URL(c.endpoint).port === '8080' && c.confidence === 'api' && c.selectable), '8080 API adayı seçilebilir olmalı');
+    assert.ok(report.candidates.every(c => new URL(c.endpoint).port === '8080'), 'yalnız açık portta yol denenmeli (ölü portlar budanır)');
+    assert.ok(touchedPorts.size > 5, 'paralel erişilebilirlik birden çok portu denemeli');
+    assert.ok(stages.some(t => /paralel taranıyor/.test(t)) && stages.some(t => /açık portlar:/.test(t)), 'aşama: paralel tarama + açık portlar gösterilmeli');
+    console.log('PASS: port-first parallel reachability — only open ports get path probes'); groups++;
+  }
   console.log(`PASS: MAC-independent portal discovery — ${groups} offline behavior groups`);
 })().catch(error => { console.error(error); process.exitCode = 1; });
