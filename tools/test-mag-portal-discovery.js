@@ -184,5 +184,19 @@ let groups = 0;
     assert.ok(stages.some(t => /paralel taranıyor/.test(t)) && stages.some(t => /açık portlar:/.test(t)), 'aşama: paralel tarama + açık portlar gösterilmeli');
     console.log('PASS: port-first parallel reachability — only open ports get path probes'); groups++;
   }
+  {
+    // v18.7.8 (AC-2/AC-3): root `/` yanıt vermese BİLE port elenmez; `/c/` denenir ve portal bulunur.
+    const noPort = { raw: 'portal.example.test', host: 'http://portal.example.test', hasPort: false, hasPath: false };
+    const fetch = async url => {
+      const u = new URL(url);
+      if (u.pathname === '/') throw new Error('root timeout/no-response'); // tüm portlarda root başarısız → unknown
+      if (u.port === '8080' && /^\/c\/?$/.test(u.pathname)) return response({ js: { token: 'fixture' } });
+      return response('missing', 404);
+    };
+    const report = (await run(fetch, [noPort], { scope: 'fallback' }))[0];
+    assert.equal(report.state, 'ready', 'root başarısız olsa da /c/ denenip portal bulunmalı');
+    assert.ok(report.candidates.some(c => new URL(c.endpoint).port === '8080' && c.selectable), '8080/c/ adayı bulunmalı (unknown port düşürülmedi)');
+    console.log('PASS: unknown port (root fail) still gets path probes — no false-negative'); groups++;
+  }
   console.log(`PASS: MAC-independent portal discovery — ${groups} offline behavior groups`);
 })().catch(error => { console.error(error); process.exitCode = 1; });

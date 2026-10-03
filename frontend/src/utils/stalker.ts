@@ -1946,9 +1946,11 @@ export function normalizeStalkerAccountInfo(profile: any): AccountInfo {
   // v18.7.7 (P4): MAC/login base64 olabilir → çöz. login base64-MAC ise kullanıcı adı olarak
   // ham base64 gösterme; gerçek login ayrı alandaysa onu kullan.
   const mac = decodeMacIfBase64(primitiveString(p.mac));
-  const rawLogin = primitiveString(p.login || p.username);
+  // v18.7.8 (A): kullanıcı adı aday alanları genişletildi. Bazı portallar login'i farklı anahtarda
+  // döndürüyor (cihaz: HKPREMIUM'da `login` boştu ama hesabın gerçek kullanıcı adı var).
+  const rawLogin = primitiveString(p.login || p.username || p.user_name || p.user || p.account || p.subscriber || p.account_number);
   const username = rawLogin ? decodeMacIfBase64(rawLogin) : undefined;
-  const password = primitiveString(p.password || p.pass);
+  const password = primitiveString(p.password || p.pass || p.user_password || p.account_password);
   return {
     username,
     password,
@@ -2010,6 +2012,10 @@ export async function stalkerAccountSnapshot(
     void recordDiagnostic("mag", "STALKER_ACCOUNT_SNAPSHOT", {
       endpoint: ses.endpoint, mainInfoOk,
       hasExpiry: !!merged.tariff_expired_date, status: merged.status || null,
+      hasUsername: !!merged.username, hasPassword: !!merged.password,
+      // v18.7.8 (A): main-info'nun ALAN ADLARINI logla (değer YOK → kimlik sızmaz). Hangi alanın
+      // kullanıcı adını taşıdığını cihaz kanıtıyla görüp eşlemek için (HKPREMIUM'da login boş çıktı).
+      mainInfoFields: main ? Object.keys(main).slice(0, 48) : [],
     });
   } catch (e: any) {
     if (terminalMagError(e)) throw e;
@@ -2240,7 +2246,9 @@ export async function stalkerCategoryPreview(cred: StalkerCreds, ses: StalkerSes
   return {live,vod,series,warnings};
 }
 
-const ORDERED_LIST_ABSOLUTE_MAX_PAGES = 120;
+// v18.7.8: paralel sayfalama ile üst sınır 120→600 (14'erlik sayfada ~8400 öğe). Gerçek sınır
+// zaman bütçesidir; bu yalnız üst emniyet tavanıdır. Canlı get_all_channels tek seferdedir, etkilenmez.
+const ORDERED_LIST_ABSOLUTE_MAX_PAGES = 600;
 const ORDERED_LIST_NO_NEW_LIMIT = 2;
 function pageFingerprint(rows:any[]):string {
   if (!rows.length) return "empty";
@@ -2279,83 +2287,134 @@ async function stalkerOrderedList(
    * Bu yüzden duvar saati bütçesi ekliyoruz: süre dolunca elde ne varsa onunla
    * dönülür (kısmi liste, boş listeden iyidir).
    */
-  const PAGE_BUDGET_MS = 45000;
+  /**
+   * v18.7.8 — PARALEL SAYFALAMA (bulgu B).
+   * Cihaz kanıtı: portal sayfa başına 14 satır veriyor ve istekler SIRALI gidiyordu
+   * (~540 ms/sayfa). 22.901 film = ~1636 sayfa → 45 sn bütçede yalnız %5. get_ordered_list
+   * SALT-OKUNUR katalog listesidir (oynatma akışı DEĞİL), bu yüzden sayfaları sınırlı
+   * eşzamanlılıkla çekmek "tek upstream" oynatma kuralını bozmaz. Önce p0/p1 ile base (0/1)
+   * ve total öğrenilir; kalan sayfalar parti parti PARALEL çekilir ama SIRAYLA işlenir
+   * (dedup + onUniqueRow sırası korunur). 429/koruma görülünce genişleme durur.
+   */
+  const PAGE_BUDGET_MS = 75000;      // paralel çekimle daha fazla sayfa sığar
+  const PAGE_CONCURRENCY = 6;        // salt-okunur liste; makul, ban-güvenli
   const budgetStartedAt = Date.now();
-  while (page < maxPages && loadedCount < total) {
-    if (signal?.aborted) { stopReason="CANCELLED"; break; }
-    if (Date.now() - budgetStartedAt > PAGE_BUDGET_MS) {
-      stopReason="TIME_BUDGET";
-      void recordDiagnostic("mag","STALKER_PAGINATION_BUDGET",{type,page,loaded:loadedCount,total,elapsedMs:Date.now()-budgetStartedAt});
-      break;
-    }
-    let data:any;
+  const overBudget = () => Date.now() - budgetStartedAt > PAGE_BUDGET_MS;
+  const seenFp = new Set<string>();   // sayfa-düzeyi yineleme (alias) tespiti
+  const fetchPage = async (p: number): Promise<{ rows: any[]; js: any }> => {
+    let data: any;
     try {
-      data=await req(
-        buildUrl(ses.endpoint,{type,action:"get_ordered_list",p:String(page),...extra}),
-        headersFor(cred,ses.token,ses.endpoint,ses.compatProfile),
-        {timeoutMs:60000,signal},
+      data = await req(
+        buildUrl(ses.endpoint, { type, action: "get_ordered_list", p: String(p), ...extra }),
+        headersFor(cred, ses.token, ses.endpoint, ses.compatProfile),
+        { timeoutMs: 60000, signal },
       );
-    } catch (e:any) {
-      if (e?.kind==="CANCELLED") { stopReason="CANCELLED"; break; }
-      if (unsupportedStatus(e)) throw new StalkerCatalogUnsupportedError(type,`${type} ordered-list endpoint desteklenmiyor`);
+    } catch (e: any) {
+      if (e?.kind === "CANCELLED") throw e;
+      // Desteklenmeyen endpoint (404 vb.) → VOD/series fallback'i tetikleyen özel hata.
+      if (unsupportedStatus(e)) throw new StalkerCatalogUnsupportedError(type, `${type} ordered-list endpoint desteklenmiyor`);
       throw e;
     }
-    if (!isExplicitListShape(data)) throw new StalkerCatalogUnsupportedError(type,`${type} ordered-list yanıt biçimi desteklenmiyor`);
-    const js=data?.js, rows=rowsFromListShape(data);
-    const declared=Number(js?.total_items);
-    const declaredPageItems=Number(js?.max_page_items);
-    if (Number.isFinite(declared) && declared>=0) total=declared;
+    if (!isExplicitListShape(data)) throw new StalkerCatalogUnsupportedError(type, `${type} ordered-list yanıt biçimi desteklenmiyor`);
+    return { rows: rowsFromListShape(data), js: data?.js };
+  };
+  const applyTotals = (js: any) => {
+    const declared = Number(js?.total_items), declaredPageItems = Number(js?.max_page_items);
+    if (Number.isFinite(declared) && declared >= 0) total = declared;
     if (Number.isFinite(declaredPageItems) && declaredPageItems > 0 && Number.isFinite(total)) {
-      maxPages=Math.min(ORDERED_LIST_ABSOLUTE_MAX_PAGES, Math.max(4, Math.ceil(total / declaredPageItems) + 3));
+      maxPages = Math.min(ORDERED_LIST_ABSOLUTE_MAX_PAGES, Math.max(4, Math.ceil(total / declaredPageItems) + 3));
     }
-    if (!rows.length) {
-      if (firstNonEmptyPage===null && page===0) { page=1; continue; }
-      stopReason="EMPTY_PAGE"; break;
-    }
-    if (firstNonEmptyPage===null) firstNonEmptyPage=page;
-    const fingerprint=pageFingerprint(rows);
-    if (fingerprint===previousFingerprint) {
-      // Bazı Ministra/Stalker portalları p=0 isteğini p=1 alias'ı gibi döndürür.
-      // Eski kod burada katalogu 14 öğede kesiyordu. İlk 0/1 çifti aynıysa
-      // 1-based portal olarak öğren ve gerçek ikinci sayfa olan p=2'yi dene.
-      if (effectivePageBase === null && firstNonEmptyPage === 0 && page === 1) {
-        effectivePageBase = 1;
-        void recordDiagnostic("mag", "STALKER_PAGINATION_BASE_DETECTED", { type, effectivePageBase, reason: "P0_EQUALS_P1", nextPage: 2 });
-        page = 2;
-        continue;
-      }
-      stopReason="DUPLICATE_PAGE"; break;
-    }
-    if (effectivePageBase === null && firstNonEmptyPage === 0 && page === 1) {
-      effectivePageBase = 0;
-      void recordDiagnostic("mag", "STALKER_PAGINATION_BASE_DETECTED", { type, effectivePageBase, reason: "P0_DIFFERS_P1" });
-    } else if (effectivePageBase === null && firstNonEmptyPage === 1) {
-      effectivePageBase = 1;
-    }
-    previousFingerprint=fingerprint;
-    if (page===firstNonEmptyPage && maxPages===ORDERED_LIST_ABSOLUTE_MAX_PAGES) maxPages=expectedPageLimit(total,rows.length);
-
-    let added=0;
-    for (let ri=0; ri<rows.length; ri++) {
-      const row=rows[ri], key=String(row?.id ?? row?.movie_id ?? row?.series_id ?? `${page}-${ri}`);
+  };
+  const processPage = async (p: number, rows: any[], js: any): Promise<number> => {
+    let added = 0;
+    for (let ri = 0; ri < rows.length; ri++) {
+      const row = rows[ri], key = String(row?.id ?? row?.movie_id ?? row?.series_id ?? `${p}-${ri}`);
       if (seen.has(key)) continue;
       seen.add(key);
       if (collectRows) out.push(row);
-      const uniqueIndex=loadedCount++;
-      if (onUniqueRow) await onUniqueRow(row,uniqueIndex);
+      const uniqueIndex = loadedCount++;
+      if (onUniqueRow) await onUniqueRow(row, uniqueIndex);
       added++;
       await stalkerCatalogYield(ri);
     }
-    await stalkerCatalogYield(page,1);
-    const progressTotal=Number.isFinite(total)?total:undefined;
-    try { onPage?.(page,loadedCount,progressTotal); } catch {}
-    void recordDiagnostic("mag","STALKER_PAGINATION_PAGE",{type,page,rows:rows.length,added,loaded:loadedCount,total:progressTotal,maxPages,effectivePageBase,maxPageItems:Number(js?.max_page_items)||undefined,streamMapped:!!onUniqueRow});
-    if (!added) consecutiveNoNew++; else consecutiveNoNew=0;
-    if (consecutiveNoNew>=ORDERED_LIST_NO_NEW_LIMIT) { stopReason="NO_NEW_IDS"; break; }
-    page++;
+    const progressTotal = Number.isFinite(total) ? total : undefined;
+    try { onPage?.(p, loadedCount, progressTotal); } catch {}
+    void recordDiagnostic("mag","STALKER_PAGINATION_PAGE",{type,page:p,rows:rows.length,added,loaded:loadedCount,total:progressTotal,maxPages,effectivePageBase,maxPageItems:Number(js?.max_page_items)||undefined,streamMapped:!!onUniqueRow,parallel:true});
+    return added;
+  };
+  try {
+    // --- BOOTSTRAP (sıralı): base (0/1) + total ---
+    let firstRows: any[] = [], firstJs: any = null, firstPage = 0;
+    const r0 = await fetchPage(0); applyTotals(r0.js);
+    if (!r0.rows.length) {
+      // p0 boş → 1-based portal olabilir; gerçek ilk sayfa p=1 (P0_EMPTY_P1_FALLBACK).
+      const r1 = await fetchPage(1); applyTotals(r1.js);
+      if (!r1.rows.length) { stopReason = "EMPTY_PAGE"; }
+      else { firstRows = r1.rows; firstJs = r1.js; firstPage = 1; firstNonEmptyPage = 1; effectivePageBase = 1; }
+    } else { firstRows = r0.rows; firstJs = r0.js; firstPage = 0; firstNonEmptyPage = 0; }
+    if (firstRows.length) {
+      previousFingerprint = pageFingerprint(firstRows); seenFp.add(previousFingerprint);
+      await processPage(firstPage, firstRows, firstJs);
+      // base tespiti (yalnız p0 doluyken): p1 p0 ile AYNI ise 1-based → gerçek ikinci sayfa p=2.
+      if (firstPage === 0 && !overBudget() && loadedCount < total && !signal?.aborted && stopReason === "TOTAL_OR_END") {
+        const second = await fetchPage(1); applyTotals(second.js);
+        if (second.rows.length && pageFingerprint(second.rows) === previousFingerprint) {
+          effectivePageBase = 1;            // p0==p1 → gerçek sayfalar 1'den; p2'den devam
+          void recordDiagnostic("mag", "STALKER_PAGINATION_BASE_DETECTED", { type, effectivePageBase, reason: "P0_EQUALS_P1", nextPage: 2 });
+        } else {
+          effectivePageBase = 0;
+          void recordDiagnostic("mag", "STALKER_PAGINATION_BASE_DETECTED", { type, effectivePageBase, reason: "P0_DIFFERS_P1" });
+          if (second.rows.length) { const fp = pageFingerprint(second.rows); if (!seenFp.has(fp)) { seenFp.add(fp); await processPage(1, second.rows, second.js); } }
+        }
+      }
+    }
+    if (maxPages === ORDERED_LIST_ABSOLUTE_MAX_PAGES && Number.isFinite(total)) maxPages = expectedPageLimit(total, 14);
+    // --- CONFIRM + PARALEL FAZ ---
+    // İlk gerçek sayfa (p=2) TEK çekilir: p0/p1 alias ise yinelenen/boş sayfa governor'u ≤3 sayfada
+    // hızlı durur (DUPLICATE_PAGE). Sonrası PARALEL (parti ${PAGE_CONCURRENCY}); sayfalar SIRAYLA
+    // işlenir, `seen` satır dedup + `seenFp` sayfa-alias tespiti liste sonunu yakalar.
+    const base = effectivePageBase ?? 0;
+    const lastPage = base + maxPages - 1;
+    page = 2;
+    while (page <= lastPage && loadedCount < total && !overBudget() && stopReason === "TOTAL_OR_END") {
+      if (signal?.aborted) { stopReason = "CANCELLED"; break; }
+      const batchSize = page === 2 ? 1 : PAGE_CONCURRENCY;
+      const batch: number[] = [];
+      for (let k = 0; k < batchSize && page <= lastPage; k++) batch.push(page++);
+      const results = await Promise.all(batch.map(p => fetchPage(p).then(r => r, (error: any) => ({ error }))));
+      let batchAdded = 0, batchEmpty = 0, batchDup = 0, aborted = false;
+      for (let bi = 0; bi < batch.length; bi++) {
+        const r: any = results[bi];
+        if (r?.error) {
+          const e = r.error;
+          if (e?.kind === "CANCELLED") { stopReason = "CANCELLED"; aborted = true; break; }
+          if (unsupportedStatus(e)) throw new StalkerCatalogUnsupportedError(type, `${type} ordered-list endpoint desteklenmiyor`);
+          if (e?.kind === "MAG_RATE_LIMIT" || e?.kind === "MAG_PROTECTION" || Number(e?.status) === 429) { stopReason = "RATE_LIMIT"; aborted = true; break; }
+          stopReason = "PAGE_ERROR"; continue;   // tek sayfa hatası tüm katalogu düşürmesin
+        }
+        applyTotals(r.js);
+        if (!r.rows.length) { batchEmpty++; continue; }
+        const fp = pageFingerprint(r.rows);
+        if (seenFp.has(fp)) { batchDup++; continue; }   // bu sayfa öncekiyle AYNI → liste sonu alias'ı
+        seenFp.add(fp);
+        batchAdded += await processPage(batch[bi], r.rows, r.js);
+      }
+      if (aborted) break;
+      if (batchAdded === 0 && (batchEmpty + batchDup) >= batch.length) { stopReason = batchDup > batchEmpty ? "DUPLICATE_PAGE" : "EMPTY_PAGE"; break; }
+      if (batchAdded === 0) { consecutiveNoNew += batch.length; if (consecutiveNoNew >= ORDERED_LIST_NO_NEW_LIMIT) { stopReason = "NO_NEW_IDS"; break; } }
+      else consecutiveNoNew = 0;
+    }
+    if (overBudget() && loadedCount < total) {
+      stopReason = "TIME_BUDGET";
+      void recordDiagnostic("mag","STALKER_PAGINATION_BUDGET",{type,page,loaded:loadedCount,total,elapsedMs:Date.now()-budgetStartedAt});
+    } else if (page > lastPage && loadedCount < total && stopReason === "TOTAL_OR_END") {
+      stopReason = "PAGE_GOVERNOR";
+    }
+  } catch (e: any) {
+    if (e instanceof StalkerCatalogUnsupportedError) throw e;
+    if (e?.kind === "CANCELLED") stopReason = "CANCELLED"; else throw e;
   }
-  if (page>=maxPages && loadedCount<total) stopReason="PAGE_GOVERNOR";
-  void recordDiagnostic("mag","STALKER_PAGINATION_STOP",{type,stopReason,page,loaded:loadedCount,total:Number.isFinite(total)?total:undefined,maxPages,effectivePageBase,streamMapped:!!onUniqueRow});
+  void recordDiagnostic("mag","STALKER_PAGINATION_STOP",{type,stopReason,page,loaded:loadedCount,total:Number.isFinite(total)?total:undefined,maxPages,effectivePageBase,streamMapped:!!onUniqueRow,parallel:true});
   return out;
 }
 

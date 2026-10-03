@@ -57,7 +57,7 @@ need(/async function stalkerCatalogYield\(index: number, every = 32\)/.test(stal
 // A4 — port-öncelikli keşif (ölü port budama)
 need(/export function discoveryPortsFor\(/.test(magBulk), 'discoveryPortsFor yok');
 need(/ports\?: string\[\]/.test(magBulk), 'portalDiscoveryCandidates ports filtresi yok');
-need(/portState/.test(disc) && /MAG_DISCOVERY_PORT_DEAD/.test(disc) && /MAG_DISCOVERY_PORT_SKIP/.test(disc), 'port budama (dead/skip) yok');
+need(/portState/.test(disc) && /MAG_DISCOVERY_PORT_(?:DEAD|CLOSED)/.test(disc) && /MAG_DISCOVERY_PORT_SKIP/.test(disc), 'port budama (dead/closed/skip) yok');
 need(/reachableOpenPorts/.test(disc) && /MAG_DISCOVERY_PORT_SCAN/.test(disc), 'paralel port erişilebilirlik fazı yok');
 
 // A3 — canlı sonuç yayını

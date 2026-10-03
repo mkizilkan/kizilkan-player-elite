@@ -2625,18 +2625,33 @@ ${pub.path}`, [
           deviceModel: "MAG320" as const,
         };
 
-        // v18.7.2: PORTSUZ ADRESTE PORT/PORTAL KEŞFİ. Kullanıcı port yazmadıysa (adres:port yok)
-        // yaygın port×yol adayları denenip çalışan portal bulunur; sonra normal login onunla yapılır.
+        // v18.7.2/v18.7.8: PORTSUZ ADRESTE PORT/PORTAL KEŞFİ. v18.7.8 (keşif #11): tekli ekleme artık
+        // çoklu MAC ile AYNI MAC'siz keşif motorunu (discoverMagHosts) kullanır — hiçbir portu yanlışlıkla
+        // elemez, open-önce sınıflar, auto scope uygular. MAC'siz keşif önce (daha az agresif); sonra
+        // çalışan endpoint'te tek login. Keşif başarısızsa eski handshake-tabanlı discoverMagPortal fallback.
         try {
           const portalHost = /^https?:\/\//i.test(cred.portal) ? cred.portal : `http://${cred.portal}`;
           const u = new URL(portalHost);
           if (!u.port) {
-            const { discoverMagPortal } = await import("@/src/utils/stalker");
-            const { portalDiscoveryCandidates } = await import("@/src/utils/magBulk");
             setProgress("Portal adresi/portu aranıyor…");
-            const cands = portalDiscoveryCandidates({ raw: cred.portal, host: portalHost, hasPort: false });
-            const found = await discoverMagPortal(cred, cands, { timeoutMs: 6000 });
-            if (found?.endpoint) { cred.portal = found.endpoint; setProgress(`Portal bulundu: ${new URL(found.endpoint).host}`); }
+            let chosen: string | undefined;
+            try {
+              const { discoverMagHosts } = await import("@/src/utils/magPortalDiscovery");
+              const { chooseMagPortals } = await import("@/src/utils/magBulkScan");
+              const reports = await discoverMagHosts(
+                [{ raw: cred.portal, host: portalHost, hasPort: false, hasPath: false }],
+                { scope: "fallback", timeoutMs: 6000, onStage: (m) => setProgress(m) },
+              );
+              chosen = reports[0] ? chooseMagPortals(reports)[reports[0].host.host] : undefined;
+            } catch { /* MAC'siz keşif başarısızsa handshake fallback */ }
+            if (!chosen) {
+              const { discoverMagPortal } = await import("@/src/utils/stalker");
+              const { portalDiscoveryCandidates } = await import("@/src/utils/magBulk");
+              const cands = portalDiscoveryCandidates({ raw: cred.portal, host: portalHost, hasPort: false });
+              const found = await discoverMagPortal(cred, cands, { timeoutMs: 6000 });
+              chosen = found?.endpoint;
+            }
+            if (chosen) { cred.portal = chosen; setProgress(`Portal bulundu: ${new URL(chosen).host}`); }
           }
         } catch { /* keşif başarısızsa normal login kendi aday listesini dener */ }
 

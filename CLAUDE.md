@@ -180,7 +180,26 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.7 RC1 — dal `v18.7.7-rc1-mag-account-fixes`)
+## 9. Mevcut durum (v18.7.8 RC1 — dal `v18.7.8-rc1-catalog-speed-discovery`)
+
+**v18.7.8 (bu sürüm — katalog hızı + keşif yanlış-negatif + tekli/çoklu birleştirme, kanıtlı):**
+v18.7.7 cihaz testi (bitiş/şifre/MAC/AKTİF ÇALIŞTI) sonrası kalan sorunlar + GPT keşif analizi.
+- **B — katalog çok yavaş (kanıt: VOD 14/sayfa sıralı, 45 sn'de %5):** `stalkerOrderedList` artık **paralel sayfalama** —
+  bootstrap (p0/p1 base+total) sıralı, ilk gerçek sayfa tek (duplicate governor ≤3), sonrası parti-6 PARALEL (sırayla işlenir,
+  dedup korunur). Mutlak sayfa sınırı 120→600, bütçe 45→75 sn. ~7× içerik, kat kat hız.
+- **Keşif P0 (GPT) — hiçbir port yanlışlıkla elenmez:** `open|unknown|closed`; yalnız kesin bağlantı reddi=closed;
+  timeout/TLS/body-limit=unknown (yollar yine denenir); proxy BODY_LIMIT=açık; `/` başarısızlığı/tek açık port
+  diğerlerini elemez; portsuz girişte **auto scope**. (`magPortalDiscovery.ts`)
+- **Tekli/çoklu motor birleştirme:** tekli MAG ekleme (`add-playlist.tsx`) artık çoklu ile aynı MAC'siz `discoverMagHosts`
+  motorunu kullanır (handshake-keşfi fallback). Aynı host her iki ekranda aynı endpoint'i bulur.
+- **A — kullanıcı adı:** `STALKER_ACCOUNT_SNAPSHOT.mainInfoFields` (alan adları, değer yok) + kullanıcı adı aday alanları genişletildi.
+- **C — ilk-kare:** kanıt hızlı (0.6–1.1 sn) gösterdi; kör düzeltme yok, P7 ölçümü kalır.
+- Doğrulama: tsc temiz · denetle TEMİZ (exit 0) · `check-v18708-release.js` PASS · keşif testi 15 grup. Native değişiklik YOK.
+  Kırılan 4 eski kapı (unsupported→VOD fallback, DUPLICATE_PAGE, nextPage:2, P0_EMPTY_P1_FALLBACK, PORT_CLOSED) düzeltildi.
+  **v18.7.9'a bırakıldı:** native gerçek-TCP, endpoint registry, soft-404, edge/challenge ayrımı, hata sınıfları, learned cache.
+  Ayrıntı `AI-DEVIR-v18.7.8.md`.
+
+## 9b. Önceki durum (v18.7.7 RC1 — dal `v18.7.7-rc1-mag-account-fixes`)
 
 **v18.7.7 (bu sürüm — MAG hesap kartı doğruluğu + oynatma/senkron, kanıtlı; PUSH/DERLEME BEKLİYOR):**
 v18.7.6 cihaz testi sonrası 8 düzeltme (P1–P8). Kök neden kanıtları: tanı `...05-13`, cihaz AsyncStorage, IPTV Extreme görüntüleri.

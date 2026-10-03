@@ -591,9 +591,11 @@ try {
   requireText(stalker, 'export async function stalkerCatalog', 'Stalker Live/VOD/Series catalog orchestrator');
   requireText(stalker, 'export async function stalkerVod', 'Stalker VOD catalog');
   requireText(stalker, 'export async function stalkerSeries', 'Stalker Series catalog');
-  if (!stalker.includes('if (firstNonEmptyPage === null && page === 0) { page=1; continue; }') &&
+  // v18.7.8: paralel sayfalamada p0-boş→p1 fallback davranışı korunur (P0_EMPTY_P1_FALLBACK işaretçisi).
+  if (!stalker.includes('P0_EMPTY_P1_FALLBACK') &&
+    !stalker.includes('if (firstNonEmptyPage === null && page === 0) { page=1; continue; }') &&
     !stalker.includes('if (firstNonEmptyPage===null && page===0) { page=1; continue; }')) {
-  issue('Stalker p=0/p=1 pagination compatibility');
+  problem('Stalker p=0/p=1 pagination compatibility');
 }
   requireText(stalker, 'truthyPortalFlag(v?.is_series)', 'Stalker VOD is_series classification');
   requireText(stalker, 'type=series boş dönse bile VOD is_series/kategori fallback', 'Stalker empty-native-series fallback contract');
