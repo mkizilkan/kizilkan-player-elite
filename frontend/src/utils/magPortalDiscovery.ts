@@ -314,18 +314,17 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
         return Number(r.status) > 0 ? "open" : "unknown";
       } catch { return "unknown"; } finally { clearTimeout(timer); parent?.removeEventListener("abort", onAbort); }
     };
-    const reachableOpenPorts = async (): Promise<string[]> => {
+    // v18.7.9 (iki aşama): portları AÇIK/BİLİNMEYEN olarak ayır. Aşama 2'de önce yalnız AÇIK
+    // portlarda yollar denenir; bulunursa bilinmeyen portlara HİÇ dokunulmaz (hız). Bulunamazsa
+    // bilinmeyen portlar fallback olarak denenir (yanlış-negatif önlenir).
+    const classifyPorts = async (): Promise<{ open: string[]; unknown: string[] }> => {
       const ports = discoveryPortsFor(host, { allPorts: true });
-      if (ports.length <= 1) return ports;
-      // Kullanıcı portu açıkça verdiyse paralel ön-tarama YAPMA: "all" kapsamı normal
-      // aralıklı/protection-aware gated sweep ile genişler. Paralel sınıflama yalnız port
-      // BİLİNMEYEN gerçek keşifte devreye girer (asıl yavaş senaryo).
-      if (host.hasPort) return ports;
+      if (ports.length <= 1 || host.hasPort) return { open: ports, unknown: [] };
       const u0 = new URL(entered), givenPort = u0.port || (u0.protocol === "https:" ? "443" : "80");
       const reachTimeout = Math.max(1500, Math.min(timeoutMs, 4000));
       const open: string[] = [], unknown: string[] = []; let idx = 0;
       const limit = Math.min(ports.length, Math.max(6, Math.min(MAG_MAX_PARALLEL, Math.floor(Number(opts.concurrency) || 6))));
-      opts.onStage?.(`Portal keşfi · ${u0.hostname} · ${ports.length} port paralel taranıyor`);
+      opts.onStage?.(`Aşama 1/2 · ${u0.hostname} · ${ports.length} port paralel taranıyor`);
       const w = async () => {
         while (true) {
           await pause(opts.control);
@@ -340,14 +339,38 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       };
       await Promise.all(Array.from({ length: limit }, () => w()));
       check(opts.control);
-      // OPEN önce, UNKNOWN sonra — ama hiçbir portu DÜŞÜRME (yanlış-negatif önlenir).
-      const ordered = [...ports.filter((p: string) => open.includes(p)), ...ports.filter((p: string) => unknown.includes(p))];
-      void recordDiagnostic("scan", "MAG_DISCOVERY_PORT_SCAN", { host: u0.hostname, scanned: ports.length, open: open.length, unknown: unknown.length, parallel: limit });
-      return ordered.length ? ordered : ports;
+      const openOrdered = ports.filter((p: string) => open.includes(p));
+      const unknownOrdered = ports.filter((p: string) => unknown.includes(p));
+      void recordDiagnostic("scan", "MAG_DISCOVERY_PORT_SCAN", { host: u0.hostname, scanned: ports.length, open: openOrdered, unknownCount: unknownOrdered.length, parallel: limit });
+      return { open: openOrdered, unknown: unknownOrdered };
     };
-    const allPortsPlan = async () => portalDiscoveryCandidates(host, { allPorts: true, ports: await reachableOpenPorts() });
-    await sweep(scope === "all" ? [entered, ...(await allPortsPlan())] : family(host));
-    if (!stop && scope === "fallback" && ![...candidates.values()].some(candidate => candidate.selectable)) await sweep(await allPortsPlan());
+    const hasSelectable = () => [...candidates.values()].some(c => c.selectable);
+    const emitDiscoveryResult = (open: string[], unknown: string[]) => {
+      void recordDiagnostic("scan", "MAG_DISCOVERY_RESULT", {
+        host: host.host, scope, openPorts: open, unknownPortCount: unknown.length, probes: report.probes, stop, state: report.state,
+        candidates: [...candidates.values()].slice(0, 12).map(c => ({ endpoint: c.endpoint, confidence: c.confidence, httpStatus: c.httpStatus, selectable: c.selectable, evidence: c.evidence.slice(0, 4) })),
+      });
+    };
+    // İKİ AŞAMALI KEŞİF
+    const twoPhaseExpand = async () => {
+      const { open, unknown } = await classifyPorts();
+      // Aşama 2a: yalnız AÇIK portlarda yollar.
+      const openPorts = open.length ? open : unknown;
+      opts.onStage?.(`Aşama 2/2 · açık portlarda (${openPorts.length}) yol aranıyor`);
+      await sweep(scope === "all" ? [entered, ...portalDiscoveryCandidates(host, { allPorts: true, ports: openPorts })] : portalDiscoveryCandidates(host, { allPorts: true, ports: openPorts }));
+      // Aşama 2b: açıkta bulunamazsa bilinmeyen portlar (fallback).
+      if (!stop && !hasSelectable() && open.length && unknown.length) {
+        opts.onStage?.(`Açık portlarda bulunamadı · ${unknown.length} bilinmeyen port deneniyor`);
+        await sweep(portalDiscoveryCandidates(host, { allPorts: true, ports: unknown }));
+      }
+      emitDiscoveryResult(open, unknown);
+    };
+    if (scope === "all") {
+      await twoPhaseExpand();
+    } else {
+      await sweep(family(host));
+      if (!stop && scope === "fallback" && !hasSelectable()) await twoPhaseExpand();
+    }
     report.candidates = [...candidates.values()];
     if (!stop) report.state = report.candidates.some(candidate => candidate.selectable) ? "ready" : lastError ? "error" : "not-found";
     if (lastError && report.state === "error") report.message = lastError;

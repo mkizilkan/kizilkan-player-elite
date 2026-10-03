@@ -2013,9 +2013,10 @@ export async function stalkerAccountSnapshot(
       endpoint: ses.endpoint, mainInfoOk,
       hasExpiry: !!merged.tariff_expired_date, status: merged.status || null,
       hasUsername: !!merged.username, hasPassword: !!merged.password,
-      // v18.7.8 (A): main-info'nun ALAN ADLARINI logla (değer YOK → kimlik sızmaz). Hangi alanın
-      // kullanıcı adını taşıdığını cihaz kanıtıyla görüp eşlemek için (HKPREMIUM'da login boş çıktı).
+      // v18.7.8/v18.7.9 (A): main-info VE profil ALAN ADLARI (değer YOK → kimlik sızmaz). Kullanıcı
+      // adı bazı portallarda get_main_info yerine get_profile'da gelir (IPTV Extreme "bilgi" bunu gösterir).
       mainInfoFields: main ? Object.keys(main).slice(0, 48) : [],
+      profileFields: accountRecord(profile) ? Object.keys(accountRecord(profile)!).slice(0, 48) : [],
     });
   } catch (e: any) {
     if (terminalMagError(e)) throw e;
