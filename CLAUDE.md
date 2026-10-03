@@ -180,7 +180,21 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.8 RC1 — dal `v18.7.8-rc1-catalog-speed-discovery`)
+## 9. Mevcut durum (v18.7.9 RC1 — dal `v18.7.9-rc1-twophase-discovery`)
+
+**v18.7.9 (bu sürüm — iki aşamalı portal keşfi + telemetri, kanıtlı):**
+Cihaz kanıtı: `weko-azure.xyz` çoklu-MAC "all" taraması 54 portun hepsinde yol denedi (~757, 8,8 dk, valid:0, görünürlük yok).
+- **İki aşamalı keşif:** önce açık portlar (paralel), sonra yollar **yalnız açık portlarda** (bulununca dur); bulunamazsa
+  bilinmeyen portlar fallback. ~757 yerine ~(açıkPort×14); yanlış-negatif korunur. (`magPortalDiscovery.ts`)
+- **Keşif telemetrisi `MAG_DISCOVERY_RESULT`:** açık portlar + bulunan aday endpoint'ler (confidence/HTTP/kanıt) + state/probes
+  → portal neden bulunamadı kanıtla görülür.
+- **Kullanıcı adı:** `STALKER_ACCOUNT_SNAPSHOT.profileFields` (get_profile alan adları) — HKPREMIUM'da kullanıcı adı
+  get_main_info'da yok (mac/phone), get_profile'da olabilir (IPTV Extreme "bilgi" gösteriyor); alan görülünce eşlenecek.
+- Doğrulama: tsc temiz · denetle TEMİZ (exit 0) · `check-v18709-release.js` PASS · keşif testi 15 grup. Native değişiklik YOK.
+  **Cihazda doğrulanacak:** weko taramasının hızı + `MAG_DISCOVERY_RESULT` ile portalın gerçekten olup olmadığı; `profileFields`.
+  Ayrıntı `AI-DEVIR-v18.7.9.md`.
+
+## 9a. Önceki durum (v18.7.8 RC1 — dal `v18.7.8-rc1-catalog-speed-discovery`)
 
 **v18.7.8 (bu sürüm — katalog hızı + keşif yanlış-negatif + tekli/çoklu birleştirme, kanıtlı):**
 v18.7.7 cihaz testi (bitiş/şifre/MAC/AKTİF ÇALIŞTI) sonrası kalan sorunlar + GPT keşif analizi.
