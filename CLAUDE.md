@@ -180,9 +180,18 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.11 RC1 — dal `v18.7.11-rc1-mag-profile-variants`)
+## 9. Mevcut durum (v18.7.12 RC1 — dal `v18.7.12-rc1-mag-ip-failover`)
 
-**v18.7.11 (bu sürüm — MAG profil-uyumluluk çekirdeği; PC doğrulandı, CİHAZ BEKLİYOR):**
+**v18.7.12 (bu sürüm — MAG çoklu-IP DNS failover; PC doğrulandı, CİHAZ BEKLİYOR):**
+Kök neden (adb + PC kanıtı): goldensm32.xyz 5 A kaydı, **yalnız .225 canlı**; telefonun DNS'i ölü IP veriyor → 6 sn timeout,
+diğer IP'ler denenmiyordu. Host failover oynatıcıda vardı, MAG ekleme/taramada yoktu. Yeni `magHostFailover.ts`: DoH ile tüm A kayıtları
+→ canlı IP yoklanıp sabitlenir → bağlantı IP'ye (Host=hostname), yanıt URL'i hostname'e çevrilir (güvenlik kontrolleri bozulmaz). Yalnız HTTP,
+yalnız RN ortamında aktif. **Tuzak tekrarlandı:** stalker.ts/magPortalDiscovery.ts'e üst düzey import 10 kapıyı kırdı → tembel `loadHostFailover()`.
+Doğrulama: tsc temiz · denetle TEMİZ · `check-v18712` PASS · failover testi 7 grup. Ayrıntı `AI-DEVIR-v18.7.12.md`.
+
+## 9-önceki. v18.7.11 RC1 (dal `v18.7.11-rc1-mag-profile-variants`)
+
+**v18.7.11 (MAG profil-uyumluluk çekirdeği; cihazda hkpremium kullanıcı adı 1787 görüldü — `name` alanından):**
 Kök neden (cihaz 18.7.10 tanı + protokol araştırması): weko `:80/portal.php` handshake OK (token) ama `get_profile` **MAG320-pcap-minimal** ile BOŞ → profil boş; yine de `get_all_channels` **21266 kanal** açıyor. Kod yalnız minimal profili deniyordu (`STALKER_COMPAT_ATTEMPT` 11× pcap320-minimal), boş profili "geçersiz" sayıp çoklu MAC'te `valid=0` yapıyordu. Standart istemci (StalkerTalker/Kodi) get_profile'ı **sn/stb_type/image_version/ver** ile gönderir; weko profili ancak öyle verir. Kullanıcı adı = `get_profile`'daki **`login`** alanı.
 - **A / M07+M08:** `initialProfileVariants(MAG320)` artık minimal + **dolu-parametreli MAG254/MAG250** varyantları; `derivedProfileVariants(MAG320)` türetilmiş kimlik üretir (eskiden boş). Minimal ÖNCE (uyumlu portaller etkilenmez), boşsa dolu varyantlara düşer.
 - **B / M08:** `stalkerVerifyAccount` kimlik (profil/main_info) yoksa HEMEN `unverified` DEMEZ; canlı/VOD/dizi erişiminde gerçek örnek varsa `verified` (weko 21266 çoklu MAC'te eklenir). yanlış-MAC/denial hâlâ elenir.

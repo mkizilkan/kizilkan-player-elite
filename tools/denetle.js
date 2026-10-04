@@ -42,6 +42,7 @@ if (process.cwd() !== PROJECT_ROOT) process.chdir(PROJECT_ROOT);
 
 const CHECKS = [
   ["test-mag-action-ownership.js", "v18.7.4 MAG add/export action ownership and profile ABA", ""],
+  ["check-v18712-release.js", "v18.7.12 MAG multi-IP DNS failover (DoH all A-records + live IP pin + IP-at-boundary connect/logical translation; player had host failover, MAG scan did not)", ""],
   ["check-v18711-release.js", "v18.7.11 MAG profile-compat core (MAG320 full-param get_profile variants + empty-profile-yet-live-accessible = valid) + safe username presence telemetry + discovery wall budget", ""],
   ["check-v18710-release.js", "v18.7.10 bulk handshake fallback + redirect-no-kill + version.js detection + alternate scheme + bounded unknown fallback + username name/fname + selectable handshake candidate", ""],
   ["check-v18709-release.js", "v18.7.9 two-phase discovery (open ports then paths; unknown fallback) + discovery result telemetry + get_profile username field telemetry", ""],
@@ -49,6 +50,7 @@ const CHECKS = [
   ["check-v18707-release.js", "v18.7.7 MAG account-card accuracy (phone-expiry, gzip, status 0=active, base64 MAC, password) + engine-switch fresh link + initial-sync freshness skip + load telemetry + progress overlay", ""],
   ["check-v18706-release.js", "v18.7.6 MAG account validation + stale-session recovery + handshake budget + port-first discovery + live results + refresh progress", ""],
   ["check-v18705-release.js", "v18.7.5 Media3 audio-state telemetry (evidence before fix)", ""],
+  ["test-mag-host-failover.js", "v18.7.12 MAG multi-IP DNS failover (DoH, live-IP pin, connect/logical translation)", ""],
   ["test-mag-portal-discovery.js", "v18.7.4 MAC-free portal discovery/path/protection/cancel", ""],
   ["test-mag-account-validation.js", "v18.7.4 real Stalker account/access/date validation", ""],
   ["test-timeshift-onpause-ownership.js", "v18.7.4 pause intent lifecycle/source ownership", ""],

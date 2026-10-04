@@ -26,6 +26,24 @@
 
 import type { AccountInfo, Channel, Playlist, SeriesItem, VodItem } from "@/src/types";
 import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
+
+/**
+ * v18.7.12: çoklu-IP DNS failover modülü TEMBEL yüklenir. Üst düzey import, stalker.ts'i sahte
+ * `require` ile çalıştıran kapıları kırıyordu (CLAUDE §7 tuzağı). Yüklenemezse failover kapalı
+ * kalır ve eski davranış aynen sürer.
+ */
+type HostFailoverModule = typeof import("@/src/utils/magHostFailover");
+let hostFailoverModule: HostFailoverModule | null | undefined;
+async function loadHostFailover(): Promise<HostFailoverModule | null> {
+  if (hostFailoverModule !== undefined) return hostFailoverModule;
+  let loaded: HostFailoverModule | null = null;
+  try {
+    const mod: any = await import("@/src/utils/magHostFailover");
+    loaded = typeof mod?.connectInfo === "function" && typeof mod?.logicalUrl === "function" ? mod : null;
+  } catch { loaded = null; }
+  hostFailoverModule = loaded;
+  return loaded;
+}
 import { storage } from "@/src/utils/storage";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { parseAccountExpiryMs } from "@/src/utils/accountExpiry";
@@ -875,6 +893,7 @@ async function req(url: string, headers: Record<string, string>, options: number
   checkScopeRuntime(runtime);
   if (parentSignal?.aborted) { const e: any = new Error("İşlem iptal edildi"); e.kind = "CANCELLED"; throw e; }
   const timeoutMs=Math.min(scope?.timeoutMs ?? opts.timeoutMs ?? 20000, opts.timeoutCapMs ?? Number.POSITIVE_INFINITY);
+  const hostFailover = await loadHostFailover(); // v18.7.12: önbellekli; yüklenemezse null (eski davranış)
   const c = new AbortController();
   const abortFromParent=()=>c.abort();
   const abortFromScope=()=>c.abort();
@@ -948,10 +967,14 @@ async function req(url: string, headers: Record<string, string>, options: number
           res = { status: pr.status, ok: pr.status >= 200 && pr.status < 300, url: target, redirected: false,
             headers: { get: (name: string) => map.get(name.toLowerCase()) || "" }, text: async () => String(pr.body || "") };
         } else {
-          res = await exactFetch!(target, { method, headers: hdrs, ...(method === "POST" ? { body } : {}), signal: c.signal, redirect: "manual", credentials: "omit" });
+          // v18.7.12: çoklu-IP failover — canlı IP sabitlenmişse bağlantı o IP'ye (Host başlığı hostname).
+          const conn = hostFailover ? hostFailover.connectInfo(target) : { url: target };
+          const connHdrs = conn.host ? { ...hdrs, Host: conn.host } : hdrs;
+          res = await exactFetch!(conn.url, { method, headers: connHdrs, ...(method === "POST" ? { body } : {}), signal: c.signal, redirect: "manual", credentials: "omit" });
         }
         const discard = async () => { try { await res.body?.cancel(); } catch {} };
-        if (!sameApi(String(res.url || target))) { await discard(); stop("response-endpoint-mismatch"); }
+        const responseUrl = String(res.url || target);
+        if (!sameApi(hostFailover ? hostFailover.logicalUrl(responseUrl) : responseUrl)) { await discard(); stop("response-endpoint-mismatch"); }
         const isRedirect = [301, 302, 303, 307, 308].includes(Number(res.status));
         if (!isRedirect) {
           if (res.redirected || res.type === "opaqueredirect") { await discard(); stop("transport-followed-redirect"); }
@@ -1055,7 +1078,9 @@ async function req(url: string, headers: Record<string, string>, options: number
           signal: c.signal,
         });
       } else {
-        res = await fetch(url, { headers, signal: c.signal });
+        // v18.7.12: çoklu-IP failover — canlı IP sabitlenmişse bağlantı o IP'ye (Host başlığı hostname).
+        const conn = hostFailover ? hostFailover.connectInfo(url) : { url };
+        res = await fetch(conn.url, { headers: conn.host ? { ...headers, Host: conn.host } : headers, signal: c.signal });
       }
     }
     catch (cause:any) {
@@ -1069,7 +1094,8 @@ async function req(url: string, headers: Record<string, string>, options: number
       throw err;
     }
     const contentType=String(res.headers?.get?.("content-type")||"");
-    const finalUrl=String((res as any).url||url);
+    const rawFinalUrl=String((res as any).url||url);
+    const finalUrl=hostFailover ? hostFailover.logicalUrl(rawFinalUrl) : rawFinalUrl;
     const redirected=!!(res as any).redirected;
     const text=await res.text();
     if (opts.maxResponseBytes && exceedsUtf8Limit(text, opts.maxResponseBytes)) {
@@ -1393,6 +1419,9 @@ export async function discoverMagPortal(
   // sıradaki adaylarda bulunur; bütçe yalnız ölü kuyruğu keser.
   const wallBudgetMs = opts.wallBudgetMs ?? Math.max(60_000, Math.min(limit * (timeoutMs + 1500), 240_000));
   const startedAll = Date.now();
+  // v18.7.12: çoklu-IP failover'ı arka planda tetikle (ölü A kaydı sabitlenmesin). Keşif handshake'leri
+  // başlarken pin hazır olur; connectInfo istekleri canlı IP'ye yönlendirir.
+  void loadHostFailover().then(hf => hf?.ensureLiveHostIp(candidates[0] || cred.portal, opts.signal));
   await primeMagIdentity(cred);
   void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_START", { candidateCount: limit, profile, timeoutMs, wallBudgetMs });
   for (let i = 0; i < limit; i++) {
@@ -1442,6 +1471,7 @@ async function stalkerHandshakeInternal(cred: StalkerCreds, signal?: AbortSignal
      * sessizce sade çereze düşer ve düzeltme etkisiz kalır.
      */
     await primeMagIdentity(cred);
+    void loadHostFailover().then(hf => hf?.ensureLiveHostIp(cred.portal, signal)); // v18.7.12: çoklu-IP failover
     const learned=await loadLearnedCompat(cred);
     const all=portalCandidates(cred.portal, cred.endpointPolicy);
     const plan:string[]=[];

@@ -4,6 +4,20 @@ import type { MagScanControl } from "@/src/utils/magBulkScan";
 import type { MagProtectionObservation, StalkerRequestScope } from "@/src/utils/stalker";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
 
+/** v18.7.12: çoklu-IP failover modülü TEMBEL yüklenir (sahte-require test koşumlarını kırmamak için). */
+type HostFailoverModule = typeof import("@/src/utils/magHostFailover");
+let hostFailoverModule: HostFailoverModule | null | undefined;
+async function loadHostFailover(): Promise<HostFailoverModule | null> {
+  if (hostFailoverModule !== undefined) return hostFailoverModule;
+  let loaded: HostFailoverModule | null = null;
+  try {
+    const mod: any = await import("@/src/utils/magHostFailover");
+    loaded = typeof mod?.connectInfo === "function" && typeof mod?.logicalUrl === "function" ? mod : null;
+  } catch { loaded = null; }
+  hostFailoverModule = loaded;
+  return loaded;
+}
+
 export type MagPortalCandidate = {
   endpoint: string; httpStatus: number; confidence: "api" | "fingerprint" | "protected";
   evidence: string[]; protection?: MagProtectionObservation; elapsedMs: number; selectable: boolean;
@@ -169,6 +183,10 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
   const scan = async (host: MagHostEntry): Promise<MagPortalDiscovery> => {
     const report: MagPortalDiscovery = { host, candidates: [], probes: 0, state: "not-found" };
     const entered = endpoint(host.host); if (!entered) return { ...report, state: "error", message: "Geçersiz portal adresi" };
+    // v18.7.12: çoklu-IP failover'ı arka planda tetikle (ölü A kaydı sabitlenmesin). Fire-and-forget:
+    // DoH + yoklama (~2–3 sn) biterken ilk istekler gate temposuyla zaten bekliyor; pin hazır olunca
+    // connectInfo sonraki istekleri canlı IP'ye yönlendirir. Tek IP / IP girişi / https'te erken döner.
+    if (!opts.useProxy) void loadHostFailover().then(hf => hf?.ensureLiveHostIp(entered, opts.control?.signal));
     const seen = new Set<string>(), planned = new Set<string>(), candidates = new Map<string, MagPortalCandidate>(); let lastError = ""; let stop = false;
     // v18.7.8 (keşif P0.5): AUTO scope. Kullanıcı port vermediyse "exact" keşif amacına terstir
     // (yalnız girilen portu dener, 8080 vb. aranmaz). Portsuz girişte exact/boş → fallback'e yükselt
@@ -207,9 +225,16 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
           // installed native transport disables redirects/cookies and streams the body.
           const { fetch: portalFetch } = await import("expo/fetch");
           check(opts.control);
-          response = await controlled(portalFetch(url, { method: "GET", headers, credentials: "omit", redirect: "manual", signal: controller.signal }), opts.control, controller.signal, cancel);
+          // v18.7.12: çoklu-IP failover — host için canlı IP sabitlenmişse bağlantı o IP'ye yapılır
+          // (Host başlığı hostname kalır). IP yalnız burada görünür; finalUrl mantıksal hostname'e çevrilir.
+          const hf = await loadHostFailover();
+          const conn = hf ? hf.connectInfo(url) : { url };
+          const fetchHeaders = conn.host ? { ...headers, Host: conn.host } : headers;
+          response = await controlled(portalFetch(conn.url, { method: "GET", headers: fetchHeaders, credentials: "omit", redirect: "manual", signal: controller.signal }), opts.control, controller.signal, cancel);
         }
-        const finalUrl = String(response.url || url);
+        const hfBack = await loadHostFailover();
+        const rawFinal = String(response.url || url);
+        const finalUrl = hfBack ? hfBack.logicalUrl(rawFinal) : rawFinal;
         if (!resolveLocal(finalUrl, url, base)) throw fault("FOREIGN_REDIRECT", "Portal başka origin veya kurulum dizinine yönlendirdi");
         const location = String(response.headers?.get?.("location") || "");
         if (response.status >= 300 && response.status < 400 && location) {
