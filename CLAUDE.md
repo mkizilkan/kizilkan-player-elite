@@ -180,19 +180,22 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.10 RC1 — dal `v18.7.10-rc1-bulk-handshake-fallback`)
+## 9. Mevcut durum (v18.7.11 RC1 — dal `v18.7.11-rc1-mag-profile-variants`)
 
-**v18.7.10 (bu sürüm — çoklu MAC handshake yedeği + GPT inceleme düzeltmeleri; PC doğrulandı, CİHAZ BEKLİYOR):**
-Kök neden (cihaz): çoklu MAC port+yol+MAC girilse bile bulamıyordu, aynı host TEKLİ eklemede handshake keşfiyle 21266 kanal/AKTİF buldu. Fark: çoklu akış yalnız **pasif** keşfe (`discoverMagHosts`) dayanıyordu; tekli eklemede **gerçek handshake** yedeği (`discoverMagPortal`) vardı.
-- **#1 Çoklu MAC handshake yedeği (`magBulkScan.ts`):** pasif boşsa gerçek handshake keşfi; bulunan endpoint **seçilebilir aday** olarak rapora enjekte → otomatik + "ben seçeceğim" manuel seçicide görünür. `MAG_BULK_HANDSHAKE_FALLBACK_*`.
-- **#2 redirect host'u öldürmez** (yalnız aday atlanır); **#3 version.js tanıma**; **#4 alternatif http/https scheme öğrenme** (TLS doğrulaması KAPATILMAZ); **#5 sınırlı unknown-port fallback (~96)**; **#6 kullanıcı adı name/fname fallback**; **#7 handshake-adayı seçilebilir**.
-- **GPT incelemesi (aynı dalda, yeni kodumu da eleştirdi) — ship öncesi düzeltildi:**
-  **M05** version.js artık kör `200/selectable` YAPMAZ → non-selectable "portal-confirmed" izi + API yollarını **probe ettirir** (404 ise aday yok). **T01** testi doğru oracle'a çekildi. **M02** korumalı/429 host'ta yedek çalışmaz (`..._SKIP/_PROTECTED`). **M03** literal `.php`'de yalnız o endpoint. **M04** ilk 3 distinct MAC denenir. **M06** bounded keşif boşsa "portal yok" sayılmaz.
-- Doğrulama: tsc temiz · **denetle TEMİZ (exit 0)** · `check-v18710-release.js` PASS · keşif testi **17 grup** (version.js yanlış-pozitif yok + gerçek API seçilebilir). **Native değişiklik YOK.**
-  **Cihazda doğrulanacak:** weko çoklu MAC handshake yedeği + manuel seçicide endpoint; version.js'de kör 200 yok; koruma delinmiyor; HKPREMIUM `profileFields`. Ayrıntı `AI-DEVIR-v18.7.10.md`.
-- **Sonraki (GPT backlog, v18.7.11+, onaysız kodlanmaz):** A01–A08, C01–C04, D01, P01–P05, N01–N03, T02; canlı-kanıtlanmamış M07/M08, P01, HTTP 444.
+**v18.7.11 (bu sürüm — MAG profil-uyumluluk çekirdeği; PC doğrulandı, CİHAZ BEKLİYOR):**
+Kök neden (cihaz 18.7.10 tanı + protokol araştırması): weko `:80/portal.php` handshake OK (token) ama `get_profile` **MAG320-pcap-minimal** ile BOŞ → profil boş; yine de `get_all_channels` **21266 kanal** açıyor. Kod yalnız minimal profili deniyordu (`STALKER_COMPAT_ATTEMPT` 11× pcap320-minimal), boş profili "geçersiz" sayıp çoklu MAC'te `valid=0` yapıyordu. Standart istemci (StalkerTalker/Kodi) get_profile'ı **sn/stb_type/image_version/ver** ile gönderir; weko profili ancak öyle verir. Kullanıcı adı = `get_profile`'daki **`login`** alanı.
+- **A / M07+M08:** `initialProfileVariants(MAG320)` artık minimal + **dolu-parametreli MAG254/MAG250** varyantları; `derivedProfileVariants(MAG320)` türetilmiş kimlik üretir (eskiden boş). Minimal ÖNCE (uyumlu portaller etkilenmez), boşsa dolu varyantlara düşer.
+- **B / M08:** `stalkerVerifyAccount` kimlik (profil/main_info) yoksa HEMEN `unverified` DEMEZ; canlı/VOD/dizi erişiminde gerçek örnek varsa `verified` (weko 21266 çoklu MAC'te eklenir). yanlış-MAC/denial hâlâ elenir.
+- **C / T02+A03/A04:** ortak `pickUsernameField` (login→…→name→sname) + snapshot telemetrisi `usernamePresent/usernameFieldKind/usernameSourceKind/loginValuePresent…` (redaksiyona takılmayan SAFE sonekler) → kullanıcı adının hangi alanda olduğu değer açılmadan görünür.
+- **M09:** `discoverMagPortal` duvar-saati bütçesi (cihaz: keşif ~19 dk) → `DISCOVERY_BUDGET_STOP` (tamamlanamadı; "portal yok" değil).
+- Doğrulama: tsc temiz · **denetle TEMİZ (exit 0)** · `check-v18711-release.js` PASS · hesap testi **12 grup** (yeni: dolu-parametre varyant, boş-profil+canlı=verified, kullanıcı adı alanı). **Native değişiklik YOK.** Ayrıntı `AI-DEVIR-v18.7.11.md`.
+- **Player (ayrı):** ilk kare ~2 sn = Media3 TS açılışı (buffer başlatma zaten ~200 ms); kör buffer dokunuşu YAPILMADI (stutter riski). Uzun gecikmeler HTTP 444+boş oturumdandı → M08 ile düzelmesi beklenir. Açılış ölçümü v18.7.12'ye.
 
-## 9a. Önceki durum (v18.7.9 RC1 — dal `v18.7.9-rc1-twophase-discovery`)
+## 9a. Önceki durum (v18.7.10 RC1 — dal `v18.7.10-rc1-bulk-handshake-fallback`)
+
+**v18.7.10 (çoklu MAC handshake yedeği + GPT inceleme düzeltmeleri):** pasif keşif boşsa gerçek handshake keşfi (`discoverMagPortal`), bulunan endpoint seçilebilir aday (`MAG_BULK_HANDSHAKE_FALLBACK_*`); redirect host'u öldürmez; version.js tanıma (M05: non-selectable iz + API probe); alternatif http/https scheme; sınırlı unknown-port fallback; korumada yedek yok (M02); literal `.php` kapsamı (M03); ilk 3 MAC (M04). Ayrıntı `AI-DEVIR-v18.7.10.md`.
+
+## 9b. Önceki durum (v18.7.9 RC1 — dal `v18.7.9-rc1-twophase-discovery`)
 
 **v18.7.9 (iki aşamalı portal keşfi + telemetri, kanıtlı):**
 Cihaz kanıtı: `weko-azure.xyz` çoklu-MAC "all" taraması 54 portun hepsinde yol denedi (~757, 8,8 dk, valid:0, görünürlük yok).
@@ -201,7 +204,7 @@ Cihaz kanıtı: `weko-azure.xyz` çoklu-MAC "all" taraması 54 portun hepsinde y
 - **Keşif telemetrisi `MAG_DISCOVERY_RESULT`:** açık portlar + bulunan aday endpoint'ler (confidence/HTTP/kanıt) + state/probes.
 - **Kullanıcı adı:** `STALKER_ACCOUNT_SNAPSHOT.profileFields` (get_profile alan adları). Ayrıntı `AI-DEVIR-v18.7.9.md`.
 
-## 9b. Önceki durum (v18.7.8 RC1 — dal `v18.7.8-rc1-catalog-speed-discovery`)
+## 9c. Önceki durum (v18.7.8 RC1 — dal `v18.7.8-rc1-catalog-speed-discovery`)
 
 **v18.7.8 (bu sürüm — katalog hızı + keşif yanlış-negatif + tekli/çoklu birleştirme, kanıtlı):**
 v18.7.7 cihaz testi (bitiş/şifre/MAC/AKTİF ÇALIŞTI) sonrası kalan sorunlar + GPT keşif analizi.
@@ -220,7 +223,7 @@ v18.7.7 cihaz testi (bitiş/şifre/MAC/AKTİF ÇALIŞTI) sonrası kalan sorunlar
   **v18.7.9'a bırakıldı:** native gerçek-TCP, endpoint registry, soft-404, edge/challenge ayrımı, hata sınıfları, learned cache.
   Ayrıntı `AI-DEVIR-v18.7.8.md`.
 
-## 9c. Önceki durum (v18.7.7 RC1 — dal `v18.7.7-rc1-mag-account-fixes`)
+## 9d. Önceki durum (v18.7.7 RC1 — dal `v18.7.7-rc1-mag-account-fixes`)
 
 **v18.7.7 (bu sürüm — MAG hesap kartı doğruluğu + oynatma/senkron, kanıtlı; PUSH/DERLEME BEKLİYOR):**
 v18.7.6 cihaz testi sonrası 8 düzeltme (P1–P8). Kök neden kanıtları: tanı `...05-13`, cihaz AsyncStorage, IPTV Extreme görüntüleri.

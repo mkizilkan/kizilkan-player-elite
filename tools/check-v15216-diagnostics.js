@@ -27,7 +27,7 @@ need('src/utils/stalker.ts', 'forceFresh: true', '401/403 sonrası fresh login')
 need('src/utils/stalker.ts', 'MAG250-legacy-minimal', 'MAG profile legacy uyumluluk varyanti');
 {
   const s=fs.readFileSync(path.join(root,'src/utils/stalker.ts'),'utf8');
-  if (!s.includes('MAG250-derived-identity') && !s.includes('`${preferredModel}-derived-identity`')) { console.error('HATA — MAG profile derived identity uyumluluk varyanti'); bad++; }
+  if (!/-derived-identity/.test(s)) { console.error('HATA — MAG profile derived identity uyumluluk varyanti'); bad++; }
 }
 need('src/utils/stalker.ts', 'STALKER_PROFILE_VARIANT_ERROR', 'MAG profile asama diagnostigi');
 forbid('src/utils/stalker.ts', 'stalkerProfile(cred, session).catch(() => null)', 'sessiz MAG profile hatası');
@@ -55,7 +55,7 @@ async function sessionCacheFixture(){
   let handshakes=0, profiles=0, creates=0;
   const fetch=async url=>{ const q=query(url);
     if(q.action==='handshake'){handshakes++;return response({js:{token:'t'+handshakes}});}
-    if(q.action==='get_profile'){profiles++;return response({js:{status:'Active'}});}
+    if(q.action==='get_profile'){profiles++;return response({js:{id:7,status:'Active',mac:'00:11:22:33:44:55'}});}
     if(q.action==='create_link'){creates++;return response({js:{cmd:'ffmpeg http://stream/'+creates}});}
     throw new Error('Beklenmeyen endpoint '+url);
   };

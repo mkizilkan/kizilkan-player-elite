@@ -159,7 +159,10 @@ async function unverifiedAndDenials() {
   for (const payload of [{ stb_type: 'MAG320' }, { id: 0 }, { id: -2 }, { id: 1.2 }, { id: 'true' }, { login: 'unknown' }, { blocked: 0 }, { mac }, { name: 'Generic device' }, null, {}, []]) {
     const e = environment(() => response({ js: payload }));
     const result = await e.load('src/utils/stalker.ts').stalkerVerifyAccount({ portal: endpoint, mac }, session(), payload);
-    assert.equal(result.state, 'unverified', JSON.stringify(payload)); assert.equal(e.calls.length, 1);
+    // v18.7.11 (M08): kimlik yoksa artık erişim DENENİR; geçerli canlı/VOD/dizi örneği yoksa unverified.
+    // (Eskiden canlı denenmeden calls===1 ile çıkıyordu; GPT T01: test doğru davranışı kodlamalı.)
+    assert.equal(result.state, 'unverified', JSON.stringify(payload));
+    assert.ok(result.evidence.includes('no-accessible-catalogue-sample'), 'kimliksizde erişim denenmeli: ' + JSON.stringify(payload));
   }
   for (const payload of [{ active: 0, status: 'Active' }, { active: 'false' }, { blocked: 'true' }, { auth: false }, { status: 'blocked' }, { error: 'Authorization failed.' }]) {
     const e = environment(() => response({ js: [item()] }));
@@ -276,9 +279,60 @@ async function nativeProxyAndInputSafety() {
   assert.equal(rejected.state, 'unverified'); assert.ok(rejected.evidence.includes('response-size-limit')); assert.equal(limitedProxy.calls.length, 1); assert.equal(limitedProxy.calls[0].maxBodyBytes, 1048576);
   groups++;
 }
+async function mag320FullParamProfileFallback() {
+  // v18.7.11 (M07/M08) — cihaz: weko MAG320 handshake OK + minimal get_profile BOŞ. Minimal (stb_type
+  // YOK) boş dönünce DOLU-parametreli (stb_type olan) get_profile varyantı hesabı döndürür → profil alınır.
+  const populated = { id: 42, login: 'realuser', mac, tariff_expired_date: '2031-05-01' };
+  const e = environment(c => {
+    if (c.action === 'handshake') return response({ js: { token: 'isolated-token' } });
+    if (c.action === 'get_profile') return response({ js: new URL(c.url).searchParams.get('stb_type') ? populated : null });
+    return response({ js: [] });
+  });
+  const login = await e.load('src/utils/stalker.ts').stalkerLogin({ portal: endpoint, mac, deviceModel: 'MAG320', endpointPolicy: 'exact' });
+  assert.ok(login.profile && login.profile.login === 'realuser', 'minimal boşsa dolu-parametre varyantı profili almalı');
+  assert.ok(!login.session.profileError, 'dolu profil bulununca profileError olmamalı');
+  const profileCalls = e.calls.filter(c => c.action === 'get_profile');
+  assert.ok(profileCalls.some(c => !new URL(c.url).searchParams.get('stb_type')), 'minimal varyant ÖNCE denenmeli (geriye uyum)');
+  assert.ok(profileCalls.some(c => new URL(c.url).searchParams.get('stb_type')), 'dolu-parametre varyantı denenmeli');
+  // Geriye uyum: minimal HER get_profile için doluyorsa (hkpremium) dolu varyant HİÇ denenmez.
+  const tolerant = environment(c => response(c.action === 'handshake' ? { js: { token: 'isolated-token' } } : c.action === 'get_profile' ? { js: { id: 7, login: 'hk', mac } } : { js: [] }));
+  const hk = await tolerant.load('src/utils/stalker.ts').stalkerLogin({ portal: endpoint, mac, deviceModel: 'MAG320', endpointPolicy: 'exact' });
+  assert.equal(hk.profile.login, 'hk');
+  assert.equal(tolerant.calls.filter(c => c.action === 'get_profile').length, 1, 'minimal doluysa tek get_profile (dolu varyanta düşmez)');
+  groups++;
+}
+async function emptyProfileButLiveAccessible() {
+  // v18.7.11 (M08) — cihaz: weko profil/main_info kimliği BOŞ ama get_all_channels 21266 kanal.
+  // Kimlik yoksa HEMEN unverified DEME: canlı erişimi GERÇEK örnek verirse verified.
+  const e = environment(c => {
+    if (c.action === 'get_main_info') return response({ js: {} });
+    if (c.action === 'get_ordered_list' && c.type === 'itv') return response({ js: { data: [item()], total_items: 21266 } });
+    return response({ js: [] });
+  });
+  const result = await e.load('src/utils/stalker.ts').stalkerVerifyAccount({ portal: endpoint, mac }, session(), null);
+  assert.equal(result.state, 'verified', 'boş profil + erişilebilir canlı → verified');
+  assert.equal(result.accessKind, 'live');
+  assert.ok(result.evidence.includes('missing-account-identity-proceed-to-access'), 'kimlik yok ama erişime devam kanıtı');
+  // Güvenlik: boş profil + HİÇBİR erişim yok → yine unverified (boş hesap eklenmez).
+  const none = environment(c => response(c.action === 'get_main_info' ? { js: {} } : { js: [] }));
+  const empty = await none.load('src/utils/stalker.ts').stalkerVerifyAccount({ portal: endpoint, mac }, session(), null);
+  assert.equal(empty.state, 'unverified'); assert.ok(empty.evidence.includes('no-accessible-catalogue-sample'));
+  groups++;
+}
+function usernameFieldSelection() {
+  // v18.7.11 (A03/A04 + protokol): kullanıcı adı = get_profile `login`; boşsa name/fname'e düşer; MAC değil.
+  const s = env.load('src/utils/stalker.ts');
+  assert.equal(s.normalizeStalkerAccountInfo({ login: 'acc123', mac, name: 'Cihaz' }).username, 'acc123');
+  assert.equal(s.normalizeStalkerAccountInfo({ login: '', name: 'Mustafa', mac }).username, 'Mustafa');
+  assert.equal(s.normalizeStalkerAccountInfo({ fname: 'Mehmet', mac }).username, 'Mehmet');
+  assert.equal(s.normalizeStalkerAccountInfo({ login: '001A79303AA7', mac: '00:1A:79:30:3A:A7' }).username, undefined);
+  assert.equal(s.normalizeStalkerAccountInfo({ login: 'anonymous', mac }).username, undefined);
+  groups++;
+}
 (async () => {
   dateContract(); flagsAndExpiry();
   await invalidTokensAndProfileFallback(); await accountAndLiveProof(); await unverifiedAndDenials();
   await sampleKindsAndBounds(); await mainAndCatalogueDenial(); await protectionCancellationAndDeadline(); await nativeProxyAndInputSafety();
-  console.log(`PASS MAG account validation: ${groups} actual-module behavior groups (date/calendar, token/profile, identity/access, denials, bounded samples, transport, terminal/cancel).`);
+  await mag320FullParamProfileFallback(); await emptyProfileButLiveAccessible(); usernameFieldSelection();
+  console.log(`PASS MAG account validation: ${groups} actual-module behavior groups (date/calendar, token/profile, identity/access, denials, bounded samples, transport, terminal/cancel, full-param profile, empty-profile-live, username field).`);
 })().catch(error => { console.error(error); process.exitCode = 1; });

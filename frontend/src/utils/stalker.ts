@@ -1378,7 +1378,7 @@ async function handshakeAttempt(
 export async function discoverMagPortal(
   cred: StalkerCreds,
   candidates: string[],
-  opts: { signal?: AbortSignal; maxCandidates?: number; timeoutMs?: number; onProbe?: (endpoint: string, index: number, total: number) => void } = {},
+  opts: { signal?: AbortSignal; maxCandidates?: number; timeoutMs?: number; wallBudgetMs?: number; onProbe?: (endpoint: string, index: number, total: number) => void } = {},
 ): Promise<{ endpoint: string; token: string } | null> {
   // v18.7.2: keşifte ölü aday hızlı elensin diye AYRI, gevşek bir guard ve KISA zaman aşımı.
   // Tekil eklemedeki 12'lik güvenli bütçe keşif için fazla dardı (ilk ölü portun yolları bütçeyi
@@ -1387,10 +1387,17 @@ export async function discoverMagPortal(
   const profile = preferredCompatProfiles(cred)[0];
   const limit = Math.min(candidates.length, opts.maxCandidates ?? 32);
   const timeoutMs = opts.timeoutMs ?? 6000;
+  // v18.7.11 (M09 — cihaz kanıtı: keşif 16:06:56→16:25:36 = ~19 DAKİKA, tried=32). Aday başına timeout
+  // olsa da yavaş/takılı portalde toplam süre patlıyordu. DUVAR-SAATİ bütçesi eklenir: aşılırsa kalan
+  // adaylar atlanır ve "BUDGET_STOP" (tamamlanamadı; "portal yok" DEĞİL) loglanır. Gerçek portal üst
+  // sıradaki adaylarda bulunur; bütçe yalnız ölü kuyruğu keser.
+  const wallBudgetMs = opts.wallBudgetMs ?? Math.max(60_000, Math.min(limit * (timeoutMs + 1500), 240_000));
+  const startedAll = Date.now();
   await primeMagIdentity(cred);
-  void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_START", { candidateCount: limit, profile, timeoutMs });
+  void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_START", { candidateCount: limit, profile, timeoutMs, wallBudgetMs });
   for (let i = 0; i < limit; i++) {
     if (opts.signal?.aborted) { const e: any = new Error("Keşif iptal edildi"); e.kind = "CANCELLED"; throw e; }
+    if (Date.now() - startedAll > wallBudgetMs) { void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_BUDGET_STOP", { tried: i, total: limit, elapsedMs: Date.now() - startedAll }); return null; }
     const endpoint = candidates[i];
     opts.onProbe?.(endpoint, i, limit);
     const probeCred: StalkerCreds = { ...cred, portal: endpoint };
@@ -1624,10 +1631,6 @@ function baseProfileParams(mac:string, model:"MAG250"|"MAG254"="MAG254"): Record
 
 function initialProfileVariants(cred:StalkerCreds, preferredModel:MagDeviceModel="MAG320"): StalkerProfileVariant[] {
   const mac=normalizeMac(cred.mac);
-  if (preferredModel === "MAG320") {
-    // PCAP: GET /portal.php?action=get_profile&type=stb — JsHttpRequest ve fingerprint query yok.
-    return [{label:"MAG320-pcap-minimal",params:{type:"stb",action:"get_profile"},noJs:true}];
-  }
   const mag254=baseProfileParams(mac,"MAG254");
   const mag250=baseProfileParams(mac,"MAG250");
   const mag254Variants:StalkerProfileVariant[]=[{
@@ -1644,24 +1647,41 @@ function initialProfileVariants(cred:StalkerCreds, preferredModel:MagDeviceModel
     label:"MAG250-legacy-minimal",
     params:{...mag250,num_banks:"1",sn:cred.serial||"",device_id:"",device_id2:"",signature:""},
   }];
+  if (preferredModel === "MAG320") {
+    // v18.7.11 (M07/M08 — cihaz kanıtı + protokol araştırması): PCAP minimal get_profile İLK denenir
+    // (uyumlu portaller — ör. hkpremium — profili bununla DOLU döndürüyor). AMA bazı portaller
+    // (cihaz: weko → `MAG320-pcap-minimal: profil boş`) parametresiz get_profile'a BOŞ `js` döndürüyor;
+    // standart istemci (StalkerTalker/Kodi pvr.stalker) get_profile'ı sn/stb_type/image_version/ver/
+    // hw_version ile gönderir ve profili ancak öyle alır. Minimal BOŞ dönerse bu DOLU-parametreli
+    // MAG254/MAG250 varyantlarına düşülür. Eskiden MAG320 yalnız minimal'i deniyordu → weko hiç kurtulamıyordu.
+    return [{label:"MAG320-pcap-minimal",params:{type:"stb",action:"get_profile"},noJs:true}, ...mag254Variants, ...mag250Variants];
+  }
   return preferredModel==="MAG250" ? [...mag250Variants,...mag254Variants] : [...mag254Variants,...mag250Variants];
 }
 
 async function derivedProfileVariants(cred:StalkerCreds, random="", preferredModel:MagDeviceModel="MAG320"): Promise<StalkerProfileVariant[]> {
-  if (preferredModel === "MAG320") return [];
+  // v18.7.11 (M07/M08): MAG320 için de TÜRETİLMİŞ kimlikli varyantlar üretilir (eskiden boş dönüyordu;
+  // minimal + initial dolu varyantlar da boşsa hiç türetilmiş deneme yapılmıyordu). MAG320 handshake
+  // başarılı olsa bile profil dolu-parametre + türetilmiş device_id/signature isteyebilir.
+  const models: MagDeviceModel[] = preferredModel === "MAG320" ? ["MAG254","MAG250"] : [preferredModel];
   try {
     const mac=normalizeMac(cred.mac);
-    const base=baseProfileParams(mac,preferredModel);
     const id=await derivedMagIdentity(cred);
-    const metrics=JSON.stringify({mac,sn:id.sn,type:"STB",model:preferredModel,uid:"",random});
-    const hwVersion=preferredModel==="MAG254" ? "2.6-IB-00" : base.hw_version;
-    return [{
-      label:`${preferredModel}-derived-identity`,
-      params:{...base,hw_version:hwVersion,sn:id.sn,device_id:id.deviceId,device_id2:id.deviceId2,signature:id.signatureModern,auth_second_step:"1",client_type:"STB",video_out:"hdmi",metrics,hw_version_2:id.hwVersion2,api_signature:"262",prehash:""},
-    },{
-      label:`${preferredModel}-derived-legacy-signature`,
-      params:{...base,hw_version:hwVersion,sn:id.sn,device_id:id.deviceId,device_id2:id.deviceId2,signature:id.signatureLegacy,auth_second_step:"0"},
-    }];
+    const out:StalkerProfileVariant[]=[];
+    for (const model of models) {
+      const base=baseProfileParams(mac, model==="MAG250" ? "MAG250" : "MAG254");
+      const metrics=JSON.stringify({mac,sn:id.sn,type:"STB",model,uid:"",random});
+      const hwVersion=model==="MAG254" ? "2.6-IB-00" : base.hw_version;
+      out.push({
+        label:`${model}-derived-identity`,
+        params:{...base,hw_version:hwVersion,sn:id.sn,device_id:id.deviceId,device_id2:id.deviceId2,signature:id.signatureModern,auth_second_step:"1",client_type:"STB",video_out:"hdmi",metrics,hw_version_2:id.hwVersion2,api_signature:"262",prehash:""},
+      });
+      out.push({
+        label:`${model}-derived-legacy-signature`,
+        params:{...base,hw_version:hwVersion,sn:id.sn,device_id:id.deviceId,device_id2:id.deviceId2,signature:id.signatureLegacy,auth_second_step:"0"},
+      });
+    }
+    return out;
   } catch {
     return [];
   }
@@ -1930,6 +1950,27 @@ function decodeMacIfBase64(raw: string | undefined): string | undefined {
   return raw;
 }
 
+/**
+ * v18.7.11 (A03/A04): kullanıcı adı aday alanları. Standart Stalker/Ministra get_profile'da gerçek
+ * giriş adı `login` alanındadır (Infomir yönetim paneli: "Login is a unique user login field");
+ * bazı portaller boş bırakıp adı `name`/`fname`/`sname`'de verir. Sıra: gerçek login → jenerik ad.
+ */
+const USERNAME_SOURCE_FIELDS = ["login","username","user_name","user","account","subscriber","fname","name","sname"] as const;
+/**
+ * Kullanıcı adını aday alanlardan seçer VE hangi alandan geldiğini bildirir (telemetri yalnız alan
+ * ADI'nı loglar, değeri DEĞİL → kimlik sızmaz). MAC'in kendisi ve jenerik/boş değerler elenir.
+ */
+function pickUsernameField(p: any, macNorm: string): { username?: string; field?: string } {
+  const candidate = (v: unknown): string | undefined => {
+    const s = primitiveString(v); if (!s || !s.trim()) return undefined;
+    const t = s.trim(); if (/^(?:0|true|false|null|undefined|anonymous|unknown|none)$/i.test(t)) return undefined;
+    if (macNorm && t.replace(/[:-]/g, "").toLowerCase() === macNorm) return undefined; // MAC'in kendisi kullanıcı adı değil
+    return t;
+  };
+  for (const f of USERNAME_SOURCE_FIELDS) { const c = candidate(p?.[f]); if (c) return { username: decodeMacIfBase64(c), field: f }; }
+  return {};
+}
+
 /** Portal get_profile yanıtını uygulama içi sabit tipe çevirir. */
 export function normalizeStalkerAccountInfo(profile: any): AccountInfo {
   const p = accountRecord(profile) || {};
@@ -1951,16 +1992,7 @@ export function normalizeStalkerAccountInfo(profile: any): AccountInfo {
   // v18.7.10: login boşsa name/fname'e düş (cihaz: HKPREMIUM/weko'da login boş, kullanıcı adı
   // name/fname'de geliyor — IPTV Extreme "bilgi"de bunu gösteriyor). MAC'e eşit değeri kullanma.
   const macNorm = mac ? mac.replace(/[:-]/g, "").toLowerCase() : "";
-  const loginCandidate = (v: unknown): string | undefined => {
-    const s = primitiveString(v); if (!s || !s.trim()) return undefined;
-    const t = s.trim(); if (/^(?:0|true|false|null|undefined|anonymous|unknown|none)$/i.test(t)) return undefined;
-    if (macNorm && t.replace(/[:-]/g, "").toLowerCase() === macNorm) return undefined; // MAC'in kendisi kullanıcı adı değil
-    return t;
-  };
-  const rawLogin = loginCandidate(p.login) || loginCandidate(p.username) || loginCandidate(p.user_name)
-    || loginCandidate(p.user) || loginCandidate(p.account) || loginCandidate(p.subscriber)
-    || loginCandidate(p.fname) || loginCandidate(p.name);
-  const username = rawLogin ? decodeMacIfBase64(rawLogin) : undefined;
+  const { username } = pickUsernameField(p, macNorm);
   const password = primitiveString(p.password || p.pass || p.user_password || p.account_password);
   return {
     username,
@@ -2020,12 +2052,25 @@ export async function stalkerAccountSnapshot(
         if (value !== undefined && value !== null && value !== "") (merged as any)[key] = value;
       }
     }
+    // v18.7.11 (T02 — cihaz kanıtı: `hasUsername` logda [REDACTED] oluyordu çünkü anahtar "username"
+    // içerip SAFE sonek taşımıyordu). Varlık bayrakları artık `*Present`/`*Kind` ile isimlendirilir →
+    // değer AÇILMADAN (yalnız boolean + alan ADI) teşhis edilebilir. Kullanıcı adının hangi alandan
+    // (login/name/fname…) ve hangi kaynaktan (main-info/profile) geldiği görünür.
+    const snapMac = String(merged.mac || "").replace(/[:-]/g, "").toLowerCase();
+    const uMain = pickUsernameField(accountRecord(main) || {}, snapMac);
+    const uProf = pickUsernameField(accountRecord(profile) || {}, snapMac);
+    const uPick = uMain.username ? { field: uMain.field, src: "main" } : uProf.username ? { field: uProf.field, src: "profile" } : { field: undefined, src: "none" };
+    const rawProfile = accountRecord(profile) || {};
     void recordDiagnostic("mag", "STALKER_ACCOUNT_SNAPSHOT", {
       endpoint: ses.endpoint, mainInfoOk,
       hasExpiry: !!merged.tariff_expired_date, status: merged.status || null,
-      hasUsername: !!merged.username, hasPassword: !!merged.password,
-      // v18.7.8/v18.7.9 (A): main-info VE profil ALAN ADLARI (değer YOK → kimlik sızmaz). Kullanıcı
-      // adı bazı portallarda get_main_info yerine get_profile'da gelir (IPTV Extreme "bilgi" bunu gösterir).
+      usernamePresent: !!merged.username, passwordPresent: !!merged.password,
+      usernameFieldKind: uPick.field || "none", usernameSourceKind: uPick.src,
+      // hangi aday alanlar RAW profilde DOLU (yalnız varlık; değer YOK):
+      loginValuePresent: !!primitiveString(rawProfile.login)?.trim(),
+      fnameValuePresent: !!primitiveString(rawProfile.fname)?.trim(),
+      nameValuePresent: !!primitiveString(rawProfile.name)?.trim(),
+      // v18.7.8/v18.7.9 (A): main-info VE profil ALAN ADLARI (değer YOK → kimlik sızmaz).
       mainInfoFields: main ? Object.keys(main).slice(0, 48) : [],
       profileFields: accountRecord(profile) ? Object.keys(accountRecord(profile)!).slice(0, 48) : [],
     });
@@ -2169,7 +2214,13 @@ export async function stalkerVerifyAccount(
     } catch (error) { const stop = nonterminal(error, "main-info"); if (stop) return stop; }
     const p = accountRecord(profile);
     if (hasAccountIdentity(p)) evidence.push("profile-account-identity");
-    if (!hasAccountIdentity(p) && !hasAccountIdentity(main)) return finish("unverified", "missing-account-identity");
+    // v18.7.11 (M08 — cihaz kanıtı: weko handshake OK + profil/main_info kimliği BOŞ ama aynı oturumda
+    // get_all_channels 21266 kanal açıyor): kimlik yoksa HEMEN "unverified" DEME. accountMatchesMac
+    // yanlış-MAC'i hâlâ eliyor (yukarıda), classify bloklu/süresi dolmuşu yakalıyor; aşağıdaki canlı/
+    // VOD/dizi probe'u GERÇEK örnek (positive id + name + kullanılabilir cmd) gerektiriyor. Erişilebilir
+    // içerik varsa "verified"; hiçbir tür erişilemezse "no-accessible-catalogue-sample" ile unverified döner.
+    // Böylece profil sunmayan ama hesabı geçerli olan klonlar (weko) eklenebilir; boş/yetkisiz hesap eklenmez.
+    if (!hasAccountIdentity(p) && !hasAccountIdentity(main)) evidence.push("missing-account-identity-proceed-to-access");
     // Keep useful profile fields when this optional endpoint omits them. The
     // account proof still requires a positive identity and actual list access.
     mergeInfo(main);

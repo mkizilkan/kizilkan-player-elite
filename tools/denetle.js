@@ -42,6 +42,7 @@ if (process.cwd() !== PROJECT_ROOT) process.chdir(PROJECT_ROOT);
 
 const CHECKS = [
   ["test-mag-action-ownership.js", "v18.7.4 MAG add/export action ownership and profile ABA", ""],
+  ["check-v18711-release.js", "v18.7.11 MAG profile-compat core (MAG320 full-param get_profile variants + empty-profile-yet-live-accessible = valid) + safe username presence telemetry + discovery wall budget", ""],
   ["check-v18710-release.js", "v18.7.10 bulk handshake fallback + redirect-no-kill + version.js detection + alternate scheme + bounded unknown fallback + username name/fname + selectable handshake candidate", ""],
   ["check-v18709-release.js", "v18.7.9 two-phase discovery (open ports then paths; unknown fallback) + discovery result telemetry + get_profile username field telemetry", ""],
   ["check-v18708-release.js", "v18.7.8 parallel catalog pagination + discovery false-negative fixes (tri-state ports, never-drop, auto scope, proxy body-limit) + single/multi engine unification + account username telemetry", ""],

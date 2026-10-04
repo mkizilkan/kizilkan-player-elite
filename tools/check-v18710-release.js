@@ -41,7 +41,7 @@ need(/ALTERNATİF scheme/.test(disc) && /schemes\?: Record<string, string>/.test
 need(/\.slice\(0, 96\)/.test(disc), '#5: bilinmeyen-port fallback sınırlanmamış');
 
 // #6 kullanıcı adı name/fname
-need(/loginCandidate\(p\.fname\) \|\| loginCandidate\(p\.name\)/.test(stalker), '#6: kullanıcı adı name/fname fallback yok');
+need(/USERNAME_SOURCE_FIELDS\s*=\s*\[[^\]]*"fname"[^\]]*"name"/.test(stalker), '#6: kullanıcı adı name/fname fallback yok');
 
 // UX
 need(/handshake \$\{i \+ 1\}\/\$\{t\}/.test(addPl), 'UX: tekli eklemede handshake ilerlemesi yok');
