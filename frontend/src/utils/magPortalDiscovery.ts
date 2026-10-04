@@ -263,6 +263,35 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       let found = inspect(target, response);
       if (found) { candidates.set(found.endpoint, found); emitLive(); return; }
       if (response.status >= 500) throw fault("HTTP_SERVER", `Portal HTTP ${response.status} döndürdü; API doğrulanamadı`);
+      // v18.7.10 (#3, M05 düzeltmesi): version.js — Stalker/Ministra kurulumlarında bulunan statik
+      // dosya; kesin PORTAL izi (sahada tarama imzası da budur) AMA API YOLU DEĞİL. version.js
+      // bulununca API ailesini (portal.php / server/load.php) KÖR "HTTP 200 / seçilebilir" işaretlemek
+      // yanlış-pozitiftir — o yollar gerçekte 404 olabilir (GPT M05). Bunun yerine: (a) non-selectable
+      // bir "portal-confirmed" izi eklenir (kullanıcı portalın burada olduğunu görür, port açık sayılır),
+      // (b) gerçek API yolları KUYRUĞA alınıp PROBE ettirilir → yanıt gerçekten API/handshake ise
+      // inspect() onu selectable yapar; 404 ise hiç aday oluşmaz. "HTTP 200 tek başına yetmez" korunur.
+      const tp = new URL(target).pathname;
+      if (response.status >= 200 && response.status < 300 && /(?:^\/?|\/)(?:c|stalker_portal\/c|portal|ministra\/c)\/?$/.test(tp)) {
+        const vjUrl = `${new URL(target).origin}${tp.replace(/\/+$/, "")}/version.js`;
+        if (!seen.has(vjUrl.replace(/\/+$/, ""))) {
+          seen.add(vjUrl.replace(/\/+$/, ""));
+          try {
+            const vj = await raw(vjUrl, base);
+            const body = String(vj.body || "").slice(0, 4000);
+            if (vj.status === 200 && !/<html|<!doctype/i.test(body.slice(0, 200)) && /\bver\b\s*[:=]|version|stalker|ministra|infomir|stb/i.test(body)) {
+              const confirmUrl = endpoint(new URL(target).origin + (tp.replace(/\/+$/, "") || "/"));
+              if (confirmUrl && !candidates.has(confirmUrl)) candidates.set(confirmUrl, { endpoint: confirmUrl, httpStatus: response.status, confidence: "fingerprint", evidence: ["stalker-version-js", "portal-confirmed"], elapsedMs: vj.elapsedMs, selectable: false });
+              let enqueued = 0;
+              for (const apiPath of ["/portal.php", "/server/load.php", "/stalker_portal/server/load.php", "/c/portal.php"]) {
+                const apiUrl = endpoint(new URL(target).origin + base + apiPath);
+                if (apiUrl && !seen.has(apiUrl.replace(/\/+$/, "")) && !queue.includes(apiUrl) && queue.length < MAX_EXTRA_ENDPOINTS) { queue.push(apiUrl); planned.add(apiUrl.replace(/\/+$/, "")); enqueued++; }
+              }
+              void recordDiagnostic("scan", "MAG_DISCOVERY_VERSION_JS", { base, enqueued });
+              emitLive();
+            }
+          } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED") throw error; }
+        }
+      }
       const fingerprint = response.status >= 200 && response.status < 300 ? htmlEvidence(response.body) : [];
       if (fingerprint.length && !/\.php$/i.test(new URL(target).pathname)) {
         // Compare a same-family missing page only after strong HTML evidence. Literal PHP is exact.
@@ -290,7 +319,12 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     const sweep = async (plan: string[]): Promise<void> => {
       for (const value of plan) { const target = endpoint(value); if (target) planned.add(target.replace(/\/+$/, "")); }
       const extra: string[] = [];
-      for (const target of plan) { if (stop || seen.size >= maxCandidates) break; try { await probe(target, extra); } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED") throw error; lastError = String(error?.message || error).slice(0, 180); if (["PROXY", "FOREIGN_REDIRECT"].includes(error?.kind)) { report.state = "error"; stop = true; } } }
+      for (const target of plan) { if (stop || seen.size >= maxCandidates) break; try { await probe(target, extra); } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED") throw error; lastError = String(error?.message || error).slice(0, 180);
+        // v18.7.10: FOREIGN_REDIRECT tüm host'u ÖLDÜRMESİN. Portal /c/'den başka yola/origin'e
+        // yönlenebilir (cihaz: weko /c/ → redirect → 11 denemede "error" + handshake hiç denenmedi).
+        // Yalnız o aday atlanır; diğer yollar/portlar ve handshake yedeği denenmeye devam eder.
+        if (error?.kind === "FOREIGN_REDIRECT") { void recordDiagnostic("scan", "MAG_DISCOVERY_FOREIGN_REDIRECT", { target }); continue; }
+        if (error?.kind === "PROXY") { report.state = "error"; stop = true; } } }
       for (let index = 0; index < extra.length && !stop; index++) { try { await probe(extra[index], extra); } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED") throw error; lastError = String(error?.message || error).slice(0, 180); } }
     };
     // v18.7.6/v18.7.8 — PARALEL PORT SINIFLAMA. Çok-portlu keşiften önce portlar PARALEL ve
@@ -317,9 +351,10 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     // v18.7.9 (iki aşama): portları AÇIK/BİLİNMEYEN olarak ayır. Aşama 2'de önce yalnız AÇIK
     // portlarda yollar denenir; bulunursa bilinmeyen portlara HİÇ dokunulmaz (hız). Bulunamazsa
     // bilinmeyen portlar fallback olarak denenir (yanlış-negatif önlenir).
-    const classifyPorts = async (): Promise<{ open: string[]; unknown: string[] }> => {
+    const portSchemes: Record<string, string> = {};   // v18.7.10: port→çalışan scheme (öğrenilmiş)
+    const classifyPorts = async (): Promise<{ open: string[]; unknown: string[]; schemes: Record<string, string> }> => {
       const ports = discoveryPortsFor(host, { allPorts: true });
-      if (ports.length <= 1 || host.hasPort) return { open: ports, unknown: [] };
+      if (ports.length <= 1 || host.hasPort) return { open: ports, unknown: [], schemes: {} };
       const u0 = new URL(entered), givenPort = u0.port || (u0.protocol === "https:" ? "443" : "80");
       const reachTimeout = Math.max(1500, Math.min(timeoutMs, 4000));
       const open: string[] = [], unknown: string[] = []; let idx = 0;
@@ -331,9 +366,17 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
           const i = idx++; if (i >= ports.length || stop) return;
           const p = ports[i];
           if (portState.get(p) === "open") { if (!open.includes(p)) open.push(p); continue; }
-          const scheme = p === givenPort ? u0.protocol.replace(":", "") : ["443", "8443", "2053", "2083", "2087", "2096"].includes(p) ? "https" : "http";
-          const st = await reachProbe(`${scheme}://${u0.hostname}:${p}/`, reachTimeout);
-          if (st === "open") { portState.set(p, "open"); open.push(p); announceOpenPorts(); }
+          const primary = p === givenPort ? u0.protocol.replace(":", "") : ["443", "8443", "2053", "2083", "2087", "2096"].includes(p) ? "https" : "http";
+          let st = await reachProbe(`${primary}://${u0.hostname}:${p}/`, reachTimeout);
+          let scheme = primary;
+          // v18.7.10 (GPT "TLS" noktası): birincil scheme yanıt vermezse ALTERNATİF scheme'i BİR KEZ dene.
+          // (HTTPS standart-dışı portta ya da tam tersi.) TLS doğrulaması KAPATILMAZ.
+          if (st !== "open") {
+            const alt = primary === "https" ? "http" : "https";
+            const st2 = await reachProbe(`${alt}://${u0.hostname}:${p}/`, reachTimeout);
+            if (st2 === "open") { st = "open"; scheme = alt; }
+          }
+          if (st === "open") { portState.set(p, "open"); open.push(p); portSchemes[p] = scheme; announceOpenPorts(); }
           else { if (!portState.has(p)) portState.set(p, "unknown"); unknown.push(p); }
         }
       };
@@ -341,8 +384,8 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       check(opts.control);
       const openOrdered = ports.filter((p: string) => open.includes(p));
       const unknownOrdered = ports.filter((p: string) => unknown.includes(p));
-      void recordDiagnostic("scan", "MAG_DISCOVERY_PORT_SCAN", { host: u0.hostname, scanned: ports.length, open: openOrdered, unknownCount: unknownOrdered.length, parallel: limit });
-      return { open: openOrdered, unknown: unknownOrdered };
+      void recordDiagnostic("scan", "MAG_DISCOVERY_PORT_SCAN", { host: u0.hostname, scanned: ports.length, open: openOrdered, unknownCount: unknownOrdered.length, parallel: limit, schemes: portSchemes });
+      return { open: openOrdered, unknown: unknownOrdered, schemes: portSchemes };
     };
     const hasSelectable = () => [...candidates.values()].some(c => c.selectable);
     const emitDiscoveryResult = (open: string[], unknown: string[]) => {
@@ -353,15 +396,17 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     };
     // İKİ AŞAMALI KEŞİF
     const twoPhaseExpand = async () => {
-      const { open, unknown } = await classifyPorts();
-      // Aşama 2a: yalnız AÇIK portlarda yollar.
+      const { open, unknown, schemes } = await classifyPorts();
+      // Aşama 2a: yalnız AÇIK portlarda yollar (öğrenilmiş scheme ile).
       const openPorts = open.length ? open : unknown;
       opts.onStage?.(`Aşama 2/2 · açık portlarda (${openPorts.length}) yol aranıyor`);
-      await sweep(scope === "all" ? [entered, ...portalDiscoveryCandidates(host, { allPorts: true, ports: openPorts })] : portalDiscoveryCandidates(host, { allPorts: true, ports: openPorts }));
-      // Aşama 2b: açıkta bulunamazsa bilinmeyen portlar (fallback).
+      await sweep(scope === "all" ? [entered, ...portalDiscoveryCandidates(host, { allPorts: true, ports: openPorts, schemes })] : portalDiscoveryCandidates(host, { allPorts: true, ports: openPorts, schemes }));
+      // Aşama 2b: açıkta bulunamazsa bilinmeyen portlar (fallback). v18.7.10: SINIRLI — yalnız en
+      // olası ilk ~96 aday (yol-öncelikli sıra: üst yollar×portlar). Böylece "bulunamadı" senaryosu
+      // 714 deneme/8,5 dk yerine kısa sürer; portal gerçekten varsa handshake yedeği yine bulur.
       if (!stop && !hasSelectable() && open.length && unknown.length) {
-        opts.onStage?.(`Açık portlarda bulunamadı · ${unknown.length} bilinmeyen port deneniyor`);
-        await sweep(portalDiscoveryCandidates(host, { allPorts: true, ports: unknown }));
+        opts.onStage?.(`Açık portlarda bulunamadı · ${unknown.length} bilinmeyen portta kısa deneme`);
+        await sweep(portalDiscoveryCandidates(host, { allPorts: true, ports: unknown }).slice(0, 96));
       }
       emitDiscoveryResult(open, unknown);
     };

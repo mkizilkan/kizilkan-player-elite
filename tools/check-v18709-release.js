@@ -22,7 +22,7 @@ need(app.expo.ios.buildNumber === ver && Number(app.expo.android.versionCode) ==
 need(JSON.parse(rd('frontend/package.json')).version === ver, 'package.json sürümü farklı');
 
 // İki aşamalı keşif
-need(/const classifyPorts = async/.test(disc) && /\{ open: string\[\]; unknown: string\[\] \}/.test(disc), 'classifyPorts {open,unknown} yok');
+need(/const classifyPorts = async/.test(disc) && /open: string\[\]; unknown: string\[\]/.test(disc), 'classifyPorts {open,unknown} yok');
 need(/const twoPhaseExpand = async/.test(disc), 'iki aşamalı genişleme fonksiyonu yok');
 need(/Aşama 2a: yalnız AÇIK portlarda yollar/.test(disc), 'aşama 2a (açık portlarda yol) yok');
 need(/Aşama 2b: açıkta bulunamazsa bilinmeyen portlar/.test(disc), 'aşama 2b (bilinmeyen fallback) yok');

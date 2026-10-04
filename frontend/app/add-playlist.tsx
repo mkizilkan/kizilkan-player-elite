@@ -2648,7 +2648,8 @@ ${pub.path}`, [
               const { discoverMagPortal } = await import("@/src/utils/stalker");
               const { portalDiscoveryCandidates } = await import("@/src/utils/magBulk");
               const cands = portalDiscoveryCandidates({ raw: cred.portal, host: portalHost, hasPort: false });
-              const found = await discoverMagPortal(cred, cands, { timeoutMs: 6000 });
+              // v18.7.10: handshake keşfinde canlı ilerleme (eskiden sessizdi).
+              const found = await discoverMagPortal(cred, cands, { timeoutMs: 6000, onProbe: (_e, i, t) => setProgress(`Portal aranıyor · handshake ${i + 1}/${t}`) });
               chosen = found?.endpoint;
             }
             if (chosen) { cred.portal = chosen; setProgress(`Portal bulundu: ${new URL(chosen).host}`); }

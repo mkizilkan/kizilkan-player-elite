@@ -228,7 +228,7 @@ export function discoveryPortsFor(entry: MagHostEntry, options: { allPorts?: boo
     : entry.hasPort ? [givenPort] : MAG_DISCOVERY_PORTS.map(String)).filter((p, i, a) => a.indexOf(p) === i);
 }
 
-export function portalDiscoveryCandidates(entry: MagHostEntry, options: { allPorts?: boolean; ports?: string[] } = {}): string[] {
+export function portalDiscoveryCandidates(entry: MagHostEntry, options: { allPorts?: boolean; ports?: string[]; schemes?: Record<string, string> } = {}): string[] {
   let u: URL;
   try { u = new URL(/^https?:\/\//i.test(entry.host) ? entry.host : "http://" + entry.host); }
   catch { return []; }
@@ -246,7 +246,11 @@ export function portalDiscoveryCandidates(entry: MagHostEntry, options: { allPor
   const seen = new Set<string>();
   const add = (port: string, p: string) => {
     const authority = port ? `${u.hostname}:${port}` : u.hostname;
-    const candidateScheme = port === givenPort ? scheme : ["443", "8443", "2053", "2083", "2087", "2096"].includes(port) ? "https" : "http";
+    // v18.7.10: port için ÖĞRENİLMİŞ scheme varsa (keşif probe'u http/https'i belirledi) onu kullan;
+    // yoksa port numarası sezgisi (443/8443/… → https). Verilen portta kullanıcının scheme'i korunur.
+    const candidateScheme = (options.schemes && options.schemes[port])
+      ? options.schemes[port]
+      : port === givenPort ? scheme : ["443", "8443", "2053", "2083", "2087", "2096"].includes(port) ? "https" : "http";
     const full = `${candidateScheme}://${authority}${p.startsWith("/") ? p : "/" + p}`;
     const norm = full.replace(/\/+$/, "");
     if (!seen.has(norm)) { seen.add(norm); out.push(full); }

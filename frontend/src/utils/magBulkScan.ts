@@ -134,7 +134,8 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
   const scope = opts.scope || "exact";
   const results: MagScanResult[] = [];
   const gate = createMagRequestGate(opts.control, opts.onStage);
-  const { stalkerLogin, stalkerVerifyAccount } = await import("@/src/utils/stalker");
+  const { stalkerLogin, stalkerVerifyAccount, discoverMagPortal } = await import("@/src/utils/stalker");
+  const { portalDiscoveryCandidates } = await import("@/src/utils/magBulk");
   const uniqueHosts = new Map<string, MagHostEntry>();
   for (const job of jobs) if (!uniqueHosts.has(job.portal)) uniqueHosts.set(job.portal, {
     raw: job.hostRaw, host: job.portal, hasPort: job.hasPort, explicitPort: job.explicitPort, hasPath: job.hasPath,
@@ -162,6 +163,78 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
     throw error;
   }
   const reportByHost = new Map(reports.map(report => [report.host.host, report]));
+  // v18.7.10 — HANDSHAKE YEDEĞİ. Pasif keşif bir host'ta seçilebilir aday bulamazsa (weko gibi
+  // "izsiz" portaller ya da /c/ redirect'i), TEKLİ eklemedeki gibi bir MAC ile GERÇEK handshake
+  // keşfi (discoverMagPortal) yapılır. Bulunan endpoint, seçilebilir aday olarak rapora eklenir →
+  // hem otomatik/manuel seçimde görünür hem de sonraki hesap doğrulaması bu endpoint'te çalışır.
+  for (const [hostKey, hostEntry] of uniqueHosts) {
+    if (cancelled(opts.control)) return results;
+    const existing = reportByHost.get(hostKey);
+    if (selectablePortalCandidates(existing).length > 0) continue;
+    // M02 — KORUMALI / İSTEK-SINIRLI host'ta handshake yedeği ÇALIŞMAZ. Pasif keşif WAF/CAPTCHA/429
+    // gördüyse gerçek handshake atmak koruma durdurmasını deler; host olduğu gibi bırakılır.
+    if (existing?.state === "protected" || existing?.candidates.some(c => c.protection?.state === "present")) {
+      void recordDiagnostic("scan", "MAG_BULK_HANDSHAKE_FALLBACK_SKIP", { host: hostEntry.raw, reason: "protected" });
+      continue;
+    }
+    const firstJob = jobs.find(job => job.portal === hostKey);
+    if (!firstJob) continue;
+    // M03 — literal `.php` girişte YALNIZ o endpoint denenir (başka kurulum ailesine taşma yok);
+    // dizin / `/c/` girişte kurulum ailesi (portal.php / server/load.php …) denenir.
+    const isLiteralPhp = (() => { try { return /\.php$/i.test(new URL(hostEntry.host).pathname); } catch { return false; } })();
+    const candidates = isLiteralPhp ? [hostEntry.host] : portalDiscoveryCandidates(hostEntry, { allPorts: !hostEntry.hasPort });
+    if (!candidates.length) continue;
+    // M04 — tek MAC'in handshake reddi host'u "portalsız" yapmasın: ilk birkaç DISTINCT MAC denenir.
+    const hostMacs: string[] = [];
+    for (const job of jobs) if (job.portal === hostKey && !hostMacs.includes(job.mac)) { hostMacs.push(job.mac); if (hostMacs.length >= 3) break; }
+    if (!hostMacs.length) continue;
+    opts.onStage?.("Pasif keşif boş · gerçek handshake ile portal aranıyor…");
+    void recordDiagnostic("scan", "MAG_BULK_HANDSHAKE_FALLBACK_START", { host: firstJob.hostRaw, candidates: candidates.length, hasPort: !!hostEntry.hasPort, macs: hostMacs.length });
+    let found: { endpoint: string; token: string } | null = null;
+    let protectedStop = false;
+    for (const mac of hostMacs) {
+      if (found?.endpoint || protectedStop || cancelled(opts.control)) break;
+      let observation = unknownObservation(hostKey, !!opts.useProxy);
+      const requestScope: StalkerRequestScope = {
+        ...gate, transport: opts.useProxy ? "proxy" : "direct", signal: opts.control?.signal, timeoutMs: opts.timeoutMs,
+        onObservation(next) { if (observation.state !== "present" || next.state === "present") observation = next; },
+      };
+      const probeCred: StalkerCreds = { portal: hostKey, mac, requestScope };
+      try {
+        found = await discoverMagPortal(probeCred, candidates, {
+          timeoutMs: opts.timeoutMs ?? 6000, maxCandidates: hostEntry.hasPort ? candidates.length : 48, signal: opts.control?.signal,
+          onProbe: (_endpoint, index, total) => opts.onStage?.(`Handshake keşfi · ${index + 1}/${total}`),
+        });
+      } catch (error: any) {
+        if (aborted(error) || cancelled(opts.control)) return results;
+        const kind = String(error?.kind || "");
+        // Koruma/istek sınırı terminaldir: başka MAC denenmez, host koruma olarak işaretlenir (M02 ile tutarlı).
+        if (kind === "MAG_PROTECTION" || kind === "MAG_RATE_LIMIT") {
+          protectedStop = true;
+          if (existing) { existing.state = "protected"; existing.message = "Portal koruması / istek sınırı; handshake yedeği durduruldu"; }
+          void recordDiagnostic("scan", "MAG_BULK_HANDSHAKE_FALLBACK_PROTECTED", { host: firstJob.hostRaw, kind });
+        } else {
+          void recordDiagnostic("scan", "MAG_BULK_HANDSHAKE_FALLBACK_ERROR", { host: firstJob.hostRaw, message: String(error?.message || error).slice(0, 160) });
+        }
+      }
+    }
+    if (found?.endpoint) {
+      const foundEndpoint = found.endpoint;
+      const synthetic: MagPortalDiscovery["candidates"][number] = {
+        endpoint: foundEndpoint, httpStatus: 200, confidence: "api",
+        evidence: ["handshake-token", "discovered-by-handshake"], elapsedMs: 0, selectable: true,
+      };
+      if (existing) { existing.candidates = [synthetic, ...existing.candidates.filter(c => c.endpoint !== foundEndpoint)]; existing.state = "ready"; existing.message = undefined; }
+      else { const r: MagPortalDiscovery = { host: hostEntry, candidates: [synthetic], probes: 0, state: "ready" }; reports.push(r); reportByHost.set(hostKey, r); }
+      opts.onPortalDiscovery?.([...reports]);
+      void recordDiagnostic("scan", "MAG_BULK_HANDSHAKE_FALLBACK_OK", { host: firstJob.hostRaw, endpointPath: (() => { try { return new URL(foundEndpoint).pathname; } catch { return ""; } })() });
+    } else if (!protectedStop) {
+      // M06 — handshake yedeği de bulamadıysa host "KESİN portalsız" DEĞİL; bounded keşif (sınırlı
+      // port/yol) tamamlanamamış olabilir. Mesaj buna göre yazılır; durum enum'u değişmez (regresyon yok).
+      if (existing && existing.state !== "error") existing.message = existing.message || "Bu kapsamda portal doğrulanamadı (keşif + handshake denendi); port/yol genişletmeyi deneyin.";
+      void recordDiagnostic("scan", "MAG_BULK_HANDSHAKE_FALLBACK_EMPTY", { host: firstJob.hostRaw, triedMacs: hostMacs.length });
+    }
+  }
   let choices = chooseMagPortals(reports);
   if (opts.selectPortals && reports.some(report => selectablePortalCandidates(report).length > 0)) {
     opts.onPhase?.("selection");

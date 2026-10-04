@@ -42,7 +42,7 @@ need(/discoverMagHosts/.test(addPl) && /chooseMagPortals/.test(addPl), 'tekli ek
 
 // A — kullanıcı adı telemetrisi + geniş alan
 need(/mainInfoFields/.test(stalker), 'A: main-info alan telemetrisi yok');
-need(/p\.user_name \|\| p\.user \|\| p\.account/.test(stalker), 'A: kullanıcı adı aday alanları genişletilmemiş');
+need(/p\.user_name.*p\.user.*p\.account|loginCandidate\(p\.user_name\)/.test(stalker), 'A: kullanıcı adı aday alanları genişletilmemiş');
 
 if (fail.length) { console.log(fail.map(f => '✗ ' + f).join('\n')); console.log('BAŞARISIZ'); process.exit(1); }
 console.log('PASS: v18.7.8 katalog paralel sayfalama + keşif yanlış-negatif + tekli/çoklu birleştirme + hesap telemetrisi kapısı TEMİZ');

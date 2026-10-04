@@ -1948,7 +1948,18 @@ export function normalizeStalkerAccountInfo(profile: any): AccountInfo {
   const mac = decodeMacIfBase64(primitiveString(p.mac));
   // v18.7.8 (A): kullanıcı adı aday alanları genişletildi. Bazı portallar login'i farklı anahtarda
   // döndürüyor (cihaz: HKPREMIUM'da `login` boştu ama hesabın gerçek kullanıcı adı var).
-  const rawLogin = primitiveString(p.login || p.username || p.user_name || p.user || p.account || p.subscriber || p.account_number);
+  // v18.7.10: login boşsa name/fname'e düş (cihaz: HKPREMIUM/weko'da login boş, kullanıcı adı
+  // name/fname'de geliyor — IPTV Extreme "bilgi"de bunu gösteriyor). MAC'e eşit değeri kullanma.
+  const macNorm = mac ? mac.replace(/[:-]/g, "").toLowerCase() : "";
+  const loginCandidate = (v: unknown): string | undefined => {
+    const s = primitiveString(v); if (!s || !s.trim()) return undefined;
+    const t = s.trim(); if (/^(?:0|true|false|null|undefined|anonymous|unknown|none)$/i.test(t)) return undefined;
+    if (macNorm && t.replace(/[:-]/g, "").toLowerCase() === macNorm) return undefined; // MAC'in kendisi kullanıcı adı değil
+    return t;
+  };
+  const rawLogin = loginCandidate(p.login) || loginCandidate(p.username) || loginCandidate(p.user_name)
+    || loginCandidate(p.user) || loginCandidate(p.account) || loginCandidate(p.subscriber)
+    || loginCandidate(p.fname) || loginCandidate(p.name);
   const username = rawLogin ? decodeMacIfBase64(rawLogin) : undefined;
   const password = primitiveString(p.password || p.pass || p.user_password || p.account_password);
   return {

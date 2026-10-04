@@ -198,5 +198,36 @@ let groups = 0;
     assert.ok(report.candidates.some(c => new URL(c.endpoint).port === '8080' && c.selectable), '8080/c/ adayı bulunmalı (unknown port düşürülmedi)');
     console.log('PASS: unknown port (root fail) still gets path probes — no false-negative'); groups++;
   }
+  {
+    // v18.7.10 (#3, M05 düzeltmesi): /c/ marka-izsiz HTML döndürse bile /c/version.js JS dönerse portal
+    // KESİNLEŞİR. AMA version.js API YOLU DEĞİL — API ailesini KÖR "HTTP 200/seçilebilir" yapmak yanlış-
+    // pozitiftir. version.js yalnız NON-SELECTABLE "portal-confirmed" izi bırakır, API yolları PROBE
+    // edilir; gerçekten handshake dönerse selectable olur.
+    // (a) version.js VAR ama tüm PHP 404 → API SEÇİLEBİLİR OLMAZ (yalnız non-selectable iz).
+    const host = entry('http://portal.example.test:8080/c');
+    const fetch404 = async url => {
+      const u = new URL(url);
+      if (/\/c\/version\.js$/.test(u.pathname)) return response('var ver = "5.6.2"; // stalker', 200, { 'content-type': 'application/javascript' });
+      if (u.pathname === '/c' || u.pathname === '/c/') return response('<html><body>login</body></html>'); // marka izi YOK
+      return response('missing', 404); // portal.php / load.php HEPSİ 404
+    };
+    const r404 = (await run(fetch404, [host], { scope: 'exact' }))[0];
+    assert.ok(r404.candidates.some(c => c.evidence.includes('stalker-version-js') && !c.selectable), 'version.js non-selectable portal izi bırakmalı');
+    assert.ok(!r404.candidates.some(c => /portal\.php$|load\.php$/.test(c.endpoint) && c.selectable), 'tüm PHP 404 iken API yolu SEÇİLEBİLİR olmamalı (M05 yanlış-pozitif yok)');
+    assert.notEqual(r404.state, 'ready', 'yalnız version.js ile (doğrulanmış API yokken) state ready olmamalı');
+    console.log('PASS: version.js alone with PHP 404 leaves only a non-selectable fingerprint (no false API200)'); groups++;
+    // (b) version.js VAR ve portal.php gerçekten handshake token dönüyor → API SEÇİLEBİLİR (PROBE ile doğrulandı).
+    const fetchApi = async url => {
+      const u = new URL(url);
+      if (/\/c\/version\.js$/.test(u.pathname)) return response('var ver = "5.6.2"; // stalker', 200, { 'content-type': 'application/javascript' });
+      if (u.pathname === '/c' || u.pathname === '/c/') return response('<html><body>login</body></html>');
+      if (/\/portal\.php$/.test(u.pathname)) return response({ js: { token: 'fixturetoken' } });
+      return response('missing', 404);
+    };
+    const rApi = (await run(fetchApi, [host], { scope: 'exact' }))[0];
+    assert.equal(rApi.state, 'ready', 'portal.php gerçek API dönerse portal ready olmalı');
+    assert.ok(rApi.candidates.some(c => /portal\.php$/.test(c.endpoint) && c.selectable && c.confidence === 'api'), 'PROBE edilen portal.php gerçek API ise seçilebilir olmalı');
+    console.log('PASS: version.js confirms portal; a real portal.php probe (not version.js alone) becomes selectable'); groups++;
+  }
   console.log(`PASS: MAC-independent portal discovery — ${groups} offline behavior groups`);
 })().catch(error => { console.error(error); process.exitCode = 1; });
