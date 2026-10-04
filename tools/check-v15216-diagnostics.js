@@ -55,7 +55,7 @@ async function sessionCacheFixture(){
   let handshakes=0, profiles=0, creates=0;
   const fetch=async url=>{ const q=query(url);
     if(q.action==='handshake'){handshakes++;return response({js:{token:'t'+handshakes}});}
-    if(q.action==='get_profile'){profiles++;return response({js:{id:7,status:'Active',mac:'00:11:22:33:44:55'}});}
+    if(q.action==='get_profile'){profiles++;return response({js:{id:7,login:'acct',status:'Active',mac:'00:11:22:33:44:55'}});}
     if(q.action==='create_link'){creates++;return response({js:{cmd:'ffmpeg http://stream/'+creates}});}
     throw new Error('Beklenmeyen endpoint '+url);
   };

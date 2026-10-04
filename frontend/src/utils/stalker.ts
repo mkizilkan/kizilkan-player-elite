@@ -1734,6 +1734,21 @@ function profilePayload(data:any): any {
  */
 export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession, signal?: AbortSignal): Promise<any> {
   const errors:string[]=[];
+  // v18.7.13 (A03/A04 — cihaz kanıtı: hkpremium minimal get_profile'da `login` BOŞ, yalnız name=1787;
+  // gerçek login `ud3B3yRH` yalnız dolu-parametreli yanıtta geliyor). GERÇEK login taşıyan (login/
+  // username/user_name/user/account/subscriber) profili tercih et; yoksa ilk dolu profili (eski davranış)
+  // koru. `name/fname/sname` gerçek login sayılmaz. Böylece login eksikse dolu-parametre varyantları da denenir.
+  const macNorm = normalizeMac(cred.mac).replace(/[:-]/g, "").toLowerCase();
+  const REAL_LOGIN_FIELDS = ["login","username","user_name","user","account","subscriber"];
+  const hasRealLogin = (p:any): boolean => REAL_LOGIN_FIELDS.some(f => {
+    const v = primitiveString(p?.[f]); if (!v || !v.trim()) return false;
+    const t = v.trim();
+    if (/^(?:0|true|false|null|undefined|anonymous|unknown|none)$/i.test(t)) return false;
+    return decodeMacIfBase64(t)?.replace(/[:-]/g, "").toLowerCase() !== macNorm; // MAC login sayılmaz
+  });
+  let best:any=null; // login'siz ama geçerli ilk profil (yedek)
+  let extraAfterBest=0; // v18.7.13: login ararken EK varyant bütçesi (login'siz hesapta sonsuz istek yok)
+  const LOGIN_SEEK_BUDGET=2;
   const tryVariants = async (variants:StalkerProfileVariant[]): Promise<any> => {
   for (const variant of variants) {
     const started=Date.now();
@@ -1741,9 +1756,12 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession, si
       const data=await req(buildUrl(ses.endpoint, variant.params, !variant.noJs), headersFor(cred, ses.token, ses.endpoint, ses.compatProfile), { timeoutMs: 20000, signal });
       const profile=profilePayload(data);
       if (profile) {
-        ses.profileVariant=variant.label;
-        void recordDiagnostic("catalog","STALKER_PROFILE_VARIANT_OK",{variant:variant.label, elapsedMs:Date.now()-started, endpoint:ses.endpoint});
-        return profile;
+        const withLogin=hasRealLogin(profile);
+        void recordDiagnostic("catalog","STALKER_PROFILE_VARIANT_OK",{variant:variant.label, elapsedMs:Date.now()-started, endpoint:ses.endpoint, hasRealLogin:withLogin});
+        if (withLogin) { ses.profileVariant=variant.label; return profile; } // gerçek login var → hemen dön
+        if (!best) { best=profile; ses.profileVariant=variant.label; } // login yok → yedek sakla, denemeye devam et
+        else if (++extraAfterBest >= LOGIN_SEEK_BUDGET) return null; // login arama bütçesi bitti → best kullanılacak
+        continue;
       }
       errors.push(`${variant.label}: profil boş`);
       void recordDiagnostic("catalog","STALKER_PROFILE_VARIANT_EMPTY",{variant:variant.label, elapsedMs:Date.now()-started, endpoint:ses.endpoint});
@@ -1760,6 +1778,7 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession, si
   if (direct) return direct;
   const derived=await tryVariants(await derivedProfileVariants(cred,ses.random || "",preferredModel));
   if (derived) return derived;
+  if (best) return best; // login'li varyant bulunamadı ama geçerli profil var (eski davranış korunur)
   throw new Error("MAG profil doğrulaması başarısız. " + errors.join(" | "));
 }
 
@@ -2131,8 +2150,12 @@ function accountMatchesMac(value: unknown, mac: string): boolean {
   if (!p) return true;
   for (const field of ["mac", "mac_address", "stb_mac"]) {
     if (p[field] == null || p[field] === "") continue;
-    if (typeof p[field] !== "string" || !/^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$|^[0-9a-f]{12}$/i.test(p[field].trim())
-      || normalizeMac(p[field]) !== mac) return false;
+    if (typeof p[field] !== "string") return false;
+    // v18.7.13 (A01): portal MAC'i base64 kodlu döndürebilir (örn. "MDA6MUE6Nzk6..."). Normalizer bunu
+    // zaten çözüyordu (decodeMacIfBase64) ama eşleştirici HAM değeri karşılaştırıp geçerli hesabı
+    // "mac-mismatch" sayıp reddediyordu (cihaz: goldensm32 tüm MAC'ler unverified). Artık burada da çöz.
+    const decoded = String(decodeMacIfBase64(p[field].trim()) || "");
+    if (!/^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$|^[0-9a-f]{12}$/i.test(decoded) || normalizeMac(decoded) !== mac) return false;
   }
   return true;
 }

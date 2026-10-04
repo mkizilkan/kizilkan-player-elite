@@ -103,7 +103,7 @@ async function fixturePcapExactFirst() {
     const u = new URL(url); const action = u.searchParams.get('action');
     seen.push({ url, headers: opts.headers || {}, method: opts.method || 'GET' });
     if (action === 'handshake') return response({ js:{ token:'fixture-token', random:'r' } });
-    if (action === 'get_profile') return response({ js:{ id:'1', mac:'00:11:22:33:44:55', stb_type:'MAG320' } });
+    if (action === 'get_profile') return response({ js:{ id:'1', login:'acct', mac:'00:11:22:33:44:55', stb_type:'MAG320' } });
     throw new Error('unexpected fixture request ' + url);
   });
   const cred = { portal:'http://portal.test:2095/c/', mac:'00:11:22:33:44:55', deviceModel:'MAG254' };

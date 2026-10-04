@@ -28,6 +28,8 @@ const portal = 'http://portal.example.test:8080/portal.php';
 const entry = value => ({ raw: value, host: value, hasPort: true, explicitPort: new URL(value).port || '80', hasPath: new URL(value).pathname !== '/' });
 const response = (body, status = 200, headers = {}, url) => ({ status, url, headers: { get: name => headers[name.toLowerCase()] || '' }, text: async () => typeof body === 'string' ? body : JSON.stringify(body) });
 const gate = { beforeRequest: async () => {} };
+// v18.7.13: "exact" artık KATİ (yalnız girilen yol). Varsayılan 'exact' (çoğu test literal .php girip
+// yalnız o endpoint'i bekliyor); kurulum ailesi (family) bekleyen testler açıkça 'fallback' kullanır.
 const run = async (fetch, hosts = [entry(portal)], options = {}) => environment({ fetch }).load('src/utils/magPortalDiscovery.ts').discoverMagHosts(hosts, { gate, scope: 'exact', ...options });
 function noCredentials(url, options) {
   assert.equal(options.method, 'GET'); assert.equal(options.credentials, 'omit');
@@ -112,12 +114,12 @@ let groups = 0;
   {
     const calls = [], stages = [];
     const host = entry('http://portal.example.test:8080/c');
-    const report = (await run(async url => { calls.push(url); const pathname = new URL(url).pathname; return pathname === '/c' ? response('large client', 200, { 'content-length': '65537' }) : pathname === '/portal.php' ? response({ js: { token: 'fixture' } }) : response('missing', 404); }, [host], { onStage: text => stages.push(text) }))[0];
+    const report = (await run(async url => { calls.push(url); const pathname = new URL(url).pathname; return pathname === '/c' ? response('large client', 200, { 'content-length': '65537' }) : pathname === '/portal.php' ? response({ js: { token: 'fixture' } }) : response('missing', 404); }, [host], { onStage: text => stages.push(text), scope: 'fallback' }))[0];
     assert.equal(report.state, 'ready'); assert.ok(report.candidates.some(candidate => candidate.endpoint.endsWith('/portal.php') && candidate.confidence === 'api'));
     assert.ok(calls.some(url => new URL(url).pathname === '/portal.php'), 'oversized client page must not stop other API candidates');
     assert.ok(stages.some(text => /aday \d+\/\d+ · \d+ istek/.test(text)), 'stage must expose candidate and request counts');
     const limitedCalls = [];
-    const limited = (await run(async url => { limitedCalls.push(url); return response('missing', 404); }, [host], { maxCandidatesPerHost: 2 }))[0];
+    const limited = (await run(async url => { limitedCalls.push(url); return response('missing', 404); }, [host], { maxCandidatesPerHost: 2, scope: 'fallback' }))[0];
     assert.equal(limitedCalls.length, 2); assert.equal(limited.probes, 2); assert.ok(limited.message.includes('aday sınırına'));
     console.log('PASS: oversized /c client does not block valid API; unique candidate budget and live probe counts'); groups++;
   }
@@ -211,7 +213,7 @@ let groups = 0;
       if (u.pathname === '/c' || u.pathname === '/c/') return response('<html><body>login</body></html>'); // marka izi YOK
       return response('missing', 404); // portal.php / load.php HEPSİ 404
     };
-    const r404 = (await run(fetch404, [host], { scope: 'exact' }))[0];
+    const r404 = (await run(fetch404, [host], { scope: 'fallback' }))[0];
     assert.ok(r404.candidates.some(c => c.evidence.includes('stalker-version-js') && !c.selectable), 'version.js non-selectable portal izi bırakmalı');
     assert.ok(!r404.candidates.some(c => /portal\.php$|load\.php$/.test(c.endpoint) && c.selectable), 'tüm PHP 404 iken API yolu SEÇİLEBİLİR olmamalı (M05 yanlış-pozitif yok)');
     assert.notEqual(r404.state, 'ready', 'yalnız version.js ile (doğrulanmış API yokken) state ready olmamalı');
@@ -224,10 +226,22 @@ let groups = 0;
       if (/\/portal\.php$/.test(u.pathname)) return response({ js: { token: 'fixturetoken' } });
       return response('missing', 404);
     };
-    const rApi = (await run(fetchApi, [host], { scope: 'exact' }))[0];
+    const rApi = (await run(fetchApi, [host], { scope: 'fallback' }))[0];
     assert.equal(rApi.state, 'ready', 'portal.php gerçek API dönerse portal ready olmalı');
     assert.ok(rApi.candidates.some(c => /portal\.php$/.test(c.endpoint) && c.selectable && c.confidence === 'api'), 'PROBE edilen portal.php gerçek API ise seçilebilir olmalı');
     console.log('PASS: version.js confirms portal; a real portal.php probe (not version.js alone) becomes selectable'); groups++;
+  }
+  {
+    // v18.7.13: "Yalnız girilen" (exact) KATİ kapsam — yalnız girilen yol denenir; kurulum ailesi
+    // (/portal.php, /server/load.php, /stalker_portal, /ministra ...) ve iki-aşamalı port keşfi DENENMEZ.
+    const host = entry('http://exact.example.test:8080/c');
+    const tried = new Set();
+    const fetch = async url => { const u = new URL(url); tried.add(u.pathname); return response('<html><body>login</body></html>'); };
+    await run(fetch, [host], { scope: 'exact' });
+    assert.ok(tried.has('/c'), 'girilen /c denenmeli');
+    assert.ok(![...tried].some(p => /portal\.php|load\.php|stalker_portal|ministra|version\.js/.test(p)), 'exact: family/version.js yolları DENENMEMELİ');
+    assert.equal(tried.size, 1, `exact yalnız 1 yol denemeli, denenen: ${[...tried].join(',')}`);
+    console.log('PASS: exact scope probes ONLY the entered path (no family/version.js expansion)'); groups++;
   }
   console.log(`PASS: MAC-independent portal discovery — ${groups} offline behavior groups`);
 })().catch(error => { console.error(error); process.exitCode = 1; });

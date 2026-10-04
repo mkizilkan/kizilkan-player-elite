@@ -296,7 +296,8 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       // (b) gerçek API yolları KUYRUĞA alınıp PROBE ettirilir → yanıt gerçekten API/handshake ise
       // inspect() onu selectable yapar; 404 ise hiç aday oluşmaz. "HTTP 200 tek başına yetmez" korunur.
       const tp = new URL(target).pathname;
-      if (response.status >= 200 && response.status < 300 && /(?:^\/?|\/)(?:c|stalker_portal\/c|portal|ministra\/c)\/?$/.test(tp)) {
+      // v18.7.13: "Yalnız girilen" (exact) kapsamda version.js API ailesi genişletmesi YAPILMAZ (kati kapsam).
+      if (scope !== "exact" && response.status >= 200 && response.status < 300 && /(?:^\/?|\/)(?:c|stalker_portal\/c|portal|ministra\/c)\/?$/.test(tp)) {
         const vjUrl = `${new URL(target).origin}${tp.replace(/\/+$/, "")}/version.js`;
         if (!seen.has(vjUrl.replace(/\/+$/, ""))) {
           seen.add(vjUrl.replace(/\/+$/, ""));
@@ -437,9 +438,14 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     };
     if (scope === "all") {
       await twoPhaseExpand();
+    } else if (scope === "exact") {
+      // v18.7.13: "Yalnız girilen" — KATİ: SADECE girilen port+yol denenir. Başka yol/port/portal,
+      // kurulum ailesi (family) ve iki-aşamalı port keşfi ARANMAZ. Kullanıcı tam endpoint'i biliyorsa
+      // kontrol ondadır; API çözümü isterse "Çalışmazsa diğerleri" (fallback) seçer.
+      await sweep([entered]);
     } else {
       await sweep(family(host));
-      if (!stop && scope === "fallback" && !hasSelectable()) await twoPhaseExpand();
+      if (!stop && !hasSelectable()) await twoPhaseExpand();
     }
     report.candidates = [...candidates.values()];
     if (!stop) report.state = report.candidates.some(candidate => candidate.selectable) ? "ready" : lastError ? "error" : "not-found";

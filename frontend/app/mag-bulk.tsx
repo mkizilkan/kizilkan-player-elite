@@ -586,7 +586,11 @@ export default function MagBulkScreen() {
               <Text style={S.count}>{report.host.raw} · {report.probes} keşif isteği</Text>
               {report.candidates.length ? report.candidates.map(candidate => <FocusButton
                 key={candidate.endpoint} testID="mag-portal-candidate"
-                disabled={report.state !== "ready" || candidate.confidence === "protected" || !candidate.selectable || !scanning || scanPhase !== "selection"}
+                /* v18.7.13 (#1): Manuel ("ben seçeyim") modda kullanıcı "portal izi" (non-selectable)
+                   adayları da SEÇEBİLİR (seçim hesap fazında handshake ile doğrulanır). Otomatik modda
+                   kati kalır (yalnız seçilebilir/hazır). Koruma adayı ve faz dışı her modda kapalı. */
+                disabled={candidate.confidence === "protected" || !scanning || scanPhase !== "selection"
+                  || (portalChoiceMode !== "manual" && (report.state !== "ready" || !candidate.selectable))}
                 onPress={() => {
                   const choices = { ...portalChoicesRef.current, [report.host.host]: candidate.endpoint };
                   portalChoicesRef.current = choices; setPortalChoices(choices);

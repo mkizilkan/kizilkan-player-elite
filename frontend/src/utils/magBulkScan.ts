@@ -179,10 +179,10 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
     }
     const firstJob = jobs.find(job => job.portal === hostKey);
     if (!firstJob) continue;
-    // M03 — literal `.php` girişte YALNIZ o endpoint denenir (başka kurulum ailesine taşma yok);
-    // dizin / `/c/` girişte kurulum ailesi (portal.php / server/load.php …) denenir.
+    // v18.7.13: "Yalnız girilen" (exact) → KATİ: yalnız girilen endpoint; başka yol/port denenmez.
+    // M03 — literal `.php` girişte YALNIZ o endpoint; dizin / `/c/` girişte kurulum ailesi (fallback/all).
     const isLiteralPhp = (() => { try { return /\.php$/i.test(new URL(hostEntry.host).pathname); } catch { return false; } })();
-    const candidates = isLiteralPhp ? [hostEntry.host] : portalDiscoveryCandidates(hostEntry, { allPorts: !hostEntry.hasPort });
+    const candidates = (scope === "exact" || isLiteralPhp) ? [hostEntry.host] : portalDiscoveryCandidates(hostEntry, { allPorts: !hostEntry.hasPort });
     if (!candidates.length) continue;
     // M04 — tek MAC'in handshake reddi host'u "portalsız" yapmasın: ilk birkaç DISTINCT MAC denenir.
     const hostMacs: string[] = [];
@@ -236,14 +236,26 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
     }
   }
   let choices = chooseMagPortals(reports);
-  if (opts.selectPortals && reports.some(report => selectablePortalCandidates(report).length > 0)) {
+  // v18.7.13 (#1): Manuel ("ben seçeyim") modda seçim fazı, BULUNAN herhangi bir aday (seçilebilir API
+  // VEYA "portal izi") varsa AÇILIR — eskiden yalnız seçilebilir API varsa açılıyordu, bu yüzden yalnız
+  // iz bulunan hostlarda kullanıcıya hiç seçim sunulmuyordu. Kullanıcının seçtiği iz, hesap fazında
+  // gerçek handshake ile doğrulanır (seçim ≠ doğrulama; sahte başarı yok).
+  // v18.7.13: seçilebilir aday İÇERMEYEN ama "portal izi" olan raporlar da manuel seçime açılır.
+  // AMA terminal (error/protected/rate-limit) raporlar seçime GİRMEZ — koruma/hata durdurması korunur.
+  const pickableReport = (r: MagPortalDiscovery) => r.state !== "error" && r.state !== "protected"
+    && r.candidates.some(c => c.confidence !== "protected");
+  if (opts.selectPortals && reports.some(pickableReport)) {
     opts.onPhase?.("selection");
     try { choices = await waitControlled(opts.selectPortals(reports), opts.control); }
     catch (error: any) { if (aborted(error) || cancelled(opts.control)) return results; throw error; }
   }
   for (const [host, endpoint] of Object.entries(choices)) {
-    if (!selectablePortalCandidates(reportByHost.get(host)).some(c => c.endpoint === endpoint))
-      throw new Error("Seçilen API yolu bu portal keşfinde doğrulanmış bir aday değil.");
+    // v18.7.13: seçim keşifte BULUNAN, terminal-olmayan, koruma-olmayan bir aday olmalı (keyfi endpoint
+    // değil); seçilebilir olması şart değil (manuel modda iz de seçilebilir), doğrulama handshake ile yapılır.
+    const rep = reportByHost.get(host);
+    if (!rep || rep.state === "error" || rep.state === "protected"
+      || !rep.candidates.some(c => c.endpoint === endpoint && c.confidence !== "protected"))
+      throw new Error("Seçilen API yolu bu portal keşfinde bulunan geçerli bir aday değil.");
   }
   const accountJobs = opts.selectPortals
     ? jobs.filter(job => choices[job.portal] || selectablePortalCandidates(reportByHost.get(job.portal)).length === 0)

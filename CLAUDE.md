@@ -180,7 +180,17 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.12 RC1 — dal `v18.7.12-rc1-mag-ip-failover`)
+## 9. Mevcut durum (v18.7.13 RC1 — dal `v18.7.13-rc1-exact-scope-username-mac`)
+
+**v18.7.13 (bu sürüm — manuel portal seçimi + kullanıcı adı + A01 base64 MAC + "Yalnız girilen" kati kapsam; PC doğrulandı, CİHAZ BEKLİYOR):**
+Cihaz kanıtı: "ben seçeyim"de bulunan izler tıklanamıyordu; hkpremium kullanıcı adı `ud3B3yRH` yerine `1787` (name); goldensm32 base64 MAC `profile-mac-mismatch`.
+- **#1** Manuel modda "portal izi" adaylar da seçilebilir; seçim fazı iz içeren terminal-olmayan raporda açılır (terminal/koruma hariç); seçim handshake ile doğrulanır. (`mag-bulk.tsx`, `magBulkScan.ts`)
+- **#2** Kullanıcı adı zenginleştirme: gerçek login yoksa dolu-parametre `get_profile` denenir (bütçe 2), login getiren tercih edilir; yoksa eski davranış. (`stalkerProfile`)
+- **#3 A01** `accountMatchesMac` base64 MAC'i `decodeMacIfBase64` ile çözer (kullanıcının defalarca istediği; artık yapıldı).
+- **#4** "Yalnız girilen" (exact) KATİ: yalnız girilen port+yol; family/version.js/iki-aşama YOK. (`magPortalDiscovery.ts`, `magBulkScan.ts`)
+- Doğrulama: tsc temiz · denetle TEMİZ · `check-v18713` PASS · hesap testi 14 grup · keşif testi 18 grup. Ayrıntı `AI-DEVIR-v18.7.13.md`. GPT devir: `GPT-OPUS-GUNCELLEME-DEVRI.md`.
+
+## 9-eski1. v18.7.12 RC1 (dal `v18.7.12-rc1-mag-ip-failover`)
 
 **v18.7.12 (bu sürüm — MAG çoklu-IP DNS failover; PC doğrulandı, CİHAZ BEKLİYOR):**
 Kök neden (adb + PC kanıtı): goldensm32.xyz 5 A kaydı, **yalnız .225 canlı**; telefonun DNS'i ölü IP veriyor → 6 sn timeout,

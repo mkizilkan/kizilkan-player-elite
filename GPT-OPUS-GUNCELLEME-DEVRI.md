@@ -1,282 +1,70 @@
-# GPT → Opus ayrıntılı güncelleme devri
+# GPT DEVİR — KIZILKAN PLAYER ELITE (güncel durum ve talimatlar)
 
-## 1 Ekim 2026 — v18.7.3 RC1 başlangıç kaydı
+**Son güncelleme:** 2026-10-04, Claude (Opus) oturumu. Bu dosya, token/bağlam azaldığında başka bir yapay zekânın
+(GPT) işi kaldığı yerden sürdürmesi için yazıldı. Önce `CLAUDE.md`'yi (özellikle §2 çalışma sözleşmesi, §3 doğrulama,
+§4 sürüm/dal, §5 mimari, §7 tuzaklar, §8 log analizi) oku; aşağıdakiler ona EKtir.
 
-Bu bölüm tarihî başlangıç durumudur. Güncel uygulama, test ve dağıtım durumu aşağıdaki **2 Ekim** kaydındadır.
+## 1. Çalışma kuralları (harfiyen)
+- **Önce PLAN sun, kullanıcı onaylayınca kodla.** Kör düzeltme yok: her sorunu önce log + kod ile KANITLA.
+- **Doğrulama (PC, her değişiklikten sonra):** `cd frontend && yarn tsc --noEmit` (çıktı yok) → `cd .. && node tools/denetle.js` (✅ TÜM DENETİMLER TEMİZ / exit 0). Geçmeden commit/push YOK.
+- **Sürüm:** beş alan birlikte (`frontend/app.json`: version, ios.buildNumber, android.versionCode=major*10000+minor*100+patch, extra.kizilkanReleaseLabel="GPT ELITE v<sürüm> RC1"; `frontend/package.json`: version). Etiket soneki DAİMA **RC1**. Her sürüm yeni dal: `v<sürüm>-rc1-<konu>`.
+- Her sürüme `tools/check-v<kod>-release.js` gate + `tools/denetle.js` kaydı + `AI-DEVIR-v<sürüm>.md` + `CLAUDE.md §9` güncellemesi.
+- **CLAUDE §7 TUZAĞI (bu oturumda tekrar yaşandı):** `stalker.ts` ve `magPortalDiscovery.ts` sahte-`require` VM testleriyle koşuyor → bu dosyalara **üst düzey import EKLEME**. Yeni modülleri `await import` ile **tembel** yükle (örnek: v18.7.12 `loadHostFailover()`).
+- **Native (Kotlin) değişmedi** (v18.7.9–v18.7.12 tümü TS). Native'e dokunursan `expo prebuild` + `gradlew assembleDebug` şart.
+- Commit attribution satırı oturuma göre değişiyor; kullanıcının verdiği EN SON reminder'daki `Co-Authored-By` satırını kullan.
 
-- Taban: `4240f6cc` / `v18.7.2-rc1-multimac-ux`.
-- Çalışma dalı: `v18.7.3-rc1-gpt-audit`.
-- Kullanıcı tespit/öneri raporu, bütün kanıtlı düzeltmeleri tek build içinde uygulama, ayrı dal push ve manuel APK tetikleme istedi.
-- Önceki salt okunur incelemede kod değiştirilmedi. Uygulama bu kayıtta başlar.
-- Ayrıntılı bulgu ve kabul matrisi: `GPT-TESPIT-VE-ONERILER.md`.
-- Mevcut workflow push dalları main/master/eski özel dal; bu çalışma dalı push ile APK başlatmaz.
-- Kalıcı PlayerHost, Room kanonik depolama, MAG live-first, tek upstream ve mevcut imza düzeni korunur.
+## 2. Mevcut durum
+- **Dal:** `v18.7.12-rc1-mag-ip-failover`. **Son commit:** `5d9e3b2f` (v18.7.12). Taban zinciri: v18.7.10 `6910a934` → v18.7.11 `1efefcfc` → v18.7.12.
+- **Cihaz:** OnePlus 7 Pro, `c3a4097e`. DEV paket `com.gpt.kizilkan.player.dev` ("KIZILKAN DEV"), debuggable. Release paket `com.gpt.kizilkan.player` (debuggable DEĞİL).
+- Telefonda kurulu: **18.7.12-dev**. Cihazda Özel DNS `DNS.google` yapıldı (kullanıcı ayarladı).
 
-### Dosya/işlem günlüğü
+## 3. Bu oturumda tamamlananlar (PC doğrulandı + kısmen cihaz)
+- **v18.7.11 — MAG profil-uyumluluk:** MAG320 `get_profile` minimal BOŞ dönerse dolu-parametreli MAG254/MAG250 varyantlarına düşer; `stalkerVerifyAccount` kimlik yoksa canlı erişimle "verified" (boş profil ama 21266 kanal). Kullanıcı adı telemetrisi (`usernamePresent/usernameFieldKind`, redaksiyona takılmaz). Keşif duvar-saati bütçesi (19 dk → ≤4 dk, `DISCOVERY_BUDGET_STOP`). Ayrıntı `AI-DEVIR-v18.7.11.md`.
+- **v18.7.12 — MAG çoklu-IP DNS failover (`frontend/src/utils/magHostFailover.ts`):** Cihaz kanıtı: goldensm32.xyz 5 A kaydı, yalnız `172.110.220.225` canlı; sistem DNS ölü IP veriyor → 6 sn timeout. DoH (dns.google→cloudflare) ile tüm A kayıtları → canlı IP yoklanıp **pin** → bağlantı IP'ye (Host=hostname), finalUrl `logicalUrl` ile hostname'e çevrilir. Yalnız http, yalnız RN ortamında aktif. `stalker.ts req()` (düz fetch + exactFetch) ve `magPortalDiscovery raw()` TEMBEL importla bağlı. **CİHAZDA KANITLANDI:** `MAG_HOST_IP_FAILOVER goldensm32 A=5` sonrası handshake'ler artık BAŞARILI (önce hepsi timeout). Ayrıntı `AI-DEVIR-v18.7.12.md`.
 
-| Dosya | Ne yapıldı / neden | Durum / doğrulama |
-|---|---|---|
-| `GPT-TESPIT-VE-ONERILER.md` | Önceki inceleme ve kullanıcının MAG/yedek talepleri kaynak kökleri, çözümler ve kabul senaryolarıyla kaydedildi. | Oluşturuldu. Uygulama durumu bu devirde takip edilir. |
-| `frontend/src/utils/accountExpiry.ts` | Tarama/kart/TXT/sıralama için ortak epoch/tarih sözleşmesi oluşturuldu. | Entegrasyon ve regresyon testi sürüyor. |
-| MAG tarama ve sonuç ekranı | Kapsam/koruma/seçim/export/iptal geliştirmeleri. | Uygulama sürüyor. |
-| Yedekleme motoru ve ekranı | Seçmeli önizleme/merge/staging/journal geliştirmeleri. | Uygulama sürüyor. |
-| Player ve native kaynak yaşam döngüsü | Önceki kanıtlı player bulguları. | Uygulama sürüyor. |
-| Profil/kütüphane/Room/TV | Sayaç, async sahiplik ve alternatif girişler. | Uygulama sürüyor. |
+## 3b. v18.7.13'te YAPILANLAR (dal `v18.7.13-rc1-exact-scope-username-mac`, PC doğrulandı, cihaz bekliyor)
+Aşağıdaki P1/P2'lerin KODU YAZILDI (ayrıntı `AI-DEVIR-v18.7.13.md`):
+- **#1 Manuel portal seçimi:** "ben seçeyim"de iz adaylar seçilebilir; seçim fazı terminal-olmayan iz raporunda açılır; seçim handshake ile doğrulanır.
+- **#2 Kullanıcı adı:** gerçek login yoksa dolu-parametre get_profile (bütçe 2), login tercih edilir. Hedef hkpremium `ud3B3yRH`.
+- **#3 A01:** `accountMatchesMac` base64 MAC çözer.
+- **#4 "Yalnız girilen" (exact) KATİ:** yalnız girilen port+yol; family/version.js/iki-aşama yok.
+Cihazda doğrulanacak: hkpremium kullanıcı adı `ud3B3yRH` mı; "ben seçeyim" seçim çalışıyor mu; goldensm32 base64 mismatch düzeldi mi; exact tek endpoint mi deniyor.
 
-### Gerçek doğrulama sonuçları
+## 4. BEKLEYEN İŞLER (öncelik sırası — hiçbiri onaysız kodlanmaz)
 
-1 Ekim başlangıcında bu sürüm için tamamlanmış build veya cihaz kabulü yoktu. Sonuçlar aşağıdaki güncel kayda eklenmiştir. Önceki sürümün başarılı kontrolleri bu sürümün kanıtı sayılmaz.
+### P1 — "Ben seçeyim" (manuel portal) seçimi çalışmıyor  [cihaz kanıtı: kullanıcı ekran görüntüsü 2026-10-04]
+Kullanıcı "ben seçeyim" seçse de bulunan portal/API yolları **tıklanınca seçilmiyor**.
+- **Kök:** `frontend/app/mag-bulk.tsx:589` aday butonu `disabled = report.state !== "ready" || !candidate.selectable || scanPhase !== "selection" ...`. goldensm32'de bulunan adaylar "portal izi" = **`selectable:false`** (v18.7.10 M05: marka-izi/version.js non-selectable yapıldı) → hepsi devre dışı.
+- **Ayrıca** `runMagBulkScan` (`frontend/src/utils/magBulkScan.ts`) seçim fazına yalnız `reports.some(selectablePortalCandidates>0)` ise giriyor; yalnız non-selectable iz varsa `selectPortals` HİÇ çağrılmıyor → picker açılmaz.
+- **Çözüm önerisi:** Manuel modda kullanıcı NON-selectable izleri de seçebilsin; seçtiği endpoint'te handshake doğrulaması yapılsın (seçim = aday, doğrulama handshake'le). UI disabled koşulundan `!candidate.selectable`'ı manuel modda kaldır; selection fazını manuel modda her zaman tetikle. GPT A02/M05 güvenliğini koru: seçim ≠ doğrulama; gerçek handshake/hesap kanıtı şart.
 
-### Opus'un devam ederken koruyacağı kurallar
+### P1 — hkpremium kullanıcı adı yanlış (gerçek login gelmiyor)  [cihaz kanıtı: IPTV Extreme Pro ekran görüntüsü]
+Kart "1787" gösteriyor; **gerçek kullanıcı adı `ud3B3yRH`** (şifre `fcTwy5ykkP` — IPTV Extreme Pro Xtream kartı; aynı abonelik).
+- **Kök:** hkpremium `get_profile` MINIMAL yanıtında `login` BOŞ, yalnız `name=1787`. Telemetri: `usernameFieldKind=name, loginValuePresent=false`. v18.7.11 dolu-parametre varyantı yalnız profil TAMAMEN boşsa deneniyor; hkpremium'da profil boş değil (name var) → gerçek login hiç istenmiyor.
+- **Çözüm önerisi (`frontend/src/utils/stalker.ts` `stalkerProfile`/`initialProfileVariants`):** Profil kabul edilse bile `login`/kullanıcı adı eksikse dolu-parametreli (`sn/stb_type/image_version/ver`) `get_profile`'ı DA dene ve `login` dolu gelirse onu kullan. Hedef: `ud3B3yRH` gelmeli. Normalizer `login`'i zaten önceliyor (`pickUsernameField`), sorun login'in minimal yanıtta boş gelmesi.
 
-1. Önce CLAUDE.md, bu dosya ve sürüm devrini oku; belirtilen taban/dalı doğrula.
-2. Android'de JS boş içerik dizilerini gerçek boş katalog sayma; native sayım esas alınır.
-3. Exact MAG kapsamını login fallback veya kayıt/export yeniden girişinde farkında olmadan genişletme.
-4. Seçmeli restore'da bütün mevcutları temizleyen eski helper'ları kullanma.
-5. Native restore applied/finalized durumunu kalıcı journal ile birlikte değerlendir; yanlış rollback veri silebilir.
-6. Test edilmemiş cihaz davranışını çalışıyor diye yazma. Uygulamayı kaldırıp kullanıcı verisini silme.
-7. Her değişiklikte dosya/işlem/kanıt/sonuç/eksik senaryo tablosunu ve sürüm devrini güncelle.
+### P2 — goldensm32 "profile-mac-mismatch" (A01)  [cihaz: handshake OK ama tüm MAC'ler unverified]
+Failover sonrası handshake başarılı ama doğrulama `profile-mac-mismatch` → unverified.
+- **Kök adayı (A01):** `frontend/src/utils/stalker.ts:2054` `accountMatchesMac` base64 MAC'i ÇÖZMÜYOR (normalizer `decodeMacIfBase64` kullanıyor, eşleştirici kullanmıyor → tutarsızlık). Portal MAC'i base64 döndürüyorsa geçerli hesap yanlışlıkla reddedilir.
+- **Alternatif:** Girilen MAC'ler goldensm32'de kayıtlı abone değilse mismatch DOĞRU olabilir. Log MAC değerini (gizlilik) yazmıyor; ayrım için ya değeri güvenli sınıflandır ya kullanıcıya sor (goldensm32 kendi aboneliği mi).
+- **Çözüm:** `accountMatchesMac`'e `decodeMacIfBase64` ekle (düşük risk, normalizer ile tutarlı). Gerçekten farklı MAC ise mismatch korunur.
 
-## 2 Ekim 2026 — v18.7.3 RC1 ayrıntılı uygulama kaydı
+### P3 — Player ilk-kare ~2 sn (Xtream TS açılışı)
+Kanıt: `FIRST_FRAME srcSet ~1.5–2.7 sn` = Media3'ün canlı MPEG-TS ilk keyframe'ini açması (buffer başlatma zaten ~200 ms). Kör buffer dokunuşu YAPILMADI (stutter riski). Önce connect/TTFB/keyframe aşama ölçümü gerekir. Uzun (28–132 sn) gecikmeler Stalker kanalında HTTP 444 + boş oturumdandı → v18.7.11 M08 ile düzelmesi beklenir.
 
-Bu bölüm önceki çalışma başlangıcı kaydını günceller. Taban `4240f6cc`, dal `v18.7.3-rc1-gpt-audit`. Beş sürüm alanı **18.7.3 / 180703 / GPT ELITE v18.7.3 RC1** olarak yükseltildi. Yeni paket bağımlılığı veya Room şema değişimi yok. Gömülü master PIN ve kurtarma yolu kullanıcı talebiyle korunuyor. Kalıcı PlayerHost/Room/live-first/tek upstream kararları korunuyor.
+### Diğer (GPT backlog, daha önce iletildi): M09-tam, M10 (tekli ekran gelip gidiyor), M11 (:80/:443 portsuz sayılıyor), A02/A05/A06/A07/A08, C01–C04, D01, P01–P05, N01–N03, T02. Özellik eksikleri: EPG zamanlı kayıt, "devam et" şeridi, hız testi, yazı boyutu, yedek şifreleme.
 
-### MAG — M01–M11 ve E03
+## 5. Cihaz / DEV iş akışı (bu oturumda kullanıldı)
+- **ADB:** `C:\Android\Sdk\platform-tools\adb.exe`. Ortam: `$env:ANDROID_HOME="C:\Android\Sdk"`, `$env:JAVA_HOME="C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot"`. Gradle PowerShell'de çalıştır (Git Bash'te loopback hatası).
+- **DEV derleme:** `cd frontend; npx expo prebuild --platform android --clean --no-install; cd android; .\gradlew.bat assembleDebug` (~15–18 dk). APK: `frontend/android/app/build/outputs/apk/debug/app-debug.apk`. Kur: `adb install -r <apk>`. **Tuzak:** önceki Gradle daemon dosya kilitlerse `.\gradlew.bat --stop` sonra tekrar.
+- **Tanı DB çekme (DEV debuggable):** `adb exec-out "run-as com.gpt.kizilkan.player.dev cat databases/kizilkan-native-core.db" > k.db` (+ `-wal`). `run-as ... cp /data/local/tmp/` ÇALIŞMAZ (izin). Node `node:sqlite DatabaseSync` ile oku; tablo `diagnostic_events`, kolonlar `atEpochMs,event,payloadJson,...`. Olaylar en-yeniden-eskiye değil `atEpochMs ASC` ile sırala. MAC/şifre/token değerleri `payloadJson`'da REDAKTE (yalnız `*Present/*Kind/*Fields` metadata açık).
+- **Cihazda ağ teşhisi:** `adb shell "nc -w 6 host port < /dev/null; echo EXIT=$?"` ("nc: Timeout" = ölü). `ping -c N host`. DNS çözümleme round-robin ölü IP verebilir (goldensm32 kanıtı). **Sistem ayarını (DNS vb.) sen DEĞİŞTİRME** — kullanıcıya söyle.
 
-| Dosya / bölge | Ne yapıldı, neden | Son davranış / kanıt |
-|---|---|---|
-| `frontend/app/mag-bulk.tsx` kapsam/start | exact varsayılan, fallback/all ayrı seçenek; hızdan bağımsız kapsam, hazırlık dahil tek iş sahipliği, 1–16 paralellik, gerçek abort/pause/unmount | Kullanıcı girdiği adresle sınır koyabilir; çift başlatma/durdur sonrası devam önlenir. |
-| Aynı dosya input/results | Boyutu 128 px ile sınırlı çok satırlı giriş ve FlatList sonuçları; endpoint+MAC checkbox; hepsi/görünenler/koruma görülmeyenler seçimi ve seçimi kaldırma | Çok MAC ekranı uzatmaz; yalnız seçilenler eklenir veya dışa aktarılır. Cihazda odak/kaydırma kabulü ayrıdır. |
-| Aynı dosya add/export | Native ok/uri/path sonucu denetlenir; kısmi TXT/JSON durumları ve kategori uyarıları gösterilir; son doğrulanan hesap bilgisi korunur; live-first sonrasında zenginleştirme yapılır | Sahte dosya başarı mesajı yok; toplu eklenen hesap film/dizi aşamasında unutulmaz. |
-| `frontend/src/utils/magBulk.ts` | Ham :80/:443 bilgisi, canonical endpoint, scope aday planı, TXT hesap bloğu ve bütün kategori türleri | URL port normalizasyonu kullanıcı niyetini silmez; aynı host farklı portal tekilleşmez. |
-| `frontend/src/utils/magBulkScan.ts` | Yalnız pozitif sonuçları paylaşan singleflight; ilk MAC'in başarısızlığı host için null cache olmaz; host başına 650 ms gate/Retry-After; abort/pause sahipliği | Daha az tekrar keşif; koruma/429 sonrasında kör genişleme yapılmaz. |
-| `frontend/src/utils/stalker.ts` classifier/login | Cloudflare cf-mitigated/CAPTCHA/WAF güçlü işaretleri; 429 ve erişim reddi ayrı; genel 403, geçersiz MAC sayılmaz; endpoint/stage/zaman/transport/evidence saklanır | Koruma görüldü/görülmedi/belirsiz gözlemidir; ban bağışıklığı veya atlatma özelliği değildir. |
-| Aynı dosya account/date | expire_billing_date alias; epoch/tarih ortak parser; eksik yeni profil eski doğrulanmış bilgiyi silmez | Kart, tarama ve TXT aynı bitişi gösterir. |
-| Aynı dosya catalog/enrichment | WeakMap ile hesap çalışma kapsamı, terminal durum ve AbortController; türü belirlenmiş protection/rate-limit/cancel hataları catch bloklarında korunur; sıradaki kategori önizlemesi iptal edilir | VOD CAPTCHA sonrası Series hiç çağrılmaz; farklı hesap etkilenmez. |
-| `frontend/modules/panel-scan/index.ts` | AbortSignal → native job cancel + typed CANCELLED | Durdurma yalnız UI bayrağı değildir. |
-| Yeni `accountExpiry.ts`, `accountCard.ts` | Tarih/sınırsız/bilinmeyen parser; bitiş/protection/catalog state için ortak kart satırı | Ayarlar ve seçim kartları aynı alanları kullanır. |
-| `frontend/app/(tabs)/settings.tsx`, `app/playlist-select.tsx`, `src/utils/playlistManagement.ts` | Ortak hesap satırları ve expiry sıralaması; gerçek count ve empty/missing açıklama; load error retry | Eski pozitif sayı ve yanlış bitiş ayrışması giderilir. |
+## 6. Güvenlik / kapsam sınırları (DEĞİŞMEZ)
+Bu, kullanıcının KENDİ aboneliği/MAC cihazları için standart bir Stalker/Ministra IPTV istemcisidir (TiviMate/IPTV Smarters gibi). TLS doğrulamasını KAPATMA. Düz kimlik bilgisi (şifre/kullanıcı adı/MAC/token) loglama — yalnız var/yok + biçim. Kullanıcı verisini/listesini silme; DEV verisini koru. HTTP 200/token tek başına geçerli hesap DEĞİL; gerçek profil/katalog erişimi kanıtı şart.
 
-### Seçmeli yedek — B01–B07
-
-| Dosya / bölge | Ne yapıldı, neden | Son davranış / kanıt |
-|---|---|---|
-| `frontend/app/backup.tsx` preview/apply | Dosya önce önizlenir; liste seçimi/hepsi/filtre/mevcut hedef profil; profil/ayar snapshot'ı ayrı ve açık eylemdir; barrier bırakıldıktan sonra başarıda ve hatada yeniden yükleme yapılır | Kullanıcı yükleme kapsamını seçer, seçilmeyenler korunur; finalized cleanup hatasında da ekran diskle uzlaşır. |
-| Yeni `frontend/src/utils/backupSelection.ts` | Kaynak profil+ID anahtarı; payload doğrulama; hedefe yönelik merge; global ID tekrarlarını ayıklama; farklı hesap/paylaşılan/yetim veya ayrılmış hedefler için yeni ID | Seçilmeyen meta/katalog/profil/ayar silinmez; yanlış hesabın üzerine yazılmaz. |
-| Yeni `backupRestoreTransaction.ts` | KV before/after journal; native applied/finalized marker; eski rollback kopyası; açılış kurtarması; ikinci JSON encoding dahil 1,5 MiB sınırı ve readback | Process-kill/iptal/yazma hatasında tutarlı eski veya finalized durum. Cihaz process-kill testi yerine geçmez. |
-| Aynı dosya cleanup | Finalized legacy hedef temizliği, staging/rollback cleanup, finalized yanlış rollback reddi | Eski dosyanın Room'u yeniden canlandırması önlenir. |
-| `frontend/src/utils/backup.ts` | Seçmeli JSON staging/journal; eski full/quick/personal yolları açıkça ayrı tutulur; progress/hidden/watched/seriesLast/startLast/libraryLegacyOwner anahtarları kapsanır | Yeni kişisel kayıtlar yedekten eksilmez. |
-| `frontend/src/utils/backupV3.ts` | Yalnız header önizlemesi; bütün dosyada end/digest/set doğrulama; yalnız seçilenlerin staging'e alınması; ortak journal | Bozuk seçilmeyen bölüm sessiz kabul edilmez; büyük katalog tek JS JSON nesnesi olmaz. |
-| `frontend/app/_layout.tsx` | Provider açılışı öncesi bekleyen restore kurtarması; hatada koruma ve yeniden deneme | Yarım restore üzerine normal çalışma açılmaz. |
-
-### Metadata, profil ve kişisel kayıt — D02–D07 / E02/E06/E07/E08
-
-| Dosya / bölge | Değişiklik | Neden / sonuç |
-|---|---|---|
-| `frontend/src/store/PlaylistContext.tsx` boot/count | fromMeta'da ağır verinin gerçek 0 sayısı veya doğrulanmış Room sayımı önceliklidir; ready/empty/missing ve expectedCounts; açılış yazımının sonucu denetlenir | Kart gerçek 0 gösterir; sağlıklı boş kaynak onarım döngüsüne sokulmaz. |
-| Aynı dosya publish | publishMetadata güncel ref üzerinde patch ve ortak commit kuyruğu; kalıcı kayıt sonrası state; expectedProfile ve yazım öncesi restore guard; bozuk deletion guard açık hata verir | Düzenleme kaybolmaz; bozuk metadata üzerine sessiz yazılmaz. |
-| Aynı dosya active switch | Bütün işlem drainer'a kayıtlıdır; yalnız lastUsedAt/count/state patch'i; sonucu denetlenen active-key kuyruğu; await sonrası generation/profile/restore kontrolü | Eski seçim, restore metadata/key'sini ezmez. |
-| Aynı dosya restore/reload | Pending catalog barrier, repair abort/wake; commit/active-key/provider/load drain; reload bus + resolve/reject waiter | Geç yazım ve kilit döngüleri önlenir. |
-| Aynı dosya migration | Anahtar başına kilit; sonucu denetlenen write/remove; önce migration owner claim; mevcut Room korunur; kaynak başarıya kadar kalır; aynı sahip yeniden deneyebilir | Taşıma hatasında kaynak korunur; başka profile ikinci kopya olmaz. |
-| Aynı dosya mutations | add/prepared/remove/heavy/enrich için catalog lock+commit; actual count ve false bigStore sonucunda hata; paylaşılan Room sahipliği; iç içe eski commit deadlock'u giderildi | Eşzamanlı işlemler birbirini ezmez; başka profil katalogları silinmez. |
-| Aynı dosya favorites/recent | Profil+liste namespace; raw ref, sıralı ve sonucu denetlenen yazım, load epoch; eski verinin sahibi ve yalnız mevcut kapsamı temizleme | Hesaplar, aynı ID üzerinden kişisel bilgiyi paylaşmaz. |
-| Aynı dosya kritik okuma/aux | Metadata hazır olmadan mutasyon reddi; strict storage okuması ve iç şema kontrolü; aux yüklemesi başında önceki raw snapshot geçersizleştirilir | Bozuk kaynak yeni boş listeyle değiştirilmez; başarısız boot sonrası ağır katalog yazımı başlamaz. |
-| `frontend/src/utils/catalogOperations.ts` | restorePending ve restoreWriting ayrı; pending yeni işleri reddeder, eski tail biter | Restore eski tail'i bloke edip kendisini beklemez. |
-| Yeni `profileDataReload.ts` | Ortak reload ve write/load drainer registry | Restore sonrası providerların kalıcı veriye dönmesi. |
-| `frontend/src/store/ProfileContext.tsx` | Sıralı ve sonucu denetlenen kalıcı kayıt; ilk profil/seçim rollback/generation; PIN/load drainer; strict dış/iç kayıt; loadError/retryLoad/readiness; credentialEpoch ve await sonrası PIN/profil/restore kontrolü; anahtar temizliği/paylaşılan Room sahipliği | Kaydedilmeyen profil/PIN başarı sayılmaz; bozuk kaynak korunur; eski yükleme veya PIN sonucu yeni oturumu açmaz. |
-| `frontend/src/store/ParentalContext.tsx` | ref üzerinden sıralı checked write; load cancel/drain/PIN migration; strict şema; loadError/retryLoad/readiness; credentialEpoch ve eski unlock sahibinin kontrolü | Kategori oturumu başka profile taşınmaz; başlangıç hatasında kategori erişimi açılmaz. |
-| `frontend/src/store/LibraryContext.tsx` | Tüm koleksiyonlarda profil/liste kapsamı; sahipliği denetlenen callback, load epoch, raw ref ve sıralı yazım; updater'da disk yan etkisi yok; restore drain/reload | Progress/watchlist/hidden/watched/seriesLast, aynı ID'li hesaplarda karışmaz. |
-| Aynı dosya iç kayıt doğrulama — E12 | Dış JSON ve map/ID dizisi yanında progress/seriesLast/watched iç kayıtlarının null/yanlış alanlı biçimleri doğrulanır | Bozuk kaynak korunur; başarısız load sonrası mutasyon reddedilir, geçerli reload toparlanır. Yeni senaryo dahil Library 8 grup PASS. |
-| Yeni `libraryScope.ts`, `libraryLegacyOwner.ts` | Encode edilmiş playlist namespace; eski verinin ilk sahibini sonucu denetlenen claim ile kaydetme; eski raw kaynak korunur | Kayıpsız geçiş; eski kayıtlar otomatik tüm hesaplara kopyalanmaz. |
-| `frontend/src/utils/localMedia.ts` | saveLocalProgressChecked; migration sırasında silmeden önce kopyalama | Kopya hatasında eski ilerleme kaybolmaz; local ID IPTV'ye girmez. |
-| `frontend/src/types/index.ts` | catalogLocalState ve expectedCounts için uyumlu alanlar | Gerçek sayı/beklenen sayı ayrımı. |
-
-### Player/Cast/kayıt/TV/EPG — P/T/D01/D05/D06 / E04/E05
-
-| Dosya / bölge | Değişiklik | Neden / sonuç |
-|---|---|---|
-| `frontend/src/player/PlayerHost.tsx` motor | Profil await'i sonrası token tekrar denetlenir; header içeren kaynak kimliği; override aboneliği; synthetic sahiplik/kategori guard | Eski istek yeni oturumu değiştirmez; yalnız header değişen düzenleme uygulanır. |
-| Aynı dosya lifecycle | Media3 null replaceAsync ile gerçek detach; timeshift/kaynak sahipliği; yakalanmış cleanup işlemini await etme | Eski görünmeyen bağlantı, tek upstream hesabı işgal etmez. |
-| Aynı dosya Cast | Sürekli mounted controller; selector playback yönetmez; disconnect cleanup, yerel bağlantı tekrar kurulmadan önce tamamlanır; generation kontrolü | Panel kapalıyken zap/teardown ve eski callback davranışı doğru yönetilir. |
-| Aynı dosya recording | Bekleyen REC ile native onaylı REC ayrıdır; sahiplik denetimli iptal ve yakalanmış stop; seçilen SAF URI parametresi; özel staging ve doğrulanan public kopya | Erken yanlış REC/eski klasör önlenir; kopyalama başarısız olursa kaynak kalır. |
-| Aynı dosya progress | Synthetic öğede gerçek profil/liste/tür; await sonrası kapsam guard | Eski hesaptan çözülen bölüm yeni hesaba progress yazmaz. |
-| `frontend/src/components/CastButton.tsx` | controllerOnly/managePlayback/load generation; bütün await/end/unmount guard'ları | Geç çözülen kaynak, yanlış eski/yeni oturuma yüklenmez. |
-| `frontend/src/player/v2/request.ts`, `types.ts` | UA/Referer/Origin/Cookie/Authorization kanonik biçimi; packed Kodi decode, CRLF filtresi, sıralı header kimliği ve açık UA bridge gereksinimi | Header isteyen bütün türler ve Cast aynı sözleşmeyi kullanır. |
-| `frontend/src/player/v2/memo.ts` | JSON([playlistId,channelId]) | Farklı sağlayıcılar aynı ID üzerinden motor öğrenimini paylaşmaz. |
-| `frontend/src/utils/iptv.ts` | VOD/series pending headers korunur | Native/JS M3U eşdeğerdir. |
-| Yeni `categoryAccess.ts` | allowed/pin/blocked ortak politikası; kids profilinde kilitli kategori kapalıdır | Alternatif giriş, kategori PIN'ini atlamaz. |
-| Yeni `resolveLivePlayback.ts` | Önce kanonik Room getItem/izin; sonra override/MAG/token/headers | Boş JS dizisi/ham MAG URL yerine gerçek kaynak kullanılır. |
-| `frontend/app/tv-home.tsx` | Generation sahipli busy/reset/son sorgu; eski finally guard; ortak resolver/PIN ve navigasyon sahipliği | Busy sırasında kategori/arama reset'i kaybolmaz. |
-| `frontend/app/multi-view.tsx` | Adil paylaştırılan, sınırlı native sonuçlar; toplam <=300; sağlayıcı kapsamlı ID; ortak resolver/PIN/header; TV yönü ve gizli sesin sıfırlanması | Room/MAG çoklu ekran ve TV yönü doğru yönetilir. |
-| `frontend/app/epg.tsx` | Native getItem/sahiplik; await sonrası eski sonucu engelleme; program hatasını sıfırlama | Room kanalının EPG'si bulunur. |
-| `frontend/app/(tabs)/favorites.tsx` | Native özel grup; türe göre ID; PIN sahipliği | Android özel favorileri boş kalmaz; doğru rota kullanılır. |
-| `frontend/app/detail.tsx` | Gerçek kategori/headers; profil/liste sahibi; kanonik öğe; resume await sonrası guard | Synthetic başlık/kilit/sahiplik kaybolmaz. |
-
-### Native dosya günlüğü
-
-Tam Kotlin yolları `frontend/modules/<modül>/android/src/main/java/expo/modules/<paket>/` altındadır.
-
-| Dosya | Değişiklik / işlem sınırı | Doğrulama / sınır |
-|---|---|---|
-| `kizilkan-native-core/.../KizilkanNativeCoreModule.kt` | Atomic restore duplicate/reserved ID denetimi ve Room applied/finalized marker; doğrulanan summary ile üç tablonun gerçek sayımı; kanonik M3U headers; public kopyalama; arka planda crypto/PIN ve senkron iptal | Gerçek release Kotlin/KSP derlemesi geçti; cihazda Room transaction kabulü ayrıdır. |
-| `frontend/modules/kizilkan-native-core/index.ts` | Restore marker/summary/crypto/public copy bridge; getItemsByIds için sırası korunan, tekilleştirilmiş 250'lik partiler ve giriş sırası | Büyük ID listesi 500'de kesilmez. |
-| `kizilkan-native-core/.../PublicStorage.kt` | TXT readback/finish hatası; 64 KB kopyalamada SHA-256+boyut/readback; hatada hedef silinir, kaynak korunur | Gerçek SAF provider için cihaz kabulü bekliyor. |
-| `kizilkan-native-core/.../LiveTimeshiftManager.kt` | Ortak OkHttp, tek upstream; örtük AES IV, upstream sequence üzerinden açık IV'ye çevrilir; teeLock/running tekrar kontrolü; gerçek kayıt hatası/bytes/stop sırası | RFC 8216 dayanağı; canlı HLS/decoder cihaz testi bekliyor. |
-| `kizilkan-native-core/.../CastBridgeServer.kt` | startLiveHls synchronized; stopAll ile aynı kilit | Cast eski recorder'ı bırakmaz. |
-| `mpv-player/.../KizilkanMpvView.kt` | currentSoftwareDecode, reload sırasında korunur | Yazılım fallback'inin reload sonrası donanım çözmeye dönmesi önlenir. |
-| `panel-scan/.../PanelScanModule.kt` | Bloklayan proxy işleri arka plan CoroutineScope'ta; iptal ayrı tek thread'de; OnDestroy temizliği | Üretim registration+JVM yavaş HTTP fixture PASS; JSI cihaz testi değildir. |
-| `panel-scan/.../ScanProxyPool.kt` | Atomik iptal, mevcut bağlantı, önceden iptal, disconnect ve cleanup; iptal proxy hatası sayılmaz | Yerel HTTP iptali <1,5 sn; heartbeat <500 ms; lease bir kez bırakıldı. |
-| Yeni `panel-scan/.../ScanWorkCoordinator.kt` | Atomik claim/checkpoint; birleştirilmiş completed prefix/tested aralıkları; worker failure/interrupt drain | Sıra dışı tamamlanan işlerde hesap atlanmaz ve sayaç iki kez artmaz. |
-| `panel-scan/.../PanelScanService.kt` | Future hatası FAILED; streaming done/drain/açık stream iptali; strict auth; geçici probe; tam Retry-After; tüm found sayısı; versiyonlu committed prefix recovery | 500 found/UI 200, 20.000 satırlık producer failure ve HTTP fixture. |
-| `panel-scan/.../ScanJournalStore.kt` | Eski cursor/tested güncellemesine karşı guard; tüm found sayısı/versiyonlu checkpoint | Recovery'nin gerilemesi önlenir; legacy uyumu sağlanır. |
-| `frontend/src/utils/bulkAccounts.ts` | Sondaki boş locator ve label alias için native eşdeğerlik | Combo satırı yanlış atılmaz. |
-
-### PIN ve şifreli yedek — X01/E08
-
-- Yeni `BackupCrypto.kt`: Android JCA AES-256-GCM; 16 byte salt, 8 byte nonce prefix ve chunk index; header/index/final AAD; 64 KB kayıt, 16 byte tag ve zorunlu final tag. PBKDF2-HMAC-SHA256 **600.000** iterasyon. Yanlış parola, bozulma, kesilme, sıra hatası ve sondaki fazladan veri reddedilir; bütün doğrulama bitmeden restore URI yayımlanmaz. Türetilen key/char/spec temizlenir.
-- Kripto iptali; girişte, KDF öncesi/sonrası, her chunk'ta ve final flush sırasında kontrol edilir. Tek KDF generateSecret çağrısının ortası kesilemez; KDF sonrası kontrolde iptal edilir. Native wrapper, hata/iptalde özel output'u siler ve job cleanup yapar. Önceki doğrulanmış chunk staging'e yazılmış olabilir; public'e yayımlanmaz.
-- Yeni `pinProtection.ts`: Android native ve WebCrypto'da eşdeğer `kzpin:1:iterations:salt:hash`; eski düz PIN doğrulaması ve load/persist migration. Profil/parental/playlist PIN kapsamı. verifyPin, `Promise<boolean>` döndürür; mevcut uygulama akışları async checkPin kullanır.
-- `pin.ts`: CSPRNG ve bias-rejection ile kurtarma kodu; sıralı, sonucu denetlenen yazım ve restore drain. Kullanıcının istediği master/recovery korundu. Kurtarma kodu ve hesap user/pass/URL bilgileri mevcut uygulamaya özel depoda tutulur; tüm yerel DB şifreli değildir. WebCrypto olmayan eski platformda düz PIN uyumu korunur.
-- Android şifreli export varsayılandır; export/import parola alanı en az 8 karakter ister, parola saklanmaz. Şifreli dosya clipboard JSON'a düşmez; düz export kullanıcı seçimidir. UI ve native sınırları aşağıdaki tabloda kayıtlıdır.
-- Birincil kaynak araştırması: [OWASP 600k](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html), [Android AES-GCM](https://developer.android.com/privacy-and-security/cryptography), [Cloudflare challenge](https://developers.cloudflare.com/cloudflare-challenges/challenge-types/challenge-pages/detect-response/), [HLS IV](https://www.rfc-editor.org/rfc/rfc8216#section-5.2).
-
-| Dosya / bölge | Son değişiklik / bulgu | Davranış, doğrulama ve sınır |
-|---|---|---|
-| `frontend/src/utils/storage/storage-base.ts` | `retrieveStrict` ve additive `getItemStrict` — E09 | Gerçek null/yokluk fallback alır. Bozuk dış JSON, yanlış tip ve geçersiz sayı hata olur. Geçerli boolean/number korunur; eski permissive API uyumluluk için durur. |
-| `frontend/src/utils/storage/index.ts`, `index.web.ts` | Native/web strict I/O uygulaması — E09 | Platform getItem hatası varsayılana çevrilmez; kritik çağıran kaynak değişmeden hata alır. Gerçek storage fixture: 8 grup PASS. |
-| `ProfileContext.tsx`, `ParentalContext.tsx`, `PlaylistContext.tsx`, `LibraryContext.tsx` | Kritik strict okuma ve iç şema; başarısız yüklemeden sonra mutasyon guard — E09/E10/E12 | Malformed JSON, yanlış dış/iç biçim veya read failure yeni boş kayıt diye yayımlanmaz. Profile/Parental `loadError/retryLoad` ve hazır olma kapısı, Playlist metadata sahibi, Library yükleme sahibi kontrol edilir. |
-| `frontend/app/_layout.tsx` | Profile/Parental yükleme hatasında kök hata/yeniden dene kapısı — E10 | Başarısız başlangıç güvenlik durumu ile normal uygulama açılmaz; geçerli reload sonrası kapı kalkar. |
-| `frontend/src/utils/pinProtection.ts` | 600k salt'lı PBKDF2-HMAC-SHA256; native/WebCrypto; eski PIN migration — X01/E10 | PIN biçimi korunur, migration false write/hash failure kaynağı silmez. Credential epoch ile bekleyen doğrulama eski yetki veremez. |
-| `frontend/src/utils/pin.ts` | Strict kurtarma okuması; checked serial write/drain; ortak 4–10 sayısal PIN sabitleri | Master/recovery kullanıcı isteğiyle korunur. Yerel recovery ve hesap depolaması şifreli kasaya dönüşmedi. |
-| `frontend/app/pin-entry.tsx` | Sayısal 4–10 giriş; maxLength/kırpma aynı politikada; loading/error ve profil/kategori işlem sahipliği — E10 | 10 haneli PIN girişte kesilmez; geç çözülen doğrulama eski kategori/profil rotasını açmaz. Gerçek ekran fixture: 4 grup PASS. |
-| `frontend/src/utils/backup.ts` | Strict snapshot; `false/0` ayrımı; number/boolean metadata patch; gelen hassas iç şema doğrulaması — E09/E11 | Yedekte geçerli false/0 kaybolmaz. Yanlış profil/PIN/parental/liste biçimi yazımdan önce reddedilir. |
-| `frontend/src/utils/backupRestoreTransaction.ts` | Strict journal readback; schema, session/phase, before/after anahtarları, duplicate/reserved hedef, stage/rollback sahipliği — E09/E11 | Bozuk journal ile native/metadata yan etkisi başlatılmaz; kaynak journal korunur. Primitive snapshot rollback'te aynı değerine döner. Restore: 52 grup PASS. |
-| `frontend/app/backup.tsx` export/share | Android şifreli varsayılan; full/quick/personal önce üretilir, sonra `.kzbe`; mount+işlem tokeni+AbortController; her await sonrası sahiplik | Geç picker/crypto sonucu paylaşım/state başlatmaz; encryption sonrası düz kaynak silinir. Yanlış parola önizleme/restore üretmez. Gerçek ekran fixture: 6 grup PASS. |
-| Aynı dosya import/apply | `.kzbe` parola/auth decrypt → mevcut önizleme ve seçmeli restore; preview/profil sahipliği ve restore barrier/reload | Çözülmüş düz geçici dosya kapanış/değiştirme/unmount/uygulama başarı-hatasında temizlenir. Hata sonrasında ekran diskten tekrar yüklenir. |
-| Aynı dosya paylaşım ömrü | Paylaşım başarılı dönerse ciphertext veya açıkça seçilen düz export URI'si hemen silinmez; share failure hedefi temizler | Android chooser dönüşü alıcının dosyayı okuduğunu kanıtlamaz. Paylaşılan hedef cache'de tutulur; alıcı URI'yi sonradan okuyabilir. |
-| `frontend/src/utils/encryptedBackup.ts` | Native encrypt/decrypt için jobId+AbortSignal; abort listener cleanup, cache sahipliği ve native ok/uri/kind doğrulaması | Hata/iptal output'u temizler; KDF ortasında zorla durdurma garantisi yoktur. Üretim native kripto 9 grupta ayrıca doğrulandı. |
-| Aynı dosya TTL | Yalnız yönetilen export adları ve cache kökü; sonraki export açılışında 24 saatten eski dosya temizliği | Restore geçici dosyaları ve başka cache dosyaları taranmaz/silinmez. Tam 24 saatte çalışan arka plan görevi değildir. |
-| `frontend/app/backup.tsx`, `frontend/src/utils/googleDrive.ts` | Şifreli modda doğrudan düz Drive upload hem UI hem çalışma zamanında engellenir; plaintext için açık opt-out; fetch'e AbortSignal | Şifreli dosya sistem paylaşımıyla Drive'a gönderilebilir. Uygulama içinden binary `.kzbe` upload eklenmedi; direct Drive kullanıcı açık düz export seçince çalışır. |
-
-### Araçlar, sürüm ve kısayol
-
-- `frontend/app.json`/`package.json`: beş sürüm alanı 18.7.3'e yükseltildi; bağımlılık değişmedi.
-- `src/utils/quickActions.ts`: Android'deki eski yazıcı, native bitmap/action shortcut kümesinin üzerine yazmaz; iOS korunur. X02.
-- `tools/checkdeps.js`: computed olmayan property adı closure capture sayılmaz; shorthand/computed gerçek referans korunur. `test-checkdeps-references.js` altı AST senaryosu içerir.
-- `checkplayercore.js`, `check-v15214-hardening.js`, `check-v15220-flight-recorder.js`, `check-v15223-complete-corrective.js`, `check-v17008-conservative-checkpoint.js`, `check-v1720-streaming-scan-pipeline.js`, `check-v18400-local-source.js`, `check-v18600-release.js`, `test-v1730-functional.js`: bölünmüş restore helper, sıralı publish, yakalanmış record handle ve coordinator için yeni gerçek sözleşmeye uyumlu statik beklenti ve I/O fixture'ları. Kapsam kaldırılmadı; işlev testleri eklendi.
-- `denetle.js`: bütün yeni JS/TS davranış testleri kontrol kapısına bağlıdır. JVM fixture cache gerektirdiğinden ayrı yerel komutla çalışır; CI geçişi sayılmaz.
-- Bu MD, tespit MD, CLAUDE/context/sürüm devri her güncellemede gerçek dosya/bulgu/test/run/sınır kaydını taşır.
-
-### Gerçek doğrulama kaydı
-
-| Komut | Sonuç / kapsam |
-|---|---|
-| `node tools/test-mag-bulk-runtime.js` | 8 grup PASS; gerçek TS ve HTTP fixture. |
-| `node tools/test-mag-bulk.js` | 7 model grubu PASS. |
-| `node tools/test-backup-selection.js` | 7 grup PASS; gerçek merge helper. |
-| `node tools/test-backup-restore.js` | 52 grup PASS; gerçek helper ile storage/native sınırları, process-kill kesitleri, false/0 snapshot ve hassas journal/incoming şemaları. |
-| `node tools/test-player-regressions.js` | 13 grup PASS; gerçek TS/AST callback; decoder/alıcı çalıştırılmaz. |
-| `node tools/test-library-runtime.js` | 8 grup PASS; gerçek provider ve taklit I/O; E12 null/yanlış iç kayıt, kaynak koruma ve geçerli reload dahil. |
-| `node tools/test-profile-catalog-regressions.js` | 15 grup PASS; geciktirilmiş read/write/hash, restore, migration, sıfır sayı, bozuk kaynak ve strict reader fault; geç PIN sonucu/yükleme hazır olma kapısı. |
-| `node tools/test-storage-strict-runtime.js` | 8 grup PASS; gerçek storage native/web gövdeleriyle yokluk/bozuk dış JSON/yanlış tip/platform I/O ve false/0 ayrımı. |
-| `node tools/test-pin-entry-runtime.js` | 4 grup PASS; gerçek ekranın 4–10 hane politikası ve async oturum sahipliği. |
-| `node tools/test-encrypted-backup-ui.js` | 6 grup PASS; gerçek UI/utility ile native/fs sınırı taklit edilir; cancel, geç sonuç, paylaşım ömrü/TTL, import cleanup ve Drive opt-out. |
-| `node tools/test-checkdeps-references.js` | 6 AST senaryosu PASS. |
-| `node tools/test-panel-scan-runtime.js --native` | Son legacy checkpoint değişikliklerinden sonra tekrar PASS / exit 0; gerçek Kotlin fonksiyon gövdeleri/HTTP/SQLite fixture. |
-| `node tools/test-proxy-cancellation-runtime.js` | Gerçek Kotlin pool/registration ile yavaş HTTP/pre-cancel/heartbeat PASS. |
-| `node tools/test-backup-security-runtime.js` | Gerçek WebCrypto/Node PBKDF ve native wrapper sözleşmeleri PASS. |
-| `node tools/test-backup-security-runtime.js --native` | Doğrudan BackupCrypto.kt, 600k: 9 native grup ve iki yönlü PIN uyumu PASS; Unicode parola, kısa/uzun input, cancel, tamper. |
-| TypeScript/denetle | Son uygulama kaynaklarıyla TypeScript exit 0; E13 araç düzeltmesi sonrası denetle 111 kapı PASS / exit 0. |
-| Expo Android prebuild `--no-install` | Başarılı. |
-| Üç native `compileReleaseKotlin` | BUILD SUCCESSFUL, 5m40s. |
-| Yerel DEV APK + release Kotlin modülleri — önceki tur | Tam `assembleDebug` BUILD SUCCESSFUL, 6m17s; release APK değildir. Üç `compileReleaseKotlin` modül kontrolü ayrıca başarılı. |
-| Yerel DEV APK + release Kotlin modülleri — son kaynak | Standalone DEV `assembleDebug` + üç modül `compileReleaseKotlin`: BUILD SUCCESSFUL, 2m22s. DEV APK cihazda `install -r` ile güncellendi. |
-| Son DEV APK MPV paket kontrolü | Dört ABI ve native DEX paketleme PASS; donanım decoder davranışının cihaz kanıtı değildir. Final release APK aşağıdaki başarılı manuel CI ile üretildi. |
-| OnePlus 7 Pro / GM1910 ADB kurulumu | `c3a4097e`: install-r Success; 18.7.3-dev / versionCode 180703 doğrulandı. PID 27529 canlı; PID logunda crash/JS error eşleşmesi 0. Görünür ekran kabulü telefon kilidi nedeniyle yapılamadı. |
-
-Windows JDK 17 Unix socket geçici yolu için `JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=C:\Projeler\kizilkan-player-elite\frontend\android -Dfile.encoding=UTF-8` kullanıldı. JAVA_OPTS/Gradle property ayarı daemon başlangıcına yetişmedi. JDK 17.0.20, Android SDK `C:\Android\Sdk`. Signing değerlerini yazdırma.
-
-### Final dağıtım kaydı
-
-Kaynak commit'i **`096fddfeccb7a9dd1b6e46cfceec30a408653926`**, 95 dosya. `git push -u origin v18.7.3-rc1-gpt-audit` başarılı. Ana dal değiştirilmedi. Workflow `build-apk.yml`, **workflow_dispatch**: new_architecture=true/build_type=release/make_release=true. Bu dal push filtresinde değil; otomatik build eklenmedi.
-
-İlk manuel run **36983481175**, başlangıç **2 Ekim 2026 11:20:33 Europe/Istanbul**: [Actions kaydı](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/36983481175). Run kaynak SHA'sı yukarıdaki commit ile aynı. **Denetle'de tek eski semantik fixture başarısız oldu; APK derlemesi başlamadı ve release üretilmedi.** Tam uygulama TypeScript kapısı denetle içinde geçti. Aşağıdaki araç düzeltmesinden sonra son kaynak ayrıca doğrulanıp yeniden manuel tetiklenecek.
-
-Yerel DEV APK: `frontend/android/app/build/outputs/apk/debug/app-debug.apk`; SHA-256 **`94cbf3e951b4db93d1e0cd531b3bf998f0129ef3d31b8eec7ab8e6202fb19ae1`**. Yerel paketin derlenmesinden sonra yalnız test altyapısı ve dokümantasyon değişti; uygulama kodu yerel DEV paketiyle aynıdır. DEV paketi Metro kapalıyken çalışan gömülü JS içerir.
-
-Aynı DEV APK, kullanıcıya sürümlü dosya olarak verilmek için `frontend/android/app/build/outputs/apk/debug/KIZILKAN-PLAYER-ELITE-DEV-v18.7.3.apk` adına kopyalandı; SHA-256 eşleşti. Üretilmiş APK/log/cihaz ekranı Git'e eklenmedi.
-
-ADB'de `c3a4097e` seri numaralı **OnePlus 7 Pro / GM1910** kurulum sırasında bağlıydı. Cihazdaki **18.7.2-dev**, kullanıcı verileri korunarak **18.7.3-dev / 180703** olarak güncellendi; uygulama kaldırılmadı/veri silinmedi. PID 27529 canlı ve ilgili PID logunda crash/JS error eşleşmesi 0. Telefon kilitli/dozing olduğu için görünür uygulama ekranı kabulü henüz tamamlanmadı. TV focus, 1000 MAC kaydırma, SAF provider, Cast receiver, canlı AES/HW decoder ve ilgili Android JSI/Room senaryoları için gerçek cihaz kanıtı henüz yok. Tarihî timeshift donması tamamen çözüldü iddiası yok.
-
-Telefon kilidi nedeniyle görünür DEV ekranı kabulü yapılmadı. Kullanıcı telefonu çıkarmak zorunda olduğu için kurulum tamamlandıktan sonra telefonun artık gerekli olmadığı bildirildi. Release CI tamamlandı; kesin kayıt aşağıdadır. Ürünün çalıştırılmamış cihaz senaryoları release başarısından ayrı tutulur.
-
-### 2 Ekim — ilk CI'da kanıtlanan araç hatası (E13)
-
-`check-v15220-typescript-semantic.js`, gerçek persist bloğunu ayrı programda derlerken yeni guard'ın `currentPid/requestedProfile/activeSwitchGeneration/generation/isCatalogRestoreActive` bağımlılıklarını fixture'da tanımlamıyordu. Ayrıca bu dosya ve `check-v15221-typescript-media3.js`, diagnostic dosya adını ham `===` ile filtreliyordu. Windows ters slash yolu, TypeScript'in normalleştirilmiş yolu ile eşleşmeyince hatalar eleniyordu; Linux'ta elenmeyip hatalı fixture ortaya çıktı. İlk yerel 110 PASS çıktısında bu iki küçük semantik fixture güvenilir kanıt sayılmaz; bağımsız tam proje TypeScript kontrolü ve diğer testler ayrı geçmiştir. Araçlar gerçek compiler diagnostic'lerini koruyacak biçimde düzeltildi ve negatif örneklerle doğrulandı. Uygulama kodu/DEV APK değişmedi; düzeltme yalnız test altyapısındadır.
-
-| Dosya | Uygulanan düzeltme | Doğrulama amacı |
-|---|---|---|
-| `tools/_typescript-semantic-fixture.js` | Gerçek TypeScript compiler host'u ile bellek içinde fixture; yol slash/case eşlemesi yalnız sanal source yüklerken yapılır. **Tüm diagnostics korunur**, `types: []` ile ilgisiz ortam ambient paketleri çıkarılır. | Windows/POSIX dosya adları semantic hatayı eleyemez; standart TypeScript kütüphaneleri gerçektir. |
-| `tools/check-v15220-typescript-semantic.js` | Gerçek persist bloğu, dış guard bağımlılıklarının doğru tipleriyle derlenir. AST ile `await storage.setItem` ve blok sonunda `await persist` korunur. | Promise<boolean> yanlışlıkla Promise<void> kuyruğuna döndürülemez; kalıcı seçim yazımı beklenmeden bitmez. |
-| `tools/check-v15221-typescript-media3.js` | Elle kopyalanmış union yerine gerçek `src/player/v2/types.ts`; gerçek MEDIA3_ERROR engine/decoder/surface ifadeleri AST ile seçilip compiler'a verilir. | Union alanı gerçek source narrowing'i olmadan okunamaz. Eski regex kontrolleri ayrıca korunur. |
-| `tools/test-typescript-semantic-fixtures.js` | Windows ve POSIX yollarında pozitif derleme; tanımsız isim TS2304, yanlış Promise TS2322, yanlış decoder TS2339 ve iki eksik await negatif senaryosu. | Test altyapısının hatayı gerçekten yakaladığı doğrulanır. |
-| `tools/denetle.js` | Yukarıdaki negatif test yeni zorunlu kapıdır. | Eski kapılar kaldırılmadı veya gevşetilmedi. |
-
-İki düzeltilmiş gate ve yeni negatif test ayrı çalıştırıldı: PASS. Root/frontend/tools çalışma dizinlerinde 6/6 kontrol PASS. Bütün denetle tekrar çalıştırıldı: **111 kapı PASS / exit 0**, tam proje TypeScript kapıları dahil. Başarılı yeni manuel run kaydı aşağıdadır. `git diff 096fddfe -- frontend` boş: application kodu ilk DEV paketi ile aynıdır. İlk CI APK aşamasına ulaşmadığından üretilmiş başarısız bir release APK yoktur; 18.7.3 uygulama sürümü korunur.
-
-### Son manuel release işi
-
-- Build kaynak commit'i: **`5757920a5a2430c77a9316d8b02f7efb945bb99f`**; ayrı dal push başarılı. Bu commit yalnız test altyapısı ve ayrıntılı devirleri güncelledi; `frontend` uygulama kaynakları **096fddfe** ile aynı.
-- [Run 36984915544](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/36984915544), **2 Ekim 2026 11:35:36 Europe/Istanbul**, `workflow_dispatch`; new_architecture=true, build_type=release, make_release=true.
-- **COMPLETED / SUCCESS**: Linux denetle, ayrı tam TypeScript, Expo prebuild, release Gradle, final MPV, paket/sürüm/imza, artifact ve release kapıları geçti. Başlangıç 11:35:36; işin son kaydı **11:54:46**, toplam **19m10s**. Gradle APK adımı **15m20s**.
-- [Release build-123](https://github.com/mkizilkan/kizilkan-player-elite/releases/tag/build-123) / [İmzalı APK](https://github.com/mkizilkan/kizilkan-player-elite/releases/download/build-123/KIZILKAN-PLAYER-ELITE-v18.7.3-build123.apk): **KIZILKAN-PLAYER-ELITE-v18.7.3-build123.apk**, **384.952.783 bayt**. GitHub asset `uploaded`; digest **`sha256:fbbd12c37c03efcf15fbf11509af06a0ac21264a2bc6594eb03d399108773494`**.
-- Gerçek tag ref SHA ve release `target_commitish` **5757920a5a2430c77a9316d8b02f7efb945bb99f** olarak API'den doğrulandı. Paket **com.gpt.kizilkan.player**, versionCode **180703**, sürüm **18.7.3** ve kalıcı beklenen imza CI kapısıyla doğrulandı. Gizli imza değerleri kayda eklenmedi.
-- Release etiket düzeltmesi ve sonraki workflow/gate devri **a7bbfdd83d5a072b56cc9b623406d812ef976cad** commit'iyle aynı dala push edildi. Bu commit yeni APK işi başlatmadı. Daha sonraki yalnız dokümantasyon commit'i de APK'nın kaynak commit'i sayılmaz.
-
-### 2 Ekim — ayrı dal release etiketi (E14)
-
-Kaynak incelemesinde `gh release create` komutunun hedef commit vermediği bulundu. [Resmî CLI belgesi](https://cli.github.com/manual/gh_release_create) ve kurulu CLI yardımı, yeni etiketin bu durumda varsayılan daldan oluşturulduğunu doğruladı. Eski release API metadata'sında build-121 hedefi `main` görülüyordu; eski release/etiketler değiştirilmedi.
-
-| Yer / işlem | Değişiklik ve kanıt |
-|---|---|
-| `.github/workflows/build-apk.yml` release komutu | Sonraki işler için `--target "$GITHUB_SHA"` eklendi. Push filtresi, manuel inputlar, imza ve APK kapıları aynı. |
-| `tools/check-v16144-ci-hardening.js` | Gerçek release komutunun build SHA hedefini taşıdığı doğrulanır; hedef yok veya `main` olduğunda kontrolün reddettiği iki negatif örnek eklendi. Ayrı gate PASS; ardından TypeScript exit 0 ve tam denetle **111 kapı PASS / exit 0**. |
-| Devam eden run 36984915544 / build 123 | Workflow bu düzeltmeden önceki 5757920a kaynaklarını kullanır. Henüz olmayan yeni `refs/tags/build-123`, GitHub refs API ile **5757920a5a2430c77a9316d8b02f7efb945bb99f** commit'inde oluşturuldu. API dönüşünde ref/type=commit/SHA doğrulandı; böylece mevcut run da doğru tag üzerinde release oluşturabilir. |
-
-Bu düzeltme uygulama/native kodunu değiştirmez ve yeni APK derlemesi tetiklemez. APK'nın kaynak commit'i 5757920a'dır; sonradan gelen workflow/rapor commit'i APK kaynağı diye gösterilmez. İş tamamlandıktan sonra tag SHA, asset digest/boyut ve başarılı imza/sürüm kapıları tekrar okundu. Eski komutun release API metadata'sında bıraktığı `main` hedefi, `gh release edit build-123 --target 5757920a5a2430c77a9316d8b02f7efb945bb99f` ile doğru kaynak SHA'sına hizalandı; tag SHA ve asset digest aynı kaldı.
-
-### Tamamlanma ve sonraki cihaz kabulü
-
-Onaylı uygulama/araç düzeltmeleri, ayrıntılı MD kayıtları, yerel standalone DEV APK ve veri koruyan telefon kurulumu; ayrı dal push, manuel release işi ve yayınlanan imzalı APK tamamlandı. İlk CI yardımcı testte durdu, APK üretmedi; araçlar düzeltildikten sonra **tek başarılı release APK** build-123 üretildi. İlk hatalı CI gizlenmedi.
-
-Telefonda yalnız kurulum/sürüm, canlı süreç, JSI/MPV yükleme ve PID hata kaydı doğrulandı; görünür UI ekran kilidi nedeniyle görülmedi. Gerçek abonelikte portal/CAPTCHA/rate-limit, 1000 MAC kaydırma, seçmeli restore süreç öldürme, SAF paylaşım/kayıt, TV odak ve Cast/HLS/codec kabulü cihazda çalıştırılmadı. Derleme ve fixture sonuçları bu senaryoların cihaz kanıtı sayılmaz. Kullanıcıya yeni gerçek cihaz hatası bildirildiğinde kaynak ve log ile doğrula; sonra yeni patch sürümü ve ayrıntılı Opus devriyle ilerle.
-
-### Opus sonraki her güncellemede
-
-Yeni tarih/sürüm bölümü ekle: taban/dal/commit; her dosyanın fonksiyon/bölgesi; bulgu ID'si ve önce/sonra davranışı; gerçek komut/sonuç; çalıştırılmayan cihaz senaryosu; manuel run ve APK bağlantısı. Eski PASS yeni değişimin kanıtı değildir. Fixture sınırlarını belirt; kullanıcı verisini silme. Kullanıcı bu dosyayı Opus'a iletecek; başka sohbet/servise mesaj izni varsayma.
-
-
-# 02.10.2026 — v18.7.4 RC1 MAC/player düzeltme devri
-
-Taban `fbbe2d7d`; dal `v18.7.4-rc1-mac-discovery`. Önceki dağıtım18.7.3/build123. Kullanıcı port/yol keşfinin MAC başına tekrarlanmasını, sahte hesap/bitiş tarihini ve onPause ilk açılış gecikmesini bildirdi. Ayrıntılı kanıt/yapılan/sonuç tablosu: [GPT-v18.7.4-MAC-PLAYER-RAPORU.md](GPT-v18.7.4-MAC-PLAYER-RAPORU.md).
-
-## Dosya bazında uygulama
-
-- `frontend/src/utils/magPortalDiscovery.ts`: MAC'siz raw HTTP/proxy keşif, same-origin/kurulum yolu, bounded body/redirect/timeout, portal/API kanıtı ve aday sonuçları.
-- `frontend/src/utils/magBulkScan.ts`: keşif önce, seçili endpoint sonra; negatif host sonucu bütün MAC'ler için yeniden kullanılabilir; manuel seçim/cancel; gerçek hesap validator.
-- `frontend/src/utils/magBulk.ts`: HTTPS web portlarında doğru şema, kullanıcı açık port/şema önceliği.
-- `frontend/app/mag-bulk.tsx`: iki aşama, bounded portal listesi, manuel/auto seçim, unverified kart, tekrar doğrulanmadan playlist shell oluşturmayı reddetme, bozuk TXT tarihi.
-- `frontend/src/utils/stalker.ts`: token/profil/ret/MAC/endpoint/örnek erişim doğrulaması; bounded scoped req; normal profile-unsupported catalogue fallback korunur.
-- `frontend/src/utils/accountExpiry.ts`: uygulama genelinde aynı deterministik tarih sözleşmesi.
-- `frontend/modules/panel-scan/index.ts`, `PanelScanModule.kt`, `ScanProxyPool.kt`: yeni opt-in bounded-cancellable proxy isteği; eski katalog API'si varsayılanları korunur.
-- `frontend/src/player/PlayerHost.tsx`, `timeshiftPauseOwnership.ts`, `timeshiftMode.ts`, ayarlar ekranı: pause ve ayar yükleme sahipliği, geç native sonuç temizliği, PREPARE kanıtı; tek upstream kuralı korunur.
-- Yeni runtime kapıları: `test-mag-portal-discovery.js`, `test-mag-account-validation.js`, `test-timeshift-onpause-ownership.js`. Mevcut bulk/proxy regresyonları genişletildi.
-- Eski Stalker VM kapıları `_account-expiry-runtime.js` ile gerçek parser'ı yükler; parser taklidi veya assertion kaldırma yok. v18.7.0/v18.7.2 kapıları yeni keşif orkestrasyonunu denetler; `denetle.js` yeni kapıları çalıştırır.
-- `app.json` ve `package.json`: beş sürüm alanı18.7.4 /180704 /RC1; yeni bağımlılık veya lockfile değişimi yok.
-
-## Doğrulama ve dağıtım kaydı
-
-Son genel denetim, TypeScript, Android derlemesi, DEV kurulumu ve manuel GitHub çalışma sonucu aşağıya gerçek çıktılarıyla eklenecek. İlk genel denetimde eski VM harness'lerinin yeni parser importunu çözemediği3 yer ve geçici native fixture profil adı hatası görüldü; aynı assertion'lar korunarak düzeltildi. Bu ilk başarısız koşu final başarı olarak sunulmaz.
-
-
-Opus için koruma şartları: kaynak/Room/kalıcı PlayerHost mimarisi değişmedi. Hesap analizi video açılabilirliği garantisi değildir. Korumayı atlatma yok. Native bodycap yalnız opt-in; eski büyük katalog API'sini genel sınıra bağlamayın. Pause-owner dış isteğe aittir; motor fallback/seek ile yeni kullanıcı isteğini karıştırmayın. Ham cihaz logları ve hesap bilgileri ignored `.expo/gpt-evidence-20261002` alanında; GitHub'a alınmaz. PlayStore/asıl paket18.7.3 kurulumuna bu DEV veri deposu dokunmaz. Uninstall/pm clear yapılmaz.
+## 7. Son cihaz kanıtı özeti (18.7.12-dev, 2026-10-04 akşam)
+- `MAG_HOST_IP_FAILOVER goldensm32 A=5` → handshake'ler başarılı (failover çalışıyor). ✅
+- goldensm32 tüm MAC'ler `STALKER_ACCOUNT_VERIFIED state=unverified ev=["profile-mac-mismatch"]` (P2/A01).
+- hkpremium `STALKER_ACCOUNT_SNAPSHOT uField=name uPres=true login=false name=true` → 1787 (P1 username).
+- weko-azure.xyz host aralıklı/ulaşılamaz olabiliyor (ISP/round-robin); PC'den erişilebilir.

@@ -329,10 +329,42 @@ function usernameFieldSelection() {
   assert.equal(s.normalizeStalkerAccountInfo({ login: 'anonymous', mac }).username, undefined);
   groups++;
 }
+async function base64MacMatches() {
+  // v18.7.13 (A01) — cihaz: goldensm32 tüm MAC'ler "profile-mac-mismatch". Portal MAC'i base64 kodlu
+  // döndürürse eşleştirici ÇÖZMELİ; aksi hâlde geçerli hesap yanlışlıkla reddediliyordu.
+  const b64 = Buffer.from(mac).toString('base64'); // "00:1A:79:00:00:01" -> base64
+  const e = environment(c => response(c.action === 'get_main_info' ? { js: { login: 'fixture-account', mac: b64, end_date: '2030-01-01' } } : { js: { data: [item()], total_items: 50 } }));
+  const result = await e.load('src/utils/stalker.ts').stalkerVerifyAccount({ portal: endpoint, mac }, session(), { id: 9, login: 'fixture-account', mac: b64 });
+  assert.notEqual(result.state, 'unverified', 'base64 MAC çözülüp eşleşmeli (mismatch olmamalı)');
+  assert.ok(!result.evidence.some(x => /mac-mismatch/.test(x)), 'profile-mac-mismatch kanıtı olmamalı');
+  // Gerçekten FARKLI MAC hâlâ reddedilmeli (base64 olsa bile).
+  const wrong = Buffer.from('00:1A:79:00:00:02').toString('base64');
+  const e2 = environment(() => response({ js: [item()] }));
+  const r2 = await e2.load('src/utils/stalker.ts').stalkerVerifyAccount({ portal: endpoint, mac }, session(), { id: 9, login: 'x', mac: wrong });
+  assert.equal(r2.state, 'unverified'); assert.ok(r2.evidence.some(x => /mac-mismatch/.test(x)), 'farklı base64 MAC reddedilmeli');
+  console.log('PASS: base64-encoded MAC decoded and matched; genuinely different MAC still rejected'); groups++;
+}
+async function usernameEnrichmentFullParam() {
+  // v18.7.13 — cihaz: hkpremium minimal get_profile'da login BOŞ (yalnız name=1787); gerçek login
+  // (ud3B3yRH) dolu-parametreli (stb_type olan) yanıtta geliyor. stalkerProfile login'li profili tercih etmeli.
+  const e = environment(c => {
+    if (c.action === 'handshake') return response({ js: { token: 'isolated-token' } });
+    if (c.action === 'get_profile') {
+      const hasStbType = !!new URL(c.url).searchParams.get('stb_type');
+      return response({ js: hasStbType ? { id: 5, login: 'ud3B3yRH', mac } : { id: 5, name: '1787', login: '', mac } });
+    }
+    return response({ js: [] });
+  });
+  const login = await e.load('src/utils/stalker.ts').stalkerLogin({ portal: endpoint, mac, deviceModel: 'MAG320', endpointPolicy: 'exact' });
+  assert.ok(login.profile, 'profil alınmalı');
+  assert.equal(e.load('src/utils/stalker.ts').normalizeStalkerAccountInfo(login.profile).username, 'ud3B3yRH', 'minimal login boşsa dolu-parametre varyantındaki gerçek login kullanılmalı (1787 değil)');
+  console.log('PASS: username enrichment — real login from full-param get_profile preferred over name'); groups++;
+}
 (async () => {
   dateContract(); flagsAndExpiry();
   await invalidTokensAndProfileFallback(); await accountAndLiveProof(); await unverifiedAndDenials();
   await sampleKindsAndBounds(); await mainAndCatalogueDenial(); await protectionCancellationAndDeadline(); await nativeProxyAndInputSafety();
   await mag320FullParamProfileFallback(); await emptyProfileButLiveAccessible(); usernameFieldSelection();
+  await base64MacMatches(); await usernameEnrichmentFullParam();
   console.log(`PASS MAG account validation: ${groups} actual-module behavior groups (date/calendar, token/profile, identity/access, denials, bounded samples, transport, terminal/cancel, full-param profile, empty-profile-live, username field).`);
 })().catch(error => { console.error(error); process.exitCode = 1; });
