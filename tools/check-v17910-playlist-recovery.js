@@ -4,7 +4,8 @@ const ROOT=path.resolve(__dirname,'..'); const read=p=>fs.readFileSync(path.join
 const ctx=read('frontend/src/store/PlaylistContext.tsx');
 const refresh=read('frontend/src/utils/refreshPlaylist.ts');
 const screen=read('frontend/app/playlist-select.tsx');
-const overlay=read('frontend/src/components/PlaylistRepairOverlay.tsx');
+const adapter=read('frontend/src/components/PlaylistRepairOverlay.tsx');
+const overlay=adapter+read('frontend/src/components/CatalogPreparationModal.tsx');
 const layout=read('frontend/app/_layout.tsx');
 const types=read('frontend/src/types/index.ts');
 const app=JSON.parse(read('frontend/app.json')); const pkg=JSON.parse(read('frontend/package.json'));

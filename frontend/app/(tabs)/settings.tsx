@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { playlistExpiryText, playlistProtectionText, playlistCatalogStateText, playlistIsExpired } from '@/src/utils/accountCard';
+import { playlistExpiryText, playlistProtectionText, playlistCatalogStateText, playlistIsExpired, accountStatus, accountExpiryLabel } from '@/src/utils/accountCard';
 import { accountExpiryMs } from '@/src/utils/accountExpiry';
 import {
   View,
@@ -1873,21 +1873,19 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
   const isStalker = playlist.source === "stalker";
 
   const expiryAt = accountExpiryMs(acc);
-  const formatExpiry = () => expiryAt === null ? 'Bilinmiyor / sınırsız' : new Date(expiryAt).toLocaleDateString('tr-TR', { day: '2-digit', month: 'long', year: 'numeric' });
+  const formatExpiry = () => accountExpiryLabel(acc);
   const daysLeft = () => expiryAt === null ? null : Math.ceil((expiryAt - Date.now()) / 86400000);
 
   const d = daysLeft();
-  const normalizedStatus = String(acc.status ?? "").trim().toLowerCase();
-  const explicitlyActive = ["active", "1", "true", "enabled"].includes(normalizedStatus);
-  const explicitlyInactive = ["disabled", "blocked", "expired", "inactive", "0", "false"].includes(normalizedStatus);
-  const isActive = !playlistIsExpired(playlist) && !explicitlyInactive;
+  const status = accountStatus(acc);
+  const statusColor = status.tone === 'success' ? colors.success : status.tone === 'error' ? colors.error : colors.onSurfaceTertiary;
 
   return (
     <View style={[cardStyles.card, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]} testID="account-info-card">
       <View style={cardStyles.headRow}>
-        <View style={[cardStyles.statusDot, { backgroundColor: isActive ? colors.success : colors.error }]} />
-        <Text style={[cardStyles.status, { color: isActive ? colors.success : colors.error }]}>
-          {isActive ? "AKTİF" : "SÜRESİ DOLDU"}
+        <View style={[cardStyles.statusDot, { backgroundColor: statusColor }]} />
+        <Text style={[cardStyles.status, { color: statusColor }]}>
+          {status.label}
         </Text>
         {acc.is_trial === "1" && (
           <View style={[cardStyles.trialBadge, { backgroundColor: colors.brandPrimary }]}>
@@ -1896,30 +1894,30 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
         )}
       </View>
       <View style={cardStyles.grid}>
-        <InfoField label="Kullanıcı" value={acc.username || acc.mac || "—"} />
+        <InfoField label="Sunucu" value={String(isStalker ? playlist.stalkerPortal || 'Belirlenemedi' : playlist.serverInfo?.url || playlist.xtreamServer || 'Belirlenemedi')} />
+        <InfoField label="Kullanıcı Adı" value={acc.username || (isXtream ? playlist.xtreamUsername : '') || "Belirlenemedi"} />
+        {acc.display_name ? <InfoField label="Görünen Ad" value={String(acc.display_name)} /> : null}
+        <InfoField label="Şifre" value={String(acc.password || (isXtream ? playlist.xtreamPassword : '') || 'Belirlenemedi')} />
         <InfoField label="Bitiş Tarihi" value={formatExpiry()} />
         {isStalker && <InfoField label="Koruma (son gözlem)" value={playlistProtectionText(playlist) || 'Belirlenemedi'} />}
-        {d !== null && (
-          <InfoField label="Kalan Gün" value={d > 0 ? `${d} gün` : "Süresi doldu"} accent={d > 0 && d < 15 ? "warning" : "normal"} />
-        )}
-        {isXtream && (
+        <InfoField label="Kalan Gün" value={d === null ? (acc.expiryKind === 'unlimited' ? 'Sınırsız' : 'Belirlenemedi') : d > 0 ? `${d} gün` : 'Süresi doldu'} accent={d !== null && d > 0 && d < 15 ? 'warning' : 'normal'} />
+        {(isXtream || isStalker) && (
           <>
-            <InfoField label="Max Kullanıcı" value={String(acc.max_connections || "—")} />
+            <InfoField label="Max Kullanıcı" value={String(acc.max_connections ?? "Belirlenemedi")} />
             {/* v7.2.0: Bu değer CANLI DEĞİL — sunucudan yalnızca liste
                 eklenirken/yenilenirken alınan ANLIK görüntüdür. Kullanıcı
                 "yanlış" sanmasın diye açıkça belirtiliyor. */}
             <InfoField
               label="Aktif Bağlantı (son yenilemede)"
-              value={String(acc.active_cons ?? "0")}
+              value={String(acc.active_cons ?? "Belirlenemedi")}
             />
           </>
         )}
         {isStalker && (
           <>
             {acc.tariff_plan ? <InfoField label="Paket" value={String(acc.tariff_plan)} /> : null}
-            {acc.mac ? <InfoField label="MAC" value={String(acc.mac)} /> : null}
+            <InfoField label="MAC" value={String(acc.mac || playlist.stalkerMac || 'Belirlenemedi')} />
             {/* v18.7.7 (P4): portal kullanıcı adı/şifre döndürürse göster (IPTV Extreme gibi). */}
-            {acc.password ? <InfoField label="Şifre" value={String(acc.password)} /> : null}
             {acc.phone ? <InfoField label="Telefon" value={String(acc.phone)} /> : null}
           </>
         )}
@@ -1977,13 +1975,13 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
       ) : null}
 
       {/* DESTEKLENEN YAYIN FORMATLARI (sunucudan — Xtream standardı) */}
-      {isXtream && Array.isArray(acc.allowed_output_formats) && acc.allowed_output_formats.length > 0 ? (
+      {(isXtream || isStalker) ? (
         <View style={[cardStyles.serverBox, { borderTopColor: colors.border }]}>
           <Text style={[cardStyles.serverTitle, { color: colors.onSurfaceTertiary }]}>
             DESTEKLENEN YAYIN FORMATLARI
           </Text>
           <Text style={{ color: colors.onSurface, fontSize: FONT.size.sm }}>
-            {acc.allowed_output_formats.join(" • ").toUpperCase()}
+            {Array.isArray(acc.allowed_output_formats) && acc.allowed_output_formats.length ? acc.allowed_output_formats.join(" • ").toUpperCase() : 'Belirlenemedi'}
           </Text>
         </View>
       ) : null}

@@ -16,6 +16,7 @@ const disc = rd('frontend/src/utils/magPortalDiscovery.ts');
 const magBulk = rd('frontend/src/utils/magBulk.ts');
 const stalker = rd('frontend/src/utils/stalker.ts');
 const addPl = rd('frontend/app/add-playlist.tsx');
+const resolveInput = rd('frontend/src/utils/magResolveInput.ts');
 const app = JSON.parse(rd('frontend/app.json'));
 
 const ver = app.expo.version; const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(ver);
@@ -40,11 +41,11 @@ need(/ALTERNATİF scheme/.test(disc) && /schemes\?: Record<string, string>/.test
 // #5 sınırlı unknown fallback
 need(/\.slice\(0, 96\)/.test(disc), '#5: bilinmeyen-port fallback sınırlanmamış');
 
-// #6 kullanıcı adı name/fname
-need(/USERNAME_SOURCE_FIELDS\s*=\s*\[[^\]]*"fname"[^\]]*"name"/.test(stalker), '#6: kullanıcı adı name/fname fallback yok');
+// v18.7.15: görünen ad alanları gerçek login'i ezemez; ayrı display_name'de tutulur.
+need(/REAL_LOGIN_FIELDS/.test(stalker) && /display_name/.test(stalker), '#6: gerçek login/görünen ad ayrımı yok');
 
 // UX
-need(/handshake \$\{i \+ 1\}\/\$\{t\}/.test(addPl), 'UX: tekli eklemede handshake ilerlemesi yok');
+need(/resolveMagInput/.test(addPl) && /handshake \$\{i \+ 1\}\/\$\{t\}/.test(resolveInput), 'UX: ortak tekli çözümleyicide handshake ilerlemesi yok');
 
 if (fail.length) { console.log(fail.map(f => '✗ ' + f).join('\n')); console.log('BAŞARISIZ'); process.exit(1); }
 console.log('PASS: v18.7.10 çoklu MAC handshake yedeği + redirect/version.js/scheme/kullanıcı adı kapısı TEMİZ');

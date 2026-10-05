@@ -22,6 +22,7 @@ import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
 import { normalizeHost } from "@/src/player/hostFailover";
 import { applyContentSelection } from "@/src/utils/contentSelection";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
+import { applyCatalogProgress } from '@/src/utils/catalogProgress';
 
 export type CatalogKind="live"|"vod"|"series";
 export type CatalogProgressState="waiting"|"saving"|"done"|"error"|"skipped";
@@ -51,6 +52,9 @@ export type RefreshProgress = {
   series?: CatalogProgressState;
   liveCount?: number; vodCount?: number; seriesCount?: number;
   liveElapsedMs?: number; vodElapsedMs?: number; seriesElapsedMs?: number;
+  liveTotal?: number; vodTotal?: number; seriesTotal?: number;
+  livePage?: number; vodPage?: number; seriesPage?: number;
+  activeKind?: CatalogKind;
 };
 
 export interface RefreshResult {
@@ -353,7 +357,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       if (!pl.stalkerPortal || !pl.stalkerMac) {
         return { ok: false, message: "Portal/MAC bilgisi eksik." };
       }
-      const { stalkerLogin, stalkerCatalog, stalkerCredsFromPlaylist, stalkerAccountSnapshot } = await import("@/src/utils/stalker");
+      const { stalkerLogin, stalkerCatalog, stalkerCredsFromPlaylist, stalkerAccountSnapshot, mergeStalkerAccountInfo, terminalMagError } = await import("@/src/utils/stalker");
       const cred = stalkerCredsFromPlaylist(pl);
       onProgress?.({ phase: "login", message: "Portal doğrulanıyor..." });
       if(options?.signal?.aborted){const e:any=new Error('İşlem uygulama arka plana geçtiği için bekletildi.');e.kind='BACKGROUND_PAUSE';throw e;}
@@ -364,12 +368,8 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       let refreshedAccountInfo = pl.accountInfo;
       try {
         const snapshot = await stalkerAccountSnapshot(cred, session, stProfile, { signal: options?.signal });
-        const merged: any = { ...(pl.accountInfo || {}) };
-        for (const [key, value] of Object.entries(snapshot.info)) {
-          if (value !== undefined && value !== null && value !== "") merged[key] = value;
-        }
-        refreshedAccountInfo = merged;
-      } catch { /* terminal olmayan hata: mevcut accountInfo korunur */ }
+        refreshedAccountInfo = mergeStalkerAccountInfo(pl.accountInfo || {}, snapshot.info);
+      } catch (error) { if (terminalMagError(error)) throw error; }
       const magProgress:RefreshProgress={
         phase:'content',message:'MAG katalog hazırlığı başlatılıyor...',
         live:requested.has('live')?'waiting':'skipped',
@@ -407,6 +407,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
           } : undefined,
           releaseDeliveredKinds: !!options?.incrementalDelivery,
           onProgress: (progress) => {
+            Object.assign(magProgress, applyCatalogProgress(magProgress, progress));
             magProgress.phase=progress.stage==='final'?'save':'content';
             magProgress.message=progress.message;
             if(progress.stage==='live'&&requested.has('live')){
@@ -443,6 +444,8 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       const seriesCap = d.seriesNative === 'UNSUPPORTED' && d.seriesFromVod > 0 ? 'vod_fallback' : d.seriesNative === 'UNSUPPORTED' ? 'unsupported_404' : d.seriesNative === 'ERROR' ? 'error' : (seriesCount ? 'supported' : 'empty');
       const endpointShape = (() => { try { return new URL(session.endpoint).pathname || '/'; } catch { return ''; } })();
       const capabilityPatch: Partial<Playlist> = {
+        stalkerPortal: session.endpoint,
+        stalkerResolvedPortal: session.resolvedPortal,
         ...(refreshedAccountInfo ? { accountInfo: refreshedAccountInfo } : {}),
         ...(session.portalTimezone ? { stalkerPortalTimezone: session.portalTimezone } : {}),
         catalogCapabilities: { live:requested.has("live")?liveCap:(pl.catalogCapabilities?.live||"empty"),vod:requested.has("vod")?vodCap:(pl.catalogCapabilities?.vod||"empty"),series:requested.has("series")?seriesCap:(pl.catalogCapabilities?.series||"empty"), updatedAt: new Date().toISOString() },

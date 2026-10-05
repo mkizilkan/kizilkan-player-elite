@@ -4,6 +4,8 @@ import type { StalkerCreds, StalkerRequestScope, MagProtectionObservation } from
 import { recordDiagnostic } from "@/src/utils/diagnostics";
 import { discoverMagHosts, type MagPortalDiscovery } from "@/src/utils/magPortalDiscovery";
 import { MAG_MAX_PARALLEL, type MagBulkJob, type MagHostEntry, type MagDiscoveryScope } from "@/src/utils/magBulk";
+import { MagDiscoveryBudget, magPassiveDiscoveryBudget, type MagDiscoverySpeed } from '@/src/utils/magDiscoveryBudget';
+import { resolveMagPortal, type ResolvedMagPortal } from '@/src/utils/magEndpointRegistry';
 
 export type MagScanCategory = "valid" | "unverified" | "expired" | "blocked" | "protected" | "no-portal" | "error";
 export type MagScanResult = {
@@ -12,6 +14,7 @@ export type MagScanResult = {
   accountInfo?: AccountInfo;
   protection?: MagProtectionObservation;
   verificationEvidence?: string[];
+  resolvedPortal?: ResolvedMagPortal;
 };
 export type MagScanControl = { isCancelled?: () => boolean; waitIfPaused?: () => Promise<void>; signal?: AbortSignal };
 export type MagScanOptions = {
@@ -24,6 +27,7 @@ export type MagScanOptions = {
   onProgress?: (done: number, total: number, current?: string) => void;
   onStage?: (msg: string) => void;
   control?: MagScanControl;
+  discoverySpeed?: MagDiscoverySpeed;
 };
 
 function cancelled(control?: MagScanControl): boolean { return !!control?.signal?.aborted || !!control?.isCancelled?.(); }
@@ -131,7 +135,15 @@ function unknownObservation(portal: string, proxy: boolean): MagProtectionObserv
 /** Complete MAC-free discovery once per entered host before any supplied MAC is transmitted. */
 export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = {}): Promise<MagScanResult[]> {
   const concurrency = Math.max(1, Math.min(MAG_MAX_PARALLEL, Math.floor(Number(opts.concurrency) || 3)));
-  const scope = opts.scope || "exact";
+  const scope = opts.scope;
+  const budgets = new Map<string, MagDiscoveryBudget>();
+  const passiveBudgets = new Map<string, MagDiscoveryBudget>();
+  const budgetForHost = (host: MagHostEntry) => {
+    const key = hostname(host.host); let budget = budgets.get(key);
+    if (!budget) { budget = new MagDiscoveryBudget({ signal: opts.control?.signal, speed: opts.discoverySpeed }); budgets.set(key, budget); }
+    return budget;
+  };
+  try {
   const results: MagScanResult[] = [];
   const gate = createMagRequestGate(opts.control, opts.onStage);
   const { stalkerLogin, stalkerVerifyAccount, discoverMagPortal } = await import("@/src/utils/stalker");
@@ -147,6 +159,11 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
   try {
     reports = await discoverMagHosts(Array.from(uniqueHosts.values()), {
       scope, concurrency, timeoutMs: opts.timeoutMs, useProxy: opts.useProxy, control: opts.control, gate,
+      budgetForHost: host => {
+        const key = hostname(host.host); let passive = passiveBudgets.get(key);
+        if (!passive) { passive = magPassiveDiscoveryBudget(budgetForHost(host)); passiveBudgets.set(key, passive); }
+        return passive;
+      },
       maxCandidatesPerHost: opts.maxCandidatesPerHost,
       // v18.7.6 (A3): host başına UPSERT — aday bulundukça canlı güncellenir (çift blok yok).
       onHost: report => {
@@ -171,6 +188,8 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
     if (cancelled(opts.control)) return results;
     const existing = reportByHost.get(hostKey);
     if (selectablePortalCandidates(existing).length > 0) continue;
+    const budget = budgetForHost(hostEntry);
+    if (budget.exhausted) { if (existing) existing.message = 'Host keşif bütçesi doldu; ek handshake denenmedi.'; continue; }
     // M02 — KORUMALI / İSTEK-SINIRLI host'ta handshake yedeği ÇALIŞMAZ. Pasif keşif WAF/CAPTCHA/429
     // gördüyse gerçek handshake atmak koruma durdurmasını deler; host olduğu gibi bırakılır.
     if (existing?.state === "protected" || existing?.candidates.some(c => c.protection?.state === "present")) {
@@ -182,6 +201,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
     // v18.7.13: "Yalnız girilen" (exact) → KATİ: yalnız girilen endpoint; başka yol/port denenmez.
     // M03 — literal `.php` girişte YALNIZ o endpoint; dizin / `/c/` girişte kurulum ailesi (fallback/all).
     const isLiteralPhp = (() => { try { return /\.php$/i.test(new URL(hostEntry.host).pathname); } catch { return false; } })();
+    const scope = opts.scope || (isLiteralPhp ? 'exact' : 'fallback');
     const candidates = (scope === "exact" || isLiteralPhp) ? [hostEntry.host] : portalDiscoveryCandidates(hostEntry, { allPorts: !hostEntry.hasPort });
     if (!candidates.length) continue;
     // M04 — tek MAC'in handshake reddi host'u "portalsız" yapmasın: ilk birkaç DISTINCT MAC denenir.
@@ -190,13 +210,14 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
     if (!hostMacs.length) continue;
     opts.onStage?.("Pasif keşif boş · gerçek handshake ile portal aranıyor…");
     void recordDiagnostic("scan", "MAG_BULK_HANDSHAKE_FALLBACK_START", { host: firstJob.hostRaw, candidates: candidates.length, hasPort: !!hostEntry.hasPort, macs: hostMacs.length });
-    let found: { endpoint: string; token: string } | null = null;
+    let found: { endpoint: string; token: string; resolvedPortal?: ResolvedMagPortal } | null = null;
     let protectedStop = false;
     for (const mac of hostMacs) {
-      if (found?.endpoint || protectedStop || cancelled(opts.control)) break;
+      if (found?.endpoint || protectedStop || cancelled(opts.control) || budget.exhausted) break;
       let observation = unknownObservation(hostKey, !!opts.useProxy);
       const requestScope: StalkerRequestScope = {
         ...gate, transport: opts.useProxy ? "proxy" : "direct", signal: opts.control?.signal, timeoutMs: opts.timeoutMs,
+        discoveryBudget: budget,
         onObservation(next) { if (observation.state !== "present" || next.state === "present") observation = next; },
       };
       const probeCred: StalkerCreds = { portal: hostKey, mac, requestScope };
@@ -208,6 +229,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
       } catch (error: any) {
         if (aborted(error) || cancelled(opts.control)) return results;
         const kind = String(error?.kind || "");
+        if (kind === 'MAG_DISCOVERY_BUDGET') break;
         // Koruma/istek sınırı terminaldir: başka MAC denenmez, host koruma olarak işaretlenir (M02 ile tutarlı).
         if (kind === "MAG_PROTECTION" || kind === "MAG_RATE_LIMIT") {
           protectedStop = true;
@@ -223,6 +245,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
       const synthetic: MagPortalDiscovery["candidates"][number] = {
         endpoint: foundEndpoint, httpStatus: 200, confidence: "api",
         evidence: ["handshake-token", "discovered-by-handshake"], elapsedMs: 0, selectable: true,
+        resolvedPortal: found.resolvedPortal || resolveMagPortal(hostEntry.host, foundEndpoint, ['handshake-token'], 'handshake'),
       };
       if (existing) { existing.candidates = [synthetic, ...existing.candidates.filter(c => c.endpoint !== foundEndpoint)]; existing.state = "ready"; existing.message = undefined; }
       else { const r: MagPortalDiscovery = { host: hostEntry, candidates: [synthetic], probes: 0, state: "ready" }; reports.push(r); reportByHost.set(hostKey, r); }
@@ -276,7 +299,9 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
       ...gate, transport: opts.useProxy ? "proxy" : "direct", signal: opts.control?.signal, timeoutMs: opts.timeoutMs,
       onObservation(next) { if (observation.state !== "present" || next.state === "present") observation = next; },
     };
-    const cred: StalkerCreds = { portal, mac: job.mac, endpointPolicy: "exact", requestScope };
+    const candidate = report?.candidates.find(value => value.endpoint === portal);
+    const resolvedPortal = candidate?.resolvedPortal || resolveMagPortal(job.portal, portal, candidate?.evidence || [], 'input');
+    const cred: StalkerCreds = { portal, mac: job.mac, endpointPolicy: "exact", requestScope, resolvedPortal };
     try {
       checkCancelled(opts.control);
       opts.onStage?.("Seçilen API yolunda hesap ve içerik erişimi doğrulanıyor");
@@ -288,6 +313,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
       const category: MagScanCategory = verification.state === "verified" ? "valid" : verification.state;
       void recordDiagnostic("scan", "MAG_BULK_ACCOUNT_VERIFIED", { state: verification.state, liveCount: verification.liveCount, evidence: verification.evidence });
       return { ...base, category, status: info.status, expiry: info.tariff_expired_date || info.exp_date,
+        resolvedPortal: login.session.resolvedPortal || resolvedPortal,
         accountInfo: { ...info, extra: { ...info.extra, magProtection: observation } }, liveCount: verification.liveCount,
         protection: observation, verificationEvidence: verification.evidence, message: verification.message };
     } catch (error: any) {
@@ -319,4 +345,5 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
   void recordDiagnostic("scan", "MAG_BULK_SCAN_DONE", { jobs: accountJobs.length, hosts: reports.length, scanned: done,
     valid: results.filter(r => r.category === "valid").length, cancelled: cancelled(opts.control) });
   return results;
+  } finally { for (const budget of passiveBudgets.values()) budget.dispose(); for (const budget of budgets.values()) budget.dispose(); }
 }

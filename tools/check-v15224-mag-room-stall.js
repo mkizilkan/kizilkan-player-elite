@@ -27,7 +27,8 @@ need('frontend/src/utils/refreshPlaylist.ts','forceFresh: true','manuel MAG yeni
     || /onProgress\s*:\s*[^,\n]*\(?progress\)?[^,\n]*=>\s*\{?[^}\n]*setProgress\(progress\.message\)/s.test(add);
   if(!progressCallback){console.log('HATA — MAG ekleme gerçek aşama UI: onProgress callback setProgress(progress.message) davranışı bulunamadı');bad++;}
 }
-need('frontend/app/edit-playlist.tsx','onProgress: (progress) => setProgress(progress.message)','MAG düzenleme gerçek aşama UI');
+need('frontend/app/edit-playlist.tsx','setProgress(progress.message)','MAG düzenleme gerçek aşama UI');
+need('frontend/app/edit-playlist.tsx','applyCatalogProgress','MAG düzenleme yapılandırılmış katalog ilerlemesi');
 
 // Room activation must be verified before activeId persistence/publication
 need('frontend/src/store/PlaylistContext.tsx','PLAYLIST_SWITCH_VERIFY_START','Room switch verify start');
@@ -65,7 +66,7 @@ async function functionalSingleFlightFixture(){
     if(id==='@/src/utils/storage') return {storage:{getItem:async(k,f)=>memoryStore.has(k)?memoryStore.get(k):f,setItem:async(k,v)=>{memoryStore.set(k,v);return true;},removeItem:async(k)=>{memoryStore.delete(k);return true;}}};
     if(id==='@/modules/kizilkan-native-core') return { KizilkanNativeCore:{ available:false, magExactRequest:async()=>null } };
       if (id === '@/src/utils/accountExpiry') return require('./_account-expiry-runtime')();
-      return require(id);
+      return require('./_mag_pure').load(id) || require(id);
   };
   const box={module:{exports:{}},exports:{},require:req,console,URL,URLSearchParams,AbortController,setTimeout,clearTimeout,fetch}; box.exports=box.module.exports;
   vm.runInNewContext(js,box,{filename:'stalker-v15224.ts'}); const m=box.module.exports;

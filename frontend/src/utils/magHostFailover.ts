@@ -17,6 +17,7 @@
  * ===========================================================================
  */
 import { recordDiagnostic } from "@/src/utils/diagnostics";
+import type { MagDiscoveryBudget } from '@/src/utils/magDiscoveryBudget';
 
 type Pin = { ip: string; at: number };
 const pins = new Map<string, Pin>();              // "hostname:port" -> canlı IP
@@ -38,20 +39,24 @@ function portOf(u: URL): string { return u.port || (u.protocol === "https:" ? "4
 function keyOf(u: URL): string { return `${u.hostname}:${portOf(u)}`; }
 
 /** DoH ile hostun tüm IPv4 A kayıtları (dns.google → cloudflare yedek). Başarısızsa []. */
-async function dohResolveAll(hostname: string, signal?: AbortSignal): Promise<string[]> {
+async function dohResolveAll(hostname: string, signal?: AbortSignal, budget?: MagDiscoveryBudget): Promise<string[]> {
   const providers = [
     `https://dns.google/resolve?name=${encodeURIComponent(hostname)}&type=A`,
     `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=A`,
   ];
   for (const url of providers) {
+    if (signal?.aborted) return [];
     const controller = new AbortController();
     const onAbort = () => controller.abort();
     signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), 4000);
     try {
-      const res: any = await fetch(url, { method: "GET", headers: { Accept: "application/dns-json" }, signal: controller.signal });
+      budget?.consume();
+      const work = fetch(url, { method: "GET", headers: { Accept: "application/dns-json" }, signal: controller.signal });
+      const res: any = await (budget ? budget.run(work) : work);
       if (!res || !(res.status >= 200 && res.status < 300)) continue;
-      const data = JSON.parse(String(await res.text()));
+      const text = res.text();
+      const data = JSON.parse(String(await (budget ? budget.run(text) : text)));
       const ips: string[] = Array.isArray(data?.Answer)
         ? data.Answer.filter((a: any) => Number(a?.type) === 1 && isIpv4(String(a?.data))).map((a: any) => String(a.data))
         : [];
@@ -63,14 +68,17 @@ async function dohResolveAll(hostname: string, signal?: AbortSignal): Promise<st
 }
 
 /** Bir IP:port'a kısa bir HTTP yoklaması: yanıt (herhangi status) = CANLI, timeout = ÖLÜ. */
-async function probeIp(ip: string, port: string, hostname: string, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
+async function probeIp(ip: string, port: string, hostname: string, timeoutMs: number, signal?: AbortSignal, budget?: MagDiscoveryBudget): Promise<boolean> {
+  if (signal?.aborted) return false;
   const controller = new AbortController();
   const onAbort = () => controller.abort();
   signal?.addEventListener("abort", onAbort, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     // Host başlığı hostname'e sabit; bağlantı doğrudan IP'ye. Yanıt gelmesi (status>0) canlı demektir.
-    const res: any = await fetch(`http://${ip}:${port}/`, { method: "GET", headers: { Host: hostname, Accept: "*/*" }, signal: controller.signal });
+    budget?.consume();
+    const work = fetch(`http://${ip}:${port}/`, { method: "GET", headers: { Host: hostname, Accept: "*/*" }, signal: controller.signal });
+    const res: any = await (budget ? budget.run(work) : work);
     return Number(res?.status) > 0;
   } catch (e: any) {
     // Abort/timeout = ölü. Bağlantı reddi gibi HIZLI hatalar da "bir şey yanıt verdi" sayılmaz ama
@@ -83,8 +91,8 @@ async function probeIp(ip: string, port: string, hostname: string, timeoutMs: nu
  * Host için CANLI bir IP bulunmuşsa sabitler. Yalnız http + çoklu A kaydı olan hostlarda çalışır.
  * Tek uçuş (aynı host için eşzamanlı çağrılar aynı Promise'i paylaşır). İdempotenttir.
  */
-export async function ensureLiveHostIp(url: string, signal?: AbortSignal): Promise<void> {
-  if (!enabled) return;
+export async function ensureLiveHostIp(url: string, signal?: AbortSignal, budget?: MagDiscoveryBudget): Promise<void> {
+  if (!enabled || signal?.aborted) return;
   let u: URL; try { u = new URL(/^https?:\/\//i.test(url) ? url : `http://${url}`); } catch { return; }
   if (u.protocol !== "http:" || isIpv4(u.hostname)) return;
   const key = keyOf(u);
@@ -95,7 +103,8 @@ export async function ensureLiveHostIp(url: string, signal?: AbortSignal): Promi
   if (inflight) return inflight;
   const task = (async () => {
     const started = Date.now();
-    const ips = await dohResolveAll(u.hostname, signal);
+    const ips = await dohResolveAll(u.hostname, signal, budget);
+    if (signal?.aborted) return;
     if (ips.length <= 1) { negativeDoh.set(key, Date.now()); return; } // tek/sıfır IP → failover gereksiz
     const port = portOf(u);
     let live = "";
@@ -104,12 +113,13 @@ export async function ensureLiveHostIp(url: string, signal?: AbortSignal): Promi
       let pending = ips.length;
       let done = false;
       for (const ip of ips) {
-        void probeIp(ip, port, u.hostname, 2500, signal).then(ok => {
+        void probeIp(ip, port, u.hostname, 2500, signal, budget).then(ok => {
           if (ok && !live) { live = ip; }
           if ((ok && !done) || --pending === 0) { if (!done) { done = true; resolve(); } }
         });
       }
     });
+    if (signal?.aborted) return;
     if (live) {
       pins.set(key, { ip: live, at: Date.now() });
       ipBack.set(`${live}:${port}`, key);

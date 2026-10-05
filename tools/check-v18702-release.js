@@ -16,6 +16,8 @@ const scan = rd('frontend/src/utils/magBulkScan.ts');
 const stalker = rd('frontend/src/utils/stalker.ts');
 const add = rd('frontend/app/add-playlist.tsx');
 const discovery = rd('frontend/src/utils/magPortalDiscovery.ts');
+const registry = rd('frontend/src/utils/magEndpointRegistry.ts');
+const resolveInput = rd('frontend/src/utils/magResolveInput.ts');
 const app = JSON.parse(rd('frontend/app.json'));
 
 // Sürüm (ileri uyumlu)
@@ -44,7 +46,7 @@ need(/stageMsg/.test(ui), 'C: ekranda canlı satır yok');
 need(/SCAN_MODES/.test(ui) && /Turbo/.test(ui) && /Güvenli/.test(ui) && /maxCandidatesPerHost: mode\.maxCandidates/.test(ui), 'D: analiz modları yok');
 need(/mag-parallel-input/.test(ui) && /parallelText/.test(ui), 'D: elle paralel sayı girişi yok');
 // Genişletilmiş portal yolları
-need(/\/stalker_portal\/c\//.test(bulk) && /\/ministra\//.test(bulk) && /\/portal\//.test(bulk), 'B: genişletilmiş portal yolları eksik');
+need(/MAG_DISCOVERY_PATHS = MAG_REGISTERED_DISCOVERY_PATHS/.test(bulk) && /\/stalker_portal\/c\//.test(registry) && /\/ministra\//.test(registry) && /\/portal\//.test(registry), 'B: ortak registry genişletilmiş portal yolları eksik');
 
 // E — dosyadan MAC
 need(/expo-document-picker/.test(ui) && /parseMacList\(text\)/.test(ui), 'E: dosyadan MAC seçme yok');
@@ -54,7 +56,7 @@ need(/writePublicTextFile\("MAG Hesap Arşivi"/.test(ui) && /stalkerCategoryPrev
 need(/mag-katalog-/.test(ui), 'F: katalog özeti kaydı yok');
 
 // G — portsuz normal MAG eklemede keşif
-need(/if \(!u\.port\)/.test(add) && /discoverMagPortal\(cred, cands/.test(add) && /stalkerPortal: cred\.portal/.test(add), 'G: portsuz normal MAG eklemede port keşfi yok');
+need(/resolveMagInput/.test(add) && /parsePortalHosts/.test(resolveInput) && /!host\.hasPort/.test(resolveInput) && /discoverMagPortal/.test(resolveInput) && /stalkerPortal: session.endpoint/.test(add), 'G: ortak portsuz keşif/gerçek endpoint kaydı yok');
 
 if (fail.length) { console.log(fail.map(f => '✗ ' + f).join('\n')); console.log('BAŞARISIZ'); process.exit(1); }
 console.log('PASS: v18.7.2 çoklu-MAC UX (tema/keşif/mod/dosya/kayıt/portsuz) sürüm kapısı TEMİZ');

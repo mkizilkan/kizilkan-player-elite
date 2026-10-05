@@ -58,7 +58,7 @@ const SCAN_MODES: Record<ScanModeKey, { label: string; concurrency: number; time
 };
 
 const DISCOVERY_MODES: Record<MagDiscoveryScope, { label: string; hint: string }> = {
-  exact: { label: "Yalnız girilen", hint: "Girilen port ve kurulum yolu korunur. /c/ arayüzünden aynı kurulumun gerçek API yolu çözülür; başka port denenmez." },
+  exact: { label: "Yalnız girilen", hint: "Yalnız yazdığınız port ve yol denenir. /c/ bir arayüz yoluysa API yolunu çözmek için Çalışmazsa diğerleri seçin." },
   fallback: { label: "Çalışmazsa diğerleri", hint: "Önce girilen port/yol ailesi keşfedilir. API bulunamazsa diğer adaylar yalnız bir kez denenir; MAC reddi yeniden keşif başlatmaz." },
   all: { label: "Tüm adaylarda keşif", hint: "Girilen ve yaygın port/yollar host başına bir kez keşfedilir. Bulunan API yollarından biri seçilir; MAC listesi yalnız bu yolda doğrulanır." },
 };
@@ -99,6 +99,7 @@ export default function MagBulkScreen() {
   const [scanMode, setScanMode] = useState<ScanModeKey>("balanced");
   const [parallelText, setParallelText] = useState("");   // boş → mod varsayılanı
   const [discoveryScope, setDiscoveryScope] = useState<MagDiscoveryScope>("exact");
+  const [scopeChosen, setScopeChosen] = useState(false);
   const [portalChoiceMode, setPortalChoiceMode] = useState<"auto" | "manual">("auto");
   const [scanPhase, setScanPhase] = useState<"discovery" | "selection" | "accounts">("discovery");
   const [portalReports, setPortalReports] = useState<MagPortalDiscovery[]>([]);
@@ -216,12 +217,13 @@ export default function MagBulkScreen() {
       const { jobs, capped } = buildMagBulkJobs(hosts, parsed.macs);
       if (capped) Alert.alert("Uyarı", "Çok fazla kombinasyon; ilk 8192 iş taranacak.");
       haptic.medium(); setProgress({ done: 0, total: jobs.length, current: "" });
-      void recordDiagnostic("scan", "MAG_BULK_UI_START", { jobs: jobs.length, hosts: hosts.length, macs: parsed.macs.length, proxy: useProxy, hostMode, mode: scanMode, scope: discoveryScope, parallel });
+      void recordDiagnostic("scan", "MAG_BULK_UI_START", { jobs: jobs.length, hosts: hosts.length, macs: parsed.macs.length, proxy: useProxy, hostMode, mode: scanMode, scope: scopeChosen ? discoveryScope : 'auto', parallel });
       await runMagBulkScan(jobs, {
         concurrency: parallel,
         timeoutMs: mode.timeoutMs,
         maxCandidatesPerHost: mode.maxCandidates,
-        scope: discoveryScope,
+        scope: scopeChosen ? discoveryScope : undefined,
+        discoverySpeed: scanMode === 'turbo' ? 'fast' : scanMode === 'safe' ? 'slow' : 'balanced',
         useProxy,
         onPhase: next => { if (mountedRef.current && run === runRef.current) setScanPhase(next); },
         onPortalDiscovery: reports => {
@@ -259,7 +261,7 @@ export default function MagBulkScreen() {
         if (mountedRef.current) { setScanning(false); setPaused(false); setStageMsg(controller.signal.aborted ? "Analiz iptal edildi. Tamamlanan sonuçlar korunuyor." : ""); }
       }
     }
-  }, [parsed.macs, resolveHosts, hostMode, useProxy, scanMode, parallelText, discoveryScope, portalChoiceMode, flushResults]);
+  }, [parsed.macs, resolveHosts, hostMode, useProxy, scanMode, parallelText, discoveryScope, scopeChosen, portalChoiceMode, flushResults]);
 
   // v18.7.2: dosyadan MAC seç (.txt/.csv) — combo mantığının MAG karşılığı.
   const pickMacFile = useCallback(async () => {
@@ -314,6 +316,7 @@ export default function MagBulkScreen() {
         if (playlists.some(pl => pl.id === id)) continue;
         setActionProgress(`${added + 1}/${toAdd.length} · ${r.mac} · hesap doğrulanıyor`);
         const cred = { portal: r.portal, mac: r.mac, deviceModel: "MAG320" as const, endpointPolicy: "exact" as const,
+          resolvedPortal: r.resolvedPortal,
           requestScope: { ...gate, transport: useProxy ? "proxy" as const : "direct" as const, signal: controller.signal,
             onObservation: (next: NonNullable<MagScanResult["protection"]>) => { if (latestProtection?.state !== "present" || next.state === "present") latestProtection = next; } } };
         const { session, profile } = await stalkerLogin(cred, { forceFresh: true, signal: controller.signal });
@@ -325,7 +328,7 @@ export default function MagBulkScreen() {
         createdAccountInfo = { ...normalizedAccountInfo, extra: { ...normalizedAccountInfo.extra, magProtection: latestProtection } };
         const shell: Playlist = {
           id, name: `MAG ${r.mac.slice(-8)}`, source: "stalker",
-          stalkerPortal: r.portal, stalkerMac: r.mac.toUpperCase(),
+          stalkerPortal: session.endpoint, stalkerResolvedPortal: session.resolvedPortal || r.resolvedPortal, stalkerMac: r.mac.toUpperCase(),
           accountInfo: createdAccountInfo,
           channels: [], vod: [], series: [],
           catalogSync: { initialSyncState: "pending", roomVerified: true, updatedAt: new Date().toISOString() },
@@ -536,12 +539,12 @@ export default function MagBulkScreen() {
         <Text style={[S.label, { marginTop: SPACING.md }]}>PORT / YOL KAPSAMI</Text>
         <View style={S.chipRow}>
           {(Object.keys(DISCOVERY_MODES) as MagDiscoveryScope[]).map(scope => (
-            <FocusButton key={scope} testID={`mag-scope-${scope}`} disabled={scanning || adding || saving} onPress={() => setDiscoveryScope(scope)} style={[S.chip, discoveryScope === scope && S.chipOn]}>
-              <Text style={[S.chipText, discoveryScope === scope && S.chipTextOn]}>{DISCOVERY_MODES[scope].label}</Text>
+            <FocusButton key={scope} testID={`mag-scope-${scope}`} disabled={scanning || adding || saving} onPress={() => { setDiscoveryScope(scope); setScopeChosen(true); }} style={[S.chip, scopeChosen && discoveryScope === scope && S.chipOn]}>
+              <Text style={[S.chipText, scopeChosen && discoveryScope === scope && S.chipTextOn]}>{DISCOVERY_MODES[scope].label}</Text>
             </FocusButton>
           ))}
         </View>
-        <Text style={S.hint}>{DISCOVERY_MODES[discoveryScope].hint}</Text>
+        <Text style={S.hint}>{scopeChosen ? DISCOVERY_MODES[discoveryScope].hint : 'Otomatik kapsam: girilen yol önce denenir; /c/ arayüzünden API çözülür. Port yazıldıysa korunur, yalnız host yazıldıysa diğer portlar da aranır. Yalnız girilen tercihi her durumda katıdır.'}</Text>
         <Text style={S.label}>KEŞİFTEN SONRA PORTAL SEÇİMİ</Text>
         <View style={S.chipRow}>
           {([["auto", "Otomatik seç"], ["manual", "Ben seçeyim"]] as const).map(([value, label]) => (

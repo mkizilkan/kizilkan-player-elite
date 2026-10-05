@@ -5,7 +5,7 @@ const ts=require(require.resolve('typescript',{paths:[path.join(root,'frontend')
 const strictValue=require('./_strict-storage-fixture');
 function load(file,mocks={},globals={}){
  const js=ts.transpileModule(fs.readFileSync(path.join(root,file),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
- const exports={};vm.runInNewContext(js,{exports,require:id=>{if(id in mocks)return mocks[id];throw Error('Unmocked '+id);},URL,AbortController,setTimeout,clearTimeout,console,Date,Map,Set,Promise,...globals},{filename:file});return exports;
+ const exports={};vm.runInNewContext(js,{exports,require:id=>{if(id in mocks)return mocks[id];const pure=require('./_mag_pure').load(id,globals);if(pure)return pure;throw Error('Unmocked '+id);},URL,AbortController,setTimeout,clearTimeout,console,Date,Map,Set,Promise,...globals},{filename:file});return exports;
 }
 const model=load('frontend/src/utils/panelDirectoryModel.ts'),plain=x=>JSON.parse(JSON.stringify(x));
 (async()=>{

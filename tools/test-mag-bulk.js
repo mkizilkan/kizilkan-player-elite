@@ -10,7 +10,10 @@ const norm = x => JSON.parse(JSON.stringify(x));
 function load(file) {
   const js = ts.transpileModule(fs.readFileSync(path.join(root, file), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports = {};
-  vm.runInNewContext(js, { exports, require: () => { throw Error('magBulk saf olmalı (import yok)'); }, console, Map, Set, Array, String, Number, Math, URL, parseInt }, { filename: file });
+  vm.runInNewContext(js, { exports, require: id => {
+    if (id === '@/src/utils/magEndpointRegistry') return load('frontend/src/utils/magEndpointRegistry.ts');
+    throw Error('Saf MAG modeline platform/ağ bağımlılığı eklendi: ' + id);
+  }, console, Map, Set, Array, String, Number, Math, URL, parseInt }, { filename: file });
   return exports;
 }
 const M = load('frontend/src/utils/magBulk.ts');

@@ -587,7 +587,8 @@ try {
   const backup = fs.readFileSync(path.join(root, 'src/utils/backup.ts'), 'utf8');
   const nativeCore = fs.readFileSync(path.join(root, 'modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeCoreModule.kt'), 'utf8');
   const nativeBulk = fs.readFileSync(path.join(root, 'modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/BulkPlaylistImportService.kt'), 'utf8');
-  requireText(settings, 'const normalizedStatus = String(acc.status ?? "").trim().toLowerCase();', 'MAG AccountInfo status type normalization');
+  requireText(settings, 'accountStatus(acc)', 'MAG shared AccountInfo status classification');
+  requireText(fs.readFileSync(path.join(root, 'src/utils/accountCard.ts'), 'utf8'), "String(info?.status ?? '').trim().toLowerCase()", 'MAG AccountInfo status type normalization');
   requireText(stalker, 'export async function stalkerCatalog', 'Stalker Live/VOD/Series catalog orchestrator');
   requireText(stalker, 'export async function stalkerVod', 'Stalker VOD catalog');
   requireText(stalker, 'export async function stalkerSeries', 'Stalker Series catalog');

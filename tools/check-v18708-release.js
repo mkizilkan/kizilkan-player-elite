@@ -13,6 +13,7 @@ const need = (c, m) => { if (!c) fail.push(m); };
 const stalker = rd('frontend/src/utils/stalker.ts');
 const disc = rd('frontend/src/utils/magPortalDiscovery.ts');
 const addPl = rd('frontend/app/add-playlist.tsx');
+const resolveInput = rd('frontend/src/utils/magResolveInput.ts');
 const app = JSON.parse(rd('frontend/app.json'));
 
 // Sürüm (ileri uyumlu)
@@ -33,13 +34,13 @@ need(/function portClosedByError/.test(disc), 'keşif: portClosedByError (kesin-
 need(/"open" \| "unknown" \| "closed"/.test(disc), 'keşif: üç durumlu port modeli yok');
 need(/Promise<"open" \| "unknown">/.test(disc), 'keşif: reachProbe üç durumlu değil');
 need(/v\.error === "BODY_LIMIT"\) \? "open"/.test(disc), 'keşif: proxy body-limit açık port sayılmıyor');
-need(/open-ÖNCE|OPEN önce, UNKNOWN sonra|open-first/i.test(disc) && /ports\.filter\(\(p: string\) => unknown\.includes\(p\)\)/.test(disc), 'keşif: unknown portlar düşürülüyor (yanlış-negatif)');
+need(/open-ÖNCE|OPEN önce, UNKNOWN sonra|open-first/i.test(disc) && /ports\.filter\(\(p: string\) => !open\.includes\(p\) && portState.get\(p\) !== "closed"\)/.test(disc), 'keşif: unknown/henüz denenmemiş portlar düşürülüyor (yanlış-negatif)');
 need(/MAG_DISCOVERY_PORT_CLOSED/.test(disc) && /MAG_DISCOVERY_PORT_SKIP/.test(disc), 'keşif: closed/skip telemetrisi yok');
 // v18.7.14 (G05): portsuz + scope VERİLMEMİŞ → fallback (auto); explicit exact artık portsuz da kati kalır.
 need(/\(!host\.hasPort && !opts\.scope\) \? "fallback"/.test(disc), 'keşif: portsuz auto scope yok');
 
 // Tekli/çoklu motor birleştirme
-need(/discoverMagHosts/.test(addPl) && /chooseMagPortals/.test(addPl), 'tekli ekleme MAC-siz keşif motorunu kullanmıyor');
+need(/resolveMagInput/.test(addPl) && /discoverMagHosts/.test(resolveInput) && /chooseMagPortals/.test(resolveInput), 'tekli ekleme ortak MAC-siz keşif motorunu kullanmıyor');
 
 // A — kullanıcı adı telemetrisi + geniş alan
 need(/mainInfoFields/.test(stalker), 'A: main-info alan telemetrisi yok');

@@ -14,7 +14,9 @@ const must = (src, re, m) => { if (!re.test(src)) fail(m); };
 
 function staticChecks() {
   if (pkg.version !== app.expo?.version || Number(app.expo?.android?.versionCode || 0) < 161202) fail('version contract/regression floor');
-  must(stalker, /return \["pcap320-minimal", learned\.profile,/, 'learned profile can still outrank PCAP');
+  // DEV1 onaylı sözleşme: bilinen çalışan legacy profil korunur; yeni hesapta PCAP ilk.
+  must(stalker, /const defaults[^\n]*\['pcap320-minimal', 'mag254-raw', 'wire250'\]/, 'new-account PCAP/default profiles missing');
+  must(stalker, /slice\(0, 3\)/, 'profile trials are not bounded to three');
   must(stalker, /push\(all\[0\]\);[\s\S]{0,160}push\(learned\?\.endpoint\);/, 'primary portal endpoint must outrank learned endpoint');
   must(stalker, /STALKER_HANDSHAKE_REQUEST_FINGERPRINT/, 'request fingerprint telemetry missing');
   must(stalker, /cookieMacShape/, 'safe cookie shape telemetry missing');
@@ -66,7 +68,7 @@ function load(fetchImpl) {
     }};
     if (id === 'expo-crypto') return { CryptoDigestAlgorithm: { MD5:'MD5', SHA1:'SHA1', SHA256:'SHA256' }, digestStringAsync: async (_a, v) => ('abc123' + v).padEnd(64, '0').slice(0,64) };
     if (id === '@/src/utils/accountExpiry') return require('./_account-expiry-runtime')();
-      return require(id);
+      return require('./_mag_pure').load(id) || require(id);
   };
   const fastSetTimeout = (fn, ms, ...args) => ms <= 6000 ? setTimeout(fn, 0, ...args) : setTimeout(fn, ms, ...args);
   const box = { module:{exports:{}}, exports:{}, require:req, console, URL, URLSearchParams, AbortController, setTimeout:fastSetTimeout, clearTimeout, fetch:fetchImpl };
@@ -75,26 +77,25 @@ function load(fetchImpl) {
   return { api: box.module.exports, memory, diagnostics };
 }
 
-async function fixtureLearnedGoldenCannotOutrankPcap() {
+async function fixtureLearnedGoldenPreserved() {
   const seen = [];
   const { api, memory, diagnostics } = load(async (url, opts = {}) => {
     seen.push({url, headers:opts.headers||{}});
     return response({js:{token:'fixture-token',random:'r'}});
   });
   const cred = { portal:'http://portal.test:2095/c/', mac:'00:11:22:33:44:55', deviceModel:'MAG254' };
-  const key = 'http://portal.test:2095|00:11:22:33:44:55';
+  const key = 'http://portal.test:2095/c|00:11:22:33:44:55|auto|normal';
   memory.set('kizilkan.mag.compat.v15225', JSON.stringify({
     [key]: { endpoint:'http://portal.test:2095/portal.php', profile:'golden', model:'MAG250', at:Date.now(), failures:0 }
   }));
   const ses = await api.stalkerHandshake(cred);
-  if (ses.compatProfile !== 'pcap320-minimal') fail('learned golden still won first handshake');
-  if (seen.length !== 1) fail('PCAP-first fixture should succeed in one request');
+  if (ses.compatProfile !== 'golden') fail('known working legacy golden profile was lost');
+  if (seen.length !== 1) fail('learned golden fixture should succeed in one request');
   const u = new URL(seen[0].url);
-  if (u.searchParams.has('JsHttpRequest') || u.searchParams.has('token') || u.searchParams.has('prehash')) fail('first request is not minimal PCAP');
-  if (!/MAG320 stbapp ver: 2 rev: 250/.test(String(seen[0].headers['User-Agent']||''))) fail('first request is not MAG320');
+  if (!/MAG200 stbapp ver: 2 rev: 250/.test(String(seen[0].headers['User-Agent']||''))) fail('learned legacy wire identity regressed');
   const fp = diagnostics.find(x => x.event === 'STALKER_HANDSHAKE_REQUEST_FINGERPRINT');
   if (!fp) fail('fingerprint telemetry not emitted');
-  if (fp.data?.userAgentProfile !== 'MAG320-PCAP' || fp.data?.jsHttpPresent !== false || fp.data?.cookieMacShape !== 'encoded') fail('fingerprint telemetry does not describe PCAP request');
+  if (fp.data?.compatProfile !== 'golden' || fp.data?.cookieMacShape !== 'encoded') fail('fingerprint telemetry does not describe learned legacy request');
 }
 
 async function fixtureAuthRejectDoesNotPersistCooldown() {
@@ -125,10 +126,10 @@ async function fixtureReal429DoesPersistCooldown() {
 (async () => {
   try {
     staticChecks();
-    await fixtureLearnedGoldenCannotOutrankPcap();
+    await fixtureLearnedGoldenPreserved();
     await fixtureAuthRejectDoesNotPersistCooldown();
     await fixtureReal429DoesPersistCooldown();
-    console.log('PASS: v16.12.2 PCAP-first / learned migration / rate-limit-aware cooldown / telemetry TEMİZ');
+    console.log('PASS: v16.12.2 + DEV1 learned legacy preservation / rate-limit-aware cooldown / telemetry TEMİZ');
   } catch (e) {
     console.error('FAIL: v16.12.2 HARD gate:', e?.stack || e);
     process.exit(1);

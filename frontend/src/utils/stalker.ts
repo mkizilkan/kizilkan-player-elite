@@ -26,6 +26,9 @@
 
 import type { AccountInfo, Channel, Playlist, SeriesItem, VodItem } from "@/src/types";
 import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
+import { MAG_LEGACY_API_PATHS, resolveMagPortal, type ResolvedMagPortal } from '@/src/utils/magEndpointRegistry';
+import { MagDiscoveryBudget } from '@/src/utils/magDiscoveryBudget';
+import { MAG_SAFE_RESPONSE_HEADERS } from '@/src/utils/magResponseFingerprint';
 
 /**
  * v18.7.12: çoklu-IP DNS failover modülü TEMBEL yüklenir. Üst düzey import, stalker.ts'i sahte
@@ -60,15 +63,7 @@ const MAG320_UA =
   "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG320 stbapp ver: 2 rev: 250 Safari/533.3";
 
 /** Sağlayıcıya göre değişen yaygın endpoint yolları. */
-const PORTAL_PATHS = [
-  "/portal.php",
-  "/load.php",
-  "/stalker_portal/server/load.php",
-  "/stalker_portal/server/portal.php",
-  "/server/load.php",
-  "/server/portal.php",
-  "/c/portal.php",
-];
+const PORTAL_PATHS = MAG_LEGACY_API_PATHS;
 
 export type StalkerTimezoneMode = "auto" | "portal" | "device" | "manual";
 
@@ -86,6 +81,7 @@ export interface StalkerCreds {
   /** İşleme ait tercih; normal oynatmanın global transport ayarını değiştirmez. */
   requestScope?: StalkerRequestScope;
   endpointPolicy?: "exact" | "auto";
+  resolvedPortal?: ResolvedMagPortal;
 }
 
 export type MagProtectionObservation = {
@@ -97,17 +93,22 @@ export type MagProtectionObservation = {
   observedAt: string;
   transport: "direct" | "proxy" | "native";
   httpStatus?: number;
+  edge?: 'cloudflare';
+  responseHeaders?: Record<string, string>;
 };
 
 export type StalkerRequestScope = {
   transport: "direct" | "proxy";
   signal?: AbortSignal;
   timeoutMs?: number;
+  discoveryBudget?: MagDiscoveryBudget;
   beforeRequest?: (url: string, signal?: AbortSignal) => Promise<void>;
   onObservation?: (observation: MagProtectionObservation) => void;
   onRateLimit?: (url: string, retryAfterMs: number) => void;
 };
 const scopedHeaders = new WeakMap<object, StalkerRequestScope>();
+const headerOwners = new WeakMap<object, StalkerCreds>();
+const protectionObservations = new WeakMap<StalkerCreds, MagProtectionObservation>();
 const exactEndpointHeaders = new WeakSet<object>();
 type RequestScopeRuntime = { controller: AbortController; terminalError?: any };
 const requestScopeRuntimes = new WeakMap<StalkerRequestScope, RequestScopeRuntime>();
@@ -131,6 +132,7 @@ function checkScopeRuntime(runtime?: RequestScopeRuntime): void {
   if (runtime?.controller.signal.aborted) throw scopeCancelledError();
 }
 function withRequestScope(cred: StalkerCreds, headers: Record<string, string>): Record<string, string> {
+  headerOwners.set(headers, cred);
   if (cred.requestScope) scopedHeaders.set(headers, cred.requestScope);
   if (cred.endpointPolicy === "exact") exactEndpointHeaders.add(headers);
   return headers;
@@ -148,6 +150,10 @@ export function observeMagProtection(input: {
   try { const u = new URL(endpoint); endpoint = `${u.protocol}//${u.host}${u.pathname}`; } catch {}
   const base: MagProtectionObservation = { state: "unknown", kind: "unknown", evidence: [], endpoint,
     stage: input.stage, observedAt: new Date(input.now ?? Date.now()).toISOString(), transport: input.transport, httpStatus: input.status };
+  const safeHeaders: Record<string, string> = {};
+  for (const key of MAG_SAFE_RESPONSE_HEADERS) if (hdr[key]) safeHeaders[key] = hdr[key].slice(0, 256);
+  base.responseHeaders = safeHeaders;
+  if (/cloudflare/i.test(hdr.server || '') || hdr['cf-ray'] || hdr['cf-cache-status']) { base.edge = 'cloudflare'; base.evidence.push('cloudflare-edge-present'); }
   if (hdr["cf-mitigated"]?.toLowerCase() === "challenge") return { ...base, state: "present", kind: "challenge", evidence: ["cf-mitigated:challenge"] };
   if (input.status === 429 || (input.status >= 400 && /too many requests|rate.?limit exceeded|request limit exceeded/.test(html))) return { ...base, state: "present", kind: "rate_limit", evidence: [input.status === 429 ? "HTTP429" : "explicit-rate-limit-response"] };
   if (/<(?:!doctype|html|head|body|form|script)\b/.test(html)) {
@@ -165,11 +171,12 @@ export function observeMagProtection(input: {
   return base;
 }
 
-function terminalMagError(error: any): boolean {
-  return ["CANCELLED", "BACKGROUND_PAUSE", "MAG_RATE_LIMIT", "MAG_PROTECTION", "MAG_ENDPOINT_BOUNDARY"].includes(String(error?.kind || ""));
+export function terminalMagError(error: any): boolean {
+  return ["CANCELLED", "BACKGROUND_PAUSE", "MAG_RATE_LIMIT", "MAG_PROTECTION", "MAG_ENDPOINT_BOUNDARY", "MAG_DISCOVERY_BUDGET"].includes(String(error?.kind || ""));
 }
 
-export function stalkerCredsFromPlaylist(pl: Pick<Playlist, "stalkerPortal" | "stalkerMac" | "stalkerSerial" | "stalkerTimezoneMode" | "stalkerTimezone" | "stalkerPortalTimezone">): StalkerCreds {
+export function stalkerCredsFromPlaylist(pl: Pick<Playlist, "stalkerPortal" | "stalkerMac" | "stalkerSerial" | "stalkerTimezoneMode" | "stalkerTimezone" | "stalkerPortalTimezone" | "stalkerResolvedPortal">): StalkerCreds {
+  const resolved = pl.stalkerResolvedPortal?.endpointLocked && pl.stalkerResolvedPortal.endpoint === String(pl.stalkerPortal || '').replace(/\/+$/, '') ? pl.stalkerResolvedPortal : undefined;
   return {
     portal: String(pl.stalkerPortal || "").trim(),
     mac: normalizeMac(String(pl.stalkerMac || "")),
@@ -177,6 +184,8 @@ export function stalkerCredsFromPlaylist(pl: Pick<Playlist, "stalkerPortal" | "s
     timezoneMode: pl.stalkerTimezoneMode || "auto",
     timezone: String(pl.stalkerTimezone || "").trim() || undefined,
     portalTimezone: String(pl.stalkerPortalTimezone || "").trim() || undefined,
+    resolvedPortal: resolved,
+    endpointPolicy: resolved ? 'exact' : undefined,
   };
 }
 
@@ -192,6 +201,7 @@ export interface StalkerPlaybackContext {
 export interface StalkerSession {
   token: string;
   endpoint: string;
+  resolvedPortal?: ResolvedMagPortal;
   /** v17.0.2: verified timezone discovered from get_profile, when present. */
   portalTimezone?: string;
   profile?: any;
@@ -408,13 +418,7 @@ function compatEncoded(profile: MagCompatProfile): boolean {
   return profile.endsWith("-encoded");
 }
 function preferredCompatProfiles(cred: StalkerCreds, learned?: LearnedMagCompat | null): MagCompatProfile[] {
-  /**
-   * v16.1.0 — "golden" HER ZAMAN İLK SIRADA.
-   * v9.6.0'da portalın kabul ettiği birebir istek budur; önce o denenir.
-   * Diğer profiller yedek olarak korunur (mevcut davranış bozulmaz).
-   * NOT: golden listeye eklenmezse headersFor'daki altın dal HİÇ çalışmaz —
-   * bu fonksiyon profilleri belirleyen tek yerdir.
-   */
+  // Eski wire/header profilleri korunur; bilinen çalışan profil seçime dahil edilir.
   /**
    * v16.12.0 — PCAP-KANITLI ÖNCELİK.
    * 30.08.2026 HKPREMIUM kaydında çalışan istemci MAG320 + Ethernet +
@@ -425,16 +429,12 @@ function preferredCompatProfiles(cred: StalkerCreds, learned?: LearnedMagCompat 
   const ordered: MagCompatProfile[] = cred.deviceModel === "MAG250"
     ? ["pcap320-minimal","wire250","mag250-raw","mag250-encoded","golden","mag254-raw","mag254-encoded","fulldevice","fulldevice-macid"]
     : ["pcap320-minimal","mag254-raw","mag254-encoded","wire250","golden","mag250-raw","mag250-encoded","fulldevice","fulldevice-macid"];
-  /**
-   * v16.12.2 — PCAP-first kesin öncelik.
-   * v16.12.1 cihaz logunda eski learned=golden kaydı MAG320 PCAP profilinin
-   * önüne geçti ve temiz ilk handshake bozuldu. Artık kanıtlı minimal MAG320
-   * HER ZAMAN ilk profildir; learned profil (farklıysa) ikinci sırada korunur.
-   */
-  if (learned?.profile && learned.profile !== "pcap320-minimal" && ordered.includes(learned.profile)) {
-    return ["pcap320-minimal", learned.profile, ...ordered.filter(x => x !== "pcap320-minimal" && x !== learned.profile)];
-  }
-  return ordered;
+  // DEV1: bilinmeyen hesapta minimal PCAP ilk; öğrenilmiş/resolved profil varsa önce o.
+  const resolvedProfile = cred.resolvedPortal?.compatProfileId as MagCompatProfile | undefined;
+  const defaults: MagCompatProfile[] = ['pcap320-minimal', 'mag254-raw', 'wire250'];
+  if (cred.deviceModel === 'MAG250') defaults.splice(1, 2, 'wire250', 'mag254-raw');
+  const preferred = [learned?.profile, resolvedProfile, ...defaults].filter((profile): profile is MagCompatProfile => !!profile && ordered.includes(profile));
+  return [...new Set(preferred)].slice(0, 3); // Öğrenilmiş legacy profil dahil en çok üç profil.
 }
 function learnedCompatKey(cred: StalkerCreds): string {
   return `${String(cred.portal || "").replace(/\/+$/, "")}|${normalizeMac(cred.mac)}|${cred.endpointPolicy || "auto"}|${cred.requestScope?.transport || "normal"}`;
@@ -877,27 +877,52 @@ function magPcapShapeParity(nr:any, requestMeta:{action:string;type:string}) {
 }
 
 async function req(url: string, headers: Record<string, string>, options: number | ReqOptions = 20000): Promise<any> {
+  const opts = typeof options === 'number' ? { timeoutMs: options } : options;
+  const scope = scopedHeaders.get(headers), budget = scope?.discoveryBudget;
+  const signals = [opts.signal, scope?.signal, budget?.signal].filter((signal, index, all): signal is AbortSignal => !!signal && all.indexOf(signal) === index);
+  const listeners: Array<() => void> = [];
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stopped = new Promise<never>((_, reject) => {
+    for (const signal of signals) {
+      const stop = () => { try { budget?.check(); reject(scopeCancelledError()); } catch (error) { reject(error); } finally { controller.abort(); } };
+      signal.addEventListener('abort', stop, { once: true }); listeners.push(() => signal.removeEventListener('abort', stop));
+      if (signal.aborted) stop();
+    }
+    if (Number.isFinite(opts.timeoutCapMs)) timer = setTimeout(() => {
+      reject(Object.assign(new Error('MAG istek süre sınırı doldu'), { kind: 'TIMEOUT' })); controller.abort();
+    }, Math.max(1, opts.timeoutCapMs!));
+  });
+  try { budget?.check(); return await Promise.race([reqTransport(url, headers, { ...opts, signal: controller.signal }), stopped]); }
+  finally { if (timer) clearTimeout(timer); for (const remove of listeners) remove(); }
+}
+async function reqTransport(url: string, headers: Record<string, string>, options: number | ReqOptions = 20000): Promise<any> {
   const opts:ReqOptions=typeof options === "number" ? {timeoutMs:options} : (options || {});
   const scope = scopedHeaders.get(headers);
   const exactEndpoint = opts.exactEndpoint || exactEndpointHeaders.has(headers);
   const runtime = scope ? requestScopeRuntime(scope) : undefined;
   const parentSignal = opts.signal || scope?.signal;
+  const budget = scope?.discoveryBudget;
   checkScopeRuntime(runtime);
   if (parentSignal?.aborted) throw scopeCancelledError();
   // Per-request listeners are removed even when cancellation happens in the shared gate.
-  const cancelScope = () => runtime?.controller.abort();
-  parentSignal?.addEventListener("abort", cancelScope, { once: true });
-  try { await scope?.beforeRequest?.(url, runtime?.controller.signal); }
+   const gateController = new AbortController();
+   const stopGate = () => gateController.abort();
+   const gateSignals = [parentSignal, scope?.signal, budget?.signal, runtime?.controller.signal].filter((signal, index, all): signal is AbortSignal => !!signal && all.indexOf(signal) === index);
+   for (const signal of gateSignals) { signal.addEventListener('abort', stopGate, { once: true }); if (signal.aborted) stopGate(); }
+   try { budget?.check(); await scope?.beforeRequest?.(url, gateController.signal); budget?.check(); }
   catch (error) { checkScopeRuntime(runtime); throw error; }
-  finally { parentSignal?.removeEventListener("abort", cancelScope); }
+   finally { for (const signal of gateSignals) signal.removeEventListener('abort', stopGate); }
   checkScopeRuntime(runtime);
   if (parentSignal?.aborted) { const e: any = new Error("İşlem iptal edildi"); e.kind = "CANCELLED"; throw e; }
-  const timeoutMs=Math.min(scope?.timeoutMs ?? opts.timeoutMs ?? 20000, opts.timeoutCapMs ?? Number.POSITIVE_INFINITY);
+  budget?.consume();
+  const timeoutMs=Math.min(scope?.timeoutMs ?? opts.timeoutMs ?? 20000, opts.timeoutCapMs ?? Number.POSITIVE_INFINITY, budget?.remainingMs ?? Infinity);
   const hostFailover = await loadHostFailover(); // v18.7.12: önbellekli; yüklenemezse null (eski davranış)
   const c = new AbortController();
   const abortFromParent=()=>c.abort();
   const abortFromScope=()=>c.abort();
   runtime?.controller.signal.addEventListener("abort",abortFromScope,{once:true});
+  budget?.signal.addEventListener('abort', abortFromScope, { once: true });
   if (parentSignal) {
     if (parentSignal.aborted) c.abort();
     else parentSignal.addEventListener("abort",abortFromParent,{once:true});
@@ -994,6 +1019,7 @@ async function req(url: string, headers: Record<string, string>, options: number
         next!.hash = "";
         target = next!.toString();
         await scope?.beforeRequest?.(target, c.signal);
+        budget?.consume();
       }
     } else if (proxyRoute) {
       // v18.7.0: çoklu-MAC taraması — istek native proxy havuzundan (bkz. setMagProxyRouting).
@@ -1104,11 +1130,17 @@ async function req(url: string, headers: Record<string, string>, options: number
     }
     const decoded=parseStalkerBody(text);
     const responseHeaders: Record<string, string> = {};
-    for (const name of ["content-type", "cf-mitigated", "retry-after"]) responseHeaders[name] = String(res.headers?.get?.(name) || "");
+    for (const name of MAG_SAFE_RESPONSE_HEADERS) responseHeaders[name] = String(res.headers?.get?.(name) || "").slice(0, 256);
     checkScopeRuntime(runtime);
     const observation = observeMagProtection({ endpoint: finalUrl, stage: requestMeta.action, status: Number(res.status || 0),
       body: text, headers: responseHeaders, transport: proxyRoute ? "proxy" : useNativeExact ? "native" : "direct" });
     scope?.onObservation?.(observation);
+    const owner = headerOwners.get(headers);
+    if (owner) {
+      const previous = protectionObservations.get(owner);
+      const rank = (value: MagProtectionObservation) => value.state === 'present' ? 2 : value.state === 'not_observed' ? 1 : 0;
+      if (!previous || rank(observation) >= rank(previous)) protectionObservations.set(owner, observation);
+    }
     if (observation.state === "present") {
       const e: any = new Error(observation.kind === "rate_limit" ? "Portal istek sınırı uyguladı; aynı hosttaki analizler bekletiliyor." : "Portal CAPTCHA / anti-bot / güvenlik duvarı doğrulaması istiyor.");
       e.kind = observation.kind === "rate_limit" ? "MAG_RATE_LIMIT" : "MAG_PROTECTION";
@@ -1166,6 +1198,12 @@ async function req(url: string, headers: Record<string, string>, options: number
     clearTimeout(t);
     if (parentSignal) parentSignal.removeEventListener("abort",abortFromParent);
     runtime?.controller.signal.removeEventListener("abort",abortFromScope);
+    budget?.signal.removeEventListener('abort', abortFromScope);
+    // v18.7.15 (D12): istek bittiğinde taşıma tutamacı her durumda kapatılır. Gövde yukarıda
+    // `await res.text()` ile tamamen okunmuştur; proxy yolu kendi dinleyicisini söker, native-exact
+    // sinyal almaz → başarıda yan etkisi yoktur. Hata/iptal/zaman aşımı yolunda yarım kalan bağlantı
+    // açık kalmaz; iptal edilen bir oturumdan geriye "canlı" taşıma sinyali kalmaz.
+    c.abort();
   }
 }
 
@@ -1358,7 +1396,8 @@ async function handshakeAttempt(
       const token=typeof rawToken === "string" ? rawToken.trim() : "";
       if (token) {
         void recordDiagnostic("mag","STALKER_HANDSHAKE_VARIANT_OK",{endpoint,compatProfile,variant:variant.label,attempt:guard.networkAttempts});
-        return {token,endpoint,random:primitiveString(data?.js?.random),compatProfile,handshakeVariant:variant.label} as StalkerSession;
+        return {token,endpoint,random:primitiveString(data?.js?.random),compatProfile,handshakeVariant:variant.label,
+          resolvedPortal: resolveMagPortal(cred.resolvedPortal?.inputUrl || cred.portal, endpoint, ['handshake-token'], 'handshake', compatProfile)} as StalkerSession;
       }
     } catch (e:any) {
       lastErr=e;
@@ -1405,23 +1444,26 @@ export async function discoverMagPortal(
   cred: StalkerCreds,
   candidates: string[],
   opts: { signal?: AbortSignal; maxCandidates?: number; timeoutMs?: number; wallBudgetMs?: number; onProbe?: (endpoint: string, index: number, total: number) => void } = {},
-): Promise<{ endpoint: string; token: string } | null> {
+): Promise<{ endpoint: string; token: string; resolvedPortal?: ResolvedMagPortal } | null> {
   // v18.7.2: keşifte ölü aday hızlı elensin diye AYRI, gevşek bir guard ve KISA zaman aşımı.
   // Tekil eklemedeki 12'lik güvenli bütçe keşif için fazla dardı (ilk ölü portun yolları bütçeyi
   // tüketip 8080'e ulaşamıyordu). Keşif kendi aday sınırıyla (maxCandidates) korunur.
   const guard: HandshakeAttemptGuard = { networkAttempts: 0, authRejects: 0, lastAttemptAt: 0, rejectionFingerprints: new Map() };
-  const profile = preferredCompatProfiles(cred)[0];
+  const profiles = preferredCompatProfiles(cred, await loadLearnedCompat(cred));
+  const profile = profiles[0];
   const limit = Math.min(candidates.length, opts.maxCandidates ?? 32);
   const timeoutMs = opts.timeoutMs ?? 6000;
   // v18.7.11 (M09 — cihaz kanıtı: keşif 16:06:56→16:25:36 = ~19 DAKİKA, tried=32). Aday başına timeout
   // olsa da yavaş/takılı portalde toplam süre patlıyordu. DUVAR-SAATİ bütçesi eklenir: aşılırsa kalan
   // adaylar atlanır ve "BUDGET_STOP" (tamamlanamadı; "portal yok" DEĞİL) loglanır. Gerçek portal üst
   // sıradaki adaylarda bulunur; bütçe yalnız ölü kuyruğu keser.
-  const wallBudgetMs = opts.wallBudgetMs ?? Math.max(60_000, Math.min(limit * (timeoutMs + 1500), 240_000));
+  const wallBudgetMs = opts.wallBudgetMs ?? 25000;
+  const budget = cred.requestScope?.discoveryBudget || new MagDiscoveryBudget({ deadlineMs: wallBudgetMs, maxRequests: 96, signal: opts.signal });
+  try {
   const startedAll = Date.now();
   // v18.7.12: çoklu-IP failover'ı arka planda tetikle (ölü A kaydı sabitlenmesin). Keşif handshake'leri
   // başlarken pin hazır olur; connectInfo istekleri canlı IP'ye yönlendirir.
-  void loadHostFailover().then(hf => hf?.ensureLiveHostIp(candidates[0] || cred.portal, opts.signal));
+  void loadHostFailover().then(hf => hf?.ensureLiveHostIp(candidates[0] || cred.portal, budget.signal, budget)).catch(() => undefined);
   await primeMagIdentity(cred);
   void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_START", { candidateCount: limit, profile, timeoutMs, wallBudgetMs });
   for (let i = 0; i < limit; i++) {
@@ -1429,15 +1471,23 @@ export async function discoverMagPortal(
     if (Date.now() - startedAll > wallBudgetMs) { void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_BUDGET_STOP", { tried: i, total: limit, elapsedMs: Date.now() - startedAll }); return null; }
     const endpoint = candidates[i];
     opts.onProbe?.(endpoint, i, limit);
-    const probeCred: StalkerCreds = { ...cred, portal: endpoint };
+    budget.check();
+    const probeCred: StalkerCreds = { ...cred, portal: endpoint, endpointPolicy: 'exact', requestScope: {
+      ...cred.requestScope, transport: cred.requestScope?.transport || 'direct', signal: opts.signal || cred.requestScope?.signal, discoveryBudget: budget,
+    } };
     // Her aday için deneme bütçesini sıfırla: keşif, adayları magBulk'un ürettiği sırayla dener;
     // güvenli hız için host tempo/timeout korunur ama bütçe adaylar arasında paylaşılmaz.
     guard.networkAttempts = 0; guard.authRejects = 0;
     try {
-      const session = await handshakeAttempt(probeCred, endpoint, profile, guard, undefined, opts.signal, timeoutMs);
-      if (session?.token) {
-        void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_OK", { endpoint: endpointPath(endpoint), index: i });
-        return { endpoint, token: session.token };
+      for (const compatProfile of profiles) {
+        try {
+        const session = await handshakeAttempt(probeCred, endpoint, compatProfile, guard, undefined, opts.signal, Math.min(timeoutMs, budget.remainingMs));
+        if (session?.token) {
+          await saveLearnedCompat({ ...cred, portal: endpoint }, { endpoint, profile: compatProfile, model: compatModel(compatProfile), handshakeVariant: session.handshakeVariant, at: Date.now(), failures: 0 });
+          void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_OK", { endpoint: endpointPath(endpoint), index: i, compatProfile, requests: budget.requests });
+          return { endpoint, token: session.token, resolvedPortal: session.resolvedPortal };
+        }
+        } catch (error: any) { if (terminalMagError(error)) throw error; if (Number(error?.status) === 404) break; }
       }
     } catch (e: any) {
       if (terminalMagError(e)) throw e;
@@ -1447,6 +1497,7 @@ export async function discoverMagPortal(
   }
   void recordDiagnostic("catalog", "STALKER_PORTAL_DISCOVERY_NONE", { tried: limit });
   return null;
+  } finally { if (!cred.requestScope?.discoveryBudget) budget.dispose(); }
 }
 
 /** 1) HANDSHAKE — v16.13.10: MAG320 PCAP/Loader Exact varsayılan; MAG254/MAG250 yalnız compatibility fallback. */
@@ -1758,13 +1809,15 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession, si
   const ENRICH_DEADLINE_MS=12_000;
   const tryVariants = async (variants:StalkerProfileVariant[]): Promise<any> => {
   for (const variant of variants) {
+    const remaining = ENRICH_DEADLINE_MS - (Date.now() - enrichStart);
+    if (remaining <= 0) return null;
     if (best) {
       if (afterBest >= ENRICH_MAX_AFTER_BEST || Date.now()-enrichStart > ENRICH_DEADLINE_MS) return null; // bütçe/deadline → best kullanılacak
       afterBest++; // best sonrası HER deneme (dolu/boş/hata dahil) sayılır
     }
     const started=Date.now();
     try {
-      const data=await req(buildUrl(ses.endpoint, variant.params, !variant.noJs), headersFor(cred, ses.token, ses.endpoint, ses.compatProfile), { timeoutMs: 20000, signal });
+      const data=await req(buildUrl(ses.endpoint, variant.params, !variant.noJs), headersFor(cred, ses.token, ses.endpoint, ses.compatProfile), { timeoutMs: 20000, timeoutCapMs: remaining, signal });
       const profile=profilePayload(data);
       if (profile) {
         const withLogin=hasRealLogin(profile);
@@ -2034,8 +2087,23 @@ function pickUsernameField(p: any, macNorm: string): { username?: string; field?
     if (macNorm && decoded.replace(/[:-]/g, "").toLowerCase() === macNorm) return undefined;
     return decoded;
   };
-  for (const f of USERNAME_SOURCE_FIELDS) { const c = candidate(p?.[f]); if (c) return { username: c, field: f }; }
+  for (const f of USERNAME_SOURCE_FIELDS) {
+    if (!REAL_LOGIN_FIELDS.has(f)) continue; // name/fname/sname yalnız görünen addır.
+    const c = candidate(p?.[f]); if (c) return { username: c, field: f };
+  }
   return {};
+}
+
+/** Snapshot ve toplu doğrulama aynı alan koruma/birleştirme sözleşmesini kullanır. */
+export function mergeStalkerAccountInfo(base: AccountInfo, next: AccountInfo): AccountInfo {
+  const merged = { ...base };
+  for (const [key, value] of Object.entries(next)) {
+    if (value === undefined || value === null || value === "") continue;
+    if (key === "expiryKind" && value === "unknown" && base.expiryKind && base.expiryKind !== "unknown") continue;
+    if (key === "extra") merged.extra = { ...base.extra, ...value };
+    else (merged as any)[key] = value;
+  }
+  return merged;
 }
 
 /** Portal get_profile yanıtını uygulama içi sabit tipe çevirir. */
@@ -2061,8 +2129,25 @@ export function normalizeStalkerAccountInfo(profile: any): AccountInfo {
   const macNorm = mac ? mac.replace(/[:-]/g, "").toLowerCase() : "";
   const { username } = pickUsernameField(p, macNorm);
   const password = primitiveString(p.password || p.pass || p.user_password || p.account_password);
+  const display_name = [p.fname, p.name, p.sname].map(primitiveString).find(value => !!value?.trim());
+  const count = (...values: unknown[]): number | undefined => {
+    for (const value of values) {
+      if (typeof value !== "string" && typeof value !== "number") continue;
+      if (typeof value === "string" && !/^\d+$/.test(value.trim())) continue;
+      const number = Number(value);
+      if (Number.isSafeInteger(number) && number >= 0) return number;
+    }
+    return undefined;
+  };
+  const formats = p.allowed_output_formats ?? p.output_formats;
+  const allowed_output_formats = (Array.isArray(formats) ? formats : typeof formats === "string" ? formats.split(/[,;\s]+/) : [])
+    .filter((value: unknown): value is string => typeof value === "string" && /^[a-z0-9_-]{1,24}$/i.test(value.trim()))
+    .map((value: string) => value.trim().toLowerCase());
+  const unlimited = [p.tariff_expired_date, p.expire_billing_date, p.exp_billing_date, p.expiration_date, p.exp_date, p.end_date]
+    .some(value => typeof value === "string" && /^(?:never|unlimited|sınırsız)$/i.test(value.trim()));
   return {
     username,
+    display_name: display_name?.trim(),
     password,
     status: denied === "blocked" ? (inactive ? "inactive" : "blocked") : denied === "expired" ? "expired"
       // v18.7.7 (P3): Stalker'da SAYISAL status 0 = AKTİF (kaynak: launcher_profile.php). Açık
@@ -2078,6 +2163,11 @@ export function normalizeStalkerAccountInfo(profile: any): AccountInfo {
     phone: phoneIsExpiry ? undefined : phoneRaw,
     tariff_plan: primitiveString(p.tariff_plan || p.tariff_plan_name),
     tariff_expired_date: expiry || null,
+    expiryKind: expiry ? "date" : unlimited ? "unlimited" : "unknown",
+    active_cons: count(p.active_cons, p.active_connections),
+    max_connections: count(p.max_connections, p.max_online),
+    allowed_output_formats: allowed_output_formats.length ? [...new Set<string>(allowed_output_formats)] : undefined,
+    message: primitiveString(p.message),
   };
 }
 
@@ -2125,12 +2215,7 @@ export async function stalkerAccountSnapshot(
       const mainReal = pickUsernameField(main!, suppliedMacNorm);
       const keepProfileLogin = !!profReal.username && REAL_LOGIN_FIELDS.has(profReal.field as string)
         && (!mainReal.field || !REAL_LOGIN_FIELDS.has(mainReal.field as string));
-      for (const key of Object.keys(fromMain) as Array<keyof AccountInfo>) {
-        const value = fromMain[key];
-        if (value === undefined || value === null || value === "") continue;
-        if (key === "username" && keepProfileLogin) continue; // gerçek login korunur
-        (merged as any)[key] = value;
-      }
+      merged = mergeStalkerAccountInfo(merged, keepProfileLogin ? { ...fromMain, username: undefined } : fromMain);
     } else if (main) {
       void recordDiagnostic("mag", "STALKER_MAIN_INFO_REJECTED", { endpoint: ses.endpoint,
         reason: !accountMatchesMac(main, suppliedMac) ? "mac-mismatch" : "empty" });
@@ -2165,6 +2250,8 @@ export async function stalkerAccountSnapshot(
     });
   }
   const source = mainInfoOk ? "main-info" : (merged.tariff_expired_date || merged.status || merged.username) ? "profile" : "none";
+  const observation = protectionObservations.get(cred);
+  if (observation) merged.extra = { ...merged.extra, magProtection: observation };
   return { info: merged, mainInfoOk, source };
 }
 
@@ -2252,10 +2339,7 @@ export async function stalkerVerifyAccount(
   const initialDenial = classify(profile);
   if (initialDenial) return finish(initialDenial, `profile-${initialDenial}`);
   const mergeInfo = (value: unknown) => {
-    const next = normalizeStalkerAccountInfo(value);
-    for (const [key, field] of Object.entries(next)) {
-      if (field !== undefined && field !== null && field !== "") (info as any)[key] = field;
-    }
+    info = mergeStalkerAccountInfo(info, normalizeStalkerAccountInfo(value));
   };
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -3051,6 +3135,10 @@ export async function stalkerLogin(
   cred: StalkerCreds,
   opts: { forceFresh?: boolean; signal?: AbortSignal } = {}
 ): Promise<{ session: StalkerSession; profile: any }> {
+  if (cred.resolvedPortal?.endpointLocked) {
+    cred.portal = cred.resolvedPortal.endpoint;
+    cred.endpointPolicy = 'exact';
+  }
   if (!opts.forceFresh) { const cached = getCachedSession(cred); if (cached) { void recordDiagnostic("catalog", "STALKER_SESSION_CACHE_HIT", { portal: cred.portal }); return cached; } }
   const started = Date.now();
   void recordDiagnostic("catalog", "STALKER_HANDSHAKE_START", { portal: cred.portal });

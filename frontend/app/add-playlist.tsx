@@ -2605,7 +2605,7 @@ ${pub.path}`, [
          */
         if (!stPortal.trim() || !stMac.trim())
           throw new Error("Portal adresi ve MAC adresi gereklidir");
-        const canonicalMag = canonicalMagIdentity(stPortal, stMac);
+        let canonicalMag = canonicalMagIdentity(stPortal, stMac);
         id = stablePlaylistId("mag", canonicalMag);
         if (playlists.some(pl => pl.id === id || (pl.stalkerPortal && pl.stalkerMac && canonicalMagIdentity(pl.stalkerPortal, pl.stalkerMac) === canonicalMag))) {
           throw new Error("Bu MAG/Portal hesabı zaten ekli.");
@@ -2619,8 +2619,9 @@ ${pub.path}`, [
           normalizeMac,
           normalizeStalkerAccountInfo,
           stalkerAccountSnapshot,
+          terminalMagError,
         } = await import("@/src/utils/stalker");
-        const cred = {
+        const cred: import('@/src/utils/stalker').StalkerCreds = {
           portal: stPortal.trim(),
           mac: normalizeMac(stMac.trim()),
           serial: stSerial.trim() || undefined,
@@ -2633,32 +2634,13 @@ ${pub.path}`, [
         // çoklu MAC ile AYNI MAC'siz keşif motorunu (discoverMagHosts) kullanır — hiçbir portu yanlışlıkla
         // elemez, open-önce sınıflar, auto scope uygular. MAC'siz keşif önce (daha az agresif); sonra
         // çalışan endpoint'te tek login. Keşif başarısızsa eski handshake-tabanlı discoverMagPortal fallback.
-        try {
-          const portalHost = /^https?:\/\//i.test(cred.portal) ? cred.portal : `http://${cred.portal}`;
-          const u = new URL(portalHost);
-          if (!u.port) {
-            setProgress("Portal adresi/portu aranıyor…");
-            let chosen: string | undefined;
-            try {
-              const { discoverMagHosts } = await import("@/src/utils/magPortalDiscovery");
-              const { chooseMagPortals } = await import("@/src/utils/magBulkScan");
-              const reports = await discoverMagHosts(
-                [{ raw: cred.portal, host: portalHost, hasPort: false, hasPath: false }],
-                { scope: "fallback", timeoutMs: 6000, onStage: (m) => setProgress(m), control: { signal: stalkerAddAbortRef.current?.signal } },
-              );
-              chosen = reports[0] ? chooseMagPortals(reports)[reports[0].host.host] : undefined;
-            } catch { /* MAC'siz keşif başarısızsa handshake fallback */ }
-            if (!chosen) {
-              const { discoverMagPortal } = await import("@/src/utils/stalker");
-              const { portalDiscoveryCandidates } = await import("@/src/utils/magBulk");
-              const cands = portalDiscoveryCandidates({ raw: cred.portal, host: portalHost, hasPort: false });
-              // v18.7.10: handshake keşfinde canlı ilerleme (eskiden sessizdi).
-              const found = await discoverMagPortal(cred, cands, { timeoutMs: 6000, signal: stalkerAddAbortRef.current?.signal, onProbe: (_e, i, t) => setProgress(`Portal aranıyor · handshake ${i + 1}/${t}`) });
-              chosen = found?.endpoint;
-            }
-            if (chosen) { cred.portal = chosen; setProgress(`Portal bulundu: ${new URL(chosen).host}`); }
-          }
-        } catch { /* keşif başarısızsa normal login kendi aday listesini dener */ }
+        const { resolveMagInput } = await import('@/src/utils/magResolveInput');
+        const resolved = await resolveMagInput(cred, { signal: stalkerAddAbortRef.current?.signal, onStage: setProgress });
+        cred.portal = resolved.endpoint; cred.resolvedPortal = resolved; cred.endpointPolicy = 'exact';
+        canonicalMag = canonicalMagIdentity(cred.portal, cred.mac);
+        id = stablePlaylistId('mag', canonicalMag);
+        if (playlists.some(pl => pl.id === id || (pl.stalkerPortal && pl.stalkerMac && canonicalMagIdentity(pl.stalkerPortal, pl.stalkerMac) === canonicalMag))) throw new Error('Bu MAG/Portal hesabı zaten ekli.');
+        setProgress(`Portal API bulundu: ${new URL(cred.portal).pathname}`);
 
         setProgress("MAG320 Exact profiliyle native portala bağlanılıyor...");
         const { session, profile: prof } = await stLogin(cred, { signal: stalkerAddAbortRef.current?.signal });
@@ -2672,14 +2654,14 @@ ${pub.path}`, [
         try {
           const snapshot = await stalkerAccountSnapshot(cred, session, profile, { signal: stalkerAddAbortRef.current?.signal });
           accountInfo = snapshot.info;
-        } catch { /* terminal olmayan hata: profil bilgisiyle devam */ }
+        } catch (error) { if (terminalMagError(error)) throw error; }
 
         // v16.14.5 P0 — VALIDATION/PERSISTENCE ayrımı. Handshake başarılıysa hesap
         // ağır katalog tamamlanmasını beklemeden atomik olarak kaydedilir.
         const shell: Playlist = {
           id, name: name.trim() || "MAG Portal", source: "stalker",
           // v18.7.2: keşif portu bulduysa ÇALIŞAN portal kaydedilir (oynatma da onu kullanır).
-          stalkerPortal: cred.portal, stalkerMac: stMac.trim().toUpperCase(),
+          stalkerPortal: session.endpoint, stalkerResolvedPortal: session.resolvedPortal || resolved, stalkerMac: stMac.trim().toUpperCase(),
           stalkerSerial: stSerial.trim() || undefined,
           accountInfo,
           channels: [], vod: [], series: [],

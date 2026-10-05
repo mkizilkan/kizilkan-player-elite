@@ -3,6 +3,10 @@ import { portalDiscoveryCandidates, discoveryPortsFor, type MagHostEntry, type M
 import type { MagScanControl } from "@/src/utils/magBulkScan";
 import type { MagProtectionObservation, StalkerRequestScope } from "@/src/utils/stalker";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
+import { magFamilyEndpoints, magClientAssetUrls, magInstallation, resolveMagPortal, type ResolvedMagPortal } from '@/src/utils/magEndpointRegistry';
+import { resolveMagLocalReference, resolveMagClientJs, isMagVersionScript } from '@/src/utils/magClientJsResolver';
+import { MagDiscoveryBudget, type MagDiscoverySpeed } from '@/src/utils/magDiscoveryBudget';
+import { magResponseFingerprint, MAG_SAFE_RESPONSE_HEADERS, type MagResponseFingerprint } from '@/src/utils/magResponseFingerprint';
 
 /** v18.7.12: çoklu-IP failover modülü TEMBEL yüklenir (sahte-require test koşumlarını kırmamak için). */
 type HostFailoverModule = typeof import("@/src/utils/magHostFailover");
@@ -21,16 +25,22 @@ async function loadHostFailover(): Promise<HostFailoverModule | null> {
 export type MagPortalCandidate = {
   endpoint: string; httpStatus: number; confidence: "api" | "fingerprint" | "protected";
   evidence: string[]; protection?: MagProtectionObservation; elapsedMs: number; selectable: boolean;
+  resolvedPortal?: ResolvedMagPortal;
 };
 export type MagPortalDiscovery = {
   host: MagHostEntry; candidates: MagPortalCandidate[]; probes: number;
   state: "ready" | "not-found" | "protected" | "error"; message?: string;
+  budget?: { requests: number; remainingMs: number; exhausted: boolean };
+  portObservations?: Array<{ port: string; state: 'open' | 'closed' | 'unknown' | 'wildcard-responder'; fingerprint?: MagResponseFingerprint }>;
 };
 export type MagPortalDiscoveryOptions = {
   scope?: MagDiscoveryScope; concurrency?: number; timeoutMs?: number; useProxy?: boolean; maxCandidatesPerHost?: number;
   control?: MagScanControl; gate?: Pick<StalkerRequestScope, "beforeRequest" | "onRateLimit">;
   onStage?: (message: string) => void; onHost?: (report: MagPortalDiscovery) => void;
   onProgress?: (done: number, total: number, current?: string) => void;
+  speed?: MagDiscoverySpeed;
+  budgetForHost?: (host: MagHostEntry) => MagDiscoveryBudget;
+  allowOtherPorts?: boolean;
 };
 const BODY_LIMIT = 65536;
 const MAX_EXTRA_ENDPOINTS = 64;
@@ -104,19 +114,10 @@ function basePath(value: string): string {
   return path.replace(/\/(?:c|server)$/i, "");
 }
 function family(entry: MagHostEntry): string[] {
-  const entered = endpoint(entry.host); if (!entered) return [];
-  if (/\.php$/i.test(new URL(entered).pathname)) return [entered];
-  const u = new URL(entered), base = basePath(entered);
-  return Array.from(new Set([entered, ...["/c/", "/c/index.html", "/portal.php", "/server/load.php", "/server/portal.php", "/load.php", "/c/portal.php", "/c/server/load.php"].map(path => endpoint(u.origin + base + path)!).filter(Boolean)]));
+  const entered = endpoint(entry.host); return entered ? magFamilyEndpoints(entered) : [];
 }
 function resolveLocal(raw: string, parent: string, base: string): string | null {
-  try {
-    const u = new URL(raw, parent), from = new URL(parent);
-    if (u.origin !== from.origin || u.username || u.password || !/^https?:$/.test(u.protocol)) return null;
-    const decoded = decodeURIComponent(u.pathname);
-    if (decoded.includes("\\") || decoded.split("/").includes("..") || (base && !(decoded === base || decoded.startsWith(base + "/")))) return null;
-    return endpoint(u.toString());
-  } catch { return null; }
+  return resolveMagLocalReference(raw, parent, base);
 }
 function utf8Length(text: string): number {
   let bytes = 0; for (const char of text) { const cp = char.codePointAt(0)!; bytes += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4; if (bytes > BODY_LIMIT) return bytes; } return bytes;
@@ -183,11 +184,16 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
   const scan = async (host: MagHostEntry): Promise<MagPortalDiscovery> => {
     const report: MagPortalDiscovery = { host, candidates: [], probes: 0, state: "not-found" };
     const entered = endpoint(host.host); if (!entered) return { ...report, state: "error", message: "Geçersiz portal adresi" };
+    const budget = opts.budgetForHost?.(host) || new MagDiscoveryBudget({ signal: opts.control?.signal, speed: opts.speed });
+    const fingerprints = new Map<string, MagResponseFingerprint>();
+    const wildcardPorts = new Set<string>();
+    const seen = new Set<string>(), planned = new Set<string>(), candidates = new Map<string, MagPortalCandidate>(); let lastError = ""; let stop = false;
+    const portState = new Map<string, "open" | "unknown" | "closed">();
+    try {
     // v18.7.12: çoklu-IP failover'ı arka planda tetikle (ölü A kaydı sabitlenmesin). Fire-and-forget:
     // DoH + yoklama (~2–3 sn) biterken ilk istekler gate temposuyla zaten bekliyor; pin hazır olunca
     // connectInfo sonraki istekleri canlı IP'ye yönlendirir. Tek IP / IP girişi / https'te erken döner.
-    if (!opts.useProxy) void loadHostFailover().then(hf => hf?.ensureLiveHostIp(entered, opts.control?.signal));
-    const seen = new Set<string>(), planned = new Set<string>(), candidates = new Map<string, MagPortalCandidate>(); let lastError = ""; let stop = false;
+    if (!opts.useProxy) void loadHostFailover().then(hf => hf?.ensureLiveHostIp(entered, budget.signal, budget)).catch(() => undefined);
     // v18.7.8 (keşif P0.5): AUTO scope. Kullanıcı port vermediyse "exact" keşif amacına terstir
     // (yalnız girilen portu dener, 8080 vb. aranmaz). Portsuz girişte exact/boş → fallback'e yükselt
     // (yaygın portlar aranır). Port verildiyse kullanıcının scope'una dokunma.
@@ -195,11 +201,14 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     // YÜKSELTİLMEZ (eskiden portsuz+exact sessizce fallback olup başka portlara gidiyordu). Yalnız scope
     // HİÇ verilmemiş + portsuz girişte varsayılan `fallback` olur; kullanıcı exact seçtiyse exact kalır.
     const scope: MagDiscoveryScope = opts.scope === "exact" ? "exact"
+      : !opts.scope && /\.php$/i.test(new URL(entered).pathname) ? 'exact'
       : (!host.hasPort && !opts.scope) ? "fallback" : (opts.scope || "fallback");
+    const allowOtherPorts = opts.allowOtherPorts ?? (scope === 'all' || !host.hasPort || opts.scope === 'fallback');
+    const allowAlternateScheme = scope !== 'exact' && (opts.scope === 'all' || opts.scope === 'fallback' || !/^https?:\/\//i.test(host.raw.trim()));
+    const alternateFamilies = new Set<string>();
     // v18.7.6 (bulgu A4): PORT-ÖNCELİKLİ BUDAMA. İlk yol turu her portu bir kez dener;
     // bağlantı reddi/zaman aşımı alan port "dead" işaretlenir ve sonraki yollarda atlanır.
     // Böylece ölü portlarda 14 yol boşuna denenmez (kullanıcı: "757 versiyon").
-    const portState = new Map<string, "open" | "unknown" | "closed">();
     const announceOpenPorts = () => {
       const open = [...portState.entries()].filter(([, s]) => s === "open").map(([p]) => p);
       if (open.length) opts.onStage?.(`Portal keşfi · açık portlar: ${open.join(", ")} · yollar deneniyor`);
@@ -211,16 +220,19 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       const stage = (requests: number) => { const u = new URL(url); opts.onStage?.(`Portal keşfi · ${u.host}${u.pathname} · aday ${seen.size}/${Math.min(maxCandidates, planned.size)} · ${requests} istek`); };
       stage(report.probes);
       const controller = new AbortController(), parent = opts.control?.signal;
-      const cancel = () => controller.abort(); parent?.addEventListener("abort", cancel, { once: true });
+      const cancel = () => controller.abort(); parent?.addEventListener("abort", cancel, { once: true }); budget.signal.addEventListener('abort', cancel, { once: true });
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        await controlled(Promise.resolve(gate.beforeRequest?.(url, controller.signal)), opts.control, undefined, cancel);
-        check(opts.control); timer = setTimeout(cancel, timeoutMs); const started = Date.now(); report.probes++; stage(report.probes);
+        budget.check();
+        await budget.run(controlled(Promise.resolve(gate.beforeRequest?.(url, controller.signal)), opts.control, controller.signal, cancel));
+        budget.consume();
+        const requestTimeout = Math.min(timeoutMs, budget.remainingMs);
+        check(opts.control); timer = setTimeout(cancel, requestTimeout); const started = Date.now(); report.probes++; stage(report.probes);
         const headers = { Accept: "text/html, application/json;q=0.9, */*;q=0.1" };
         let response: any;
         if (opts.useProxy) {
           const { PanelScan } = await import("@/modules/panel-scan");
-          const value = await controlled(PanelScan.proxiedRequest(url, "GET", headers, "", timeoutMs, controller.signal, BODY_LIMIT), opts.control, controller.signal, cancel);
+          const value = await budget.run(controlled(PanelScan.proxiedRequest(url, "GET", headers, "", requestTimeout, controller.signal, BODY_LIMIT), opts.control, controller.signal, cancel));
           if (!(value.status > 0)) throw fault(value.error === "BODY_LIMIT" ? "BODY_LIMIT" : "PROXY", `Proxy keşfi başarısız: ${value.error || "proxy yok"}`);
           const map = Object.fromEntries(Object.entries(value.headers || {}).map(([key, value]) => [key.toLowerCase(), String(value)]));
           response = { status: value.status, url, headers: { get: (key: string) => map[key.toLowerCase()] || "" }, text: async () => value.body };
@@ -234,7 +246,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
           const hf = await loadHostFailover();
           const conn = hf ? hf.connectInfo(url) : { url };
           const fetchHeaders = conn.host ? { ...headers, Host: conn.host } : headers;
-          response = await controlled(portalFetch(conn.url, { method: "GET", headers: fetchHeaders, credentials: "omit", redirect: "manual", signal: controller.signal }), opts.control, controller.signal, cancel);
+          response = await budget.run(controlled(portalFetch(conn.url, { method: "GET", headers: fetchHeaders, credentials: "omit", redirect: "manual", signal: controller.signal }), opts.control, controller.signal, cancel));
         }
         const hfBack = await loadHostFailover();
         const rawFinal = String(response.url || url);
@@ -246,11 +258,11 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
           const next = resolveLocal(location, url, base); if (!next) throw fault("FOREIGN_REDIRECT", "Portal başka origin veya kurulum dizinine yönlendirdi");
           clearTimeout(timer); timer = undefined; return await raw(next, base, redirects + 1);
         }
-        const body = await controlled(limitedText(response, controller.signal), opts.control, controller.signal, cancel);
+        const body = await budget.run(controlled(limitedText(response, controller.signal), opts.control, controller.signal, cancel));
         const result: Raw = { status: Number(response.status), body, headers: {}, finalUrl, elapsedMs: Date.now() - started };
-        for (const key of ["content-type", "cf-mitigated", "retry-after"]) result.headers[key] = String(response.headers?.get?.(key) || "");
+        for (const key of MAG_SAFE_RESPONSE_HEADERS) result.headers[key] = String(response.headers?.get?.(key) || "").slice(0, 256);
         return result;
-      } finally { if (timer) clearTimeout(timer); parent?.removeEventListener("abort", cancel); }
+      } finally { if (timer) clearTimeout(timer); parent?.removeEventListener("abort", cancel); budget.signal.removeEventListener('abort', cancel); }
     };
     const inspect = (target: string, response: Raw): MagPortalCandidate | null => {
       const protection = observeMagProtection({ endpoint: response.finalUrl, stage: "portal-discovery", status: response.status, body: response.body, headers: response.headers, transport: opts.useProxy ? "proxy" : "direct" });
@@ -260,7 +272,11 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
         return { endpoint: endpoint(response.finalUrl)!, httpStatus: response.status, confidence: "protected", evidence: protection.evidence, protection, elapsedMs: response.elapsedMs, selectable: false };
       }
       const evidence = response.status >= 200 && response.status < 300 ? apiEvidence(response.body) : [];
-      if (evidence.length) return { endpoint: endpoint(response.finalUrl)!, httpStatus: response.status, confidence: "api", evidence, protection, elapsedMs: response.elapsedMs, selectable: true };
+      if (evidence.length) {
+        void recordDiagnostic('scan', 'MAG_DISCOVERY_API_SCHEME', { endpoint: endpoint(response.finalUrl), scheme: new URL(response.finalUrl).protocol, evidence });
+        return { endpoint: endpoint(response.finalUrl)!, httpStatus: response.status, confidence: "api", evidence, protection, elapsedMs: response.elapsedMs, selectable: true,
+          resolvedPortal: resolveMagPortal(host.host, endpoint(response.finalUrl)!, evidence, 'api') };
+      }
       if (/\.php$/i.test(new URL(target).pathname) && [200, 401, 403].includes(response.status)) {
         const auth = authEvidence(response.body);
         if (auth.length) return { endpoint: endpoint(response.finalUrl)!, httpStatus: response.status, confidence: "fingerprint", evidence: auth, protection, elapsedMs: response.elapsedMs, selectable: true };
@@ -291,6 +307,21 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       }
       let found = inspect(target, response);
       if (found) { candidates.set(found.endpoint, found); emitLive(); return; }
+      // v18.7.15 (D11): alternatif scheme (http↔https) genişletmesi yalnız HENÜZ seçilebilir bir API
+      // bulunmadıysa yapılır. Aynı kurulum ailesinde http üzerinden çalışan API varken https varyantlarını
+      // yoklamak hem gereksiz hem de girilen scheme'in dışına (origin değişimi) taşar. twoPhaseExpand'in
+      // `!hasSelectable()` kapısıyla tutarlı: bir kez çalışan yol bulununca keşif genişlemez.
+      if (allowAlternateScheme && !hasSelectable() && /\.php$/i.test(new URL(target).pathname)) {
+        const installation = magInstallation(target), identity = `${port}|${installation.base}`;
+        if (!alternateFamilies.has(identity)) {
+          alternateFamilies.add(identity);
+          const alternate = new URL(target); alternate.protocol = alternate.protocol === 'https:' ? 'http:' : 'https:';
+          // Aynı açık port korunur; URL'nin standart port normalizasyonu protokol değişiminde portu silmesin.
+          alternate.port = port;
+          const apis = magFamilyEndpoints(alternate.origin + installation.base + '/c/').filter(value => /\.php$/i.test(new URL(value).pathname)).slice(0, 3);
+          for (const api of apis.reverse()) if (!queue.includes(api) && !seen.has(api) && queue.length < MAX_EXTRA_ENDPOINTS) queue.unshift(api);
+        }
+      }
       if (response.status >= 500) throw fault("HTTP_SERVER", `Portal HTTP ${response.status} döndürdü; API doğrulanamadı`);
       // v18.7.10 (#3, M05 düzeltmesi): version.js — Stalker/Ministra kurulumlarında bulunan statik
       // dosya; kesin PORTAL izi (sahada tarama imzası da budur) AMA API YOLU DEĞİL. version.js
@@ -302,24 +333,46 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       const tp = new URL(target).pathname;
       // v18.7.13: "Yalnız girilen" (exact) kapsamda version.js API ailesi genişletmesi YAPILMAZ (kati kapsam).
       if (scope !== "exact" && response.status >= 200 && response.status < 300 && /(?:^\/?|\/)(?:c|stalker_portal\/c|portal|ministra\/c)\/?$/.test(tp)) {
-        const vjUrl = `${new URL(target).origin}${tp.replace(/\/+$/, "")}/version.js`;
+        const vjUrl = magClientAssetUrls(target).version;
         if (!seen.has(vjUrl.replace(/\/+$/, ""))) {
           seen.add(vjUrl.replace(/\/+$/, ""));
           try {
             const vj = await raw(vjUrl, base);
             const body = String(vj.body || "").slice(0, 4000);
-            if (vj.status === 200 && !/<html|<!doctype/i.test(body.slice(0, 200)) && /\bver\b\s*[:=]|version|stalker|ministra|infomir|stb/i.test(body)) {
+            const vjProtection = inspect(vjUrl, vj);
+            if (vjProtection?.confidence === 'protected') { candidates.set(vjProtection.endpoint, vjProtection); return; }
+            if (vj.status === 200 && isMagVersionScript(body, vj.headers['content-type'])) {
               const confirmUrl = endpoint(new URL(target).origin + (tp.replace(/\/+$/, "") || "/"));
               if (confirmUrl && !candidates.has(confirmUrl)) candidates.set(confirmUrl, { endpoint: confirmUrl, httpStatus: response.status, confidence: "fingerprint", evidence: ["stalker-version-js", "portal-confirmed"], elapsedMs: vj.elapsedMs, selectable: false });
               let enqueued = 0;
-              for (const apiPath of ["/portal.php", "/server/load.php", "/stalker_portal/server/load.php", "/c/portal.php"]) {
-                const apiUrl = endpoint(new URL(target).origin + base + apiPath);
+              for (const apiUrl of magFamilyEndpoints(target).filter(value => /\.php$/i.test(new URL(value).pathname))) {
                 if (apiUrl && !seen.has(apiUrl.replace(/\/+$/, "")) && !queue.includes(apiUrl) && queue.length < MAX_EXTRA_ENDPOINTS) { queue.push(apiUrl); planned.add(apiUrl.replace(/\/+$/, "")); enqueued++; }
               }
               void recordDiagnostic("scan", "MAG_DISCOVERY_VERSION_JS", { base, enqueued });
               emitLive();
             }
-          } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED") throw error; }
+          } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; }
+        }
+      }
+      if (scope !== 'exact' && response.status >= 200 && response.status < 300 && !/\.php$/i.test(tp)) {
+        const xpcomUrl = magClientAssetUrls(target).xpcom;
+        if (!seen.has(xpcomUrl)) {
+          seen.add(xpcomUrl);
+          try {
+            const script = await raw(xpcomUrl, base);
+            const guarded = inspect(xpcomUrl, script);
+            if (guarded?.confidence === 'protected') { candidates.set(guarded.endpoint, guarded); return; }
+            if (script.status === 200) {
+              const resolved = resolveMagClientJs(script.body, script.finalUrl, script.headers['content-type']);
+              for (const api of resolved.endpoints) {
+                if (!queue.includes(api) && !seen.has(api.replace(/\/+$/, '')) && queue.length < MAX_EXTRA_ENDPOINTS) { queue.unshift(api); planned.add(api.replace(/\/+$/, '')); }
+                if (!candidates.has(api)) candidates.set(api, { endpoint: api, httpStatus: script.status, confidence: 'fingerprint', evidence: resolved.evidence, elapsedMs: script.elapsedMs, selectable: false,
+                  resolvedPortal: resolveMagPortal(host.host, api, resolved.evidence, 'xpcom') });
+              }
+              void recordDiagnostic('scan', 'MAG_DISCOVERY_XPCOM', { path: new URL(script.finalUrl).pathname, endpoints: resolved.endpoints.length, evidence: resolved.evidence });
+              emitLive();
+            }
+          } catch (error: any) { if (isCancelled(opts.control) || error?.kind === 'CANCELLED' || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; }
         }
       }
       const fingerprint = response.status >= 200 && response.status < 300 ? htmlEvidence(response.body) : [];
@@ -333,7 +386,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
           const baselineProtection = inspect(target, baseline);
           if (baselineProtection?.confidence === "protected") { candidates.set(baselineProtection.endpoint, baselineProtection); return; }
           if ([200, 404].includes(baseline.status)) same = baseline.body.trim().replace(/\s+/g, " ") === response.body.trim().replace(/\s+/g, " ");
-        } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED") throw error; }
+        } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; }
         if (!same) {
           const links = linkedApis(response.body, response.finalUrl, base);
           for (const link of links) {
@@ -351,13 +404,13 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     const sweep = async (plan: string[]): Promise<void> => {
       for (const value of plan) { const target = endpoint(value); if (target) planned.add(target.replace(/\/+$/, "")); }
       const extra: string[] = [];
-      for (const target of plan) { if (stop || seen.size >= maxCandidates) break; try { await probe(target, extra); } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED") throw error; lastError = String(error?.message || error).slice(0, 180);
+      for (const target of plan) { if (stop || seen.size >= maxCandidates) break; budget.check(); try { await probe(target, extra); } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; lastError = String(error?.message || error).slice(0, 180);
         // v18.7.10: FOREIGN_REDIRECT tüm host'u ÖLDÜRMESİN. Portal /c/'den başka yola/origin'e
         // yönlenebilir (cihaz: weko /c/ → redirect → 11 denemede "error" + handshake hiç denenmedi).
         // Yalnız o aday atlanır; diğer yollar/portlar ve handshake yedeği denenmeye devam eder.
         if (error?.kind === "FOREIGN_REDIRECT") { void recordDiagnostic("scan", "MAG_DISCOVERY_FOREIGN_REDIRECT", { target }); continue; }
         if (error?.kind === "PROXY") { report.state = "error"; stop = true; } } }
-      for (let index = 0; index < extra.length && !stop; index++) { try { await probe(extra[index], extra); } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED") throw error; lastError = String(error?.message || error).slice(0, 180); } }
+      while (extra.length && !stop && seen.size < maxCandidates) { budget.check(); try { await probe(extra.shift()!, extra); } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; lastError = String(error?.message || error).slice(0, 180); } }
     };
     // v18.7.6/v18.7.8 — PARALEL PORT SINIFLAMA. Çok-portlu keşiften önce portlar PARALEL ve
     // gate'siz (her port ayrı TCP ucu; portal API'si değil → ban riski yok) sınıflanır:
@@ -365,47 +418,62 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     // sıralanır AMA unknown portlar ASLA DÜŞÜRÜLMEZ (yollar yine denenir). Böylece `host:8080/`
     // timeout verse bile `/c/` denenir; bir başka port açık diye gerçek portal portu kaybolmaz.
     const reachProbe = async (portUrl: string, ms: number): Promise<"open" | "unknown"> => {
+      budget.consume(); report.probes++;
       const controller = new AbortController(), parent = opts.control?.signal;
-      const onAbort = () => controller.abort(); parent?.addEventListener("abort", onAbort, { once: true });
-      const timer = setTimeout(() => controller.abort(), ms);
+      const onAbort = () => controller.abort(); parent?.addEventListener("abort", onAbort, { once: true }); budget.signal.addEventListener('abort', onAbort, { once: true });
+      const timer = setTimeout(() => controller.abort(), Math.min(ms, budget.remainingMs));
       try {
+        const save = (status: number, body: string, headers: Record<string, string>) => {
+          const port = portOf(portUrl), fingerprint = magResponseFingerprint(status, headers, body);
+          fingerprints.set(port, fingerprint);
+          const repeats = [...fingerprints].filter(([, value]) => value.length > 0 && value.bodyHash === fingerprint.bodyHash && value.status === fingerprint.status && value.contentType === fingerprint.contentType);
+          if (repeats.length >= 3) for (const [p] of repeats) wildcardPorts.add(p);
+          const guarded = observeMagProtection({ endpoint: portUrl, stage: 'port-probe', status, body, headers, transport: opts.useProxy ? 'proxy' : 'direct' });
+          if (guarded.state === 'present') { candidates.set(portUrl, { endpoint: portUrl, httpStatus: status, confidence: 'protected', evidence: guarded.evidence, protection: guarded, elapsedMs: 0, selectable: false }); report.state = 'protected'; stop = true; if (guarded.kind === 'rate_limit') gate.onRateLimit?.(portUrl, retryAfter(headers['retry-after'] || '')); }
+        };
         if (opts.useProxy) {
           const { PanelScan } = await import("@/modules/panel-scan");
-          const v = await PanelScan.proxiedRequest(portUrl, "GET", { Accept: "*/*" }, "", ms, controller.signal, 1024);
+          const v = await budget.run(controlled(PanelScan.proxiedRequest(portUrl, "GET", { Accept: "*/*" }, "", Math.min(ms, budget.remainingMs), controller.signal, BODY_LIMIT), opts.control, controller.signal));
+          if (Number(v.status) > 0) save(Number(v.status), String(v.body || ''), Object.fromEntries(Object.entries(v.headers || {}).map(([key, value]) => [key.toLowerCase(), String(value)])));
           // Gövde 1 KiB'ı aşsa bile (BODY_LIMIT) sunucu YANIT verdi → port AÇIK.
           return (Number(v.status) > 0 || v.error === "BODY_LIMIT") ? "open" : "unknown";
         }
         const { fetch: portalFetch } = await import("expo/fetch");
-        const r = await portalFetch(portUrl, { method: "GET", headers: { Accept: "*/*" }, credentials: "omit", redirect: "manual", signal: controller.signal });
+        const hf = await loadHostFailover(), conn = hf ? hf.connectInfo(portUrl) : { url: portUrl };
+        const r = await budget.run(controlled(portalFetch(conn.url, { method: "GET", headers: conn.host ? { Accept: '*/*', Host: conn.host } : { Accept: '*/*' }, credentials: "omit", redirect: "manual", signal: controller.signal }), opts.control, controller.signal));
+        const headers: Record<string, string> = {}; for (const key of MAG_SAFE_RESPONSE_HEADERS) headers[key] = String(r.headers?.get?.(key) || '').slice(0, 256);
+        try { const body = await budget.run(controlled(limitedText(r, controller.signal), opts.control, controller.signal)); save(Number(r.status), body, headers); } catch (error: any) { if (error?.kind === 'MAG_DISCOVERY_BUDGET' || isCancelled(opts.control)) throw error; }
         return Number(r.status) > 0 ? "open" : "unknown";
-      } catch { return "unknown"; } finally { clearTimeout(timer); parent?.removeEventListener("abort", onAbort); }
+      } catch (error: any) { if (error?.kind === 'MAG_DISCOVERY_BUDGET' || isCancelled(opts.control)) throw error; return "unknown"; } finally { clearTimeout(timer); parent?.removeEventListener("abort", onAbort); budget.signal.removeEventListener('abort', onAbort); }
     };
     // v18.7.9 (iki aşama): portları AÇIK/BİLİNMEYEN olarak ayır. Aşama 2'de önce yalnız AÇIK
     // portlarda yollar denenir; bulunursa bilinmeyen portlara HİÇ dokunulmaz (hız). Bulunamazsa
     // bilinmeyen portlar fallback olarak denenir (yanlış-negatif önlenir).
     const portSchemes: Record<string, string> = {};   // v18.7.10: port→çalışan scheme (öğrenilmiş)
     const classifyPorts = async (): Promise<{ open: string[]; unknown: string[]; schemes: Record<string, string> }> => {
-      const ports = discoveryPortsFor(host, { allPorts: true });
-      if (ports.length <= 1 || host.hasPort) return { open: ports, unknown: [], schemes: {} };
+      const ports = discoveryPortsFor(host, { allPorts: allowOtherPorts });
+      if (ports.length <= 1) return { open: ports, unknown: [], schemes: {} };
       const u0 = new URL(entered), givenPort = u0.port || (u0.protocol === "https:" ? "443" : "80");
       const reachTimeout = Math.max(1500, Math.min(timeoutMs, 4000));
       const open: string[] = [], unknown: string[] = []; let idx = 0;
+      const portDeadlineAt = Date.now() + Math.min(10000, Math.floor(budget.remainingMs * 0.4));
       const limit = Math.min(ports.length, Math.max(6, Math.min(MAG_MAX_PARALLEL, Math.floor(Number(opts.concurrency) || 6))));
       opts.onStage?.(`Aşama 1/2 · ${u0.hostname} · ${ports.length} port paralel taranıyor`);
       const w = async () => {
         while (true) {
           await pause(opts.control);
+          if (Date.now() >= portDeadlineAt || budget.maxRequests - budget.requests <= 24) return;
           const i = idx++; if (i >= ports.length || stop) return;
           const p = ports[i];
           if (portState.get(p) === "open") { if (!open.includes(p)) open.push(p); continue; }
           const primary = p === givenPort ? u0.protocol.replace(":", "") : ["443", "8443", "2053", "2083", "2087", "2096"].includes(p) ? "https" : "http";
-          let st = await reachProbe(`${primary}://${u0.hostname}:${p}/`, reachTimeout);
+          let st = await reachProbe(`${primary}://${u0.hostname}:${p}/`, Math.max(1, Math.min(reachTimeout, portDeadlineAt - Date.now())));
           let scheme = primary;
           // v18.7.10 (GPT "TLS" noktası): birincil scheme yanıt vermezse ALTERNATİF scheme'i BİR KEZ dene.
           // (HTTPS standart-dışı portta ya da tam tersi.) TLS doğrulaması KAPATILMAZ.
-          if (st !== "open") {
+          if (st !== "open" && !stop && (p !== givenPort || allowAlternateScheme) && Date.now() < portDeadlineAt && budget.maxRequests - budget.requests > 24) {
             const alt = primary === "https" ? "http" : "https";
-            const st2 = await reachProbe(`${alt}://${u0.hostname}:${p}/`, reachTimeout);
+            const st2 = await reachProbe(`${alt}://${u0.hostname}:${p}/`, Math.max(1, Math.min(reachTimeout, portDeadlineAt - Date.now())));
             if (st2 === "open") { st = "open"; scheme = alt; }
           }
           if (st === "open") { portState.set(p, "open"); open.push(p); portSchemes[p] = scheme; announceOpenPorts(); }
@@ -415,7 +483,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       await Promise.all(Array.from({ length: limit }, () => w()));
       check(opts.control);
       const openOrdered = ports.filter((p: string) => open.includes(p));
-      const unknownOrdered = ports.filter((p: string) => unknown.includes(p));
+      const unknownOrdered = ports.filter((p: string) => !open.includes(p) && portState.get(p) !== "closed"); // denenemeyen portlar bilinmeyen kalır.
       void recordDiagnostic("scan", "MAG_DISCOVERY_PORT_SCAN", { host: u0.hostname, scanned: ports.length, open: openOrdered, unknownCount: unknownOrdered.length, parallel: limit, schemes: portSchemes });
       return { open: openOrdered, unknown: unknownOrdered, schemes: portSchemes };
     };
@@ -428,22 +496,25 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     };
     // İKİ AŞAMALI KEŞİF
     const twoPhaseExpand = async () => {
+      if (stop || seen.size >= maxCandidates) return;
       const { open, unknown, schemes } = await classifyPorts();
       // Aşama 2a: yalnız AÇIK portlarda yollar (öğrenilmiş scheme ile).
       const openPorts = open.length ? open : unknown;
+      if (!openPorts.length || stop) return;
       opts.onStage?.(`Aşama 2/2 · açık portlarda (${openPorts.length}) yol aranıyor`);
-      await sweep(scope === "all" ? [entered, ...portalDiscoveryCandidates(host, { allPorts: true, ports: openPorts, schemes })] : portalDiscoveryCandidates(host, { allPorts: true, ports: openPorts, schemes }));
+      await sweep(scope === "all" ? [entered, ...portalDiscoveryCandidates(host, { allPorts: allowOtherPorts, ports: openPorts, schemes })] : portalDiscoveryCandidates(host, { allPorts: allowOtherPorts, ports: openPorts, schemes }));
       // Aşama 2b: açıkta bulunamazsa bilinmeyen portlar (fallback). v18.7.10: SINIRLI — yalnız en
       // olası ilk ~96 aday (yol-öncelikli sıra: üst yollar×portlar). Böylece "bulunamadı" senaryosu
       // 714 deneme/8,5 dk yerine kısa sürer; portal gerçekten varsa handshake yedeği yine bulur.
       if (!stop && !hasSelectable() && open.length && unknown.length) {
         opts.onStage?.(`Açık portlarda bulunamadı · ${unknown.length} bilinmeyen portta kısa deneme`);
-        await sweep(portalDiscoveryCandidates(host, { allPorts: true, ports: unknown }).slice(0, 96));
+        await sweep(portalDiscoveryCandidates(host, { allPorts: allowOtherPorts, ports: unknown }).slice(0, 96));
       }
       emitDiscoveryResult(open, unknown);
     };
     if (scope === "all") {
-      await twoPhaseExpand();
+      await sweep([entered]); // Koruma/429 varsa paralel port isteği başlamadan dur.
+      if (!stop) await twoPhaseExpand();
     } else if (scope === "exact") {
       // v18.7.13: "Yalnız girilen" — KATİ: SADECE girilen port+yol denenir. Başka yol/port/portal,
       // kurulum ailesi (family) ve iki-aşamalı port keşfi ARANMAZ. Kullanıcı tam endpoint'i biliyorsa
@@ -458,6 +529,19 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     if (lastError && report.state === "error") report.message = lastError;
     else if (report.state === "not-found" && seen.size >= maxCandidates) report.message = `Portal aday sınırına ulaşıldı (${maxCandidates}); bu kapsamda API doğrulanamadı`;
     return report;
+    } catch (error: any) {
+      if (isCancelled(opts.control) || error?.kind === 'CANCELLED') throw error;
+      if (error?.kind !== 'MAG_DISCOVERY_BUDGET') throw error;
+      report.candidates = [...candidates.values()];
+      report.state = report.candidates.some(candidate => candidate.selectable) ? 'ready' : 'not-found';
+      report.message = `${budget.sharedBudget ? 'Pasif' : 'Host'} keşif bütçesi doldu; kalan port/yollar denenmedi. Portalın bulunmadığı kesinleşmedi.`;
+      return report;
+    } finally {
+      report.budget = { requests: budget.requests, remainingMs: budget.remainingMs, exhausted: budget.exhausted };
+      report.portObservations = [...portState].map(([port, state]) => ({ port, state: wildcardPorts.has(port) ? 'wildcard-responder' : state, fingerprint: fingerprints.get(port) }));
+      void recordDiagnostic('scan', 'MAG_DISCOVERY_BUDGET_RESULT', { host: new URL(entered).hostname, ...report.budget, elapsedMs: Date.now() - budget.startedAt, reason: budget.stopReason });
+      if (!opts.budgetForHost) budget.dispose();
+    }
   };
   const worker = async () => {
     while (true) { await pause(opts.control); const index = cursor++; if (index >= unique.length) return; const host = unique[index]; opts.onProgress?.(done, unique.length, host.raw); const report = await scan(host); check(opts.control); reports.push(report); done++; opts.onHost?.(report); opts.onProgress?.(done, unique.length, host.raw); }

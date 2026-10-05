@@ -10,7 +10,9 @@
  * YASAL: yalnız kullanıcının KENDİ MAG cihazlarının MAC adresleri taranmalıdır
  * (UI'da uyarı korunur). Bu model bir kısıt getirmez; sınırları çağıran uygular.
  * ===========================================================================
- */
+*/
+
+import { MAG_REGISTERED_DISCOVERY_PATHS } from '@/src/utils/magEndpointRegistry';
 
 /**
  * Portal keşfi için portlar (kullanıcı port vermezse). Verilen port her zaman ilk denenir.
@@ -32,22 +34,7 @@ export const MAG_DISCOVERY_PORTS = [
  * Portal keşfi için yollar (kullanıcı listesi + yaygın Stalker/Ministra yolları), EN OLASI ÖNCE.
  * v18.7.2: genişletildi. Yol-öncelikli süpürmede /c/, /portal.php, /stalker_portal/c/ öne alınır.
  */
-export const MAG_DISCOVERY_PATHS = [
-  "/c/",
-  "/portal.php",
-  "/stalker_portal/c/",
-  "/stalker_portal/server/load.php",
-  "/stalker_portal/server/",
-  "/stalker_portal/",
-  "/server/load.php",
-  "/portal/",
-  "/load.php",
-  "/c/portal.php",
-  "/ministra/c/",
-  "/ministra/portal/c/",
-  "/ministra/portal/",
-  "/ministra/",
-];
+export const MAG_DISCOVERY_PATHS = MAG_REGISTERED_DISCOVERY_PATHS;
 
 /** MAC güvenli üst sınırı (aralık üretiminde donmayı/istismarı önler). */
 export const MAG_MAX_MACS = 1024;

@@ -1,4 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
+import { CatalogPreparationModal } from '@/src/components/CatalogPreparationModal';
+import { applyCatalogProgress } from '@/src/utils/catalogProgress';
+import type { RefreshProgress } from '@/src/utils/refreshPlaylist';
 import {
   View,
   Text,
@@ -46,6 +49,11 @@ export default function EditPlaylist() {
   const [reloadContent, setReloadContent] = useState(true);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
+  const [catalogProgress, setCatalogProgress] = useState<RefreshProgress | null>(null);
+  const [operationStartedAt, setOperationStartedAt] = useState(0);
+  const [lastProgressAt, setLastProgressAt] = useState(0);
+  const editAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => editAbortRef.current?.abort(), []);
   const [error, setError] = useState<string | null>(null);
   const [serverCode, setServerCode] = useState(pl?.serverCodeBinding?.code || "");
   const [serverCodeAutoResolve, setServerCodeAutoResolve] = useState(pl?.serverCodeBinding?.autoResolve ?? true);
@@ -67,6 +75,9 @@ export default function EditPlaylist() {
   if (!pl) return null;
 
   const save = async () => {
+    if (loading) return;
+    const controller = new AbortController(); editAbortRef.current = controller;
+    setOperationStartedAt(Date.now()); setLastProgressAt(Date.now()); setCatalogProgress(null);
     Keyboard.dismiss();
     setError(null);
     setLoading(true);
@@ -245,31 +256,29 @@ export default function EditPlaylist() {
           throw new Error("Manuel MAG saat dilimi IANA biçiminde olmalı. Örnek: Europe/Istanbul");
         }
         if (reloadContent) {
-          const { stalkerLogin, stalkerCatalog, stalkerCredsFromPlaylist, normalizeStalkerAccountInfo, stalkerAccountSnapshot } = await import("@/src/utils/stalker");
+          const { stalkerLogin, stalkerCatalog, stalkerCredsFromPlaylist, normalizeStalkerAccountInfo, stalkerAccountSnapshot, mergeStalkerAccountInfo, terminalMagError } = await import("@/src/utils/stalker");
           const cred = stalkerCredsFromPlaylist({ ...pl, ...patch });
           setProgress("Portal doğrulanıyor...");
-          const { session, profile: prof } = await stalkerLogin(cred);
+          const { session, profile: prof } = await stalkerLogin(cred, { signal: controller.signal });
           const profile = prof || {};
           // v18.7.6: elle güncellemede de hesap API ile doğrulanır; boş sonuç eldeki
           // bitişi EZMEZ (regresyon: katı profil reddi bitişi siliyordu).
           setProgress("Hesap bilgileri doğrulanıyor...");
           let editedAccountInfo: any = normalizeStalkerAccountInfo(profile);
           try {
-            const snapshot = await stalkerAccountSnapshot(cred, session, profile);
-            const merged: any = { ...(pl.accountInfo || {}) };
-            for (const [key, value] of Object.entries(snapshot.info)) {
-              if (value !== undefined && value !== null && value !== "") merged[key] = value;
-            }
-            editedAccountInfo = merged;
-          } catch { editedAccountInfo = { ...(pl.accountInfo || {}), ...editedAccountInfo }; }
+            const snapshot = await stalkerAccountSnapshot(cred, session, profile, { signal: controller.signal });
+            editedAccountInfo = mergeStalkerAccountInfo(pl.accountInfo || {}, snapshot.info);
+          } catch (error) { if (terminalMagError(error)) throw error; editedAccountInfo = mergeStalkerAccountInfo(pl.accountInfo || {}, editedAccountInfo); }
           patch.accountInfo = editedAccountInfo;
+          patch.stalkerPortal = session.endpoint; patch.stalkerResolvedPortal = session.resolvedPortal;
           if (session.portalTimezone) patch.stalkerPortalTimezone = session.portalTimezone;
           setProgress("MAG katalog hazırlığı başlatılıyor...");
           let catalog;
           try {
             catalog = await stalkerCatalog(cred, session, {
               forceFresh: true,
-              onProgress: (progress) => setProgress(progress.message),
+              signal: controller.signal,
+              onProgress: (progress) => { setProgress(progress.message); setLastProgressAt(Date.now()); setCatalogProgress(previous => applyCatalogProgress(previous, progress)); },
             });
           }
           catch (e: any) { throw new Error(`MAG katalog yenileme başarısız: ${String(e?.message || e)}${session.profileError ? `\nProfil aşaması: ${session.profileError}` : ""}`); }
@@ -287,6 +296,7 @@ export default function EditPlaylist() {
         }
       }
 
+      if (controller.signal.aborted) throw Object.assign(new Error('Hazırlama iptal edildi.'), { kind: 'CANCELLED' });
       await updatePlaylist(pl.id, patch);
       router.back();
     } catch (e: any) {
@@ -550,13 +560,16 @@ export default function EditPlaylist() {
               <Text style={[styles.errText, { color: colors.error }]}>{error}</Text>
             </View>
           )}
-          {loading && progress && (
+          {loading && progress && pl.source !== 'stalker' && (
             <View style={[styles.progressBox, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
               <ActivityIndicator color={colors.brandPrimary} />
               <Text style={[styles.progressText, { color: colors.onSurface }]}>{progress}</Text>
             </View>
           )}
         </ScrollView>
+        <CatalogPreparationModal visible={loading && pl.source === 'stalker'} presentation="modal" title={`${name || pl.name} hazırlanıyor`}
+          message={progress || 'Portal doğrulanıyor…'} progress={catalogProgress} startedAt={operationStartedAt} lastProgressAt={lastProgressAt}
+          onCancel={() => editAbortRef.current?.abort()}/>
 
         <View style={[styles.footer, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
           <TouchableOpacity

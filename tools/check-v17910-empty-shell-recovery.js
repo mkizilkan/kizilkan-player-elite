@@ -17,7 +17,8 @@ const app = JSON.parse(read('frontend/app.json'));
 const pkg = JSON.parse(read('frontend/package.json'));
 const refresh = read('frontend/src/utils/refreshPlaylist.ts');
 const ctx = read('frontend/src/store/PlaylistContext.tsx');
-const overlay = read('frontend/src/components/PlaylistRepairOverlay.tsx');
+const adapter = read('frontend/src/components/PlaylistRepairOverlay.tsx');
+const overlay = adapter + read('frontend/src/components/CatalogPreparationModal.tsx');
 const layout = read('frontend/app/_layout.tsx');
 const settings = read('frontend/app/(tabs)/settings.tsx');
 const select = read('frontend/app/playlist-select.tsx');
@@ -44,8 +45,8 @@ ok(ctx.includes('PLAYLIST_REPAIR_PROGRESS') && ctx.includes('liveElapsedMs') && 
 ok(ctx.includes('PLAYLIST_SELF_REPAIR_PARTIAL') && ctx.includes('allowPartialRecovery:true'), 'usable partial recovery is explicit and diagnosed');
 
 ok(layout.includes('PlaylistRepairOverlay') && /<PlaylistRepairOverlay\s*\/>/.test(layout), 'global repair overlay is mounted at root layout');
-ok(overlay.includes('playlist-repair-catalog-progress') && overlay.includes('formatRefreshProgress'), 'global overlay displays shared catalog progress');
-ok(overlay.includes('silentFor>=30000') && overlay.includes('silentFor>=15000'), 'overlay reports slow/stalled-looking server waits');
+ok(adapter.includes('<CatalogPreparationModal') && adapter.includes('progress={repairProgress.progress}') && overlay.includes('playlist-repair-catalog-progress') && overlay.includes('<CatalogProgressCards'), 'global overlay displays actual shared catalog progress');
+ok(/silentFor\s*>=\s*30000/.test(overlay) && /silentFor\s*>=\s*15000/.test(overlay), 'overlay reports slow/stalled-looking server waits');
 ok(overlay.includes('Geçen süre:'), 'overlay displays elapsed time');
 ok(settings.includes('selectPlaylistFromSettings') && settings.includes('await setActivePlaylist(id)'), 'Settings SEÇ awaits selection and surfaces failure');
 ok(select.includes('await setActivePlaylist(only.id)') && select.includes('await setActivePlaylist(last.id)') && select.includes('await setActivePlaylist(id)'), 'profile auto/manual entry always re-verifies canonical Room state');

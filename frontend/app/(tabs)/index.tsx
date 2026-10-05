@@ -1,4 +1,5 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
+import { CatalogPreparationModal } from '@/src/components/CatalogPreparationModal';
 import {
   View,
   Text,
@@ -1125,7 +1126,7 @@ function ClassicLiveTvScreen() {
       <View style={[styles.header, isTvLayout && { paddingTop: 4, paddingBottom: 2 }]}>
         <View style={{ flex: 1 }}>
           <KizilkanLogo size="md" showSubtitle={false} showIcon align="left" />
-          {freshnessStatus?.playlistId===activePlaylist.id&&<Text style={{color:colors.onSurfaceSecondary,fontSize:11}}>{freshnessStatus.message}</Text>}
+          {freshnessStatus?.playlistId===activePlaylist.id&&!freshnessStatus.active&&<Text style={{color:colors.onSurfaceSecondary,fontSize:11}}>{freshnessStatus.message}</Text>}
           <Text style={[styles.subtitle, { color: colors.onSurfaceSecondary }]} numberOfLines={1}>
             {activePlaylist.name}
             {activePlaylist.serverCodeBinding?.code ? ` • Kod ${activePlaylist.serverCodeBinding.code}` : ""}
@@ -1472,15 +1473,9 @@ function ClassicLiveTvScreen() {
       {/* v18.7.7 (P8): otomatik güncelleme sürerken ortada, simgeli kutuda görünür ilerleme
           (manuel güncellemedeki gibi). Eskiden logonun altında 11px soluk yazıydı. */}
       {freshnessStatus?.active && freshnessStatus.playlistId === activePlaylist.id && (
-        <View pointerEvents="none" style={{ position: "absolute", left: 0, right: 0, bottom: 0, top: 0, alignItems: "center", justifyContent: "center" }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.md, maxWidth: "86%", backgroundColor: colors.surfaceSecondary, borderColor: colors.brandPrimary, borderWidth: 1, borderRadius: RADIUS.lg, paddingVertical: SPACING.md, paddingHorizontal: SPACING.lg }}>
-            <Ionicons name="sync" size={22} color={colors.brandPrimary} />
-            <ActivityIndicator color={colors.brandPrimary} />
-            <Text numberOfLines={2} style={{ flexShrink: 1, color: colors.onSurface, fontSize: FONT.size.sm, fontWeight: FONT.weight.medium }}>
-              {freshnessStatus.message}
-            </Text>
-          </View>
-        </View>
+        <CatalogPreparationModal visible title={`${freshnessStatus.playlistName || activePlaylist.name} hazırlanıyor`} message={freshnessStatus.message}
+          progress={freshnessStatus.progress || null} startedAt={freshnessStatus.startedAt || Date.now()} lastProgressAt={freshnessStatus.lastProgressAt}
+          interactive={false}/>
       )}
     </SafeAreaView>
   );

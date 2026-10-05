@@ -72,6 +72,9 @@ export interface SeriesItem {
 
 export interface AccountInfo {
   username?: string;
+  /** Portalın görünen adı; oturum açma kullanıcı adı değildir. */
+  display_name?: string;
+  expiryKind?: "date" | "unlimited" | "unknown";
   /** v18.7.7: Bazı MAG/Stalker portalları hesap şifresini de döndürür (get_main_info). */
   password?: string;
   status?: string;
@@ -187,6 +190,8 @@ export interface Playlist {
    */
   backupHosts?: string[];
   stalkerPortal?: string;
+  /** Doğrulanmış API yolu; ham /c UI yolu ile karıştırılmaz. */
+  stalkerResolvedPortal?: import('@/src/utils/magEndpointRegistry').ResolvedMagPortal;
   stalkerMac?: string;
   stalkerSerial?: string;
   /** v17.0.2: MAG/Stalker timezone policy. auto preserves proven profile defaults. */

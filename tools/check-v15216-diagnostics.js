@@ -65,7 +65,7 @@ async function sessionCacheFixture(){
     if(id==='@/src/utils/storage') return {storage:{getItem:async(k,f)=>memoryStore.has(k)?memoryStore.get(k):f,setItem:async(k,v)=>{memoryStore.set(k,v);return true;},removeItem:async(k)=>{memoryStore.delete(k);return true;}}};
     if(id==='@/modules/kizilkan-native-core') return { KizilkanNativeCore:{ available:false, magExactRequest:async()=>null } };
       if (id === '@/src/utils/accountExpiry') return require('./_account-expiry-runtime')();
-      return require(id);
+      return require('./_mag_pure').load(id) || require(id);
   };
   const box={module:{exports:{}},exports:{},require:req,console,URL,URLSearchParams,AbortController,setTimeout,clearTimeout,fetch}; box.exports=box.module.exports;
   vm.runInNewContext(js,box,{filename:'stalker.ts'}); const m=box.module.exports;

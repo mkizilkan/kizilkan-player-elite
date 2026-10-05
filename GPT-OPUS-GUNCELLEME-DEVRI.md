@@ -22,6 +22,16 @@
 - **v18.7.11 — MAG profil-uyumluluk:** MAG320 `get_profile` minimal BOŞ dönerse dolu-parametreli MAG254/MAG250 varyantlarına düşer; `stalkerVerifyAccount` kimlik yoksa canlı erişimle "verified" (boş profil ama 21266 kanal). Kullanıcı adı telemetrisi (`usernamePresent/usernameFieldKind`, redaksiyona takılmaz). Keşif duvar-saati bütçesi (19 dk → ≤4 dk, `DISCOVERY_BUDGET_STOP`). Ayrıntı `AI-DEVIR-v18.7.11.md`.
 - **v18.7.12 — MAG çoklu-IP DNS failover (`frontend/src/utils/magHostFailover.ts`):** Cihaz kanıtı: goldensm32.xyz 5 A kaydı, yalnız `172.110.220.225` canlı; sistem DNS ölü IP veriyor → 6 sn timeout. DoH (dns.google→cloudflare) ile tüm A kayıtları → canlı IP yoklanıp **pin** → bağlantı IP'ye (Host=hostname), finalUrl `logicalUrl` ile hostname'e çevrilir. Yalnız http, yalnız RN ortamında aktif. `stalker.ts req()` (düz fetch + exactFetch) ve `magPortalDiscovery raw()` TEMBEL importla bağlı. **CİHAZDA KANITLANDI:** `MAG_HOST_IP_FAILOVER goldensm32 A=5` sonrası handshake'ler artık BAŞARILI (önce hepsi timeout). Ayrıntı `AI-DEVIR-v18.7.12.md`.
 
+## 3a. v18.7.15 — GPT Build 1 Opus tarafından TAMAMLANDI (2026-10-05)
+- **Dal:** `v18.7.15-rc1-mag-endpoint-lock` (GPT'nin `v18.7.15-dev1` yerel dalı yeniden adlandırıldı; uzakta hiç yoktu). **Taban:** v18.7.14 `4dc91551`.
+- GPT'nin D01–D15 kodu korunarak alındı; Opus iki kırık kapıyı kök nedenle düzeltti:
+  1. `frontend/src/utils/magPortalDiscovery.ts` ~310: alternatif scheme (http↔https) genişletmesine `!hasSelectable()` eklendi.
+     Kanıt: fixture izinde http `load.php` seçilebilirken 404 `portal.php` yolları için 3 https isteği → origin taşması (`test-mag-portal-discovery.js:86`).
+  2. `frontend/src/utils/stalker.ts` `reqTransport` finally: `c.abort()` (D12). Kanıt: `test-v18715-dev1.js:164` tamamlanan handshake taşıma sinyali iptalde açık kalıyordu.
+- Yeni statik kapı `tools/check-v18715-release.js` (denetime kayıtlı). Doğrulama: tsc temiz, denetle TEMİZ, keşif 19 grup, DEV1 13 grup.
+- Commit/push/Actions ve DEV APK sonuçları `AI-DEVIR-v18.7.15.md`'ye yazılır. Cihaz testi bekliyor (liste aynı dosyada).
+- Bekleyen: Build 2 (paralel katalog/adaptif worker/DB yazımı/yüzde), G07–G10, oynatıcı ilk-kare ölçümü.
+
 ## 3b. v18.7.13'te YAPILANLAR (dal `v18.7.13-rc1-exact-scope-username-mac`, PC doğrulandı, cihaz bekliyor)
 Aşağıdaki P1/P2'lerin KODU YAZILDI (ayrıntı `AI-DEVIR-v18.7.13.md`):
 - **#1 Manuel portal seçimi:** "ben seçeyim"de iz adaylar seçilebilir; seçim fazı terminal-olmayan iz raporunda açılır; seçim handshake ile doğrulanır.

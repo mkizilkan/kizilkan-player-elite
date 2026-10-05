@@ -123,6 +123,10 @@ export type PlaylistRepairProgress = {
   pausedTotalMs?: number;
   partial?: boolean;
 };
+export type PlaylistFreshnessStatus = {
+  playlistId: string; message: string; active?: boolean; playlistName?: string;
+  progress?: RefreshProgress; startedAt?: number; lastProgressAt?: number;
+};
 
 interface PlaylistContextValue {
   playlists: Playlist[];
@@ -143,7 +147,7 @@ interface PlaylistContextValue {
   removePlaylist: (id: string) => Promise<void>;
   cleanupPlaylistContent:(id:string,kinds:Array<CatalogKind|'epg'>)=>Promise<number>;
   refreshPlaylistKinds:(id:string,kinds:Array<CatalogKind|'epg'>,progress?:(p:RefreshProgress)=>void,valid?:()=>boolean)=>Promise<void>;
-  freshnessStatus:{playlistId:string;message:string;active?:boolean}|null;
+  freshnessStatus:PlaylistFreshnessStatus|null;
   updatePlaylist: (id: string, patch: Partial<Playlist>) => Promise<void>;
   setActivePlaylist: (id: string) => Promise<void>;
   toggleFavorite: (channelId: string) => Promise<void>;
@@ -188,7 +192,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   const playlistsRef = useRef<Playlist[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeIdRef=useRef(activeId);activeIdRef.current=activeId;
-  const [freshnessStatus,setFreshnessStatus]=useState<{playlistId:string;message:string;active?:boolean}|null>(null);
+  const [freshnessStatus,setFreshnessStatus]=useState<PlaylistFreshnessStatus|null>(null);
   const freshnessAttempts=useRef(new Map<string,number>());
   useEffect(() => { playlistsRef.current = playlists; }, [playlists]);
   const [favorites, setFavorites] = useState<string[]>([]);
@@ -1039,7 +1043,8 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       freshnessAttempts.current.set(attemptKey,Date.now());
       let kinds=(['live','vod','series'] as CatalogKind[]).filter(k=>pl.cleanedKinds?.includes(k)||(pl.contentSelection?.[k]??true));
       if(!kinds.length)return;
-      setFreshnessStatus({playlistId:id,message:'Güncellik kontrol ediliyor…',active:true});
+      const freshnessStartedAt=Date.now();
+      setFreshnessStatus({playlistId:id,playlistName:pl.name,message:'Güncellik kontrol ediliyor…',active:true,startedAt:freshnessStartedAt,lastProgressAt:freshnessStartedAt});
       try{
         let missingKinds:CatalogKind[]=[];
         if(KizilkanNativeCore.available){
@@ -1059,7 +1064,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           if(typeof p.vodCount==='number'&&p.vod==='saving')parts.push(`Film ${p.vodCount}`);
           if(typeof p.seriesCount==='number'&&p.series==='saving')parts.push(`Dizi ${p.seriesCount}`);
           const detail=parts.length?` · ${parts.join(' • ')}`:'';
-          setFreshnessStatus({playlistId:id,message:(p.message||'Güncelleniyor…')+detail,active:true});
+          setFreshnessStatus({playlistId:id,playlistName:pl.name,message:(p.message||'Güncelleniyor…')+detail,active:true,progress:p,startedAt:freshnessStartedAt,lastProgressAt:Date.now()});
         },valid,missingKinds.length>0);
         if(valid())setFreshnessStatus({playlistId:id,message:'Yerel katalog güncel.',active:false});
       }catch{if(valid())setFreshnessStatus({playlistId:id,message:'Sunucuya ulaşılamadı; yerel katalog kullanılabilir.',active:false});}

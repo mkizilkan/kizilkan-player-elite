@@ -180,7 +180,19 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.14 RC1 — dal `v18.7.14-rc1-verify-username-scope`)
+## 9. Mevcut durum (v18.7.15 RC1 — dal `v18.7.15-rc1-mag-endpoint-lock`)
+
+**v18.7.15 (bu sürüm — GPT Build 1 D01-D15 + Opus tamamlama; PC doğrulandı, CİHAZ BEKLİYOR):**
+GPT `v18.7.15-dev1`'de kodladı, token bitti (47 dosya, 2 kırık kapı); kullanıcı onayıyla Opus devraldı, dalı §4 adına çevirdi.
+- **D01/D02:** kullanıcı adı yalnız gerçek login alanlarından; MAC'e düşmez ("Belirlenemedi"); `name/fname` → ayrı **"Görünen Ad"** (hkpremium: Kullanıcı Adı Belirlenemedi, Görünen Ad 1787 — bilerek).
+- **D03/D04:** toplu `mergeInfo` ortak birleştirici; MAG `active_cons/max_connections/allowed_output_formats`. **D05/D06:** durum bilinmeyen/engelli ayrımı, 0 bağlantı korunur.
+- **D07:** ortak `CatalogPreparationModal` (ana ekran/onarım/düzenleme; düzenleme İptal+geri tuşu). **D08:** tekli ekleme `resolveMagInput` → endpoint exact kilit.
+- **D13:** `MagDiscoveryBudget` ortak host bütçesi. **D14/D15:** joker yanıtlayıcı parmak izi, CF edge≠challenge. İstemci JS (xpcom) yalnız METİN olarak çözülür.
+- **Opus:** (1) alternatif scheme genişletmesi yalnız seçilebilir API yokken (http API bulunmuşken https'e taşma); (2) D12 `reqTransport` finally'de `c.abort()` (iptal edilen oturumda açık taşıma kalmaz).
+- **Tuzak:** `stalker.ts`'teki yeni üst düzey importlar SAF modüllerdir; eski VM kapıları `tools/_mag_pure.js` ile yükler. Platform modülü (panel-scan/failover) yine tembel.
+- Doğrulama: tsc temiz · denetle TEMİZ · `check-v18715` PASS · keşif 19 grup · DEV1 13 grup. Native değişiklik YOK. Ayrıntı `AI-DEVIR-v18.7.15.md`.
+
+## 9-eski00. v18.7.14 RC1 (dal `v18.7.14-rc1-verify-username-scope`)
 
 **v18.7.14 (bu sürüm — GPT G01-G06 + back-trap iptal; PC doğrulandı, CİHAZ BEKLİYOR):**
 Kaynak: GPT v18.7.13 incelemesi (`GPT-PYTHON-REFERANSLARI-VE-MAC-INCELEME-2026-10-05.md`) + kullanıcı "oynatma listesi ekle'den geri çıkamıyorum".

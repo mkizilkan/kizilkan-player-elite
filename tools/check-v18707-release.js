@@ -57,7 +57,7 @@ need(/media3SourceSetAtRef/.test(player) && /sinceSourceSetMs/.test(player), 'P7
 
 // P8 — ortada simgeli ilerleme kutusu
 need(/freshnessStatus\?\.active/.test(idx), 'P8: aktif ilerleme overlay kullanılmıyor');
-need(/active\?:boolean/.test(ctx), 'P8: freshnessStatus.active alanı yok');
+need(/active\?:\s*boolean/.test(ctx), 'P8: freshnessStatus.active alanı yok');
 
 if (fail.length) { console.log(fail.map(f => '✗ ' + f).join('\n')); console.log('BAŞARISIZ'); process.exit(1); }
 console.log('PASS: v18.7.7 MAG hesap kartı doğruluğu + oynatma/senkron düzeltmeleri kapısı TEMİZ');

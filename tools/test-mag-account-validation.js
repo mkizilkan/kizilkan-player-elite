@@ -323,8 +323,8 @@ function usernameFieldSelection() {
   // v18.7.11 (A03/A04 + protokol): kullanıcı adı = get_profile `login`; boşsa name/fname'e düşer; MAC değil.
   const s = env.load('src/utils/stalker.ts');
   assert.equal(s.normalizeStalkerAccountInfo({ login: 'acc123', mac, name: 'Cihaz' }).username, 'acc123');
-  assert.equal(s.normalizeStalkerAccountInfo({ login: '', name: 'Mustafa', mac }).username, 'Mustafa');
-  assert.equal(s.normalizeStalkerAccountInfo({ fname: 'Mehmet', mac }).username, 'Mehmet');
+  assert.equal(s.normalizeStalkerAccountInfo({ login: '', name: 'Fixture Display', mac }).username, undefined);
+  assert.equal(s.normalizeStalkerAccountInfo({ fname: 'Fixture Display', mac }).display_name, 'Fixture Display');
   assert.equal(s.normalizeStalkerAccountInfo({ login: '001A79303AA7', mac: '00:1A:79:30:3A:A7' }).username, undefined);
   assert.equal(s.normalizeStalkerAccountInfo({ login: 'anonymous', mac }).username, undefined);
   groups++;
@@ -373,13 +373,17 @@ async function g02PreserveRealLogin() {
   const e = environment(c => c.action === 'get_main_info' ? response({ js: { fname: 'Mustafa', mac, end_date: '2030-01-01' } }) : response({ js: { data: [item()] } }));
   const snap = await e.load('src/utils/stalker.ts').stalkerAccountSnapshot({ portal: endpoint, mac }, session(), { id: 1, login: 'realacct', mac, end_date: '2030-01-01' });
   assert.equal(snap.info.username, 'realacct', 'main-info fname profildeki gerçek login\'i ezmemeli');
+  const bulk = await e.load('src/utils/stalker.ts').stalkerVerifyAccount({ portal: endpoint, mac }, session(), { id: 1, login: 'realacct', mac, end_date: '2030-01-01' });
+  assert.equal(bulk.accountInfo.username, 'realacct', 'toplu doğrulamada da gerçek login korunmalı');
+  assert.equal(bulk.accountInfo.display_name, 'Mustafa', 'görünen ad ayrı saklanmalı');
   groups++;
 }
 function g03Base64LoginNotUsername() {
   // v18.7.14 (G03/K03): login alanı base64-MAC → kullanıcı adı DEĞİL; sonraki gerçek alan (name) seçilir.
   const s = env.load('src/utils/stalker.ts');
   const b64mac = Buffer.from('00:1A:79:30:3A:A7').toString('base64');
-  assert.equal(s.normalizeStalkerAccountInfo({ login: b64mac, name: 'Gercek', mac: '00:1A:79:30:3A:A7' }).username, 'Gercek');
+  assert.equal(s.normalizeStalkerAccountInfo({ login: b64mac, username: 'Gercek', name: 'Gorunen', mac: '00:1A:79:30:3A:A7' }).username, 'Gercek');
+  assert.equal(s.normalizeStalkerAccountInfo({ login: b64mac, name: 'Gorunen', mac: '00:1A:79:30:3A:A7' }).username, undefined);
   assert.equal(s.normalizeStalkerAccountInfo({ login: b64mac, mac: '00:1A:79:30:3A:A7' }).username, undefined, 'base64-MAC tek başına kullanıcı adı olmaz');
   groups++;
 }
@@ -404,6 +408,18 @@ async function g04BudgetBounded() {
   assert.ok(calls <= 3, `login'siz hesapta en çok best+2 ek get_profile; oldu: ${calls}`);
   console.log('PASS: G04 enrichment budget bounded (empty responses counted)'); groups++;
 }
+function dev1AccountMetadata() {
+  const s = env.load('src/utils/stalker.ts');
+  const info = s.normalizeStalkerAccountInfo({ login: 'fixture', mac, active_cons: '0', max_connections: 3, allowed_output_formats: ['TS', 'm3u8', 'bad<>', 'TS'], exp_date: 'unlimited' });
+  assert.equal(info.active_cons, 0); assert.equal(info.max_connections, 3);
+  assert.equal(JSON.stringify(info.allowed_output_formats), JSON.stringify(['ts', 'm3u8']));
+  assert.equal(info.expiryKind, 'unlimited');
+  const unknown = s.normalizeStalkerAccountInfo({ active_cons: '', max_connections: -1, exp_date: '0002-01-01' });
+  assert.equal(unknown.active_cons, undefined); assert.equal(unknown.max_connections, undefined); assert.equal(unknown.expiryKind, 'unknown');
+  const merged = s.mergeStalkerAccountInfo(info, unknown);
+  assert.equal(merged.active_cons, 0); assert.equal(merged.expiryKind, 'unlimited');
+  groups++;
+}
 (async () => {
   dateContract(); flagsAndExpiry();
   await invalidTokensAndProfileFallback(); await accountAndLiveProof(); await unverifiedAndDenials();
@@ -411,5 +427,6 @@ async function g04BudgetBounded() {
   await mag320FullParamProfileFallback(); await emptyProfileButLiveAccessible(); usernameFieldSelection();
   await base64MacMatches(); await usernameEnrichmentFullParam();
   await g01AllChannelsFallback(); await g02PreserveRealLogin(); g03Base64LoginNotUsername(); await g06SnapshotMacGuard(); await g04BudgetBounded();
+  dev1AccountMetadata();
   console.log(`PASS MAG account validation: ${groups} actual-module behavior groups (date/calendar, token/profile, identity/access, denials, bounded samples, transport, terminal/cancel, full-param profile, empty-profile-live, username field).`);
 })().catch(error => { console.error(error); process.exitCode = 1; });
