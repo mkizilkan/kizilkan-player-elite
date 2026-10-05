@@ -35,7 +35,8 @@ need(/Promise<"open" \| "unknown">/.test(disc), 'keşif: reachProbe üç durumlu
 need(/v\.error === "BODY_LIMIT"\) \? "open"/.test(disc), 'keşif: proxy body-limit açık port sayılmıyor');
 need(/open-ÖNCE|OPEN önce, UNKNOWN sonra|open-first/i.test(disc) && /ports\.filter\(\(p: string\) => unknown\.includes\(p\)\)/.test(disc), 'keşif: unknown portlar düşürülüyor (yanlış-negatif)');
 need(/MAG_DISCOVERY_PORT_CLOSED/.test(disc) && /MAG_DISCOVERY_PORT_SKIP/.test(disc), 'keşif: closed/skip telemetrisi yok');
-need(/!host\.hasPort && \(!opts\.scope \|\| opts\.scope === "exact"\)\) \? "fallback"/.test(disc), 'keşif: portsuz auto scope yok');
+// v18.7.14 (G05): portsuz + scope VERİLMEMİŞ → fallback (auto); explicit exact artık portsuz da kati kalır.
+need(/\(!host\.hasPort && !opts\.scope\) \? "fallback"/.test(disc), 'keşif: portsuz auto scope yok');
 
 // Tekli/çoklu motor birleştirme
 need(/discoverMagHosts/.test(addPl) && /chooseMagPortals/.test(addPl), 'tekli ekleme MAC-siz keşif motorunu kullanmıyor');

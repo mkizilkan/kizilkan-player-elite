@@ -201,7 +201,7 @@ async function sampleKindsAndBounds() {
   const malformed = [null, [], {}, { error: 'unauthorized' }, { id: 0, name: 'name', cmd: 'ffmpeg http://localhost/ch/0' }, { id: 2, name: 'name' }, { id: {}, name: 'name', cmd: 'http://localhost/ch/2' }, { id: 2, name: {}, cmd: 'http://localhost/ch/2' }, { id: 2, name: 'name', cmd: 'unauthorized' }, { id: 2, name: 'name', cmd: 'http://%' }, { id: 2, name: 'name', cmd: '//invalid' }];
   const empty = environment(c => response(c.action === 'get_main_info' ? { js: {} } : c.type === 'series' ? { js: { data: [] } } : { js: { data: malformed, total_items: 999999 } }));
   assert.equal((await empty.load('src/utils/stalker.ts').stalkerVerifyAccount({ portal: endpoint, mac }, session(), profile())).state, 'unverified');
-  assert.equal(empty.calls.length, 7, 'no full-catalogue traversal despite declared huge total');
+  assert.equal(empty.calls.length, 8, 'no full-catalogue traversal despite declared huge total (7 ordered-list + 1 get_all_channels fallback, G01)');
   const capped = environment(c => response(c.action === 'get_main_info' ? { js: {} } : { js: Array.from({ length: 200 }, item) }));
   assert.equal((await capped.load('src/utils/stalker.ts').stalkerVerifyAccount({ portal: endpoint, mac }, session(), profile())).sampledItems, 128);
   const oversized = environment(() => response({ js: { login: 'fixture-account', padding: 'ş'.repeat(530000) } }));
@@ -222,7 +222,7 @@ async function mainAndCatalogueDenial() {
   }
   const opaque = environment(() => response('<html>ordinary homepage</html>'));
   assert.equal((await opaque.load('src/utils/stalker.ts').stalkerVerifyAccount({ portal: endpoint, mac }, session(), profile())).state, 'unverified');
-  assert.equal(opaque.calls.length, 7);
+  assert.equal(opaque.calls.length, 8); // v18.7.14 (G01): 7 ordered-list + 1 get_all_channels fallback
   groups++;
 }
 async function protectionCancellationAndDeadline() {
@@ -360,11 +360,56 @@ async function usernameEnrichmentFullParam() {
   assert.equal(e.load('src/utils/stalker.ts').normalizeStalkerAccountInfo(login.profile).username, 'ud3B3yRH', 'minimal login boşsa dolu-parametre varyantındaki gerçek login kullanılmalı (1787 değil)');
   console.log('PASS: username enrichment — real login from full-param get_profile preferred over name'); groups++;
 }
+async function g01AllChannelsFallback() {
+  // v18.7.14 (G01/K01): get_ordered_list desteklenmiyor ama get_all_channels gerçek kanal veriyor → verified.
+  const e = environment(c => c.action === 'get_main_info' ? response({ js: { login: 'acct', mac, end_date: '2030-01-01' } })
+    : c.action === 'get_all_channels' ? response({ js: { data: [item()] } }) : response({ js: {} }));
+  const r = await e.load('src/utils/stalker.ts').stalkerVerifyAccount({ portal: endpoint, mac }, session(), profile());
+  assert.equal(r.state, 'verified'); assert.equal(r.accessKind, 'live'); assert.ok(r.evidence.includes('live-all-channels-sample'));
+  console.log('PASS: G01 ordered-list unsupported but get_all_channels verifies live'); groups++;
+}
+async function g02PreserveRealLogin() {
+  // v18.7.14 (G02/K02): profil gerçek login; main-info yalnız görünen ad (fname) → login KORUNUR.
+  const e = environment(c => c.action === 'get_main_info' ? response({ js: { fname: 'Mustafa', mac, end_date: '2030-01-01' } }) : response({ js: { data: [item()] } }));
+  const snap = await e.load('src/utils/stalker.ts').stalkerAccountSnapshot({ portal: endpoint, mac }, session(), { id: 1, login: 'realacct', mac, end_date: '2030-01-01' });
+  assert.equal(snap.info.username, 'realacct', 'main-info fname profildeki gerçek login\'i ezmemeli');
+  groups++;
+}
+function g03Base64LoginNotUsername() {
+  // v18.7.14 (G03/K03): login alanı base64-MAC → kullanıcı adı DEĞİL; sonraki gerçek alan (name) seçilir.
+  const s = env.load('src/utils/stalker.ts');
+  const b64mac = Buffer.from('00:1A:79:30:3A:A7').toString('base64');
+  assert.equal(s.normalizeStalkerAccountInfo({ login: b64mac, name: 'Gercek', mac: '00:1A:79:30:3A:A7' }).username, 'Gercek');
+  assert.equal(s.normalizeStalkerAccountInfo({ login: b64mac, mac: '00:1A:79:30:3A:A7' }).username, undefined, 'base64-MAC tek başına kullanıcı adı olmaz');
+  groups++;
+}
+async function g06SnapshotMacGuard() {
+  // v18.7.14 (G06/K06): yanlış-MAC veya boş main-info OTORİTER değildir; profil bilgisi bozulmaz.
+  const wrong = Buffer.from('00:1A:79:00:00:02').toString('base64');
+  const e = environment(() => response({ js: { login: 'wrongacct', mac: wrong, end_date: '2040-01-01' } }));
+  const snap = await e.load('src/utils/stalker.ts').stalkerAccountSnapshot({ portal: endpoint, mac }, session(), { id: 1, login: 'realacct', mac, end_date: '2030-01-01' });
+  assert.equal(snap.mainInfoOk, false, 'yanlış MAC main-info otoriter olmamalı');
+  assert.equal(snap.info.username, 'realacct'); assert.equal(snap.info.tariff_expired_date, '2030-01-01', 'yanlış MAC bitişi ezmemeli');
+  const e2 = environment(() => response({ js: {} }));
+  const snap2 = await e2.load('src/utils/stalker.ts').stalkerAccountSnapshot({ portal: endpoint, mac }, session(), { id: 1, login: 'realacct', mac });
+  assert.equal(snap2.mainInfoOk, false, '{} main-info otoriter olmamalı');
+  console.log('PASS: G06 snapshot rejects wrong-MAC/empty main-info; G02 real login preserved'); groups++;
+}
+async function g04BudgetBounded() {
+  // v18.7.14 (G04/K04): login'siz hesapta best sonrası boş yanıtlar da sayılır → en çok 1 best + 2 ek istek.
+  let calls = 0;
+  const e = environment(c => c.action === 'handshake' ? response({ js: { token: 'isolated-token' } })
+    : c.action === 'get_profile' ? (++calls, response({ js: calls === 1 ? { id: 5, name: '1787', mac } : null })) : response({ js: [] }));
+  await e.load('src/utils/stalker.ts').stalkerLogin({ portal: endpoint, mac, deviceModel: 'MAG320', endpointPolicy: 'exact' });
+  assert.ok(calls <= 3, `login'siz hesapta en çok best+2 ek get_profile; oldu: ${calls}`);
+  console.log('PASS: G04 enrichment budget bounded (empty responses counted)'); groups++;
+}
 (async () => {
   dateContract(); flagsAndExpiry();
   await invalidTokensAndProfileFallback(); await accountAndLiveProof(); await unverifiedAndDenials();
   await sampleKindsAndBounds(); await mainAndCatalogueDenial(); await protectionCancellationAndDeadline(); await nativeProxyAndInputSafety();
   await mag320FullParamProfileFallback(); await emptyProfileButLiveAccessible(); usernameFieldSelection();
   await base64MacMatches(); await usernameEnrichmentFullParam();
+  await g01AllChannelsFallback(); await g02PreserveRealLogin(); g03Base64LoginNotUsername(); await g06SnapshotMacGuard(); await g04BudgetBounded();
   console.log(`PASS MAG account validation: ${groups} actual-module behavior groups (date/calendar, token/profile, identity/access, denials, bounded samples, transport, terminal/cancel, full-param profile, empty-profile-live, username field).`);
 })().catch(error => { console.error(error); process.exitCode = 1; });

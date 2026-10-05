@@ -348,6 +348,9 @@ export default function AddPlaylist() {
   const [bulkScanStopping, setBulkScanStopping] = useState(false);
   const bulkPreparationAbortRef = React.useRef<AbortController | null>(null);
   const bulkScanPausedRef = React.useRef(false);
+  // v18.7.14 (A): MAG tek-ekleme iptali. Modal (loading && stalker) iptal butonu bunu abort eder;
+  // stLogin/snapshot/katalog signal'i dinler, akış catch/finally'de loading=false yapıp modalı kapatır.
+  const stalkerAddAbortRef = React.useRef<AbortController | null>(null);
   const bulkScanCancelledRef = React.useRef(false);
   const bulkNativeScanRef = React.useRef(false);
   // GPT ELITE v14.2.0 — çoklu hesap: manuel ve dosya birlikte kullanılabilir.
@@ -2494,6 +2497,7 @@ ${pub.path}`, [
     }
 
     setLoading(true);
+    if (method === "stalker") stalkerAddAbortRef.current = new AbortController(); // v18.7.14 (A): iptal edilebilir
     setProgress(method === "stalker" ? "MAG Portal hazırlanıyor · bağlantı ve cihaz profili doğrulanacak…" : "");
     try {
       // GPT v10.5.0: "Paneli bilmiyorum" yolunda kullanıcı yalnız kullanıcı
@@ -2640,7 +2644,7 @@ ${pub.path}`, [
               const { chooseMagPortals } = await import("@/src/utils/magBulkScan");
               const reports = await discoverMagHosts(
                 [{ raw: cred.portal, host: portalHost, hasPort: false, hasPath: false }],
-                { scope: "fallback", timeoutMs: 6000, onStage: (m) => setProgress(m) },
+                { scope: "fallback", timeoutMs: 6000, onStage: (m) => setProgress(m), control: { signal: stalkerAddAbortRef.current?.signal } },
               );
               chosen = reports[0] ? chooseMagPortals(reports)[reports[0].host.host] : undefined;
             } catch { /* MAC'siz keşif başarısızsa handshake fallback */ }
@@ -2649,7 +2653,7 @@ ${pub.path}`, [
               const { portalDiscoveryCandidates } = await import("@/src/utils/magBulk");
               const cands = portalDiscoveryCandidates({ raw: cred.portal, host: portalHost, hasPort: false });
               // v18.7.10: handshake keşfinde canlı ilerleme (eskiden sessizdi).
-              const found = await discoverMagPortal(cred, cands, { timeoutMs: 6000, onProbe: (_e, i, t) => setProgress(`Portal aranıyor · handshake ${i + 1}/${t}`) });
+              const found = await discoverMagPortal(cred, cands, { timeoutMs: 6000, signal: stalkerAddAbortRef.current?.signal, onProbe: (_e, i, t) => setProgress(`Portal aranıyor · handshake ${i + 1}/${t}`) });
               chosen = found?.endpoint;
             }
             if (chosen) { cred.portal = chosen; setProgress(`Portal bulundu: ${new URL(chosen).host}`); }
@@ -2657,7 +2661,7 @@ ${pub.path}`, [
         } catch { /* keşif başarısızsa normal login kendi aday listesini dener */ }
 
         setProgress("MAG320 Exact profiliyle native portala bağlanılıyor...");
-        const { session, profile: prof } = await stLogin(cred);
+        const { session, profile: prof } = await stLogin(cred, { signal: stalkerAddAbortRef.current?.signal });
         const profile = prof || {};
 
         // v18.7.6: "portal bulundu" yetmez — hesap durumu/bitişi API ile doğrulanır
@@ -2666,7 +2670,7 @@ ${pub.path}`, [
         setProgress("Hesap bilgileri portaldan doğrulanıyor...");
         let accountInfo = normalizeStalkerAccountInfo(profile);
         try {
-          const snapshot = await stalkerAccountSnapshot(cred, session, profile);
+          const snapshot = await stalkerAccountSnapshot(cred, session, profile, { signal: stalkerAddAbortRef.current?.signal });
           accountInfo = snapshot.info;
         } catch { /* terminal olmayan hata: profil bilgisiyle devam */ }
 
@@ -3594,7 +3598,8 @@ ${pub.path}`, [
           visible={loading && method === "stalker"}
           transparent
           animationType="fade"
-          onRequestClose={() => {}}
+          /* v18.7.14 (A): donanım geri tuşu da işlemi iptal eder (eskiden boştu → kullanıcı kilitleniyordu). */
+          onRequestClose={() => { stalkerAddAbortRef.current?.abort(); setLoading(false); setProgress(""); }}
         >
           <View style={styles.matchModalBackdrop}>
             <View style={[styles.matchModalCard, { backgroundColor: colors.surface, borderColor: colors.border, maxWidth: 520 }]}>
@@ -3603,6 +3608,11 @@ ${pub.path}`, [
                 <Text style={[styles.matchModalTitle, { color: colors.onSurface, textAlign: "center" }]}>MAG Portal hazırlanıyor</Text>
                 <Text style={{ color: colors.onSurfaceSecondary, textAlign: "center", lineHeight: 21 }}>{progress || "Portala bağlanılıyor… Lütfen bekleyin, tekrar dokunmayın."}</Text>
                 <Text style={{ color: colors.onSurfaceTertiary, textAlign: "center", fontSize: FONT.size.sm }}>Bu ekran bağlantı, katalog ve cihaz kayıt aşamalarını canlı gösterir.</Text>
+                {/* v18.7.14 (A): İPTAL — işlem takılırsa/uzarsa kullanıcı çıkabilsin (back-trap düzeltmesi). */}
+                <FocusButton testID="stalker-add-cancel" onPress={() => { stalkerAddAbortRef.current?.abort(); setLoading(false); setProgress(""); }} style={{ marginTop: SPACING.sm, alignSelf: "stretch", flexDirection: "row", gap: 8, alignItems: "center", justifyContent: "center", paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border }}>
+                  <Ionicons name="close-circle-outline" size={18} color={colors.onSurface} />
+                  <Text style={{ color: colors.onSurface, fontWeight: "600" }}>İptal et ve geri dön</Text>
+                </FocusButton>
               </View>
             </View>
           </View>

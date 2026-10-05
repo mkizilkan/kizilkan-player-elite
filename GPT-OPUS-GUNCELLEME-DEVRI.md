@@ -30,6 +30,13 @@ Aşağıdaki P1/P2'lerin KODU YAZILDI (ayrıntı `AI-DEVIR-v18.7.13.md`):
 - **#4 "Yalnız girilen" (exact) KATİ:** yalnız girilen port+yol; family/version.js/iki-aşama yok.
 Cihazda doğrulanacak: hkpremium kullanıcı adı `ud3B3yRH` mı; "ben seçeyim" seçim çalışıyor mu; goldensm32 base64 mismatch düzeldi mi; exact tek endpoint mi deniyor.
 
+## 3c. v18.7.14'te YAPILANLAR (dal `v18.7.14-rc1-verify-username-scope`, PC doğrulandı, cihaz bekliyor)
+GPT v18.7.13 incelemesi (G01-G06) + back-trap kodlandı (ayrıntı `AI-DEVIR-v18.7.14.md`):
+- **A** MAG ekleme modalı iptal edilebilir (abort + İptal butonu). **G01** çoklu doğrulama get_all_channels yedeği.
+- **G02** gerçek login main-info görünen-adıyla ezilmez. **G03** base64-MAC decode'dan önce elenir.
+- **G04** enrichment gerçek bütçe (her deneme + deadline). **G05** exact portsuz da kati + HTML-link/soft-404 kapalı. **G06** snapshot main-info MAC/boş otorite.
+Kalan GPT maddeleri: **G07** (keşif handshake yalnız ilk profil), **G08** (fazlar arası ortak deadline/sayaç; M09 kısmi), **G09** (oynatma gecikmesi ölçümü), **G10** ("katalog erişimi ≠ ilk kare" etiket ayrımı). GPT K07-K10 fixture'ları eklenecek.
+
 ## 4. BEKLEYEN İŞLER (öncelik sırası — hiçbiri onaysız kodlanmaz)
 
 ### P1 — "Ben seçeyim" (manuel portal) seçimi çalışmıyor  [cihaz kanıtı: kullanıcı ekran görüntüsü 2026-10-04]

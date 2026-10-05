@@ -81,10 +81,10 @@ let groups = 0;
   {
     const calls = [], host = entry('http://portal.example.test:8080/stalker_portal/c');
     const html = '<html>Stalker Portal<script src="stb.js"></script><script>server="../server/load.php";other="https://foreign.example/portal.php";</script></html>';
-    const reports = await run(async (url, options) => { noCredentials(url, options); calls.push(url); const u = new URL(url); if (u.pathname === '/stalker_portal/c') return response('', 302, { location: '/stalker_portal/c/' }); if (u.pathname === '/stalker_portal/c/') return response(html); if (u.pathname === '/stalker_portal/server/load.php') return response({ js: { token: 'fixture' } }); return response('missing', 404); }, [host]);
+    const reports = await run(async (url, options) => { noCredentials(url, options); calls.push(url); const u = new URL(url); if (u.pathname === '/stalker_portal/c') return response('', 302, { location: '/stalker_portal/c/' }); if (u.pathname === '/stalker_portal/c/') return response(html); if (u.pathname === '/stalker_portal/server/load.php') return response({ js: { token: 'fixture' } }); return response('missing', 404); }, [host], { scope: 'fallback' });
     assert.equal(reports[0].state, 'ready'); assert.ok(reports[0].candidates.some(candidate => candidate.endpoint.endsWith('/stalker_portal/server/load.php') && candidate.confidence === 'api'));
     assert.ok(calls.every(url => new URL(url).origin === 'http://portal.example.test:8080' && new URL(url).pathname.startsWith('/stalker_portal/')));
-    const indexed = (await run(async url => new URL(url).pathname === '/stalker_portal/c/index.html' ? response(html) : new URL(url).pathname === '/stalker_portal/server/load.php' ? response({ js: { token: 'fixture' } }) : response('missing', 404), [entry('http://portal.example.test:8080/stalker_portal/c/index.html')]))[0];
+    const indexed = (await run(async url => new URL(url).pathname === '/stalker_portal/c/index.html' ? response(html) : new URL(url).pathname === '/stalker_portal/server/load.php' ? response({ js: { token: 'fixture' } }) : response('missing', 404), [entry('http://portal.example.test:8080/stalker_portal/c/index.html')], { scope: 'fallback' }))[0];
     assert.ok(indexed.candidates.some(candidate => candidate.endpoint.endsWith('/stalker_portal/server/load.php') && candidate.confidence === 'api'));
     console.log('PASS: /c installation family, slash redirect and relative API; foreign references never requested'); groups++;
   }
@@ -242,6 +242,14 @@ let groups = 0;
     assert.ok(![...tried].some(p => /portal\.php|load\.php|stalker_portal|ministra|version\.js/.test(p)), 'exact: family/version.js yolları DENENMEMELİ');
     assert.equal(tried.size, 1, `exact yalnız 1 yol denemeli, denenen: ${[...tried].join(',')}`);
     console.log('PASS: exact scope probes ONLY the entered path (no family/version.js expansion)'); groups++;
+  }
+  {
+    // v18.7.14 (G05): portsuz giriş + exact → KATİ (yalnız girilen host, varsayılan port 80); port fan-out YOK.
+    const noPort = { raw: 'exactless.example.test', host: 'http://exactless.example.test', hasPort: false, hasPath: false };
+    const ports = new Set();
+    await run(async url => { ports.add(new URL(url).port || '80'); return response('missing', 404); }, [noPort], { scope: 'exact' });
+    assert.deepEqual([...ports], ['80'], `portsuz exact yalnız 80 denemeli, denenen: ${[...ports].join(',')}`);
+    console.log('PASS: portless + exact stays strict (default port only, no port fan-out)'); groups++;
   }
   console.log(`PASS: MAC-independent portal discovery — ${groups} offline behavior groups`);
 })().catch(error => { console.error(error); process.exitCode = 1; });

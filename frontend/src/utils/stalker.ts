@@ -1739,18 +1739,29 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession, si
   // username/user_name/user/account/subscriber) profili tercih et; yoksa ilk dolu profili (eski davranış)
   // koru. `name/fname/sname` gerçek login sayılmaz. Böylece login eksikse dolu-parametre varyantları da denenir.
   const macNorm = normalizeMac(cred.mac).replace(/[:-]/g, "").toLowerCase();
-  const REAL_LOGIN_FIELDS = ["login","username","user_name","user","account","subscriber"];
-  const hasRealLogin = (p:any): boolean => REAL_LOGIN_FIELDS.some(f => {
+  const hasRealLogin = (p:any): boolean => [...REAL_LOGIN_FIELDS].some(f => {
     const v = primitiveString(p?.[f]); if (!v || !v.trim()) return false;
     const t = v.trim();
     if (/^(?:0|true|false|null|undefined|anonymous|unknown|none)$/i.test(t)) return false;
-    return decodeMacIfBase64(t)?.replace(/[:-]/g, "").toLowerCase() !== macNorm; // MAC login sayılmaz
+    const decoded = String(decodeMacIfBase64(t) || t);
+    if (MAC_SHAPE.test(decoded)) return false;                                   // MAC (base64 olsa da) login değil
+    return decoded.replace(/[:-]/g, "").toLowerCase() !== macNorm;
   });
-  let best:any=null; // login'siz ama geçerli ilk profil (yedek)
-  let extraAfterBest=0; // v18.7.13: login ararken EK varyant bütçesi (login'siz hesapta sonsuz istek yok)
-  const LOGIN_SEEK_BUDGET=2;
+  // v18.7.14 (G04): GERÇEK bütçe — ilk kullanılabilir (login'siz) profilden sonra HER deneme sayılır
+  // (dolu/boş/hata), gruplar (initial+derived) arasında ORTAK, ve ortak bir DEADLINE var. Eski "2 dolu
+  // profil" sayacı boş/hatalı yanıtları saymıyordu ve grup başına sıfırlanıyordu (ilk yanıttan sonra
+  // 8 ek istek olabiliyordu). Artık login'siz hesapta en çok ENRICH_MAX_AFTER_BEST deneme + süre sınırı.
+  let best:any=null;
+  let afterBest=0;
+  const enrichStart=Date.now();
+  const ENRICH_MAX_AFTER_BEST=2;
+  const ENRICH_DEADLINE_MS=12_000;
   const tryVariants = async (variants:StalkerProfileVariant[]): Promise<any> => {
   for (const variant of variants) {
+    if (best) {
+      if (afterBest >= ENRICH_MAX_AFTER_BEST || Date.now()-enrichStart > ENRICH_DEADLINE_MS) return null; // bütçe/deadline → best kullanılacak
+      afterBest++; // best sonrası HER deneme (dolu/boş/hata dahil) sayılır
+    }
     const started=Date.now();
     try {
       const data=await req(buildUrl(ses.endpoint, variant.params, !variant.noJs), headersFor(cred, ses.token, ses.endpoint, ses.compatProfile), { timeoutMs: 20000, signal });
@@ -1760,7 +1771,6 @@ export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession, si
         void recordDiagnostic("catalog","STALKER_PROFILE_VARIANT_OK",{variant:variant.label, elapsedMs:Date.now()-started, endpoint:ses.endpoint, hasRealLogin:withLogin});
         if (withLogin) { ses.profileVariant=variant.label; return profile; } // gerçek login var → hemen dön
         if (!best) { best=profile; ses.profileVariant=variant.label; } // login yok → yedek sakla, denemeye devam et
-        else if (++extraAfterBest >= LOGIN_SEEK_BUDGET) return null; // login arama bütçesi bitti → best kullanılacak
         continue;
       }
       errors.push(`${variant.label}: profil boş`);
@@ -2009,14 +2019,22 @@ const USERNAME_SOURCE_FIELDS = ["login","username","user_name","user","account",
  * Kullanıcı adını aday alanlardan seçer VE hangi alandan geldiğini bildirir (telemetri yalnız alan
  * ADI'nı loglar, değeri DEĞİL → kimlik sızmaz). MAC'in kendisi ve jenerik/boş değerler elenir.
  */
+const MAC_SHAPE = /^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$|^[0-9a-f]{12}$/i;
+/** Gerçek giriş adı alanları (görünen ad/soyad DEĞİL). Birleştirmede bunlar önceliklidir. */
+const REAL_LOGIN_FIELDS = new Set(["login","username","user_name","user","account","subscriber"]);
 function pickUsernameField(p: any, macNorm: string): { username?: string; field?: string } {
   const candidate = (v: unknown): string | undefined => {
     const s = primitiveString(v); if (!s || !s.trim()) return undefined;
     const t = s.trim(); if (/^(?:0|true|false|null|undefined|anonymous|unknown|none)$/i.test(t)) return undefined;
-    if (macNorm && t.replace(/[:-]/g, "").toLowerCase() === macNorm) return undefined; // MAC'in kendisi kullanıcı adı değil
-    return t;
+    // v18.7.14 (G03): ÖNCE base64 MAC'i çöz; herhangi bir geçerli MAC biçimi kullanıcı adı DEĞİLDİR
+    // (supplied MAC'e eşit olmasa bile). Böylece base64-MAC bir "login" alanında gelse bile seçilmez
+    // ve sonraki GERÇEK kullanıcı adı alanı okunur. (Eski kod ham değeri kontrol edip MAC'i ezebiliyordu.)
+    const decoded = String(decodeMacIfBase64(t) || t);
+    if (MAC_SHAPE.test(decoded)) return undefined;
+    if (macNorm && decoded.replace(/[:-]/g, "").toLowerCase() === macNorm) return undefined;
+    return decoded;
   };
-  for (const f of USERNAME_SOURCE_FIELDS) { const c = candidate(p?.[f]); if (c) return { username: decodeMacIfBase64(c), field: f }; }
+  for (const f of USERNAME_SOURCE_FIELDS) { const c = candidate(p?.[f]); if (c) return { username: c, field: f }; }
   return {};
 }
 
@@ -2092,14 +2110,30 @@ export async function stalkerAccountSnapshot(
       { timeoutMs: 6000, maxResponseBytes: 262_144, signal: opts.signal },
     );
     const main = accountRecord(data?.js);
-    if (main) {
+    // v18.7.14 (G06): main-info yalnız (a) supplied MAC ile eşleşiyor (base64 dahil, accountMatchesMac)
+    // VE (b) boş değilse OTORİTER sayılır. `{js:{}}` veya BAŞKA MAC'e ait yanıt profil bilgisini EZMEZ
+    // (eskiden her obje mainInfoOk=true idi → yanlış MAC/kullanıcı/bitiş yazılabiliyordu).
+    const suppliedMac = normalizeMac(cred.mac);
+    const suppliedMacNorm = suppliedMac.replace(/[:-]/g, "").toLowerCase();
+    const mainAuthoritative = !!main && accountMatchesMac(main, suppliedMac) && Object.keys(main).length > 0;
+    if (mainAuthoritative) {
       mainInfoOk = true;
       const fromMain = normalizeStalkerAccountInfo(main);
-      // main-info otoriterdir; boş alanları profil bilgisi doldurur.
+      // v18.7.14 (G02): profildeki GERÇEK login (login/username/...), main-info'nun görünen-ad türevi
+      // (name/fname/sname) username'i EZMESİN. Diğer alanlar main-info otoriter.
+      const profReal = pickUsernameField(accountRecord(profile) || {}, suppliedMacNorm);
+      const mainReal = pickUsernameField(main!, suppliedMacNorm);
+      const keepProfileLogin = !!profReal.username && REAL_LOGIN_FIELDS.has(profReal.field as string)
+        && (!mainReal.field || !REAL_LOGIN_FIELDS.has(mainReal.field as string));
       for (const key of Object.keys(fromMain) as Array<keyof AccountInfo>) {
         const value = fromMain[key];
-        if (value !== undefined && value !== null && value !== "") (merged as any)[key] = value;
+        if (value === undefined || value === null || value === "") continue;
+        if (key === "username" && keepProfileLogin) continue; // gerçek login korunur
+        (merged as any)[key] = value;
       }
+    } else if (main) {
+      void recordDiagnostic("mag", "STALKER_MAIN_INFO_REJECTED", { endpoint: ses.endpoint,
+        reason: !accountMatchesMac(main, suppliedMac) ? "mac-mismatch" : "empty" });
     }
     // v18.7.11 (T02 — cihaz kanıtı: `hasUsername` logda [REDACTED] oluyordu çünkü anahtar "username"
     // içerip SAFE sonek taşımıyordu). Varlık bayrakları artık `*Present`/`*Kind` ile isimlendirilir →
@@ -2291,6 +2325,21 @@ export async function stalkerVerifyAccount(
         } catch (error) { const stop = nonterminal(error, kind); if (stop) return stop; }
       }
     }
+    // v18.7.14 (G01 — cihaz: kullanıcı "port/path girsem de bulunamıyor"): bazı portaller get_ordered_list
+    // DESTEKLEMEZ ama get_all_channels ile kanal verir (tekli oynatma zaten get_all_channels kullanıyor).
+    // Ordered-list hiçbir türde örnek vermediyse canlı için SINIRLI get_all_channels dene (aynı 20 sn +
+    // yanıt boyutu bütçesi; tam katalog indirmez, ilk 128 örnek). Desteklenmeyen ≠ yetkisiz.
+    try {
+      const data = await probe({ type: "itv", action: "get_all_channels" });
+      const denied = classify(accountRecord(data?.js));
+      if (denied) return finish(denied, `live-all-channels-${denied}`);
+      if (isExplicitListShape(data)) {
+        const rows = rowsFromListShape(data).slice(0, 128);
+        const count = rows.filter(row => validAccountSample(row, "live")).length;
+        if (count > 0) return finish("verified", "live-all-channels-sample", { accessKind: "live", sampledItems: count, liveCount: count });
+      }
+      evidence.push("all-channels-no-valid-sample");
+    } catch (error) { const stop = nonterminal(error, "live-all-channels"); if (stop) return stop; }
     return finish("unverified", "no-accessible-catalogue-sample");
   } finally {
     clearTimeout(timer);

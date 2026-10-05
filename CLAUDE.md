@@ -180,7 +180,18 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.13 RC1 — dal `v18.7.13-rc1-exact-scope-username-mac`)
+## 9. Mevcut durum (v18.7.14 RC1 — dal `v18.7.14-rc1-verify-username-scope`)
+
+**v18.7.14 (bu sürüm — GPT G01-G06 + back-trap iptal; PC doğrulandı, CİHAZ BEKLİYOR):**
+Kaynak: GPT v18.7.13 incelemesi (`GPT-PYTHON-REFERANSLARI-VE-MAC-INCELEME-2026-10-05.md`) + kullanıcı "oynatma listesi ekle'den geri çıkamıyorum".
+- **A (back-trap):** MAG ekleme modalına İptal butonu + onRequestClose abort + `stalkerAddAbortRef` signal (stLogin/snapshot/keşif). Takılınca kullanıcı çıkabilir.
+- **G01:** çoklu doğrulama ordered-list boşsa sınırlı `get_all_channels` dener (tekli çalışıp çoklunun reddi biter).
+- **G02:** main-info görünen-adı profildeki gerçek `login`'i ezmez. **G03:** base64-MAC decode'dan önce elenir (login alanında olsa da username olmaz).
+- **G04:** enrichment gerçek bütçe (best sonrası her deneme sayılır + 12s deadline). **G05:** "Yalnız girilen" portsuz girişte bile kati; HTML-link/soft-404 exact'te kapalı. **G06:** snapshot main-info yalnız MAC eşleşiyor+boş değilse otoriter.
+- Doğrulama: tsc temiz · denetle TEMİZ · `check-v18714` PASS · hesap testi 19 grup · keşif testi 19 grup. Ayrıntı `AI-DEVIR-v18.7.14.md`.
+- **Bekleyen (GPT):** G07/G08/G09/G10 (keşif profil farkı, ortak deadline, oynatma ölçümü, "katalog≠ilk kare" etiketi).
+
+## 9-eski0. v18.7.13 RC1 (dal `v18.7.13-rc1-exact-scope-username-mac`)
 
 **v18.7.13 (bu sürüm — manuel portal seçimi + kullanıcı adı + A01 base64 MAC + "Yalnız girilen" kati kapsam; PC doğrulandı, CİHAZ BEKLİYOR):**
 Cihaz kanıtı: "ben seçeyim"de bulunan izler tıklanamıyordu; hkpremium kullanıcı adı `ud3B3yRH` yerine `1787` (name); goldensm32 base64 MAC `profile-mac-mismatch`.

@@ -42,6 +42,7 @@ if (process.cwd() !== PROJECT_ROOT) process.chdir(PROJECT_ROOT);
 
 const CHECKS = [
   ["test-mag-action-ownership.js", "v18.7.4 MAG add/export action ownership and profile ABA", ""],
+  ["check-v18714-release.js", "v18.7.14 back-trap cancel (abort MAG add) + G01 get_all_channels verify fallback + G02 preserve real login + G03 decode-before-MAC username + G04 real enrichment budget + G05 strict exact (portless too) + G06 snapshot MAC authority", ""],
   ["check-v18713-release.js", "v18.7.13 manual portal pick (traces selectable) + username enrichment (full-param get_profile real login) + A01 base64 MAC decode in matcher + strict exact scope (only entered port/path)", ""],
   ["check-v18712-release.js", "v18.7.12 MAG multi-IP DNS failover (DoH all A-records + live IP pin + IP-at-boundary connect/logical translation; player had host failover, MAG scan did not)", ""],
   ["check-v18711-release.js", "v18.7.11 MAG profile-compat core (MAG320 full-param get_profile variants + empty-profile-yet-live-accessible = valid) + safe username presence telemetry + discovery wall budget", ""],

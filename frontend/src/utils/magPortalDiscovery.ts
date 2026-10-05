@@ -191,7 +191,11 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     // v18.7.8 (keşif P0.5): AUTO scope. Kullanıcı port vermediyse "exact" keşif amacına terstir
     // (yalnız girilen portu dener, 8080 vb. aranmaz). Portsuz girişte exact/boş → fallback'e yükselt
     // (yaygın portlar aranır). Port verildiyse kullanıcının scope'una dokunma.
-    const scope: MagDiscoveryScope = (!host.hasPort && (!opts.scope || opts.scope === "exact")) ? "fallback" : (opts.scope || "fallback");
+    // v18.7.14 (G05): "Yalnız girilen" (exact) HER DURUMDA kati — portsuz girişte bile `fallback`'a
+    // YÜKSELTİLMEZ (eskiden portsuz+exact sessizce fallback olup başka portlara gidiyordu). Yalnız scope
+    // HİÇ verilmemiş + portsuz girişte varsayılan `fallback` olur; kullanıcı exact seçtiyse exact kalır.
+    const scope: MagDiscoveryScope = opts.scope === "exact" ? "exact"
+      : (!host.hasPort && !opts.scope) ? "fallback" : (opts.scope || "fallback");
     // v18.7.6 (bulgu A4): PORT-ÖNCELİKLİ BUDAMA. İlk yol turu her portu bir kez dener;
     // bağlantı reddi/zaman aşımı alan port "dead" işaretlenir ve sonraki yollarda atlanır.
     // Böylece ölü portlarda 14 yol boşuna denenmez (kullanıcı: "757 versiyon").
@@ -319,7 +323,9 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
         }
       }
       const fingerprint = response.status >= 200 && response.status < 300 ? htmlEvidence(response.body) : [];
-      if (fingerprint.length && !/\.php$/i.test(new URL(target).pathname)) {
+      // v18.7.14 (G05): exact kapsamda soft-404 baseline ve HTML'den çıkarılan ek API yolları KUYRUĞA ALINMAZ
+      // (kati kapsam — yalnız girilen yol). Yalnız fallback/all'da kurulum ailesi genişletilir.
+      if (scope !== "exact" && fingerprint.length && !/\.php$/i.test(new URL(target).pathname)) {
         // Compare a same-family missing page only after strong HTML evidence. Literal PHP is exact.
         let same = false;
         try {
