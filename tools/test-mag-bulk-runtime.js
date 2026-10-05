@@ -206,11 +206,12 @@ async function selectedActionsAndArchive() {
   };
   const env = environment({ '@/src/utils/stalker': fake, '@/modules/kizilkan-native-core': { KizilkanNativeCore: { writePublicTextFile: async (_subdir, name, _mime, data) => { writes.push({ name, data }); return name.endsWith('.txt') && txtFails || name.endsWith('.json') && jsonFails ? { ok: false, error: 'fixture write failed' } : { ok: true, uri: 'content://fixture/' + name, path: name }; } } } });
   const values = {
-    selectedResults: selected, selectedValid: selected, validResults: [...selected, { ...job(2), category: 'valid' }], playlists: [],
+    selectedResults: selected, selectedValid: selected, selectedAddable: selected, selectedProbable: [], validResults: [...selected, { ...job(2), category: 'valid' }], playlists: [],
     busyRef: { current: false }, profileRef: { current: 'owner' }, mountedRef: { current: true }, actionAbortRef: { current: null },
     // v18.7.4 sahiplik/ABA kapsamı: callback bu serbest değişkenlere kapanıyor.
     profileEpoch: 0, profileEpochRef: { current: 0 }, resetProfileEpochRef: { current: 0 }, actionRunRef: { current: 0 }, runRef: { current: 0 },
     setSaving() {}, setAdding() {}, setActionProgress() {}, useProxy: false,
+    setAddStartedAt() {}, setAddProgressAt() {}, setAddProgress() {}, setAddTitle() {}, applyCatalogProgress: (_p, n) => n,
     createMagRequestGate: () => ({}), formatAccountExpiry: expiry.formatAccountExpiry, formatMagArchiveTxt: model.formatMagArchiveTxt,
     magIdentity: model.magAccountIdentity, stableId: (_prefix, identity) => identity,
     addPlaylist: async item => added.push(item), updatePlaylist: async () => {}, enrichPlaylistMedia: async () => {},

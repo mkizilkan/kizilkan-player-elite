@@ -36,10 +36,11 @@ function makeReq(stalker) {
 }
 
 const baseValues = (over = {}) => ({
-  selectedValid: [result(1), result(2)], selectedResults: [result(1)], validResults: [result(1), result(2)], playlists: [],
+  selectedValid: [result(1), result(2)], selectedAddable: [result(1), result(2)], selectedProbable: [], selectedResults: [result(1)], validResults: [result(1), result(2)], playlists: [],
   busyRef: { current: false }, mountedRef: { current: true }, profileRef: { current: 'A' }, actionAbortRef: { current: null },
   profileEpoch: 0, profileEpochRef: { current: 0 }, resetProfileEpochRef: { current: 0 }, actionRunRef: { current: 0 }, runRef: { current: 0 },
   setAdding() {}, setSaving() {}, setActionProgress() {}, useProxy: false,
+  setAddStartedAt() {}, setAddProgressAt() {}, setAddProgress() {}, setAddTitle() {}, applyCatalogProgress: (_p, n) => n,
   createMagRequestGate: () => ({}), magIdentity: (p, m) => `${p}|${m}`, stableId: (_p, id) => id,
   formatAccountExpiry: () => '2030', formatMagArchiveTxt: () => 'TXT',
   addPlaylist: async () => {}, updatePlaylist: async () => {}, enrichPlaylistMedia: async () => {},

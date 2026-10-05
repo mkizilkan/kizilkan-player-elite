@@ -7,7 +7,9 @@ import { MAG_MAX_PARALLEL, type MagBulkJob, type MagHostEntry, type MagDiscovery
 import { MagDiscoveryBudget, magPassiveDiscoveryBudget, type MagDiscoverySpeed } from '@/src/utils/magDiscoveryBudget';
 import { resolveMagPortal, type ResolvedMagPortal } from '@/src/utils/magEndpointRegistry';
 
-export type MagScanCategory = "valid" | "unverified" | "expired" | "blocked" | "protected" | "no-portal" | "error";
+// v18.7.16 (A): "probable" = hesap kimliği + gelecek bitiş var ama içerik erişim örneği (çökük host/süre
+// bütçesi) alınamadı. "unverified"ten ayrılır: kullanıcı isterse eklenebilir (uyarı etiketiyle).
+export type MagScanCategory = "valid" | "probable" | "unverified" | "expired" | "blocked" | "protected" | "no-portal" | "error";
 export type MagScanResult = {
   hostRaw: string; portal: string; mac: string; category: MagScanCategory;
   status?: string; expiry?: string | null; liveCount?: number; message?: string;
@@ -310,8 +312,13 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
       const verification = await stalkerVerifyAccount(cred, login.session, login.profile, { signal: opts.control?.signal });
       checkCancelled(opts.control);
       const info = verification.accountInfo;
-      const category: MagScanCategory = verification.state === "verified" ? "valid" : verification.state;
-      void recordDiagnostic("scan", "MAG_BULK_ACCOUNT_VERIFIED", { state: verification.state, liveCount: verification.liveCount, evidence: verification.evidence });
+      // v18.7.16 (A): doğrulama "unverified" ama hesap kimliği VE gelecek bitiş varsa → "probable".
+      // Yalnız içerik örneği alınamamış demektir (denial değil; blocked/expired ayrı state). Kullanıcı
+      // isterse ekleyebilir. Kimlik yoksa veya bitiş yoksa eski "unverified" davranışı korunur.
+      const category: MagScanCategory = verification.state === "verified" ? "valid"
+        : verification.state === "unverified" && (verification.accountIdentity || verification.expiryValid) ? "probable"
+        : verification.state;
+      void recordDiagnostic("scan", "MAG_BULK_ACCOUNT_VERIFIED", { state: verification.state, category, liveCount: verification.liveCount, evidence: verification.evidence, accountIdentity: verification.accountIdentity, expiryValid: verification.expiryValid });
       return { ...base, category, status: info.status, expiry: info.tariff_expired_date || info.exp_date,
         resolvedPortal: login.session.resolvedPortal || resolvedPortal,
         accountInfo: { ...info, extra: { ...info.extra, magProtection: observation } }, liveCount: verification.liveCount,

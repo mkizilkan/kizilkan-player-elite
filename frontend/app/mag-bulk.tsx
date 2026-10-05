@@ -20,6 +20,9 @@ import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT, type ThemePalette } from "@/src/theme/themes";
 import { FocusButton } from "@/src/components/FocusButton";
 import { ScanProxyToggleRow, ScanProxyLiveLine } from "@/src/components/ScanProxyControls";
+import { CatalogPreparationModal } from "@/src/components/CatalogPreparationModal";
+import { applyCatalogProgress } from "@/src/utils/catalogProgress";
+import type { RefreshProgress } from "@/src/utils/refreshPlaylist";
 import { usePlaylists } from "@/src/store/PlaylistContext";
 import { useProfiles } from "@/src/store/ProfileContext";
 import { formatAccountExpiry } from "@/src/utils/accountExpiry";
@@ -39,6 +42,7 @@ type HostMode = "manual" | "code" | "name" | "all";
 
 const CATEGORY_META: Record<MagScanResult["category"], { label: string; color: (c: any) => string; icon: any }> = {
   unverified: { label: "Doğrulanamadı", color: c => c.onSurfaceTertiary, icon: "help-circle" },
+  probable: { label: "Muhtemel geçerli", color: c => c.warning || "#f39c12", icon: "alert-circle" },
   valid: { label: "Geçerli", color: c => c.success || "#2ecc71", icon: "checkmark-circle" },
   expired: { label: "Süresi dolmuş", color: c => c.warning || "#f39c12", icon: "time" },
   blocked: { label: "Yetkisiz/bloke", color: c => c.error, icon: "close-circle" },
@@ -62,7 +66,7 @@ const DISCOVERY_MODES: Record<MagDiscoveryScope, { label: string; hint: string }
   fallback: { label: "Çalışmazsa diğerleri", hint: "Önce girilen port/yol ailesi keşfedilir. API bulunamazsa diğer adaylar yalnız bir kez denenir; MAC reddi yeniden keşif başlatmaz." },
   all: { label: "Tüm adaylarda keşif", hint: "Girilen ve yaygın port/yollar host başına bir kez keşfedilir. Bulunan API yollarından biri seçilir; MAC listesi yalnız bu yolda doğrulanır." },
 };
-type ResultFilter = "all" | "valid" | "not_observed" | "present" | "unknown";
+type ResultFilter = "all" | "valid" | "probable" | "not_observed" | "present" | "unknown";
 function protectionLabel(r: MagScanResult): string {
   if (r.protection?.state === "present") return r.protection.kind === "rate_limit" ? "İstek sınırı gözlendi" : "Koruma gözlendi";
   return r.protection?.state === "not_observed" ? "Koruma görülmedi" : "Koruma belirlenemedi";
@@ -117,6 +121,11 @@ export default function MagBulkScreen() {
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [actionProgress, setActionProgress] = useState("");
+  // v18.7.16 (B): toplu ekleme için görsel katalog ilerlemesi (Canlı/Film/Dizi kartları + süre).
+  const [addProgress, setAddProgress] = useState<RefreshProgress | null>(null);
+  const [addTitle, setAddTitle] = useState("");
+  const [addStartedAt, setAddStartedAt] = useState(0);
+  const [addProgressAt, setAddProgressAt] = useState(0);
 
   const cancelRef = useRef(false);
   const pauseRef = useRef(false);
@@ -279,13 +288,18 @@ export default function MagBulkScreen() {
   }, []);
 
   const validResults = useMemo(() => results.filter(r => r.category === "valid"), [results]);
+  const probableResults = useMemo(() => results.filter(r => r.category === "probable"), [results]);
   const selectedResults = useMemo(() => {
     const unique = new Map<string, MagScanResult>();
     for (const r of results) { const key = magIdentity(r.portal, r.mac); if (selected.has(key)) unique.set(key, r); }
     return Array.from(unique.values());
   }, [results, selected]);
   const selectedValid = useMemo(() => selectedResults.filter(r => r.category === "valid"), [selectedResults]);
-  const visibleResults = useMemo(() => results.filter(r => resultFilter === "all" || (resultFilter === "valid" ? r.category === "valid" : (r.protection?.state || "unknown") === resultFilter)), [results, resultFilter]);
+  const selectedProbable = useMemo(() => selectedResults.filter(r => r.category === "probable"), [selectedResults]);
+  // v18.7.16 (A): eklenebilir = geçerli + muhtemel geçerli. Muhtemel geçerli hesaplar (kimlik+bitiş var,
+  // içerik örneği alınamadı) kullanıcı seçtiyse eklenir; "doğrulanmadı" etiketiyle işaretlenir.
+  const selectedAddable = useMemo(() => [...selectedValid, ...selectedProbable], [selectedValid, selectedProbable]);
+  const visibleResults = useMemo(() => results.filter(r => resultFilter === "all" || (resultFilter === "valid" ? r.category === "valid" : resultFilter === "probable" ? r.category === "probable" : (r.protection?.state || "unknown") === resultFilter)), [results, resultFilter]);
   const toggleResult = useCallback((r: MagScanResult) => {
     const key = magIdentity(r.portal, r.mac);
     setSelected(prev => { const next = new Set(prev); next.has(key) ? next.delete(key) : next.add(key); return next; });
@@ -293,14 +307,16 @@ export default function MagBulkScreen() {
 
   const addValid = useCallback(async () => {
     if (!mountedRef.current || busyRef.current || profileEpoch !== profileEpochRef.current || profileEpoch !== resetProfileEpochRef.current) return;
-    const toAdd = selectedValid.filter(r => !playlists.some(pl => pl.stalkerPortal && pl.stalkerMac && magIdentity(pl.stalkerPortal, pl.stalkerMac) === magIdentity(r.portal, r.mac)));
-    if (toAdd.length === 0) { Alert.alert("Eklenecek yok", "Geçerli sonuç yok ya da hepsi zaten ekli."); return; }
+    const toAdd = selectedAddable.filter(r => !playlists.some(pl => pl.stalkerPortal && pl.stalkerMac && magIdentity(pl.stalkerPortal, pl.stalkerMac) === magIdentity(r.portal, r.mac)));
+    if (toAdd.length === 0) { Alert.alert("Eklenecek yok", "Seçili geçerli/muhtemel geçerli sonuç yok ya da hepsi zaten ekli."); return; }
     busyRef.current = true; setAdding(true);
     const owner = profileRef.current;
     const controller = new AbortController(); actionAbortRef.current = controller;
     const action = ++actionRunRef.current;
     const ownsAction = () => mountedRef.current && owner === profileRef.current && profileEpoch === profileEpochRef.current && action === actionRunRef.current && actionAbortRef.current === controller;
     const stillOwned = () => ownsAction() && !controller.signal.aborted;
+    setAddStartedAt(Date.now()); setAddProgressAt(Date.now()); setAddProgress(null); setAddTitle("");
+    const onAddStage = (p: Parameters<typeof applyCatalogProgress>[1]) => { if (stillOwned()) { setAddProgress(prev => applyCatalogProgress(prev, p)); setAddProgressAt(Date.now()); } };
     let added = 0, ready = 0;
     const failures: string[] = [];
     try {
@@ -315,6 +331,7 @@ export default function MagBulkScreen() {
         const id = stableId("mag", magIdentity(r.portal, r.mac));
         if (playlists.some(pl => pl.id === id)) continue;
         setActionProgress(`${added + 1}/${toAdd.length} · ${r.mac} · hesap doğrulanıyor`);
+        setAddTitle(`${added + 1}/${toAdd.length} · ${r.mac}`); setAddProgress(null); setAddProgressAt(Date.now());
         const cred = { portal: r.portal, mac: r.mac, deviceModel: "MAG320" as const, endpointPolicy: "exact" as const,
           resolvedPortal: r.resolvedPortal,
           requestScope: { ...gate, transport: useProxy ? "proxy" as const : "direct" as const, signal: controller.signal,
@@ -323,9 +340,15 @@ export default function MagBulkScreen() {
         if (!stillOwned()) break;
         const verification = await stalkerVerifyAccount(cred, session, profile, { signal: controller.signal });
         if (!stillOwned()) break;
-        if (verification.state !== "verified") throw new Error(verification.message || "Hesap ve içerik erişimi yeniden doğrulanamadı.");
+        // v18.7.16 (A): "verified" değilse bile, hesap kimliği VEYA gelecek bitiş kanıtlanmışsa ekle
+        // ("muhtemel geçerli"). Yalnız içerik örneği alınamamış demektir; bloklu/süresi dolmuş/yanlış-MAC
+        // zaten "blocked/expired" state'iyle burada reddedilir. Eklenen hesap "doğrulanmadı" işaretlenir.
+        const probableOk = verification.state === "unverified" && (verification.accountIdentity || verification.expiryValid);
+        if (verification.state !== "verified" && !probableOk) throw new Error(verification.message || "Hesap ve içerik erişimi yeniden doğrulanamadı.");
+        const accountVerified = verification.state === "verified";
         const normalizedAccountInfo = verification.accountInfo;
-        createdAccountInfo = { ...normalizedAccountInfo, extra: { ...normalizedAccountInfo.extra, magProtection: latestProtection } };
+        createdAccountInfo = { ...normalizedAccountInfo, extra: { ...normalizedAccountInfo.extra, magProtection: latestProtection,
+          accountVerified, verificationState: accountVerified ? "verified" : "probable", verificationEvidence: verification.evidence.slice(0, 8) } };
         const shell: Playlist = {
           id, name: `MAG ${r.mac.slice(-8)}`, source: "stalker",
           stalkerPortal: session.endpoint, stalkerResolvedPortal: session.resolvedPortal || r.resolvedPortal, stalkerMac: r.mac.toUpperCase(),
@@ -339,7 +362,7 @@ export default function MagBulkScreen() {
         if (!stillOwned()) throw new Error("İşlem durduruldu.");
         // Canlı katalog arka planda (live-first — §5 MAG kuralı).
             const catalog = await stalkerCatalog(cred, session, { liveOnly: true, signal: controller.signal,
-              onProgress: p => { if (stillOwned()) setActionProgress(`${r.mac} · ${p.message}`); } });
+              onProgress: p => { if (stillOwned()) { setActionProgress(`${r.mac} · ${p.message}`); onAddStage(p); } } });
             if (!stillOwned()) break;
             await updatePlaylist(id, {
               channels: catalog.channels,
@@ -351,7 +374,7 @@ export default function MagBulkScreen() {
             await updatePlaylist(id, { catalogSync: { initialSyncState: "enriching", roomVerified: true, updatedAt: new Date().toISOString() } });
             if (!stillOwned()) throw new Error("İşlem durduruldu.");
             const enriched = await stalkerEnrichment(cred, session, { signal: controller.signal,
-              onProgress: p => { if (stillOwned()) setActionProgress(`${r.mac} · ${p.message}`); } });
+              onProgress: p => { if (stillOwned()) { setActionProgress(`${r.mac} · ${p.message}`); onAddStage(p); } } });
             if (!stillOwned()) break;
             await enrichPlaylistMedia(id, { vod: enriched.vod, series: enriched.series });
             if (!stillOwned()) throw new Error("İşlem durduruldu.");
@@ -384,7 +407,7 @@ export default function MagBulkScreen() {
     } finally {
       if (ownsAction()) { busyRef.current = false; actionAbortRef.current = null; setAdding(false); setActionProgress(""); }
     }
-  }, [selectedValid, playlists, addPlaylist, enrichPlaylistMedia, updatePlaylist, router, useProxy, profileEpoch]);
+  }, [selectedAddable, playlists, addPlaylist, enrichPlaylistMedia, updatePlaylist, router, useProxy, profileEpoch]);
 
   /**
    * v18.7.2 — Bulunan geçerli hesapları görünür klasöre kaydet:
@@ -651,25 +674,27 @@ export default function MagBulkScreen() {
                 </View>
               ))}
             </View>
-            <Text style={S.count}>{selectedResults.length} seçili · {selectedValid.length} geçerli · {visibleResults.length} görünen</Text>
+            <Text style={S.count}>{selectedResults.length} seçili · {selectedValid.length} geçerli{selectedProbable.length ? ` + ${selectedProbable.length} muhtemel` : ""} · {visibleResults.length} görünen</Text>
             <View style={S.chipRow}>
-              {([["all", "Tüm sonuçlar"], ["valid", "Geçerli"], ["not_observed", "Koruma görülmedi"], ["present", "Koruma gözlendi"], ["unknown", "Belirlenemedi"]] as [ResultFilter, string][]).map(([value, label]) => (
+              {([["all", "Tüm sonuçlar"], ["valid", "Geçerli"], ["probable", "Muhtemel"], ["not_observed", "Koruma görülmedi"], ["present", "Koruma gözlendi"], ["unknown", "Belirlenemedi"]] as [ResultFilter, string][]).map(([value, label]) => (
                 <FocusButton key={value} disabled={adding || saving} onPress={() => setResultFilter(value)} style={[S.chip, resultFilter === value && S.chipOn]}><Text style={[S.chipText, resultFilter === value && S.chipTextOn]}>{label}</Text></FocusButton>
               ))}
             </View>
             <View style={S.chipRow}>
               <FocusButton testID="mag-select-all" disabled={scanning || adding || saving} onPress={() => setSelected(new Set(results.map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Tümünü seç</Text></FocusButton>
               <FocusButton testID="mag-select-valid" disabled={scanning || adding || saving} onPress={() => setSelected(new Set(validResults.map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Geçerlileri seç</Text></FocusButton>
+              {probableResults.length > 0 && <FocusButton testID="mag-select-probable" disabled={scanning || adding || saving} onPress={() => setSelected(new Set([...validResults, ...probableResults].map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Geçerli + muhtemelleri seç</Text></FocusButton>}
               <FocusButton testID="mag-select-unprotected" disabled={scanning || adding || saving} onPress={() => setSelected(new Set(validResults.filter(r => r.protection?.state === "not_observed").map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Koruma görülmeyen geçerlileri seç</Text></FocusButton>
               <FocusButton testID="mag-clear-selection" disabled={scanning || adding || saving} onPress={() => setSelected(new Set())} style={S.chip}><Text style={S.chipText}>Seçimi kaldır</Text></FocusButton>
             </View>
             <Text style={S.hint}>“Koruma görülmedi” yalnız analiz anındaki endpoint ve bağlantı gözlemidir. Bilinmeyen durum korumasız sayılmaz.</Text>
             {!scanning && (
               <>
-                <FocusButton testID="mag-add-valid-btn" onPress={addValid} disabled={adding || saving || !selectedValid.length} style={[S.primaryBtn, { backgroundColor: colors.success || "#2ecc71" }]}>
+                <FocusButton testID="mag-add-valid-btn" onPress={addValid} disabled={adding || saving || !selectedAddable.length} style={[S.primaryBtn, { backgroundColor: colors.success || "#2ecc71" }]}>
                   {adding ? <ActivityIndicator color="#fff" /> : <Ionicons name="add-circle" size={18} color="#fff" />}
-                  <Text style={S.primaryBtnText}>{adding ? "Ekleniyor…" : `Seçili ${selectedValid.length} geçerli hesabı playliste ekle`}</Text>
+                  <Text style={S.primaryBtnText}>{adding ? "Ekleniyor…" : `Seçili ${selectedAddable.length} hesabı ekle${selectedProbable.length ? ` (${selectedValid.length} geçerli + ${selectedProbable.length} muhtemel)` : ""}`}</Text>
                 </FocusButton>
+                {selectedProbable.length > 0 && <Text style={S.hint}>“Muhtemel geçerli”: hesap kimliği ve bitiş tarihi doğrulandı, ancak içerik örneği (sunucu yanıt vermedi/süre doldu) alınamadı. Eklenebilir; kart “doğrulanmadı” olarak işaretlenir.</Text>}
                 <FocusButton testID="mag-save-valid-btn" onPress={saveFound} disabled={adding || saving || !selectedResults.length} style={[S.secondaryBtn, { marginTop: SPACING.xs }]}>
                   {saving ? <ActivityIndicator color={colors.onSurface} /> : <Ionicons name="save" size={16} color={colors.onSurface} />}
                   <Text style={[S.secondaryBtnText, { marginLeft: 6 }]}>{saving ? "Kaydediliyor…" : `Seçili ${selectedResults.length} hesabı TXT + kategori olarak kaydet`}</Text>
@@ -700,6 +725,10 @@ export default function MagBulkScreen() {
         }}
         ListFooterComponent={!PanelScan.available && useProxy ? <Text style={[S.count, { color: colors.error }]}>Proxy native modülü yok; proxy analizi başlatılamaz.</Text> : null}
       />
+      {/* v18.7.16 (B): toplu ekleme ilerlemesi büyük görsel modal (Canlı/Film/Dizi kartları + süre + iptal). */}
+      <CatalogPreparationModal visible={adding} presentation="overlay" title={addTitle ? `${addTitle} hazırlanıyor` : "Hesaplar ekleniyor"}
+        message={actionProgress || "Hesap doğrulanıyor…"} progress={addProgress} startedAt={addStartedAt || Date.now()} lastProgressAt={addProgressAt}
+        onCancel={() => actionAbortRef.current?.abort()} />
     </SafeAreaView>
   );
 }

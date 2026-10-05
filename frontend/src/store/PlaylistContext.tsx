@@ -148,6 +148,8 @@ interface PlaylistContextValue {
   cleanupPlaylistContent:(id:string,kinds:Array<CatalogKind|'epg'>)=>Promise<number>;
   refreshPlaylistKinds:(id:string,kinds:Array<CatalogKind|'epg'>,progress?:(p:RefreshProgress)=>void,valid?:()=>boolean)=>Promise<void>;
   freshnessStatus:PlaylistFreshnessStatus|null;
+  autoRefreshGlobal:boolean;
+  setAutoRefreshGlobal:(enabled:boolean)=>void;
   updatePlaylist: (id: string, patch: Partial<Playlist>) => Promise<void>;
   setActivePlaylist: (id: string) => Promise<void>;
   toggleFavorite: (channelId: string) => Promise<void>;
@@ -194,6 +196,14 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   const activeIdRef=useRef(activeId);activeIdRef.current=activeId;
   const [freshnessStatus,setFreshnessStatus]=useState<PlaylistFreshnessStatus|null>(null);
   const freshnessAttempts=useRef(new Map<string,number>());
+  // v18.7.16 (C): KÜRESEL otomatik yenileme ana anahtarı. Kapalıyken HİÇBİR liste için güncellik
+  // kontrolü yapılmaz (liste başına ayardan bağımsız kati kapalı). Cihaz kanıtı: kullanıcı yenilemeyi
+  // kapatsa da listeye girişte güncelleme tetikleniyordu; bu anahtar tek noktadan kesin kapatır.
+  const AUTO_REFRESH_GLOBAL_KEY='kizilkan.autoRefresh.global';
+  const [autoRefreshGlobal,setAutoRefreshGlobalState]=useState(true);
+  const autoRefreshGlobalRef=useRef(true);autoRefreshGlobalRef.current=autoRefreshGlobal;
+  useEffect(()=>{void(async()=>{try{const v=String(await storage.getItem(AUTO_REFRESH_GLOBAL_KEY,''));if(v==='off')setAutoRefreshGlobalState(false);}catch{}})();},[]);
+  const setAutoRefreshGlobal=useCallback((enabled:boolean)=>{setAutoRefreshGlobalState(enabled);void storage.setItem(AUTO_REFRESH_GLOBAL_KEY,enabled?'on':'off').catch(()=>{});void recordDiagnostic('database','AUTO_REFRESH_GLOBAL_SET',{enabled});},[]);
   useEffect(() => { playlistsRef.current = playlists; }, [playlists]);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [recent, setRecent] = useState<string[]>([]);
@@ -1029,6 +1039,8 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     const valid=()=>!cancelled&&currentPid()===pid&&activeSwitchGeneration.current===generation;
     const check=()=>{void(async()=>{
       const pl=playlistsRef.current.find(p=>p.id===id);
+      // v18.7.16 (C): küresel ana anahtar kapalıysa hiçbir listede güncellik kontrolü yapılmaz.
+      if(!autoRefreshGlobalRef.current){void recordDiagnostic('database','FRESHNESS_SKIP_GLOBAL_OFF',{playlistId:id});return;}
       if(!pl||pl.source==='m3u_file'||pl.autoRefreshEnabled===false||!valid())return;
       // v18.7.7 (P6): İlk senkron (canlı/film/dizi ekleme aşamaları) SÜRERKEN otomatik güncellik
       // kontrolü o hesabı ATLAR. Cihaz kanıtı: yeni MAG eklerken aynı portal için ikinci katalog
@@ -1548,7 +1560,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       value={{
         playlists, activePlaylist, favorites, recent,
         isLoading: isLoading || (!loadError && loadedProfileId !== profileId),
-        loadedProfileId,loadError,nativeSummary,beginExternalRestore,reloadAfterRestore,ensureHeavyLoaded,cleanupPlaylistContent,refreshPlaylistKinds,freshnessStatus,
+        loadedProfileId,loadError,nativeSummary,beginExternalRestore,reloadAfterRestore,ensureHeavyLoaded,cleanupPlaylistContent,refreshPlaylistKinds,freshnessStatus,autoRefreshGlobal,setAutoRefreshGlobal,
         addPlaylist, addPreparedPlaylist, enrichPlaylistMedia, removePlaylist, updatePlaylist, setActivePlaylist,
         toggleFavorite, isFavorite, addToRecent, clearRecent,
         heavyLoading, repairProgress, repairFailedId,

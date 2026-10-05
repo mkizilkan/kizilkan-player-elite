@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { playlistExpiryText, playlistProtectionText, playlistCatalogStateText, playlistIsExpired, accountStatus, accountExpiryLabel } from '@/src/utils/accountCard';
 import { accountExpiryMs } from '@/src/utils/accountExpiry';
+import { getStreamDerivedCredentials } from '@/src/utils/stalker';
 import {
   View,
   Text,
@@ -48,7 +49,7 @@ export default function SettingsTab() {
   const { toggleHiddenGroup, isGroupHidden, hiddenGroups, clearAllProgress } = useLibrary();
   const router = useRouter();
   const { colors, themeName, setTheme } = useTheme();
-  const { playlists, activePlaylist, setActivePlaylist, removePlaylist, updatePlaylist } = usePlaylists();
+  const { playlists, activePlaylist, setActivePlaylist, removePlaylist, updatePlaylist, autoRefreshGlobal, setAutoRefreshGlobal } = usePlaylists();
   const [nativeGroups, setNativeGroups] = useState<string[]>([]);
   const { profiles, activeProfile, switchProfile, removeProfile, setPin: setProfPin, verifyAdminPin, adminHasPin, authorizeProfileSession } = useProfiles();
   const { settings: parental, setPin, clearPin, toggleCategoryLock, setAdultHidden, verifyPinAsync, isCategoryLocked } = useParental();
@@ -1097,12 +1098,26 @@ export default function SettingsTab() {
         {/* Oynatma Listeleri */}
         <SectionTitle text="OYNATMA LİSTELERİ" />
         <View style={{ paddingHorizontal: SPACING.lg }}>
-          {activePlaylist && activePlaylist.source !== "m3u_file" && (
+          {/* v18.7.16 (C): KÜRESEL otomatik yenileme ana anahtarı — kapalıyken hiçbir liste güncellenmez. */}
+          <View style={[styles.settingsPanelCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginBottom: SPACING.md }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm }}>
+              <Ionicons name="sync-circle-outline" size={20} color={colors.brandPrimary} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Otomatik Yenileme (Tümü)</Text>
+                <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Ana anahtar. KAPALI iken hiçbir liste otomatik güncellenmez; yalnız elle yenileme çalışır. Yeni hesap eklerken ilk içerik yüklemesi bundan bağımsızdır.</Text>
+              </View>
+              <FocusButton testID="auto-refresh-global-toggle" onPress={() => setAutoRefreshGlobal(!autoRefreshGlobal)}
+                style={[styles.smallBtn, { borderColor: colors.border, borderWidth: 1, backgroundColor: autoRefreshGlobal ? colors.brandPrimary : colors.surfaceTertiary }]}>
+                <Text style={{ color: autoRefreshGlobal ? colors.onBrandPrimary : colors.onSurface, fontWeight: "800" }}>{autoRefreshGlobal ? "AÇIK" : "KAPALI"}</Text>
+              </FocusButton>
+            </View>
+          </View>
+          {autoRefreshGlobal && activePlaylist && activePlaylist.source !== "m3u_file" && (
             <View style={[styles.settingsPanelCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginBottom: SPACING.md }]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm }}>
                 <Ionicons name="sync-outline" size={20} color={colors.brandPrimary} />
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Otomatik Liste Yenileme</Text>
+                  <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Otomatik Liste Yenileme (bu liste)</Text>
                   <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>Uygulama açıkken ve ön plana dönünce zamanı gelmiş aktif listeyi güvenli singleflight ile yeniler.</Text>
                 </View>
                 <FocusButton
@@ -1871,6 +1886,12 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
   const acc = playlist.accountInfo || {};
   const isXtream = playlist.source === "xtream";
   const isStalker = playlist.source === "stalker";
+  // v18.7.16 (U4): MAG hesabı Xtream panelde ise oynatma (create_link) sırasında yayın URL'inden türetilen
+  // kullanıcı adı/şifre (kullanıcının kendi hesabı). Profil `login` boş olsa da bir kanal açılınca dolar.
+  const magDerived = React.useMemo(() => (isStalker && playlist.stalkerMac && playlist.stalkerPortal)
+    ? getStreamDerivedCredentials(playlist.stalkerMac, playlist.stalkerPortal) : null, [isStalker, playlist.stalkerMac, playlist.stalkerPortal]);
+  const shownUsername = acc.username || (isXtream ? playlist.xtreamUsername : "") || magDerived?.username || "";
+  const shownPassword = acc.password || (isXtream ? playlist.xtreamPassword : "") || magDerived?.password || "";
 
   const expiryAt = accountExpiryMs(acc);
   const formatExpiry = () => accountExpiryLabel(acc);
@@ -1895,9 +1916,10 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
       </View>
       <View style={cardStyles.grid}>
         <InfoField label="Sunucu" value={String(isStalker ? playlist.stalkerPortal || 'Belirlenemedi' : playlist.serverInfo?.url || playlist.xtreamServer || 'Belirlenemedi')} />
-        <InfoField label="Kullanıcı Adı" value={acc.username || (isXtream ? playlist.xtreamUsername : '') || "Belirlenemedi"} />
+        <InfoField label="Kullanıcı Adı" value={shownUsername || "Belirlenemedi"} />
         {acc.display_name ? <InfoField label="Görünen Ad" value={String(acc.display_name)} /> : null}
-        <InfoField label="Şifre" value={String(acc.password || (isXtream ? playlist.xtreamPassword : '') || 'Belirlenemedi')} />
+        <InfoField label="Şifre" value={shownPassword || 'Belirlenemedi'} />
+        {!acc.username && magDerived?.username ? <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: -SPACING.xs }}>Kullanıcı adı/şifre yayın adresinden alındı (bir kanal açıldıktan sonra).</Text> : null}
         <InfoField label="Bitiş Tarihi" value={formatExpiry()} />
         {isStalker && <InfoField label="Koruma (son gözlem)" value={playlistProtectionText(playlist) || 'Belirlenemedi'} />}
         <InfoField label="Kalan Gün" value={d === null ? (acc.expiryKind === 'unlimited' ? 'Sınırsız' : 'Belirlenemedi') : d > 0 ? `${d} gün` : 'Süresi doldu'} accent={d !== null && d > 0 && d < 15 ? 'warning' : 'normal'} />

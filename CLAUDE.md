@@ -180,7 +180,18 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.15 RC1 — dal `v18.7.15-rc1-mag-endpoint-lock`)
+## 9. Mevcut durum (v18.7.16 RC1 — dal `v18.7.16-rc1-bulk-ux-portal-discovery`)
+
+**v18.7.16 (bu sürüm — toplu UX + portal keşfi + kullanıcı adı; PC doğrulandı, CİHAZ BEKLİYOR):**
+Kaynak: cihaz DEV logu (goldensm32 çoklu MAC) + MAG Converter aracı. Kanıtla teşhis, hepsi `AI-DEVIR-v18.7.16.md`.
+- **A:** yeni **"probable"** (muhtemel geçerli) kategorisi — doğrulama "unverified" ama kimlik+gelecek bitiş varsa eklenebilir (içerik örneği çökük host/süre bütçesinden alınamadı; blocked/expired ayrı). `stalkerVerifyAccount`→`accountIdentity/expiryValid`.
+- **B:** toplu ekleme görsel `CatalogPreparationModal`. **C:** küresel otomatik yenileme ana anahtarı (`FRESHNESS_SKIP_GLOBAL_OFF`; kapalıyken hiçbir liste güncellenmez).
+- **D:** katalog sayfalama hız ölçümü (`STALKER_PAGINATION_STOP.avgPageMs/elapsedMs`). **E2a:** version.js API yolları öne (`unshift`); **E2b:** "all" aile-önce; **E1:** keşif telemetrisi deadline'da da yazılır.
+- **U1:** dolgulu base64 kullanıcı adı çözme. **U2:** alan biçim telemetrisi (değer yok). **U3:** yayın URL yapı telemetrisi. **U4:** Xtream-şekilli URL'den kullanıcı adı/şifre çıkar+kartta göster (kendi hesabın; loglanmaz).
+- **Kök neden (portal "all"+turbo bulamıyor):** version.js bulunup 6 API yolu `queue.push` ile SONA ekleniyordu; turbo'nun ~6,6 sn bütçesi o yollara sıra gelmeden doluyordu (`MAG_DISCOVERY_BUDGET_RESULT reason:deadline`).
+- Doğrulama: tsc temiz · denetle TEMİZ · `check-v18716` PASS · MAG testleri (discovery/bulk/account/dev1) PASS. Native değişiklik YOK.
+
+## 9-eski000. v18.7.15 RC1 (dal `v18.7.15-rc1-mag-endpoint-lock`)
 
 **v18.7.15 (bu sürüm — GPT Build 1 D01-D15 + Opus tamamlama; PC doğrulandı, CİHAZ BEKLİYOR):**
 GPT `v18.7.15-dev1`'de kodladı, token bitti (47 dosya, 2 kırık kapı); kullanıcı onayıyla Opus devraldı, dalı §4 adına çevirdi.

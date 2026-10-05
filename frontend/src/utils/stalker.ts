@@ -2061,6 +2061,20 @@ function decodeMacIfBase64(raw: string | undefined): string | undefined {
   if (decoded && /^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$|^[0-9a-f]{12}$/i.test(decoded.trim())) return decoded.trim();
   return raw;
 }
+/**
+ * v18.7.16 (U1): kullanıcı adı alanı DOLGULU base64 ise (ör. "dXNlcjEyMw==") çöz. Dolgu ('=') kuvvetli
+ * base64 sinyalidir; normal kullanıcı adları '=' içermez → padding'siz değerler (ör. "ud3B3yRH") ham
+ * KULLANILIR, yanlışlıkla çözülmez. Çözülen değer boşluksuz basılabilir ASCII (3–64 karakter) ve MAC
+ * değilse döndürülür; aksi halde undefined (ham değer kullanılır). Ham base64 ASLA kullanıcıya gösterilmez.
+ */
+function decodeBase64Username(raw: string): string | undefined {
+  if (!/^[A-Za-z0-9+/]{4,}={1,2}$/.test(raw)) return undefined;
+  const decoded = base64DecodeAscii(raw);
+  if (!decoded) return undefined;
+  const t = decoded.trim();
+  if (t.length < 3 || t.length > 64 || !/^[\x21-\x7e]+$/.test(t) || MAC_SHAPE.test(t)) return undefined;
+  return t;
+}
 
 /**
  * v18.7.11 (A03/A04): kullanıcı adı aday alanları. Standart Stalker/Ministra get_profile'da gerçek
@@ -2085,6 +2099,9 @@ function pickUsernameField(p: any, macNorm: string): { username?: string; field?
     const decoded = String(decodeMacIfBase64(t) || t);
     if (MAC_SHAPE.test(decoded)) return undefined;
     if (macNorm && decoded.replace(/[:-]/g, "").toLowerCase() === macNorm) return undefined;
+    // v18.7.16 (U1): dolgulu base64 kullanıcı adı → okunabilir metne çöz (ham base64 gösterme).
+    const b64 = decodeBase64Username(t);
+    if (b64 && !(macNorm && b64.replace(/[:-]/g, "").toLowerCase() === macNorm)) return b64;
     return decoded;
   };
   for (const f of USERNAME_SOURCE_FIELDS) {
@@ -2229,7 +2246,17 @@ export async function stalkerAccountSnapshot(
     const uProf = pickUsernameField(accountRecord(profile) || {}, snapMac);
     const uPick = uMain.username ? { field: uMain.field, src: "main" } : uProf.username ? { field: uProf.field, src: "profile" } : { field: undefined, src: "none" };
     const rawProfile = accountRecord(profile) || {};
+    // v18.7.16 (U2): get_profile + get_main_info TÜM alanlarının GÜVENLİ biçim analizi (DEĞER YOK).
+    // Her alan için: adı + "dolgulu base64 mı (b)", "base64 çözülünce okunabilir metin mi (t)",
+    // "MAC biçimi mi (m)". Böylece kullanıcı adının gizli/base64 bir alanda olup olmadığı, değer
+    // açılmadan kanıtlanır. Değerin kendisi asla yazılmaz; yalnız boolean bayraklar.
+    const fieldShapes = (rec: Record<string, any> | null) => Object.entries(rec || {}).slice(0, 48).map(([k, v]) => {
+      const s = primitiveString(v)?.trim() || "";
+      const b = /^[A-Za-z0-9+/]{4,}={1,2}$/.test(s);
+      return { f: k, b, t: b && !!decodeBase64Username(s), m: MAC_SHAPE.test(String(decodeMacIfBase64(s) || s)) };
+    });
     void recordDiagnostic("mag", "STALKER_ACCOUNT_SNAPSHOT", {
+      profileFieldShapes: fieldShapes(rawProfile), mainInfoFieldShapes: fieldShapes(accountRecord(main)),
       endpoint: ses.endpoint, mainInfoOk,
       hasExpiry: !!merged.tariff_expired_date, status: merged.status || null,
       usernamePresent: !!merged.username, passwordPresent: !!merged.password,
@@ -2264,6 +2291,10 @@ export type StalkerAccountVerification = {
   accessKind?: "live" | "vod" | "series";
   sampledItems?: number;
   message?: string;
+  /** v18.7.16 (A): profil veya main-info gerçek hesap kimliği kanıtladı (klon/boş değil). */
+  accountIdentity?: boolean;
+  /** v18.7.16 (A): hesabın GELECEK tarihli (dolmamış) bir bitişi var. */
+  expiryValid?: boolean;
 };
 
 function accountMatchesMac(value: unknown, mac: string): boolean {
@@ -2314,8 +2345,14 @@ export async function stalkerVerifyAccount(
   let requests = 0;
   const finish = (state: StalkerAccountVerification["state"], code: string, extra: Partial<StalkerAccountVerification> = {}): StalkerAccountVerification => {
     evidence.push(code);
-    const result: StalkerAccountVerification = { state, accountInfo: info, evidence: [...evidence], liveCount: 0, ...extra };
-    void recordDiagnostic("mag", "STALKER_ACCOUNT_VERIFIED", { state, evidence: result.evidence, requests, accessKind: result.accessKind, sampledItems: result.sampledItems || 0 });
+    // v18.7.16 (A): kimlik + gelecek bitiş sinyalleri. Doğrulama "unverified" dönse bile (içerik örneği
+    // çökük host/süre bütçesi yüzünden alınamadıysa) toplu ekran bunları "muhtemel geçerli" ayırt etmek için
+    // kullanır. Yalnız kanıt (identity/expiry) — eklenirken hesap yine "doğrulanmadı" etiketiyle işaretlenir.
+    const accountIdentity = evidence.includes("profile-account-identity") || evidence.includes("main-info-account-identity") || hasAccountIdentity(info as any);
+    const expiryMs = parseAccountExpiryMs(info.tariff_expired_date);
+    const expiryValid = typeof expiryMs === "number" && Number.isFinite(expiryMs) && expiryMs > Date.now();
+    const result: StalkerAccountVerification = { state, accountInfo: info, evidence: [...evidence], liveCount: 0, accountIdentity, expiryValid, ...extra };
+    void recordDiagnostic("mag", "STALKER_ACCOUNT_VERIFIED", { state, evidence: result.evidence, requests, accessKind: result.accessKind, sampledItems: result.sampledItems || 0, accountIdentity, expiryValid });
     return result;
   };
   const signals = [opts.signal, cred.requestScope?.signal].filter((value, index, all): value is AbortSignal => !!value && all.indexOf(value) === index);
@@ -2522,6 +2559,7 @@ async function stalkerOrderedList(
 ): Promise<any[]> {
   const out:any[]=[]; const seen=new Set<string>();
   let loadedCount=0;
+  const paginationStartMs=Date.now(); let pagesFetched=0; // v18.7.16 (D): katalog sayfalama hız ölçümü.
   let total=Number.POSITIVE_INFINITY, page=0, firstNonEmptyPage:number|null=null;
   let maxPages=ORDERED_LIST_ABSOLUTE_MAX_PAGES, consecutiveNoNew=0, previousFingerprint="";
   let effectivePageBase: 0 | 1 | null = null;
@@ -2588,7 +2626,8 @@ async function stalkerOrderedList(
     }
     const progressTotal = Number.isFinite(total) ? total : undefined;
     try { onPage?.(p, loadedCount, progressTotal); } catch {}
-    void recordDiagnostic("mag","STALKER_PAGINATION_PAGE",{type,page:p,rows:rows.length,added,loaded:loadedCount,total:progressTotal,maxPages,effectivePageBase,maxPageItems:Number(js?.max_page_items)||undefined,streamMapped:!!onUniqueRow,parallel:true});
+    pagesFetched++;
+    void recordDiagnostic("mag","STALKER_PAGINATION_PAGE",{type,page:p,rows:rows.length,added,loaded:loadedCount,total:progressTotal,maxPages,effectivePageBase,maxPageItems:Number(js?.max_page_items)||undefined,streamMapped:!!onUniqueRow,parallel:true,sinceStartMs:Date.now()-paginationStartMs,pagesFetched});
     return added;
   };
   try {
@@ -2663,7 +2702,9 @@ async function stalkerOrderedList(
     if (e instanceof StalkerCatalogUnsupportedError) throw e;
     if (e?.kind === "CANCELLED") stopReason = "CANCELLED"; else throw e;
   }
-  void recordDiagnostic("mag","STALKER_PAGINATION_STOP",{type,stopReason,page,loaded:loadedCount,total:Number.isFinite(total)?total:undefined,maxPages,effectivePageBase,streamMapped:!!onUniqueRow,parallel:true});
+  void recordDiagnostic("mag","STALKER_PAGINATION_STOP",{type,stopReason,page,loaded:loadedCount,total:Number.isFinite(total)?total:undefined,maxPages,effectivePageBase,streamMapped:!!onUniqueRow,parallel:true,
+    // v18.7.16 (D): toplam süre + sayfa sayısı + sayfa başına ortalama ms (hız analizi; iyileştirme bu ölçümden sonra).
+    elapsedMs:Date.now()-paginationStartMs,pagesFetched,concurrency:PAGE_CONCURRENCY,avgPageMs:pagesFetched?Math.round((Date.now()-paginationStartMs)/pagesFetched):0});
   return out;
 }
 
@@ -3171,6 +3212,58 @@ export async function stalkerLogin(
  * Oynatma adresini güvenle alır. Token süresi dolmuşsa BİR KEZ yeniden
  * oturum açıp tekrar dener; kullanıcı bu yenilemeyi fark etmez.
  */
+/**
+ * v18.7.16 (U3): create_link ile çözülen yayın URL'inin GÜVENLİ yapısı (DEĞER YOK). Bazı MAG hesapları
+ * Xtream-tabanlı panelde barınır; create_link `.../<kullanıcı>/<şifre>/<id>.ext` biçiminde URL döndürür.
+ * Bu analiz, kullanıcı adı/şifrenin yayın URL'inde olup olmadığını — değerleri açmadan (yalnız parça
+ * SAYISI, her parçanın UZUNLUĞU ve TİPİ) — kanıtlar. U4 bu kanıttan sonra değeri okur. Değer asla yazılmaz.
+ */
+function streamUrlShape(url: string, portalHost: string): Record<string, any> | null {
+  try {
+    const u = new URL(url);
+    const segs = u.pathname.split("/").filter(Boolean);
+    const classify = (s: string) => {
+      const ext = /\.([a-z0-9]{1,5})$/i.exec(s)?.[1] || "";
+      const base = ext ? s.slice(0, -(ext.length + 1)) : s;
+      const kind = /^\d+$/.test(base) ? "num" : /^[A-Za-z0-9+/]{4,}={1,2}$/.test(base) ? "b64" : /^[A-Za-z0-9_.-]+$/.test(base) ? "alnum" : "other";
+      return { len: base.length, kind, ext };
+    };
+    const tail = segs.slice(-4).map(classify);
+    // Xtream kalıbı: son üç parça <kullanıcı>/<şifre>/<id>[.ext] — [-3],[-2] alnum/b64, [-1] sayısal id.
+    const n = segs.length;
+    const xtreamShape = n >= 3 && /^\d+$/.test(segs[n - 1].replace(/\.[a-z0-9]{1,5}$/i, ""))
+      && /^[A-Za-z0-9+/_.=-]{2,}$/.test(segs[n - 2]) && /^[A-Za-z0-9+/_.=-]{2,}$/.test(segs[n - 3]);
+    return { segCount: n, tail, xtreamShape, hostDiffersPortal: u.hostname.toLowerCase() !== portalHost.toLowerCase(), scheme: u.protocol.replace(":", ""), portPresent: !!u.port };
+  } catch { return null; }
+}
+/**
+ * v18.7.16 (U4): Xtream-şekilli yayın URL'inden kullanıcı adı/şifre çıkar. MAG hesabı Xtream panelde
+ * barınıyorsa create_link `.../<kullanıcı>/<şifre>/<id>.ext` döndürür (MAG Converter aracının yöntemi).
+ * Yalnız son parça SAYISAL yayın id'si iken ve önceki iki parça kimlik-benzeri olduğunda çıkarılır.
+ * KULLANICININ KENDİ hesabı; değerler yalnız kartta gösterilir, LOGA/telemetriye YAZILMAZ.
+ */
+function extractStreamCredentials(url: string): { username: string; password: string } | null {
+  try {
+    const u = new URL(url);
+    const segs = u.pathname.split("/").filter(Boolean);
+    const n = segs.length;
+    if (n < 3) return null;
+    if (!/^\d+$/.test(segs[n - 1].replace(/\.[a-z0-9]{1,5}$/i, ""))) return null; // son parça sayısal id
+    const username = segs[n - 3], password = segs[n - 2];
+    const credLike = (s: string) => /^[A-Za-z0-9+/_.=-]{2,48}$/.test(s) && !/^(?:live|movie|series|vod|hls|ts|play|stream|timeshift|catchup)$/i.test(s);
+    if (!credLike(username) || !credLike(password)) return null;
+    return { username: decodeURIComponent(username), password: decodeURIComponent(password) };
+  } catch { return null; }
+}
+const streamDerivedCreds = new Map<string, { username: string; password: string; at: number }>();
+/** v18.7.16 (U4): oynatmadan türetilen Xtream kullanıcı adı/şifre (kullanıcının kendi hesabı). */
+export function getStreamDerivedCredentials(mac: string, portalOrHost: string): { username: string; password: string } | null {
+  try {
+    const host = /^https?:\/\//i.test(portalOrHost) ? new URL(portalOrHost).hostname : String(portalOrHost).split("/")[0].split(":")[0];
+    const v = streamDerivedCreds.get(`${normalizeMac(mac)}|${host.toLowerCase()}`);
+    return v ? { username: v.username, password: v.password } : null;
+  } catch { return null; }
+}
 export async function stalkerResolveStream(
   cred: StalkerCreds,
   ses: StalkerSession | null,
@@ -3203,9 +3296,17 @@ export async function stalkerResolveStream(
       if (oldest) stalkerPlaybackLinkCache.delete(oldest);
     }
     const headers = playbackHeadersFor(cred, activeSession, url);
+    // v18.7.16 (U4): Xtream-şekilli URL'den kimlik çıkar, host'a göre sakla (kartta gösterilir, loglanmaz).
+    const derived = extractStreamCredentials(url);
+    const streamHost = (() => { try { return new URL(activeSession.endpoint || cred.portal).hostname.toLowerCase(); } catch { return ""; } })();
+    if (derived && streamHost) streamDerivedCreds.set(`${normalizeMac(cred.mac)}|${streamHost}`, { ...derived, at: Date.now() });
     void recordDiagnostic("player", "STALKER_RESOLVE_DONE", {
       elapsedMs: Date.now()-started, cacheHit, linkCacheHit: false, mediaType: parsed.kind, refreshed: didRefresh,
       headerNames: Object.keys(headers).sort(),
+      // v18.7.16 (U3): çözülen yayın URL'inin güvenli yapısı (değer yok) — kullanıcı adı/şifre URL'de mi?
+      streamShape: streamUrlShape(url, streamHost),
+      // U4: kimlik ÇIKARILDI mı (yalnız boolean + uzunluk; DEĞER YOK).
+      streamCredsFound: !!derived, streamUsernameLen: derived?.username.length || 0, streamPasswordLen: derived?.password.length || 0,
     });
     return { url, headers, session: activeSession, mediaType: parsed.kind, refreshed: didRefresh };
   };

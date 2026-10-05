@@ -189,6 +189,21 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     const wildcardPorts = new Set<string>();
     const seen = new Set<string>(), planned = new Set<string>(), candidates = new Map<string, MagPortalCandidate>(); let lastError = ""; let stop = false;
     const portState = new Map<string, "open" | "unknown" | "closed">();
+    // v18.7.16 (E1): scope + keşif-sonucu telemetrisi `try` ÖNCESİNDE tanımlanır; böylece bütçe/deadline
+    // yolunda (catch bloğu) da çağrılabilir (try içindeki const'lar catch'ten görünmez).
+    let scope: MagDiscoveryScope = "fallback";
+    let discoveryResultEmitted = false;
+    const emitDiscoveryResult = (open?: string[], unknown?: string[]) => {
+      if (discoveryResultEmitted) return;
+      discoveryResultEmitted = true;
+      const openPorts = open ?? [...portState].filter(([, s]) => s === "open").map(([p]) => p);
+      const unknownCount = unknown ? unknown.length : [...portState].filter(([, s]) => s === "unknown").length;
+      void recordDiagnostic("scan", "MAG_DISCOVERY_RESULT", {
+        host: host.host, scope, openPorts: openPorts, unknownPortCount: unknownCount, probes: report.probes, stop, state: report.state,
+        budget: { requests: budget.requests, remainingMs: budget.remainingMs, exhausted: budget.exhausted, reason: budget.stopReason },
+        candidates: [...candidates.values()].slice(0, 12).map(c => ({ endpoint: c.endpoint, confidence: c.confidence, httpStatus: c.httpStatus, selectable: c.selectable, evidence: c.evidence.slice(0, 4) })),
+      });
+    };
     try {
     // v18.7.12: çoklu-IP failover'ı arka planda tetikle (ölü A kaydı sabitlenmesin). Fire-and-forget:
     // DoH + yoklama (~2–3 sn) biterken ilk istekler gate temposuyla zaten bekliyor; pin hazır olunca
@@ -200,7 +215,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     // v18.7.14 (G05): "Yalnız girilen" (exact) HER DURUMDA kati — portsuz girişte bile `fallback`'a
     // YÜKSELTİLMEZ (eskiden portsuz+exact sessizce fallback olup başka portlara gidiyordu). Yalnız scope
     // HİÇ verilmemiş + portsuz girişte varsayılan `fallback` olur; kullanıcı exact seçtiyse exact kalır.
-    const scope: MagDiscoveryScope = opts.scope === "exact" ? "exact"
+    scope = opts.scope === "exact" ? "exact"
       : !opts.scope && /\.php$/i.test(new URL(entered).pathname) ? 'exact'
       : (!host.hasPort && !opts.scope) ? "fallback" : (opts.scope || "fallback");
     const allowOtherPorts = opts.allowOtherPorts ?? (scope === 'all' || !host.hasPort || opts.scope === 'fallback');
@@ -345,8 +360,13 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
               const confirmUrl = endpoint(new URL(target).origin + (tp.replace(/\/+$/, "") || "/"));
               if (confirmUrl && !candidates.has(confirmUrl)) candidates.set(confirmUrl, { endpoint: confirmUrl, httpStatus: response.status, confidence: "fingerprint", evidence: ["stalker-version-js", "portal-confirmed"], elapsedMs: vj.elapsedMs, selectable: false });
               let enqueued = 0;
-              for (const apiUrl of magFamilyEndpoints(target).filter(value => /\.php$/i.test(new URL(value).pathname))) {
-                if (apiUrl && !seen.has(apiUrl.replace(/\/+$/, "")) && !queue.includes(apiUrl) && queue.length < MAX_EXTRA_ENDPOINTS) { queue.push(apiUrl); planned.add(apiUrl.replace(/\/+$/, "")); enqueued++; }
+              // v18.7.16 (E2a): version.js PORTAL'I DOĞRULADI → çıkan gerçek API yolları kuyruğun ÖNÜNE
+              // alınır (unshift). Cihaz kanıtı (v18.7.15, "all"+turbo): version.js bulunup 6 API yolu
+              // kuyruğun SONUNA eklenince (push), egzotik portlar bütçeyi tüketiyor ve o yollara sıra
+              // gelmeden deadline doluyordu (valid:0). xpcom çözümleyici zaten unshift kullanıyor; tutarlı
+              // hâle getirildi. En olası API (load.php/portal.php) en önce denensin diye ters sırayla unshift.
+              for (const apiUrl of magFamilyEndpoints(target).filter(value => /\.php$/i.test(new URL(value).pathname)).reverse()) {
+                if (apiUrl && !seen.has(apiUrl.replace(/\/+$/, "")) && !queue.includes(apiUrl) && queue.length < MAX_EXTRA_ENDPOINTS) { queue.unshift(apiUrl); planned.add(apiUrl.replace(/\/+$/, "")); enqueued++; }
               }
               void recordDiagnostic("scan", "MAG_DISCOVERY_VERSION_JS", { base, enqueued });
               emitLive();
@@ -488,12 +508,6 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       return { open: openOrdered, unknown: unknownOrdered, schemes: portSchemes };
     };
     const hasSelectable = () => [...candidates.values()].some(c => c.selectable);
-    const emitDiscoveryResult = (open: string[], unknown: string[]) => {
-      void recordDiagnostic("scan", "MAG_DISCOVERY_RESULT", {
-        host: host.host, scope, openPorts: open, unknownPortCount: unknown.length, probes: report.probes, stop, state: report.state,
-        candidates: [...candidates.values()].slice(0, 12).map(c => ({ endpoint: c.endpoint, confidence: c.confidence, httpStatus: c.httpStatus, selectable: c.selectable, evidence: c.evidence.slice(0, 4) })),
-      });
-    };
     // İKİ AŞAMALI KEŞİF
     const twoPhaseExpand = async () => {
       if (stop || seen.size >= maxCandidates) return;
@@ -513,7 +527,13 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       emitDiscoveryResult(open, unknown);
     };
     if (scope === "all") {
-      await sweep([entered]); // Koruma/429 varsa paralel port isteği başlamadan dur.
+      // v18.7.16 (E2b): "all" kapsamı da kurulum ailesini (family) ÖNCE tarar — "fallback" gibi.
+      // Cihaz kanıtı (v18.7.15): "all"+turbo'da yalnız girilen host (`[entered]`) taranıp sonra tüm
+      // portlara açılınca, asıl `/server/load.php` egzotik portların arasında kalıyor ve bütçe dolmadan
+      // bulunamıyordu. Önce aile (hızlı, kesin yollar) taranır → asıl portal bütçe dolmadan ERKEN bulunur;
+      // ardından "all" semantiği gereği tüm portlara/protokollere GENİŞLER (tüketici keşif korunur, dedup
+      // `seen` ile aynı endpoint iki kez taranmaz). Aile-önce yalnız SIRAYI değiştirir, kapsamı daraltmaz.
+      await sweep(family(host));
       if (!stop) await twoPhaseExpand();
     } else if (scope === "exact") {
       // v18.7.13: "Yalnız girilen" — KATİ: SADECE girilen port+yol denenir. Başka yol/port/portal,
@@ -528,6 +548,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     if (!stop) report.state = report.candidates.some(candidate => candidate.selectable) ? "ready" : lastError ? "error" : "not-found";
     if (lastError && report.state === "error") report.message = lastError;
     else if (report.state === "not-found" && seen.size >= maxCandidates) report.message = `Portal aday sınırına ulaşıldı (${maxCandidates}); bu kapsamda API doğrulanamadı`;
+    emitDiscoveryResult(); // v18.7.16 (E1): exact/fallback/all her yol için bir kez (twoPhaseExpand atlanmış olsa da).
     return report;
     } catch (error: any) {
       if (isCancelled(opts.control) || error?.kind === 'CANCELLED') throw error;
@@ -535,6 +556,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       report.candidates = [...candidates.values()];
       report.state = report.candidates.some(candidate => candidate.selectable) ? 'ready' : 'not-found';
       report.message = `${budget.sharedBudget ? 'Pasif' : 'Host'} keşif bütçesi doldu; kalan port/yollar denenmedi. Portalın bulunmadığı kesinleşmedi.`;
+      emitDiscoveryResult(); // v18.7.16 (E1): bütçe/deadline dolunca da sebep (açık portlar, adaylar, bütçe) kaydedilir.
       return report;
     } finally {
       report.budget = { requests: budget.requests, remainingMs: budget.remainingMs, exhausted: budget.exhausted };
