@@ -180,7 +180,17 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.20 RC1 — dal `v18.7.20-rc1-catalog-speed-vod-class`)
+## 9. Mevcut durum (v18.7.21 RC1 — dal `v18.7.21-rc1-addtime-user-xtparallel-m3u`)
+
+**v18.7.21 (bu sürüm — A+B+C+D; PC doğrulandı, NATIVE var → assembleDebug + CİHAZ BEKLİYOR):**
+- **A:** Ekleme anında kullanıcı adı/şifre (`stalkerPrimeStreamCredentials` — ilk kanalın create_link'inden, oynatmasız). Tekli+çoklu. Yayın sunucusu da depolanır.
+- **B:** Xtream combo özel paralellik girişi (1–250, girilen=çalışan; boş→mod).
+- **C:** Kartta Xtream M3U get.php linki üret + kopyala + "Görüntü testi" (`get_live_streams`).
+- **D:** Genel "canlı tut" ön plan servisi (`ForegroundKeepAliveService`, native, dataSync) — MAG çoklu tarama/ekleme + liste güncelleme app arka plandayken sürer. İş mantığı Kotlin'e taşınmaz; servis yalnız süreci canlı tutar.
+- Doğrulama: tsc temiz · denetle TEMİZ · `check-v18721` PASS. **NATIVE DEĞİŞİKLİK → assembleDebug zorunlu.** Ayrıntı `AI-DEVIR-v18.7.21.md`.
+- **Bekleyen:** filmler sınıflama düzeltmesi (v18.7.20 `STALKER_VOD_PARTITION` telemetrisinden sonra); GPT G07-G10.
+
+## 9-eski-18720. v18.7.20 RC1 (dal `v18.7.20-rc1-catalog-speed-vod-class`)
 
 **v18.7.20 (bu sürüm — katalog hızı + filmler teşhisi; PC doğrulandı, CİHAZ BEKLİYOR):**
 Cihaz logu (hkpremium): VOD 22905 öğenin yüklenen 6244'ü HEPSİ diziye sınıflandı (Filmler boş); her tür 75 sn bütçeye takılıp %27 yükledi.

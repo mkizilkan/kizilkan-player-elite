@@ -49,6 +49,7 @@ const CHECKS = [
   ["check-v18718-release.js", "v18.7.18 backup orphan-playlist resilience (skip rejected queryItems) + Google Drive runtime OAuth client ID (user-entered, app-scheme redirect)", ""],
   ["check-v18719-release.js", "v18.7.19 stream-derived credential persistence (storage + startup hydrate) for MAG accounts whose portal login is empty", ""],
   ["check-v18720-release.js", "v18.7.20 catalog pagination speed (concurrency 20, budget 100s, 2000 page cap) + VOD->series classification diagnostic telemetry", ""],
+  ["check-v18721-release.js", "v18.7.21 add-time username derivation + Xtream combo custom parallelism + account-card M3U link/content-test + background keep-alive foreground service", ""],
   ["check-v18713-release.js", "v18.7.13 manual portal pick (traces selectable) + username enrichment (full-param get_profile real login) + A01 base64 MAC decode in matcher + strict exact scope (only entered port/path)", ""],
   ["check-v18712-release.js", "v18.7.12 MAG multi-IP DNS failover (DoH all A-records + live IP pin + IP-at-boundary connect/logical translation; player had host failover, MAG scan did not)", ""],
   ["check-v18711-release.js", "v18.7.11 MAG profile-compat core (MAG320 full-param get_profile variants + empty-profile-yet-live-accessible = valid) + safe username presence telemetry + discovery wall budget", ""],

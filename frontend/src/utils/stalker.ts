@@ -3258,7 +3258,7 @@ function streamUrlShape(url: string, portalHost: string): Record<string, any> | 
  * Yalnız son parça SAYISAL yayın id'si iken ve önceki iki parça kimlik-benzeri olduğunda çıkarılır.
  * KULLANICININ KENDİ hesabı; değerler yalnız kartta gösterilir, LOGA/telemetriye YAZILMAZ.
  */
-function extractStreamCredentials(url: string): { username: string; password: string } | null {
+function extractStreamCredentials(url: string): { username: string; password: string; server: string } | null {
   try {
     const u = new URL(url);
     const segs = u.pathname.split("/").filter(Boolean);
@@ -3268,10 +3268,11 @@ function extractStreamCredentials(url: string): { username: string; password: st
     const username = segs[n - 3], password = segs[n - 2];
     const credLike = (s: string) => /^[A-Za-z0-9+/_.=-]{2,48}$/.test(s) && !/^(?:live|movie|series|vod|hls|ts|play|stream|timeshift|catchup)$/i.test(s);
     if (!credLike(username) || !credLike(password)) return null;
-    return { username: decodeURIComponent(username), password: decodeURIComponent(password) };
+    // v18.7.21 (C): yayın sunucusu (scheme://host:port) = Xtream API tabanı → M3U get.php linki buradan kurulur.
+    return { username: decodeURIComponent(username), password: decodeURIComponent(password), server: u.origin };
   } catch { return null; }
 }
-const streamDerivedCreds = new Map<string, { username: string; password: string; at: number }>();
+const streamDerivedCreds = new Map<string, { username: string; password: string; server?: string; at: number }>();
 // v18.7.19 (U4 kalıcılaştırma): türetilen kimlik KALICI olmalı. Cihaz kanıtı: kart Şifre'yi get_profile'dan
 // (accountInfo) gösteriyor ama Kullanıcı Adı (login boş) yalnız oynatma URL'inden gelebiliyor; eski U4
 // haritası bellekteydi → yeniden açılışta/yeni kurulumda kayboluyordu, "Belirlenemedi" kalıyordu. Artık
@@ -3280,7 +3281,7 @@ const streamDerivedCreds = new Map<string, { username: string; password: string;
 const STREAM_CREDS_KEY = "kizilkan.streamCreds";
 function persistStreamDerivedCreds(): void {
   try {
-    const obj: Record<string, { username: string; password: string; at: number }> = {};
+    const obj: Record<string, { username: string; password: string; server?: string; at: number }> = {};
     for (const [k, v] of streamDerivedCreds) obj[k] = v;
     void storage.setItem(STREAM_CREDS_KEY, JSON.stringify(obj)).catch(() => {});
   } catch {}
@@ -3290,21 +3291,38 @@ export async function hydrateStreamDerivedCredentials(): Promise<void> {
   try {
     const raw = String((await storage.getItem(STREAM_CREDS_KEY, "")) || "");
     if (!raw) return;
-    const obj = JSON.parse(raw) as Record<string, { username?: string; password?: string; at?: number }>;
+    const obj = JSON.parse(raw) as Record<string, { username?: string; password?: string; server?: string; at?: number }>;
     for (const [k, v] of Object.entries(obj || {})) {
-      if (v && typeof v.username === "string" && typeof v.password === "string") streamDerivedCreds.set(k, { username: v.username, password: v.password, at: Number(v.at) || Date.now() });
+      if (v && typeof v.username === "string" && typeof v.password === "string") streamDerivedCreds.set(k, { username: v.username, password: v.password, server: typeof v.server === "string" ? v.server : undefined, at: Number(v.at) || Date.now() });
     }
   } catch {}
 }
-/** v18.7.16 (U4): oynatmadan türetilen Xtream kullanıcı adı/şifre (kullanıcının kendi hesabı). */
-export function getStreamDerivedCredentials(mac: string, portalOrHost: string): { username: string; password: string } | null {
+/** v18.7.16 (U4): oynatmadan türetilen Xtream kullanıcı adı/şifre (+ yayın sunucusu; kullanıcının kendi hesabı). */
+export function getStreamDerivedCredentials(mac: string, portalOrHost: string): { username: string; password: string; server?: string } | null {
   try {
     const macN = normalizeMac(mac);
     let host = ""; try { host = (/^https?:\/\//i.test(portalOrHost) ? new URL(portalOrHost).hostname : String(portalOrHost).split("/")[0].split(":")[0]).toLowerCase(); } catch {}
     // v18.7.19: önce host-özel key, sonra MAC-only yedek (oynatma host'u portal host'undan farklıysa — ör.
     // failover IP / farklı yayın sunucusu — kart yine de gösterir). MAC hesabın kimliğidir.
     const v = (host && streamDerivedCreds.get(`${macN}|${host}`)) || streamDerivedCreds.get(macN);
-    return v ? { username: v.username, password: v.password } : null;
+    return v ? { username: v.username, password: v.password, server: v.server } : null;
+  } catch { return null; }
+}
+/**
+ * v18.7.21 (A): EKLEME ANINDA kullanıcı adı/şifre türet — oynatmaya GEREK YOK (MAG Converter yöntemi).
+ * İlk canlı kanalın create_link'ini çözer; stalkerResolveStream içindeki U4 çıkarma+kalıcılaştırma devreye
+ * girer. EN-İYİ-ÇABA: başarısız olursa (link yok / Xtream-şekilli değil) sessizce null döner, ekleme bozulmaz.
+ */
+export async function stalkerPrimeStreamCredentials(
+  cred: StalkerCreds, ses: StalkerSession, channels: Channel[], signal?: AbortSignal,
+): Promise<{ username: string; password: string; server?: string } | null> {
+  try {
+    if (signal?.aborted) return null;
+    const ch = channels.find(c => !!c?.url);
+    if (!ch) return null;
+    await stalkerResolveStream(cred, ses, String(ch.url));
+    const host = (() => { try { return new URL(ses.endpoint || cred.portal).hostname; } catch { return cred.portal; } })();
+    return getStreamDerivedCredentials(cred.mac, host);
   } catch { return null; }
 }
 export async function stalkerResolveStream(

@@ -1903,6 +1903,28 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
   const accUsernameIsName = !!acc.username && !!acc.display_name && String(acc.username) === String(acc.display_name);
   const shownUsername = (isStalker ? magDerived?.username : "") || (accUsernameIsName ? "" : acc.username) || (isXtream ? playlist.xtreamUsername : "") || magDerived?.username || "";
   const shownPassword = (isStalker ? magDerived?.password : "") || acc.password || (isXtream ? playlist.xtreamPassword : "") || "";
+  // v18.7.21 (C): kullanıcı adı + şifre + yayın sunucusundan Xtream M3U (get.php) linki üret; kopyalanabilir
+  // ve "görüntü var/yok" testi yapılabilir. MAG hesabında sunucu U4'ten (yayın origin'i), Xtream'de xtreamServer.
+  const m3uServer = String((isStalker ? magDerived?.server : playlist.xtreamServer) || "").replace(/\/+$/, "");
+  const m3uLink = (m3uServer && shownUsername && shownPassword)
+    ? `${m3uServer}/get.php?username=${encodeURIComponent(shownUsername)}&password=${encodeURIComponent(shownPassword)}&type=m3u_plus&output=ts` : "";
+  const [m3uCopied, setM3uCopied] = React.useState(false);
+  const [m3uTest, setM3uTest] = React.useState<{ state: "idle" | "testing" | "ok" | "fail"; msg: string }>({ state: "idle", msg: "" });
+  const copyM3u = async () => { try { await Clipboard.setStringAsync(m3uLink); setM3uCopied(true); try { haptic.light?.(); } catch {} setTimeout(() => setM3uCopied(false), 1200); } catch {} };
+  const testM3u = async () => {
+    if (!m3uServer || !shownUsername || !shownPassword) return;
+    setM3uTest({ state: "testing", msg: "Görüntü kontrol ediliyor…" });
+    try {
+      // player_api.php get_live_streams (JSON, hafif) → kanal dönerse "görüntü var".
+      const api = `${m3uServer}/player_api.php?username=${encodeURIComponent(shownUsername)}&password=${encodeURIComponent(shownPassword)}&action=get_live_streams`;
+      const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 15000);
+      const res = await fetch(api, { signal: ctrl.signal }); clearTimeout(timer);
+      const text = await res.text();
+      let count = 0; try { const arr = JSON.parse(text); count = Array.isArray(arr) ? arr.length : 0; } catch {}
+      if (count > 0) setM3uTest({ state: "ok", msg: `✓ Görüntü var · ${count} kanal` });
+      else setM3uTest({ state: "fail", msg: "✗ Görüntü yok (içerik dönmedi / hesap aktif değil)" });
+    } catch (e: any) { setM3uTest({ state: "fail", msg: "✗ Test başarısız: " + String(e?.message || e).slice(0, 60) }); }
+  };
 
   const expiryAt = accountExpiryMs(acc);
   const formatExpiry = () => accountExpiryLabel(acc);
@@ -1955,6 +1977,27 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
           </>
         )}
       </View>
+
+      {/* v18.7.21 (C): Xtream M3U (get.php) linki — kullanıcı adı/şifre/sunucudan üretilir, kopyalanır, test edilir. */}
+      {m3uLink ? (
+        <View style={[cardStyles.serverBox, { borderTopColor: colors.border }]}>
+          <Text style={[cardStyles.serverTitle, { color: colors.onSurfaceTertiary }]}>M3U / XTREAM LİNKİ</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.surfaceSecondary, borderRadius: RADIUS.sm, paddingHorizontal: SPACING.sm, paddingVertical: 8, borderWidth: 1, borderColor: colors.border }}>
+            <Text numberOfLines={2} style={{ flex: 1, color: colors.onSurfaceSecondary, fontSize: FONT.size.xs }}>{m3uLink}</Text>
+            <FocusButton testID="copy-m3u-link" accessibilityLabel="M3U linkini kopyala" onPress={copyM3u} style={{ padding: 4 }}>
+              <Ionicons name={m3uCopied ? "checkmark" : "copy-outline"} size={16} color={m3uCopied ? (colors.success || "#2ecc71") : colors.brandPrimary} />
+            </FocusButton>
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm, marginTop: SPACING.sm }}>
+            <FocusButton testID="test-m3u-link" onPress={testM3u} disabled={m3uTest.state === "testing"}
+              style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 8, paddingHorizontal: SPACING.md, borderRadius: RADIUS.md, borderWidth: 1, borderColor: colors.brandPrimary, opacity: m3uTest.state === "testing" ? 0.6 : 1 }}>
+              <Ionicons name="play-circle-outline" size={16} color={colors.brandPrimary} />
+              <Text style={{ color: colors.brandPrimary, fontWeight: "700", fontSize: FONT.size.sm }}>Görüntü testi</Text>
+            </FocusButton>
+            {m3uTest.state !== "idle" ? <Text style={{ flex: 1, fontSize: FONT.size.xs, color: m3uTest.state === "ok" ? (colors.success || "#2ecc71") : m3uTest.state === "fail" ? colors.error : colors.onSurfaceSecondary }}>{m3uTest.msg}</Text> : null}
+          </View>
+        </View>
+      ) : null}
 
       {/* SUNUCU BİLGİLERİ (kullanıcı isteği: görünür olsun) */}
       {isXtream && playlist.serverInfo ? (

@@ -159,6 +159,7 @@ export default function MagBulkScreen() {
       scanAbortRef.current?.abort(); actionAbortRef.current?.abort();
       if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
       try { KizilkanNativeCore.setKeepScreenOn(false); } catch {}
+      try { KizilkanNativeCore.stopForegroundKeepAlive(); } catch {}
     };
   }, []);
   useEffect(() => {
@@ -219,6 +220,8 @@ export default function MagBulkScreen() {
     // v18.7.6 (A2): tarama sürerken ekran/CPU uykuya geçmesin (cihaz uykusu taramayı yarıda
     // kesiyordu). Ayrı keep-awake paketi yok; native pencere bayrağı kullanılır.
     try { KizilkanNativeCore.setKeepScreenOn(true); } catch {}
+    // v18.7.21 (D): uygulama arka plana alınsa da tarama sürsün (foreground keep-alive servisi).
+    try { KizilkanNativeCore.startForegroundKeepAlive("KIZILKAN · Çoklu MAC", "Portal taraması çalışıyor…"); } catch {}
     try {
       const hosts = await resolveHosts();
       if (controller.signal.aborted || run !== runRef.current) return;
@@ -252,7 +255,7 @@ export default function MagBulkScreen() {
           resultBufferRef.current.push(r);
           if (!flushTimerRef.current) flushTimerRef.current = setTimeout(flushResults, 150);
         },
-        onProgress: (done, total, current) => { if (mountedRef.current && run === runRef.current) setProgress({ done, total, current: current || "" }); },
+        onProgress: (done, total, current) => { if (mountedRef.current && run === runRef.current) { setProgress({ done, total, current: current || "" }); try { KizilkanNativeCore.updateForegroundKeepAlive(`Tarama · ${done}/${total}`, done, total); } catch {} } },
         onStage: msg => { if (mountedRef.current && run === runRef.current) setStageMsg(msg); },
         control: {
           isCancelled: () => cancelRef.current,
@@ -267,6 +270,7 @@ export default function MagBulkScreen() {
         portalPickerRef.current = null;
         flushResults(); busyRef.current = false; scanAbortRef.current = null;
         try { KizilkanNativeCore.setKeepScreenOn(false); } catch {}
+      try { KizilkanNativeCore.stopForegroundKeepAlive(); } catch {}
         if (mountedRef.current) { setScanning(false); setPaused(false); setStageMsg(controller.signal.aborted ? "Analiz iptal edildi. Tamamlanan sonuçlar korunuyor." : ""); }
       }
     }
@@ -310,6 +314,7 @@ export default function MagBulkScreen() {
     const toAdd = selectedAddable.filter(r => !playlists.some(pl => pl.stalkerPortal && pl.stalkerMac && magIdentity(pl.stalkerPortal, pl.stalkerMac) === magIdentity(r.portal, r.mac)));
     if (toAdd.length === 0) { Alert.alert("Eklenecek yok", "Seçili geçerli/muhtemel geçerli sonuç yok ya da hepsi zaten ekli."); return; }
     busyRef.current = true; setAdding(true);
+    try { KizilkanNativeCore.startForegroundKeepAlive("KIZILKAN · Hesap ekleme", "Hesaplar ekleniyor…"); } catch {} // v18.7.21 (D): arka planda sürsün.
     const owner = profileRef.current;
     const controller = new AbortController(); actionAbortRef.current = controller;
     const action = ++actionRunRef.current;
@@ -364,6 +369,8 @@ export default function MagBulkScreen() {
             const catalog = await stalkerCatalog(cred, session, { liveOnly: true, signal: controller.signal,
               onProgress: p => { if (stillOwned()) { setActionProgress(`${r.mac} · ${p.message}`); onAddStage(p); } } });
             if (!stillOwned()) break;
+            // v18.7.21 (A): ekleme anında kullanıcı adı/şifre türet (oynatmasız) — en-iyi-çaba.
+            try { const { stalkerPrimeStreamCredentials } = await import("@/src/utils/stalker"); await stalkerPrimeStreamCredentials(cred, session, catalog.channels, controller.signal); } catch {}
             await updatePlaylist(id, {
               channels: catalog.channels,
               catalogCapabilities: { live: catalog.channels.length ? "supported" : "empty", vod: "empty", series: "empty", updatedAt: new Date().toISOString() },
@@ -405,7 +412,7 @@ export default function MagBulkScreen() {
     } catch (e: any) {
       if (stillOwned()) Alert.alert("Ekleme hatası", String(e?.message || e));
     } finally {
-      if (ownsAction()) { busyRef.current = false; actionAbortRef.current = null; setAdding(false); setActionProgress(""); }
+      if (ownsAction()) { busyRef.current = false; actionAbortRef.current = null; setAdding(false); setActionProgress(""); try { KizilkanNativeCore.stopForegroundKeepAlive(); } catch {} }
     }
   }, [selectedAddable, playlists, addPlaylist, enrichPlaylistMedia, updatePlaylist, router, useProxy, profileEpoch]);
 

@@ -333,6 +333,10 @@ export const KizilkanNativeCore = {
   peekPendingShortcut: (): string => native?.peekPendingShortcut ? String(native.peekPendingShortcut() || "") : "",
   /** v18.4.0 — Ekranı açık tut (slayt gösterisi). */
   setKeepScreenOn: (on: boolean): boolean => native?.setKeepScreenOn ? !!native.setKeepScreenOn(on) : false,
+  // v18.7.21 (D): genel "canlı tut" ön plan servisi — JS işleri (MAG çoklu/güncelleme) arka planda sürsün.
+  startForegroundKeepAlive: (title: string, text: string): boolean => native?.startForegroundKeepAlive ? !!native.startForegroundKeepAlive(title, text) : false,
+  updateForegroundKeepAlive: (text: string, done: number, total: number): boolean => native?.updateForegroundKeepAlive ? !!native.updateForegroundKeepAlive(text, Math.floor(done) || 0, Math.floor(total) || 0) : false,
+  stopForegroundKeepAlive: (): boolean => native?.stopForegroundKeepAlive ? !!native.stopForegroundKeepAlive() : false,
   /** v18.4.0 — MediaStore küçük resmi (file:// JPEG, önbellekli) veya "". */
   getDeviceMediaThumbnail: async (uri: string, sizePx = 256): Promise<string> =>
     native?.getDeviceMediaThumbnail ? String(await native.getDeviceMediaThumbnail(uri, sizePx) || "") : "",

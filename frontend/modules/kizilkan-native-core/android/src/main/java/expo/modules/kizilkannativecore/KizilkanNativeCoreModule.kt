@@ -964,6 +964,17 @@ class KizilkanNativeCoreModule : Module() {
       }
       true
     }
+    // v18.7.21 (D): JS işleri (MAG çoklu tarama/ekleme/güncelleme) uygulama arka plandayken de sürsün diye
+    // genel "canlı tut" ön plan servisi. İş başında start, ilerledikçe update, bittiğinde stop çağrılır.
+    Function("startForegroundKeepAlive") { title: String, text: String ->
+      try { ForegroundKeepAliveService.start(context(), title, text); true } catch (_: Throwable) { false }
+    }
+    Function("updateForegroundKeepAlive") { text: String, done: Int, total: Int ->
+      try { ForegroundKeepAliveService.update(context(), text, done, total); true } catch (_: Throwable) { false }
+    }
+    Function("stopForegroundKeepAlive") {
+      try { ForegroundKeepAliveService.stop(context()); true } catch (_: Throwable) { false }
+    }
     // v18.4.0: Medya Merkezi — cihazdaki tüm video/müzik/fotoğraf (MediaStore) + küçük resim.
     AsyncFunction("queryDeviceMediaJson") { kind: String, offset: Int, limit: Int ->
       localMediaLibrary.queryDeviceMediaJson(kind, offset, limit)

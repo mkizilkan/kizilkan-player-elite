@@ -985,6 +985,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       const pl=playlistsRef.current.find(p=>p.id===id)!;
       const catalogKinds=kinds.filter((k):k is CatalogKind=>k!=='epg');
       if(catalogKinds.length){
+        // v18.7.21 (D): liste güncelleme uygulama arka plandayken de sürsün (foreground keep-alive).
+        try { KizilkanNativeCore.startForegroundKeepAlive("KIZILKAN · Güncelleme", `${pl.name} güncelleniyor…`); } catch {}
+        try {
         /**
          * v17.4.1 — FARK RAPORU MERKEZİ YOLA TAŞINDI.
          * v17.4.0'da rapor yalnız playlist-select ekranındaki ELLE yenileme
@@ -1038,6 +1041,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         }catch(e:any){
           void recordDiagnostic('catalog','PLAYLIST_REFRESH_DIFF_ERROR',{playlistId:id,error:String(e?.message||e)});
         }
+        } finally { try { KizilkanNativeCore.stopForegroundKeepAlive(); } catch {} } // v18.7.21 (D): iş bitince/hatada servisi durdur.
       }
       if(kinds.includes('epg')&&owns()){
         if(!pl.epgUrl)throw new Error('Bu liste için EPG adresi tanımlı değil.');

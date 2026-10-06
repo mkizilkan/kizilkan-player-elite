@@ -329,6 +329,7 @@ export default function AddPlaylist() {
     const resolve=categoryResolveRef.current; categoryResolveRef.current=null; setCategoryPicker(null); resolve?.(value);
   }, []);
   const [scanSpeed, setScanSpeed] = useState<ScanSpeed>("balanced");
+  const [comboParallelText, setComboParallelText] = useState(""); // v18.7.21 (B): Xtream combo özel paralellik (boş→mod).
   // v17.1.0 ultra-scale: bulk tarama için kullanıcı kontrollü değerler.
   const [bulkCustomConcurrencyEnabled, setBulkCustomConcurrencyEnabled] = useState(false);
   const [bulkRequestedConcurrency, setBulkRequestedConcurrency] = useState("32");
@@ -632,13 +633,17 @@ export default function AddPlaylist() {
   };
 
   const scanConfigForSpeed = () => {
-    switch (scanSpeed) {
+    const base = (() => { switch (scanSpeed) {
       case "very_safe": return { concurrency: 2, timeoutMs: 16000, accountConcurrency: 1, label: "Çok Güvenli" };
       case "safe": return { concurrency: 3, timeoutMs: 12000, accountConcurrency: 2, label: "Güvenli" };
       case "fast": return { concurrency: 10, timeoutMs: 5000, accountConcurrency: 4, label: "Hızlı" };
       case "turbo": return { concurrency: 16, timeoutMs: 3500, accountConcurrency: 6, label: "Turbo" };
       default: return { concurrency: 6, timeoutMs: 8000, accountConcurrency: 3, label: "Dengeli" };
-    }
+    } })();
+    // v18.7.21 (B): kullanıcı özel paralellik girdiyse (boş değil) TAM o değer uygulanır (1–250; girilen=çalışan);
+    // boşsa mod varsayılanı (concurrency × accountConcurrency). MAG çoklu ekrandaki davranışla tutarlı.
+    const manual = comboParallelText.trim() ? Math.max(1, Math.min(250, Number(comboParallelText) || 0)) : 0;
+    return manual ? { ...base, requestedConcurrency: manual } : base;
   };
 
   const mergeStreamingMatches = React.useCallback((incoming: PanelCredentialMatch[], title: string, subtitle: string) => {
@@ -2684,6 +2689,9 @@ ${pub.path}`, [
               // hem metni hem yapılandırılmış ilerlemeyi günceller → CatalogPreparationModal canlı gösterir.
               onProgress: (progress) => { setProgress(progress.message); setCatalogProgress(prev => applyCatalogProgress(prev, progress)); },
             });
+            // v18.7.21 (A): EKLEME ANINDA kullanıcı adı/şifre türet (oynatmaya gerek yok) — ilk kanalın
+            // create_link'ini çözer, U4 çıkarma+kalıcılaştırma devreye girer. En-iyi-çaba; başarısızsa ekleme sürer.
+            try { const { stalkerPrimeStreamCredentials } = await import("@/src/utils/stalker"); await stalkerPrimeStreamCredentials(cred, session, catalog.channels, stalkerAddAbortRef.current?.signal); } catch {}
             let contentSelection: PlaylistContentSelection|null = null;
             let liveCatalog={channels:catalog.channels,vod:[] as any[],series:[] as any[]};
             if (interactiveSelection) {
@@ -3294,6 +3302,16 @@ ${pub.path}`, [
                     </FocusButton>
                   );
                 })}
+              </View>
+              {/* v18.7.21 (B): Xtream combo özel paralellik — ne yazarsan o çalışır (1–250); boş→mod varsayılanı. */}
+              <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm, marginTop: SPACING.sm }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold, fontSize: FONT.size.sm }}>Paralel analiz sayısı</Text>
+                  <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs }}>Boş → mod varsayılanı. 1–250 arası; girilen = çalışan.</Text>
+                </View>
+                <TextInput testID="combo-parallel-input" value={comboParallelText} onChangeText={t => setComboParallelText(t.replace(/[^0-9]/g, "").slice(0, 3))}
+                  placeholder="mod" placeholderTextColor={colors.onSurfaceTertiary} keyboardType="number-pad"
+                  style={[styles.input, { width: 72, textAlign: "center", color: colors.onSurface, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]} />
               </View>
               <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: SPACING.sm, lineHeight: 18 }}>
                 Aynı profil tüm hesapların panel/DNS worker sayısını ve timeout değerini birlikte yönetir.

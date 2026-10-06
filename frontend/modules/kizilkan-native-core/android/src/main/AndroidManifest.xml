@@ -7,5 +7,10 @@
       android:name=".BulkPlaylistImportService"
       android:exported="false"
       android:foregroundServiceType="dataSync" />
+    <!-- v18.7.21 (D): MAG çoklu tarama/ekleme/güncelleme gibi JS işleri arka planda sürsün diye genel canlı-tut servisi. -->
+    <service
+      android:name=".ForegroundKeepAliveService"
+      android:exported="false"
+      android:foregroundServiceType="dataSync" />
   </application>
 </manifest>
