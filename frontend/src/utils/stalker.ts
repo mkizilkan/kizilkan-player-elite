@@ -3256,6 +3256,30 @@ function extractStreamCredentials(url: string): { username: string; password: st
   } catch { return null; }
 }
 const streamDerivedCreds = new Map<string, { username: string; password: string; at: number }>();
+// v18.7.19 (U4 kalıcılaştırma): türetilen kimlik KALICI olmalı. Cihaz kanıtı: kart Şifre'yi get_profile'dan
+// (accountInfo) gösteriyor ama Kullanıcı Adı (login boş) yalnız oynatma URL'inden gelebiliyor; eski U4
+// haritası bellekteydi → yeniden açılışta/yeni kurulumda kayboluyordu, "Belirlenemedi" kalıyordu. Artık
+// storage'da (`kizilkan.streamCreds`) saklanır, açılışta `hydrateStreamDerivedCredentials` ile yüklenir →
+// bir kez kanal açınca kalıcı görünür. Değerler loglanmaz; kullanıcının kendi hesabı; storage cihaz-yerel.
+const STREAM_CREDS_KEY = "kizilkan.streamCreds";
+function persistStreamDerivedCreds(): void {
+  try {
+    const obj: Record<string, { username: string; password: string; at: number }> = {};
+    for (const [k, v] of streamDerivedCreds) obj[k] = v;
+    void storage.setItem(STREAM_CREDS_KEY, JSON.stringify(obj)).catch(() => {});
+  } catch {}
+}
+/** Açılışta çağrılır: kayıtlı türetilmiş kimlikleri belleğe yükler (senkron getter için). */
+export async function hydrateStreamDerivedCredentials(): Promise<void> {
+  try {
+    const raw = String((await storage.getItem(STREAM_CREDS_KEY, "")) || "");
+    if (!raw) return;
+    const obj = JSON.parse(raw) as Record<string, { username?: string; password?: string; at?: number }>;
+    for (const [k, v] of Object.entries(obj || {})) {
+      if (v && typeof v.username === "string" && typeof v.password === "string") streamDerivedCreds.set(k, { username: v.username, password: v.password, at: Number(v.at) || Date.now() });
+    }
+  } catch {}
+}
 /** v18.7.16 (U4): oynatmadan türetilen Xtream kullanıcı adı/şifre (kullanıcının kendi hesabı). */
 export function getStreamDerivedCredentials(mac: string, portalOrHost: string): { username: string; password: string } | null {
   try {
@@ -3299,7 +3323,7 @@ export async function stalkerResolveStream(
     // v18.7.16 (U4): Xtream-şekilli URL'den kimlik çıkar, host'a göre sakla (kartta gösterilir, loglanmaz).
     const derived = extractStreamCredentials(url);
     const streamHost = (() => { try { return new URL(activeSession.endpoint || cred.portal).hostname.toLowerCase(); } catch { return ""; } })();
-    if (derived && streamHost) streamDerivedCreds.set(`${normalizeMac(cred.mac)}|${streamHost}`, { ...derived, at: Date.now() });
+    if (derived && streamHost) { streamDerivedCreds.set(`${normalizeMac(cred.mac)}|${streamHost}`, { ...derived, at: Date.now() }); persistStreamDerivedCreds(); }
     void recordDiagnostic("player", "STALKER_RESOLVE_DONE", {
       elapsedMs: Date.now()-started, cacheHit, linkCacheHit: false, mediaType: parsed.kind, refreshed: didRefresh,
       headerNames: Object.keys(headers).sort(),
