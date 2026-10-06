@@ -3283,8 +3283,11 @@ export async function hydrateStreamDerivedCredentials(): Promise<void> {
 /** v18.7.16 (U4): oynatmadan türetilen Xtream kullanıcı adı/şifre (kullanıcının kendi hesabı). */
 export function getStreamDerivedCredentials(mac: string, portalOrHost: string): { username: string; password: string } | null {
   try {
-    const host = /^https?:\/\//i.test(portalOrHost) ? new URL(portalOrHost).hostname : String(portalOrHost).split("/")[0].split(":")[0];
-    const v = streamDerivedCreds.get(`${normalizeMac(mac)}|${host.toLowerCase()}`);
+    const macN = normalizeMac(mac);
+    let host = ""; try { host = (/^https?:\/\//i.test(portalOrHost) ? new URL(portalOrHost).hostname : String(portalOrHost).split("/")[0].split(":")[0]).toLowerCase(); } catch {}
+    // v18.7.19: önce host-özel key, sonra MAC-only yedek (oynatma host'u portal host'undan farklıysa — ör.
+    // failover IP / farklı yayın sunucusu — kart yine de gösterir). MAC hesabın kimliğidir.
+    const v = (host && streamDerivedCreds.get(`${macN}|${host}`)) || streamDerivedCreds.get(macN);
     return v ? { username: v.username, password: v.password } : null;
   } catch { return null; }
 }
@@ -3323,7 +3326,12 @@ export async function stalkerResolveStream(
     // v18.7.16 (U4): Xtream-şekilli URL'den kimlik çıkar, host'a göre sakla (kartta gösterilir, loglanmaz).
     const derived = extractStreamCredentials(url);
     const streamHost = (() => { try { return new URL(activeSession.endpoint || cred.portal).hostname.toLowerCase(); } catch { return ""; } })();
-    if (derived && streamHost) { streamDerivedCreds.set(`${normalizeMac(cred.mac)}|${streamHost}`, { ...derived, at: Date.now() }); persistStreamDerivedCreds(); }
+    if (derived) {
+      const at = Date.now(), macN = normalizeMac(cred.mac);
+      if (streamHost) streamDerivedCreds.set(`${macN}|${streamHost}`, { ...derived, at });
+      streamDerivedCreds.set(macN, { ...derived, at }); // v18.7.19: MAC-only yedek (host uyuşmazlığına karşı).
+      persistStreamDerivedCreds();
+    }
     void recordDiagnostic("player", "STALKER_RESOLVE_DONE", {
       elapsedMs: Date.now()-started, cacheHit, linkCacheHit: false, mediaType: parsed.kind, refreshed: didRefresh,
       headerNames: Object.keys(headers).sort(),

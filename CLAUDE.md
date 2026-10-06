@@ -186,7 +186,7 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
 Cihaz kanıtı (18.7.18-dev kart): Şifre `vtRSvSDdnl` görünüyor (get_profile.password, kayıtlı) ama Kullanıcı Adı "Belirlenemedi". Kök neden: portal `login` boş → kullanıcı adı yalnız oynatma URL'inden (U4) gelir; eski U4 haritası BELLEK-İÇİ idi → yeniden açılışta kayboluyordu.
 - **Düzeltme:** türetilen kimlik storage'da (`kizilkan.streamCreds`) saklanır + açılışta `hydrateStreamDerivedCredentials` yüklenir → bir kez kanal açınca KALICI görünür. Değerler loglanmaz. `stalker.ts`, `_layout.tsx`.
 - Doğrulama: tsc temiz · denetle TEMİZ · `check-v18719` PASS. Native değişiklik YOK. Ayrıntı `AI-DEVIR-v18.7.19.md`.
-- **Not:** yeni kurulumda storage boş; ilk görüntü için hkpremium'da BİR kez kanal açmak gerekir, sonrası kalıcı.
+- **Kök neden (log kanıtı):** çıkarma çalışıyordu (credsFound=true) ama kart (Ayarlar sekmesi mount) oynatmadan sonra yeniden OKUMUYORDU → `useFocusEffect` ile yeniden oku + kalıcılaştırma + MAC-only yedek key. İlk görüntü için bir kez kanal aç.
 
 ## 9-eski-18718. v18.7.18 RC1 (dal `v18.7.18-rc1-backup-drive`)
 

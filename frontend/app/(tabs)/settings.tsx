@@ -20,7 +20,7 @@ import {
   Switch,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LIVE_TIMESHIFT_MODE_OPTIONS, loadLiveTimeshiftMode, saveLiveTimeshiftMode, type LiveTimeshiftMode } from "@/src/player/timeshiftMode";
 import Constants from "expo-constants";
@@ -1890,8 +1890,13 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
   const isStalker = playlist.source === "stalker";
   // v18.7.16 (U4): MAG hesabı Xtream panelde ise oynatma (create_link) sırasında yayın URL'inden türetilen
   // kullanıcı adı/şifre (kullanıcının kendi hesabı). Profil `login` boş olsa da bir kanal açılınca dolar.
-  const magDerived = React.useMemo(() => (isStalker && playlist.stalkerMac && playlist.stalkerPortal)
+  // v18.7.19: cihaz kanıtı — çıkarma ÇALIŞIYOR (credsFound=true) ama Ayarlar sekmesi mount kaldığı için
+  // useMemo boş haritayla hesaplanıp öyle kalıyordu (kanal açtıktan sonra güncellenmiyordu). Artık state +
+  // useFocusEffect ile ekrana her dönüşte yeniden okunur → türetilen kullanıcı adı görünür.
+  const readDerived = React.useCallback(() => (isStalker && playlist.stalkerMac && playlist.stalkerPortal)
     ? getStreamDerivedCredentials(playlist.stalkerMac, playlist.stalkerPortal) : null, [isStalker, playlist.stalkerMac, playlist.stalkerPortal]);
+  const [magDerived, setMagDerived] = React.useState(readDerived);
+  useFocusEffect(React.useCallback(() => { setMagDerived(readDerived()); }, [readDerived]));
   // v18.7.17 (K1): MAG hesabında kullanıcı adı için ÖNCE U4'ün yayın adresinden çıkardığı GERÇEK değer.
   // Ayrıca eski sürümden kalan bayat `username` (aslında görünen ad = name; "1787") gerçek kullanıcı adı
   // sayılmaz — display_name'e eşitse gösterilmez (gerçek login ya da stream'den geleni tercih edilir).

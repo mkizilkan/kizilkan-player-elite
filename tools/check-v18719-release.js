@@ -13,6 +13,7 @@ const need = (c, m) => { if (!c) fail.push(m); };
 
 const stalker = rd('frontend/src/utils/stalker.ts');
 const layout = rd('frontend/app/_layout.tsx');
+const settings = rd('frontend/app/(tabs)/settings.tsx');
 const app = JSON.parse(rd('frontend/app.json'));
 
 const ver = app.expo.version; const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(ver);
@@ -23,8 +24,11 @@ need(JSON.parse(rd('frontend/package.json')).version === ver, 'package.json sür
 
 need(/const STREAM_CREDS_KEY = "kizilkan\.streamCreds"/.test(stalker), 'U4: storage anahtarı yok');
 need(/function persistStreamDerivedCreds/.test(stalker) && /export async function hydrateStreamDerivedCredentials/.test(stalker), 'U4: persist/hydrate fonksiyonları yok');
-need(/persistStreamDerivedCreds\(\); \}/.test(stalker), 'U4: türetme anında persist çağrısı yok');
+need(/if \(derived\) \{[\s\S]{0,300}persistStreamDerivedCreds\(\);/.test(stalker), 'U4: türetme anında persist çağrısı yok');
 need(/hydrateStreamDerivedCredentials\(\)/.test(layout), 'U4: açılışta hydrate çağrısı yok');
+// Kök neden (cihaz kanıtı): kart oynatmadan sonra yeniden okumuyordu → useFocusEffect ile yeniden oku + MAC-only yedek key.
+need(/useFocusEffect\(React\.useCallback\(\(\) => \{ setMagDerived\(readDerived\(\)\)/.test(settings), 'U4: kart odaklanınca yeniden okumuyor (useFocusEffect)');
+need(/streamDerivedCreds\.set\(macN, \{ \.\.\.derived, at \}\)/.test(stalker), 'U4: MAC-only yedek key yazılmıyor');
 // Güvenlik: değer loglanmaz (yalnız uzunluk/boolean telemetri)
 need(!/recordDiagnostic\([^)]*derived\.username/.test(stalker), 'GÜVENLİK: türetilen kullanıcı adı DEĞERİ loglanıyor olabilir');
 
