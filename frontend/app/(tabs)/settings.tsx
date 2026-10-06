@@ -1896,7 +1896,25 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
   const readDerived = React.useCallback(() => (isStalker && playlist.stalkerMac && playlist.stalkerPortal)
     ? getStreamDerivedCredentials(playlist.stalkerMac, playlist.stalkerPortal) : null, [isStalker, playlist.stalkerMac, playlist.stalkerPortal]);
   const [magDerived, setMagDerived] = React.useState(readDerived);
-  useFocusEffect(React.useCallback(() => { setMagDerived(readDerived()); }, [readDerived]));
+  const primeTriedRef = React.useRef(false);
+  // v18.7.23: kart açılınca kullanıcı adı yoksa (mevcut MAG hesabı, henüz oynatılmadı) Room'daki BİR kanalın
+  // create_link'ini çözüp kullanıcı adını türet — oynatmaya/yeni eklemeye gerek yok. En-iyi-çaba, hesap başına
+  // bir kez (primeTriedRef). Cihaz kanıtı: A yalnız yeni eklemede çalışıyordu; mevcut hesapta kart boş kalıyordu.
+  useFocusEffect(React.useCallback(() => { setMagDerived(readDerived());
+    if (!isStalker || !playlist.stalkerMac || !playlist.stalkerPortal || primeTriedRef.current) return;
+    if (readDerived()?.username) return;
+    primeTriedRef.current = true;
+    (async () => {
+      try {
+        if (!KizilkanNativeCore.available) return;
+        const page = await KizilkanNativeCore.queryItems<any>(playlist.id, "live", { limit: 1 });
+        const ch = page.items?.[0]; if (!ch?.url) return;
+        const stalker = await import("@/src/utils/stalker");
+        await stalker.stalkerResolveStream({ portal: String(playlist.stalkerResolvedPortal?.endpoint || playlist.stalkerPortal), mac: String(playlist.stalkerMac), serial: playlist.stalkerSerial, deviceModel: "MAG320" }, null, String(ch.url));
+        setMagDerived(readDerived());
+      } catch {}
+    })();
+  }, [readDerived, isStalker, playlist.id, playlist.stalkerMac, playlist.stalkerPortal]));
   // v18.7.17 (K1): MAG hesabında kullanıcı adı için ÖNCE U4'ün yayın adresinden çıkardığı GERÇEK değer.
   // Ayrıca eski sürümden kalan bayat `username` (aslında görünen ad = name; "1787") gerçek kullanıcı adı
   // sayılmaz — display_name'e eşitse gösterilmez (gerçek login ya da stream'den geleni tercih edilir).
@@ -1925,6 +1943,11 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
       else setM3uTest({ state: "fail", msg: "✗ Görüntü yok (içerik dönmedi / hesap aktif değil)" });
     } catch (e: any) { setM3uTest({ state: "fail", msg: "✗ Test başarısız: " + String(e?.message || e).slice(0, 60) }); }
   };
+  // v18.7.23: M3U linki hazır olur olmaz görüntü testini OTOMATİK çalıştır (kullanıcı butona basmak zorunda kalmasın).
+  const autoTestedRef = React.useRef("");
+  React.useEffect(() => {
+    if (m3uLink && autoTestedRef.current !== m3uLink && m3uTest.state === "idle") { autoTestedRef.current = m3uLink; void testM3u(); }
+  }, [m3uLink]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const expiryAt = accountExpiryMs(acc);
   const formatExpiry = () => accountExpiryLabel(acc);

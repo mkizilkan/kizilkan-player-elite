@@ -180,7 +180,16 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.22 RC1 — dal `v18.7.22-rc1-vod-series-classification`)
+## 9. Mevcut durum (v18.7.23 RC1 — dal `v18.7.23-rc1-card-autoprime-autotest`)
+
+**v18.7.23 (bu sürüm — hesap kartı oto-prime + görüntü oto-testi; PC doğrulandı, CİHAZ BEKLİYOR):**
+Cihaz kanıtı (OnePlus 7 Pro, v18.7.22-dev): hkpremium **manuel güncellendi** ama kullanıcı adı yine "Belirlenemedi" — v18.7.21 **A** yalnız yeni eklemede çalışıyordu, mevcut hesapta kart açılınca türetme tetiklenmiyordu. Görüntü var/yok ise butona basınca geliyordu.
+- **Oto-prime:** `AccountInfoCard` `useFocusEffect` — MAG hesabında kullanıcı adı yoksa + hesap başına bir kez (`primeTriedRef`), Room'dan BİR canlı kanal (`queryItems(id,"live",{limit:1})`) alınıp `stalkerResolveStream(..., ch.url)` ile create_link çözülür → kullanıcı adı/şifre OYNATMASIZ türetilip kalıcılaştırılır (v18.7.19 altyapısı), kart yenilenir. En-iyi-çaba, değer loglanmaz.
+- **Oto-test:** `m3uLink` hazır olunca `autoTestedRef` ile `testM3u()` otomatik çalışır → "✓ Görüntü var · N kanal" / "✗ Görüntü yok" kendiliğinden görünür.
+- Doğrulama: tsc temiz · denetle TEMİZ · `check-v18723` PASS. **Yalnız TS (`settings.tsx`), native YOK.** Ayrıntı `AI-DEVIR-v18.7.23.md`.
+- **Bekleyen (plan onayı bekliyor):** Xtream+MAC çoklu ekleme **seçim ekranında** hesap başına "görüntü var/yok" + süzmede "sadece görüntü olanları seç". MAG tarafı `liveCount` ile ücretsiz; Xtream tarafı `get_live_streams` probe'u (ban/hız dengesi) gerektirir.
+
+## 9-eski-18722. v18.7.22 RC1 (dal `v18.7.22-rc1-vod-series-classification`)
 
 **v18.7.22 (bu sürüm — "Filmler kayboldu" düzeltmesi; PC doğrulandı, CİHAZ BEKLİYOR):**
 Cihaz telemetrisi (`STALKER_VOD_PARTITION`): hkpremium'da TÜM filmler diziye gidiyordu — portal filmlere de BOŞ `series: []` koyuyor, `rowLooksSeries` `Array.isArray(v.series)`'i koşulsuz dizi sayıyordu. **Düzeltme:** `v.series.length > 0`. Boş → FİLM; dolu season/"Dizi" kategorisi/is_series → DİZİ. tsc temiz · denetle TEMİZ · `check-v18722` PASS. Native YOK. Ayrıntı `AI-DEVIR-v18.7.22.md`.

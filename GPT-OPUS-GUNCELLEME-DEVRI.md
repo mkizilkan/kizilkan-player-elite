@@ -1,13 +1,20 @@
 # GPT DEVİR — KIZILKAN PLAYER ELITE (güncel durum ve talimatlar)
 
-**Son güncelleme:** 2026-10-06, Claude (Opus) oturumu — v18.7.19'a kadar güncel. Bu dosya, token/bağlam azaldığında
+**Son güncelleme:** 2026-10-07, Claude (Opus) oturumu — v18.7.23'e kadar güncel. Bu dosya, token/bağlam azaldığında
 başka bir yapay zekânın (GPT) işi kaldığı yerden sürdürmesi için yazıldı. Önce `CLAUDE.md`'yi (özellikle §2 çalışma
 sözleşmesi, §3 doğrulama, §4 sürüm/dal, §5 mimari, §7 tuzaklar, §8 log analizi) oku; aşağıdakiler ona EKtir.
-**EN GÜNCEL DURUM aşağıda "## 0. GÜNCEL (v18.7.16–v18.7.19)" bölümünde.**
+**EN GÜNCEL DURUM aşağıda "## 0. GÜNCEL (v18.7.16–v18.7.23)" bölümünde.**
 
-## 0. GÜNCEL DURUM (v18.7.16 → v18.7.19) — EN ÖNEMLİ BÖLÜM
+## 0. GÜNCEL DURUM (v18.7.16 → v18.7.23) — EN ÖNEMLİ BÖLÜM
 
-**Dal zinciri (her biri bir öncekinin dalından):** v18.7.15 `v18.7.15-rc1-mag-endpoint-lock` → v18.7.16 `v18.7.16-rc1-bulk-ux-portal-discovery` → v18.7.17 `v18.7.17-rc1-discovery-copy-update` → v18.7.18 `v18.7.18-rc1-backup-drive` → **v18.7.19 (AKTİF) `v18.7.19-rc1-stream-creds-persist`**.
+**Dal zinciri (her biri bir öncekinin dalından):** v18.7.15 → v18.7.16 → v18.7.17 → v18.7.18 → v18.7.19 `v18.7.19-rc1-stream-creds-persist` → v18.7.20 `v18.7.20-rc1-catalog-speed-vod-class` → v18.7.21 `v18.7.21-rc1-addtime-user-xtparallel-m3u` → v18.7.22 `v18.7.22-rc1-vod-series-classification` → **v18.7.23 (AKTİF) `v18.7.23-rc1-card-autoprime-autotest`**.
+
+- **v18.7.20** (katalog hızı + filmler teşhisi): MAG katalog `PAGE_CONCURRENCY` 6→**20**, `PAGE_BUDGET_MS` 75→100 sn, sayfa sınırı 600→2000, salt-okunur `get_ordered_list`. `STALKER_VOD_PARTITION` telemetrisi (hangi ölçüt kaç öğeyi diziye attı). Ayrıntı `AI-DEVIR-v18.7.20.md`.
+- **v18.7.21** (A+B+C+D — NATIVE): A) ekleme anında `stalkerPrimeStreamCredentials` (ilk kanalın create_link'inden kullanıcı adı/şifre, oynatmasız); B) Xtream combo özel paralellik (1–250, girilen=çalışan); C) kartta Xtream M3U get.php linki üret+kopyala+görüntü testi; D) genel `ForegroundKeepAliveService` (native, dataSync) — MAG tarama/ekleme/güncelleme arka planda sürer. **assembleDebug BAŞARILI.** Ayrıntı `AI-DEVIR-v18.7.21.md`.
+- **v18.7.22** (filmler kayboldu): cihaz `STALKER_VOD_PARTITION` kanıtı — portal filmlere de BOŞ `series:[]` koyuyor, `rowLooksSeries` koşulsuz dizi sayıyordu → `v.series.length > 0`. Ayrıntı `AI-DEVIR-v18.7.22.md`.
+- **v18.7.23 (AKTİF)** (kart oto-prime + görüntü oto-testi): Cihaz kanıtı — hkpremium **manuel güncellendi**, kullanıcı adı yine "Belirlenemedi" (v18.7.21 A yalnız yeni eklemede çalışıyordu). Düzeltme: `AccountInfoCard` `useFocusEffect` — MAG hesabında kullanıcı adı yoksa + hesap başına bir kez (`primeTriedRef`), Room'dan BİR canlı kanal (`queryItems(id,"live",{limit:1})`) alınıp `stalkerResolveStream(..., ch.url)` ile create_link OYNATMASIZ çözülür → kullanıcı adı türetilip kalıcılaştırılır, kart yenilenir. Ayrıca `m3uLink` hazır olunca görüntü testi `autoTestedRef` ile OTOMATİK çalışır. **Yalnız TS (`settings.tsx`), native YOK.** Ayrıntı `AI-DEVIR-v18.7.23.md`.
+
+**Dal zinciri (eski not):** v18.7.15 `v18.7.15-rc1-mag-endpoint-lock` → v18.7.16 `v18.7.16-rc1-bulk-ux-portal-discovery` → v18.7.17 `v18.7.17-rc1-discovery-copy-update` → v18.7.18 `v18.7.18-rc1-backup-drive` → v18.7.19 `v18.7.19-rc1-stream-creds-persist`.
 **Cihaz:** OnePlus 7 Pro `c3a4097e`. DEV paket `com.gpt.kizilkan.player.dev`. Her sürüm DEV APK adb ile kuruldu (`adb install -r`, ~460 MB). Release güncelleme SORUNU: telefondaki release imza anahtarı Actions Secrets anahtarından farklı olabilir (açık konu) → "Uygulama yüklenmedi"; test DEV'de yapılıyor.
 **Her sürüm:** PC doğrulandı (tsc temiz + `node tools/denetle.js` TÜM TEMİZ + `check-v<kod>-release.js` PASS), commit+push, Actions `release` tetiklendi, yerel DEV APK derlendi. Native değişiklik YOK (hepsi TS) — v18.7.16-19 arası.
 
@@ -16,7 +23,8 @@ sözleşmesi, §3 doğrulama, §4 sürüm/dal, §5 mimari, §7 tuzaklar, §8 log
 - **v18.7.18** (yedek + Drive): B1) tam yedekte yetim/boş-kabuk playlist (`queryItems` IllegalStateException) TÜM yedeği düşürmez — o tür atlanır (`chunk-error`/`BACKUP_KIND_SKIPPED`), yedeğe devam (bu hata TÜM eski sürümlerde vardı); G1) Google Drive OAuth Client ID uygulama içinde girilir (env zorunlu değil), Yedekleme ekranı → redirect URI kopyala → Console'a ekle → Client ID yapıştır → "Giriş yap ve Yükle" tarayıcı OAuth. Storage `kizilkan.googleDrive.clientId`, açılışta `hydrateGoogleDriveConfig`. Redirect scheme `kizilkan-gpt` (eski yanlış `'frontend'` kaldırıldı). Ayrıntı `AI-DEVIR-v18.7.18.md`.
 - **v18.7.19 (AKTİF)** (U4 kullanıcı adı görünmüyor düzeltmesi): **Kök neden log'dan KANITLANDI** — `STALKER_RESOLVE_DONE.streamCredsFound=true` (çıkarma çalışıyor) ama kart `magDerived` bir `useMemo`'ydu ve Ayarlar sekmesi mount kaldığından oynatmadan sonra yeniden okumuyordu → "Belirlenemedi". Düzeltme: (1) kart `state + useFocusEffect` ile ekrana her dönüşte yeniden okur [ASIL]; (2) türetilen kimlik storage'da (`kizilkan.streamCreds`) saklanır + açılışta `hydrateStreamDerivedCredentials` [kalıcılık]; (3) MAC-only yedek key. Değerler loglanmaz. Ayrıntı `AI-DEVIR-v18.7.19.md`.
 
-**CİHAZDA TEST BEKLEYEN (v18.7.19-dev):** (a) hkpremium kanal aç → Ayarlar → Kullanıcı Adı `ud3B3yRH` görünmeli + kapat/aç kalıcı; (b) portal keşfi çoklu+DNS+"Tüm adaylarda" → bulmalı (P1); (c) 100 paralel; (d) muhtemel geçerli ekleme; (e) güncelleme içerik silmemeli (G1); (f) tam yedek yetim listeyle tamamlanmalı (B1); (g) Google Drive OAuth.
+**CİHAZDA TEST BEKLEYEN (v18.7.23-dev):** (a) hkpremium hesabının kartını aç (oynatMADAN) → Kullanıcı Adı `ud3B3yRH` otomatik gelmeli; (b) kartta "✓ Görüntü var · N kanal" otomatik görünmeli; (c) filmler Film sekmesinde görünmeli (v18.7.22); (d) katalog hız (v18.7.20); (e) arka plan keep-alive (v18.7.21 D).
+**PLAN ONAYI BEKLEYEN:** Xtream+MAC çoklu ekleme seçim ekranında hesap başına "görüntü var/yok" + süzmede "sadece görüntü olanları seç" (MAG `liveCount` ücretsiz; Xtream `get_live_streams` probe'u ban/hız dengesi gerektirir).
 
 **ONAYLI AMA KODLANMAMIŞ — SIRADAKİ BÜYÜK İŞ:** Arka planda çalışma (çoklu arama/ekleme/güncelleme app arkadayken). Plan `AI-DEVIR` + sohbet: **Xtream çoklu ve panel ZATEN native foreground service kullanıyor** (`BulkPlaylistImportService.kt`, `PanelScanService.kt`); **MAG çoklu tarama/ekleme ve güncelleme saf JS** → arka planda duruyor. Önerilen yaklaşım A: genel "canlı tut" ön plan servisi (`startForegroundKeepAlive`/`stop`), Android 14 için `foregroundServiceType=dataSync`+izin; JS işi başında başlat/bitince durdur. **Native iş → prebuild+assembleDebug+cihaz testi şart.** Kullanıcı planı gördü, onayı bekliyor.
 
