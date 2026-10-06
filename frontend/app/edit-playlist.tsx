@@ -27,6 +27,9 @@ import {
 } from "@/src/utils/iptv";
 import { DEFAULT_CODE_SOURCE, resolveServerCode } from "@/src/utils/serverCode";
 import { DnsManager } from "@/src/components/DnsManager";
+import { FocusButton } from "@/src/components/FocusButton";
+import * as Clipboard from "expo-clipboard";
+import { haptic } from "@/src/utils/haptic";
 import { normalizeHost } from "@/src/player/hostFailover";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
@@ -423,17 +426,17 @@ export default function EditPlaylist() {
                   </Text>
                 </>
               )}
-              <Label text="SUNUCU" mt />
+              <Label text="SUNUCU" mt copy={xtServer || pl.xtreamServer || ""} />
               <TextInput testID="edit-xt-server-input" value={xtServer} onChangeText={setXtServer}
                 autoCapitalize="none" autoCorrect={false} keyboardType="url"
                 placeholderTextColor={colors.onSurfaceTertiary}
                 style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]} />
-              <Label text="KULLANICI ADI" mt />
+              <Label text="KULLANICI ADI" mt copy={xtUser || pl.xtreamUsername || ""} />
               <TextInput testID="edit-xt-user-input" value={xtUser} onChangeText={setXtUser}
                 autoCapitalize="none" autoCorrect={false}
                 placeholderTextColor={colors.onSurfaceTertiary}
                 style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]} />
-              <Label text="ŞİFRE" mt />
+              <Label text="ŞİFRE" mt copy={xtPass || pl.xtreamPassword || ""} />
               {/**
                 * ŞİFREYİ GÖSTER (v9.4.0 — kullanıcı isteği)
                 * Şifre yıldızlı geldiği için kullanıcı kayıtlı değeri göremiyor,
@@ -484,12 +487,12 @@ export default function EditPlaylist() {
 
           {pl.source === "stalker" && (
             <>
-              <Label text="PORTAL URL" mt />
+              <Label text="PORTAL URL" mt copy={stPortal || pl.stalkerPortal || ""} />
               <TextInput testID="edit-st-portal-input" value={stPortal} onChangeText={setStPortal}
                 autoCapitalize="none" autoCorrect={false} keyboardType="url"
                 placeholderTextColor={colors.onSurfaceTertiary}
                 style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]} />
-              <Label text="MAC ADRESİ" mt />
+              <Label text="MAC ADRESİ" mt copy={stMac || pl.stalkerMac || ""} />
               <TextInput testID="edit-st-mac-input" value={stMac} onChangeText={t => setStMac(t.toUpperCase())}
                 autoCapitalize="characters" autoCorrect={false}
                 placeholderTextColor={colors.onSurfaceTertiary}
@@ -591,14 +594,21 @@ export default function EditPlaylist() {
   );
 }
 
-function Label({ text, mt }: { text: string; mt?: boolean }) {
+function Label({ text, mt, copy }: { text: string; mt?: boolean; copy?: string }) {
   const { colors } = useTheme();
+  const [copied, setCopied] = React.useState(false);
+  // v18.7.17 (K2): etiket yanında kopyala butonu — düzenleme ekranında kullanıcı adı/şifre/MAC/sunucu kopyalanır.
+  const canCopy = !!copy && !!copy.trim();
+  const doCopy = async () => { try { await Clipboard.setStringAsync(copy!); setCopied(true); try { haptic.light?.(); } catch {} setTimeout(() => setCopied(false), 1200); } catch {} };
   return (
-    <Text style={{
-      fontSize: FONT.size.xs, fontWeight: FONT.weight.bold, letterSpacing: 1.5,
-      color: colors.onSurfaceSecondary,
-      marginTop: mt ? SPACING.lg : 0, marginBottom: SPACING.sm,
-    }}>{text}</Text>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm, marginTop: mt ? SPACING.lg : 0, marginBottom: SPACING.sm }}>
+      <Text style={{ fontSize: FONT.size.xs, fontWeight: FONT.weight.bold, letterSpacing: 1.5, color: colors.onSurfaceSecondary }}>{text}</Text>
+      {canCopy && (
+        <FocusButton testID={`edit-copy-${text}`} accessibilityLabel={`${text} kopyala`} onPress={doCopy} style={{ padding: 2, borderRadius: RADIUS.sm }}>
+          <Ionicons name={copied ? "checkmark" : "copy-outline"} size={14} color={copied ? (colors.success || "#2ecc71") : colors.brandPrimary} />
+        </FocusButton>
+      )}
+    </View>
   );
 }
 

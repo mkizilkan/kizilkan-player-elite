@@ -232,16 +232,36 @@ let groups = 0;
     console.log('PASS: version.js confirms portal; a real portal.php probe (not version.js alone) becomes selectable'); groups++;
   }
   {
-    // v18.7.13: "Yalnız girilen" (exact) KATİ kapsam — yalnız girilen yol denenir; kurulum ailesi
-    // (/portal.php, /server/load.php, /stalker_portal, /ministra ...) ve iki-aşamalı port keşfi DENENMEZ.
-    const host = entry('http://exact.example.test:8080/c');
+    // v18.7.13: "Yalnız girilen" (exact) + LİTERAL .php yol → KATİ: yalnız girilen yol denenir; kurulum
+    // ailesi ve port keşfi DENENMEZ. (v18.7.17 P2 yalnız ARAYÜZ yolu `/c` için API çözümüne izin verir.)
+    const host = entry('http://exact.example.test:8080/mypanel/portal.php');
     const tried = new Set();
     const fetch = async url => { const u = new URL(url); tried.add(u.pathname); return response('<html><body>login</body></html>'); };
     await run(fetch, [host], { scope: 'exact' });
-    assert.ok(tried.has('/c'), 'girilen /c denenmeli');
-    assert.ok(![...tried].some(p => /portal\.php|load\.php|stalker_portal|ministra|version\.js/.test(p)), 'exact: family/version.js yolları DENENMEMELİ');
-    assert.equal(tried.size, 1, `exact yalnız 1 yol denemeli, denenen: ${[...tried].join(',')}`);
-    console.log('PASS: exact scope probes ONLY the entered path (no family/version.js expansion)'); groups++;
+    assert.ok(tried.has('/mypanel/portal.php'), 'girilen literal .php denenmeli');
+    assert.ok(![...tried].some(p => p !== '/mypanel/portal.php'), `exact literal: yalnız girilen yol, denenen: ${[...tried].join(',')}`);
+    assert.equal(tried.size, 1, 'exact literal yalnız 1 yol denemeli');
+    console.log('PASS: exact scope + literal .php probes ONLY the entered path (no expansion)'); groups++;
+  }
+  {
+    // v18.7.17 (P2): "Yalnız girilen" (exact) + ARAYÜZ yolu `/c` → AYNI KURULUM içinde API çözülür
+    // (version.js → server/load.php). BAŞKA port/host/kurulum ailesine TAŞMAZ.
+    const host = entry('http://exact.example.test:8080/c');
+    const tried = new Set();
+    const vjs = 'var stb={}; this.stb_version="5.1"; ministra portal';
+    const fetch = async url => {
+      const u = new URL(url); tried.add(u.pathname);
+      if (u.pathname === '/c' || u.pathname === '/c/') return response('<html>Stalker Portal<script src="xpcom.common.js"></script></html>');
+      if (u.pathname === '/c/version.js') return response(vjs);
+      if (u.pathname === '/server/load.php') return response({ js: { token: 'exact-fixture' } });
+      return response('missing', 404);
+    };
+    const report = (await run(fetch, [host], { scope: 'exact' }))[0];
+    assert.equal(report.state, 'ready', 'exact + /c API çözmeli');
+    assert.ok(report.candidates.some(c => c.endpoint.endsWith('/server/load.php') && c.confidence === 'api' && c.selectable), 'exact + /c: server/load.php selectable API olmalı');
+    assert.ok(![...tried].some(p => /stalker_portal|ministra/.test(p)), `exact /c başka kuruluma (stalker_portal/ministra) taşmamalı: ${[...tried].join(',')}`);
+    assert.ok([...tried].every(p => /\.(?:php|js)$|^\/c\/?$/.test(p)), `exact /c yalnız aynı host .php/.js: ${[...tried].join(',')}`);
+    console.log('PASS: exact scope + /c resolves API within the same installation (no cross-family/port)'); groups++;
   }
   {
     // v18.7.14 (G05): portsuz giriş + exact → KATİ (yalnız girilen host, varsayılan port 80); port fan-out YOK.

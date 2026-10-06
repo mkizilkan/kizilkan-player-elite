@@ -346,8 +346,15 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       // (b) gerçek API yolları KUYRUĞA alınıp PROBE ettirilir → yanıt gerçekten API/handshake ise
       // inspect() onu selectable yapar; 404 ise hiç aday oluşmaz. "HTTP 200 tek başına yetmez" korunur.
       const tp = new URL(target).pathname;
-      // v18.7.13: "Yalnız girilen" (exact) kapsamda version.js API ailesi genişletmesi YAPILMAZ (kati kapsam).
-      if (scope !== "exact" && response.status >= 200 && response.status < 300 && /(?:^\/?|\/)(?:c|stalker_portal\/c|portal|ministra\/c)\/?$/.test(tp)) {
+      // v18.7.17 (P2): "Yalnız girilen" (exact) + girilen yol bir ARAYÜZ yoluysa (`/c`, `/stalker_portal/c`,
+      // `/portal`, `/ministra/c`), AYNI KURULUM içinde API çözülmesine izin ver. Başka port/yola taşımaz
+      // (twoPhaseExpand exact'te zaten çalışmaz; enqueued yollar `magFamilyEndpoints` ile aynı kurulumdan).
+      // Kullanıcı `/c` girip "API bulunamadı" almak yerine `server/load.php`'ye ulaşır.
+      const uiPath = /(?:^\/?|\/)(?:c|stalker_portal\/c|portal|ministra\/c)\/?$/.test(tp);
+      const exactUiResolve = scope === "exact" && uiPath;
+      // v18.7.13: "Yalnız girilen" (exact) kapsamda version.js API ailesi genişletmesi YAPILMAZ (kati kapsam) —
+      // AMA v18.7.17 (P2) ile arayüz yolu girildiğinde aynı kurulumda API çözümüne izin verilir.
+      if ((scope !== "exact" || exactUiResolve) && response.status >= 200 && response.status < 300 && uiPath) {
         const vjUrl = magClientAssetUrls(target).version;
         if (!seen.has(vjUrl.replace(/\/+$/, ""))) {
           seen.add(vjUrl.replace(/\/+$/, ""));
@@ -368,13 +375,17 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
               for (const apiUrl of magFamilyEndpoints(target).filter(value => /\.php$/i.test(new URL(value).pathname)).reverse()) {
                 if (apiUrl && !seen.has(apiUrl.replace(/\/+$/, "")) && !queue.includes(apiUrl) && queue.length < MAX_EXTRA_ENDPOINTS) { queue.unshift(apiUrl); planned.add(apiUrl.replace(/\/+$/, "")); enqueued++; }
               }
-              void recordDiagnostic("scan", "MAG_DISCOVERY_VERSION_JS", { base, enqueued });
+              // v18.7.17 (P1): portal KESİN doğrulandı (version.js). Asıl API yollarının kısa turbo bütçesi
+              // yüzünden denenememesini önlemek için bütçeye bir kez ek süre/istek ver (deadline'dan önce).
+              if (enqueued) budget.grant(6000, Math.max(6, enqueued + 2));
+              void recordDiagnostic("scan", "MAG_DISCOVERY_VERSION_JS", { base, enqueued, granted: enqueued > 0 });
               emitLive();
             }
           } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; }
         }
       }
-      if (scope !== 'exact' && response.status >= 200 && response.status < 300 && !/\.php$/i.test(tp)) {
+      // v18.7.17 (P2): exact + arayüz yolu → xpcom'dan da API çözülebilir (aynı kurulum).
+      if ((scope !== 'exact' || exactUiResolve) && response.status >= 200 && response.status < 300 && !/\.php$/i.test(tp)) {
         const xpcomUrl = magClientAssetUrls(target).xpcom;
         if (!seen.has(xpcomUrl)) {
           seen.add(xpcomUrl);
@@ -389,6 +400,8 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
                 if (!candidates.has(api)) candidates.set(api, { endpoint: api, httpStatus: script.status, confidence: 'fingerprint', evidence: resolved.evidence, elapsedMs: script.elapsedMs, selectable: false,
                   resolvedPortal: resolveMagPortal(host.host, api, resolved.evidence, 'xpcom') });
               }
+              // v18.7.17 (P1): xpcom istemci JS'inden gerçek API yolu çözüldü → bütçeye ek süre (deadline öncesi).
+              if (resolved.endpoints.length) budget.grant(6000, Math.max(6, resolved.endpoints.length + 2));
               void recordDiagnostic('scan', 'MAG_DISCOVERY_XPCOM', { path: new URL(script.finalUrl).pathname, endpoints: resolved.endpoints.length, evidence: resolved.evidence });
               emitLive();
             }

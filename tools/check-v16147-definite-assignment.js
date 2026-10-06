@@ -17,7 +17,7 @@ ok(!/\bplaylist!\b/.test(submit)&&!/\bplaylist\s+as\s+Playlist\b/.test(submit),'
 ok(submit.includes('} else if (method === "stalker") {'),'MAG remains explicit terminal branch');
 ok(submit.indexOf('commitPlaylist(shell)')>0&&submit.indexOf('commitPlaylist(shell)')<submit.indexOf('stalkerCatalog(cred, session'),'verified MAG persist still precedes catalog');
 ok(/liveOnly:\s*true/.test(submit)&&submit.includes('void bootstrap(false)'),'MAG live-first async enrichment preserved');
-ok(submit.includes('onProgress: interactiveSelection ? (progress) => setProgress(progress.message) : undefined'),'interactive MAG progress preserved');
+ok(submit.includes('onProgress: (progress) => { setProgress(progress.message); setCatalogProgress(prev => applyCatalogProgress(prev, progress)); }'),'interactive MAG progress preserved');
 try{
   const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'kizilkan-v16147-'));
   const stub=path.join(tmp,'stubs.d.ts');

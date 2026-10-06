@@ -15,7 +15,7 @@ ok(stalker>0&&catchPos>stalker,'explicit MAG terminal branch exists');
 if(stalker>0&&catchPos>stalker){const tail=add.slice(stalker,catchPos); ok(!/magEnrichment/.test(tail),'MAG branch has no obsolete unreachable enrichment bridge');}
 ok(add.indexOf('commitPlaylist(shell)')>0&&add.indexOf('commitPlaylist(shell)')<add.indexOf('stalkerCatalog(cred, session'),'verified MAG persist still precedes catalog');
 ok(/liveOnly:\s*true/.test(add)&&add.includes('void bootstrap(false)'),'live-first and non-blocking async catalog preserved');
-ok(add.includes('onProgress: interactiveSelection ? (progress) => setProgress(progress.message) : undefined'),'interactive MAG progress callback preserved');
+ok(add.includes('onProgress: (progress) => { setProgress(progress.message); setCatalogProgress(prev => applyCatalogProgress(prev, progress)); }'),'interactive MAG progress callback preserved');
 // Local semantic regression probe: global TypeScript may run without project deps. We intentionally
 // noResolve + wildcard-stub unresolved imports and ONLY fail on the exact historical control-flow codes
 // in the corrected submit block (TS2367 overlap / TS2339 never-property).

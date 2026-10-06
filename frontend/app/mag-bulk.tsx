@@ -592,7 +592,7 @@ export default function MagBulkScreen() {
             <Text style={S.switchLabel}>Paralel analiz sayısı</Text>
             <Text style={S.hint}>Boş → mod varsayılanı ({SCAN_MODES[scanMode].concurrency}). 1–{MAG_MAX_PARALLEL} arası.</Text>
           </View>
-          <TextInput testID="mag-parallel-input" value={parallelText} onChangeText={t => setParallelText(t.replace(/[^0-9]/g, "").slice(0, 2))}
+          <TextInput testID="mag-parallel-input" value={parallelText} onChangeText={t => setParallelText(t.replace(/[^0-9]/g, "").slice(0, 3))}
             placeholder={String(SCAN_MODES[scanMode].concurrency)} placeholderTextColor={colors.onSurfaceTertiary}
             keyboardType="number-pad" style={[S.input, { width: 70, textAlign: "center" }]} />
         </View>

@@ -56,6 +56,9 @@ import { initializeDiagnostics, recordDiagnostic, setDiagnosticAppState, startMe
 import { storage } from "@/src/utils/storage";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 
+// v18.7.17 (M1): JS modül yükleme anı — soğuk açılış ölçümünün başlangıcı.
+const MODULE_LOAD_MS = Date.now();
+
 // Açılış ekranı, fontlar hazır olana kadar ekranda kalsın.
 SplashScreen.preventAutoHideAsync().catch(() => {
   /* bazı platformlarda çağrı zaten yapılmış olabilir — yoksayılabilir */
@@ -317,6 +320,10 @@ export default function RootLayout() {
     if (!loaded && !error) return;
 
     SplashScreen.hideAsync().catch(() => {});
+    // v18.7.17 (M1): SOĞUK AÇILIŞ ÖLÇÜMÜ — JS modül yüklemesinden ilk ekranın (splash gizlenene kadar)
+    // çizilmesine kadar geçen süre. Native süreç başlangıcını kapsamaz ama sürümler arası kıyas için ölçüt.
+    // "İlk açılma görüntüsü hızlansın" isteğinin kör düzeltmeden önce kanıtlanması için (FIRST_FRAME ayrı).
+    void recordDiagnostic("lifecycle", "APP_COLD_START", { sinceModuleLoadMs: Math.max(0, Date.now() - MODULE_LOAD_MS), fontsLoaded: !!loaded, fontError: !!error });
     registerQuickActions();
 
     // Kullanıcıya splash'i görecek kadar zaman tanıyıp izni nazikçe iste.

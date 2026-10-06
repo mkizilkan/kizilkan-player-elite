@@ -118,7 +118,10 @@ export type MagHostEntry = {
 };
 
 export type MagDiscoveryScope = "exact" | "fallback" | "all";
-export const MAG_MAX_PARALLEL = 16;
+// v18.7.17 (P3): kullanıcı 1–100 arası paralellik girebilir ve TAM o değer uygulanır (girilen=çalışan).
+// Hesap doğrulama ve keşif bu değere kadar eşzamanlı çalışır. Yüksek değer yavaş/korumalı sunucuda
+// ban riski taşıyabilir — kullanıcı tercihi.
+export const MAG_MAX_PARALLEL = 100;
 
 export type MagArchiveEntry = {
   portal: string; mac: string; category: string; status?: string; expiry?: string | null;

@@ -294,6 +294,8 @@ export default function StatsScreen() {
             setLastExitInfo({});
             setExitHistory([]);
             setBlackBoxHealth(nativeData ? (await KizilkanNativeCore.getBlackBoxHealth?.() || {}) : {});
+            // v18.7.17 (S1): silme sessizdi (kullanıcı silindiğini anlamıyordu) → onay bildirimi.
+            Alert.alert("Tanılama geçmişi silindi", "Player, uygulama ve tarama tanılama geçmişinin tamamı temizlendi.");
           }}])}>
             <Ionicons name="trash-outline" size={18} color={colors.onSurface} /><Text style={[styles.diagButtonText,{color:colors.onSurface}]}>Geçmişi Temizle</Text>
           </FocusButton>

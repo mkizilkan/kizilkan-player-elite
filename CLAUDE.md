@@ -180,7 +180,19 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.16 RC1 — dal `v18.7.16-rc1-bulk-ux-portal-discovery`)
+## 9. Mevcut durum (v18.7.17 RC1 — dal `v18.7.17-rc1-discovery-copy-update`)
+
+**v18.7.17 (bu sürüm — portal keşfi + kopyala + güncelleme; PC doğrulandı, CİHAZ BEKLİYOR):**
+Kaynak: v18.7.16-dev cihaz logu (U4 ÇALIŞTI — hkpremium kullanıcı adı `ud3B3yRH` yayın adresinde kanıtlandı; portal keşfi 4 test; güncelleme 16800→6776 silme) + kullanıcı istekleri. Ayrıntı `AI-DEVIR-v18.7.17.md`.
+- **P1:** portal version.js/xpcom doğrulanınca `MagDiscoveryBudget.grant(6000)` → API yolları deadline'dan önce denenir (çoklu+DNS "bulamadı" düzelir).
+- **P2:** "Yalnız girilen" (exact) + arayüz yolu `/c` → aynı kurulumda API çözülür (literal .php hâlâ kati). **P3:** paralellik 1–100, girilen=çalışan (`MAG_MAX_PARALLEL` 16→100; turbo 12 kırpması kalktı).
+- **K1:** MAG kartı kullanıcı adı ÖNCE U4 stream değeri (bayat name=1787 gösterilmez). **K2:** kart + düzenleme ekranı kopyala butonları (expo-clipboard kurulu).
+- **E1:** tekli MAG eklemede görsel `CatalogPreparationModal`. **G1:** yıkıcı diff koruması (`MAG_REFRESH_SHRINK_GUARD` — auto refresh'te eksik çekilen tür Room'u yarıdan aza düşüremez; manuel tam yenileme atlar).
+- **S1:** Flight Recorder sil bildirimi. **M1:** soğuk açılış ölçümü `APP_COLD_START`.
+- **Kör düzeltme yok:** G2 (süre) — sayfalama paralel, yavaşlık sunucu kaynaklı (avgPageMs 53↔10547ms); concurrency artışı "1 kullanıcı"da ban riski (§5) → yapılmadı, G1 kaybı önler.
+- Doğrulama: tsc temiz · denetle TEMİZ · `check-v18717` PASS · MAG testleri PASS. Native değişiklik YOK.
+
+## 9-eski0000. v18.7.16 RC1 (dal `v18.7.16-rc1-bulk-ux-portal-discovery`)
 
 **v18.7.16 (bu sürüm — toplu UX + portal keşfi + kullanıcı adı; PC doğrulandı, CİHAZ BEKLİYOR):**
 Kaynak: cihaz DEV logu (goldensm32 çoklu MAC) + MAG Converter aracı. Kanıtla teşhis, hepsi `AI-DEVIR-v18.7.16.md`.

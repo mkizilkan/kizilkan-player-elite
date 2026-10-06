@@ -26,9 +26,10 @@ need(code >= 180714, `expo.version (${ver}) >= 18.7.14 değil`);
 need(app.expo.ios.buildNumber === ver && Number(app.expo.android.versionCode) === code && app.expo.extra.kizilkanReleaseLabel === `GPT ELITE v${ver} RC1`, 'beş sürüm alanı tutarsız');
 need(JSON.parse(rd('frontend/package.json')).version === ver, 'package.json sürümü farklı');
 
-// A — back-trap iptal
-need(/stalkerAddAbortRef/.test(addPl) && /testID="stalker-add-cancel"/.test(addPl), 'A: MAG ekleme iptal butonu/ref yok');
-need(/onRequestClose=\{\(\) => \{ stalkerAddAbortRef\.current\?\.abort\(\)/.test(addPl), 'A: onRequestClose hâlâ boş (hardware back iptal etmiyor)');
+// A — back-trap iptal (v18.7.17: düz Modal yerine CatalogPreparationModal; iptal onCancel ile, geri tuşu
+// presentation="modal" → Modal onRequestClose=onCancel ile çalışır. Davranış korunur.)
+need(/stalkerAddAbortRef/.test(addPl) && /<CatalogPreparationModal/.test(addPl), 'A: MAG ekleme görsel modalı/ref yok');
+need(/onCancel=\{\(\) => \{ stalkerAddAbortRef\.current\?\.abort\(\)/.test(addPl), 'A: iptal (onCancel) MAG eklemeyi abort etmiyor (back-trap)');
 need(/stLogin\(cred, \{ signal: stalkerAddAbortRef\.current\?\.signal \}\)/.test(addPl), 'A: stLogin signal almıyor (iptal edilemez)');
 
 // G01 — get_all_channels yedeği

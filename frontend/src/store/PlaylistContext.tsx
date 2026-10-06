@@ -997,7 +997,25 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         const result=await refreshPlaylistContent(pl,progress,{kinds:catalogKinds,forceUnconditional});
         if(!owns())return;
         if(!result.ok||!result.patch)throw new Error(result.message);
-        await commitPlaylistUpdate(id,{...result.patch,lastRefreshedAt:new Date().toISOString(),lastRefreshOk:true,lastFreshnessCheckAt:Date.now()});
+        // v18.7.17 (G1): YIKICI DİFF KORUMASI. Cihaz kanıtı: yavaş MAG sunucuda yenileme TIME_BUDGET'e
+        // takılıp eksik çekince (dizi 16800→6776) native diff çekilmeyeni SİLİYORDU. Otomatik yenilemede
+        // (forceUnconditional DEĞİL) bir tür mevcut Room sayısının yarısından aza düşüyorsa o türü patch'ten
+        // ÇIKAR → Room'daki dolu katalog korunur. Manuel tam yenileme (forceUnconditional) guard'ı atlar
+        // (gerçek azalmayı kullanıcı uygular). Yalnız MAG/Xtream; native sayım `queryItems().total`.
+        const guardedPatch:any={...result.patch};
+        if(!forceUnconditional && KizilkanNativeCore.available && (pl.source==='stalker'||pl.source==='xtream')){
+          for(const kind of catalogKinds){
+            const field=kind==='live'?'channels':kind;
+            if(!(field in guardedPatch) || !Array.isArray((guardedPatch as any)[field])) continue;
+            const newCount=((guardedPatch as any)[field] as any[]).length;
+            let roomCount=0; try{ roomCount=(await KizilkanNativeCore.queryItems(id,kind,{limit:1})).total||0; }catch{}
+            if(roomCount>20 && newCount < roomCount*0.5){
+              delete (guardedPatch as any)[field];
+              void recordDiagnostic('catalog','MAG_REFRESH_SHRINK_GUARD',{playlistId:id,kind,roomCount,newCount,kept:true});
+            }
+          }
+        }
+        await commitPlaylistUpdate(id,{...guardedPatch,lastRefreshedAt:new Date().toISOString(),lastRefreshOk:true,lastFreshnessCheckAt:Date.now()});
         try{
           const {buildRefreshDiff,formatRefreshDiff,diffTelemetry,diffFromNative}=await import('@/src/utils/refreshDiff');
           /**

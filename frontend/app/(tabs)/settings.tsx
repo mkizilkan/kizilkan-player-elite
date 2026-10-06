@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { playlistExpiryText, playlistProtectionText, playlistCatalogStateText, playlistIsExpired, accountStatus, accountExpiryLabel } from '@/src/utils/accountCard';
 import { accountExpiryMs } from '@/src/utils/accountExpiry';
 import { getStreamDerivedCredentials } from '@/src/utils/stalker';
+import * as Clipboard from 'expo-clipboard';
+import { haptic } from '@/src/utils/haptic';
 import {
   View,
   Text,
@@ -1890,8 +1892,12 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
   // kullanıcı adı/şifre (kullanıcının kendi hesabı). Profil `login` boş olsa da bir kanal açılınca dolar.
   const magDerived = React.useMemo(() => (isStalker && playlist.stalkerMac && playlist.stalkerPortal)
     ? getStreamDerivedCredentials(playlist.stalkerMac, playlist.stalkerPortal) : null, [isStalker, playlist.stalkerMac, playlist.stalkerPortal]);
-  const shownUsername = acc.username || (isXtream ? playlist.xtreamUsername : "") || magDerived?.username || "";
-  const shownPassword = acc.password || (isXtream ? playlist.xtreamPassword : "") || magDerived?.password || "";
+  // v18.7.17 (K1): MAG hesabında kullanıcı adı için ÖNCE U4'ün yayın adresinden çıkardığı GERÇEK değer.
+  // Ayrıca eski sürümden kalan bayat `username` (aslında görünen ad = name; "1787") gerçek kullanıcı adı
+  // sayılmaz — display_name'e eşitse gösterilmez (gerçek login ya da stream'den geleni tercih edilir).
+  const accUsernameIsName = !!acc.username && !!acc.display_name && String(acc.username) === String(acc.display_name);
+  const shownUsername = (isStalker ? magDerived?.username : "") || (accUsernameIsName ? "" : acc.username) || (isXtream ? playlist.xtreamUsername : "") || magDerived?.username || "";
+  const shownPassword = (isStalker ? magDerived?.password : "") || acc.password || (isXtream ? playlist.xtreamPassword : "") || "";
 
   const expiryAt = accountExpiryMs(acc);
   const formatExpiry = () => accountExpiryLabel(acc);
@@ -1915,10 +1921,10 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
         )}
       </View>
       <View style={cardStyles.grid}>
-        <InfoField label="Sunucu" value={String(isStalker ? playlist.stalkerPortal || 'Belirlenemedi' : playlist.serverInfo?.url || playlist.xtreamServer || 'Belirlenemedi')} />
-        <InfoField label="Kullanıcı Adı" value={shownUsername || "Belirlenemedi"} />
+        <InfoField label="Sunucu" copyable value={String(isStalker ? playlist.stalkerPortal || 'Belirlenemedi' : playlist.serverInfo?.url || playlist.xtreamServer || 'Belirlenemedi')} />
+        <InfoField label="Kullanıcı Adı" copyable value={shownUsername || "Belirlenemedi"} />
         {acc.display_name ? <InfoField label="Görünen Ad" value={String(acc.display_name)} /> : null}
-        <InfoField label="Şifre" value={shownPassword || 'Belirlenemedi'} />
+        <InfoField label="Şifre" copyable value={shownPassword || 'Belirlenemedi'} />
         {!acc.username && magDerived?.username ? <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: -SPACING.xs }}>Kullanıcı adı/şifre yayın adresinden alındı (bir kanal açıldıktan sonra).</Text> : null}
         <InfoField label="Bitiş Tarihi" value={formatExpiry()} />
         {isStalker && <InfoField label="Koruma (son gözlem)" value={playlistProtectionText(playlist) || 'Belirlenemedi'} />}
@@ -1938,7 +1944,7 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
         {isStalker && (
           <>
             {acc.tariff_plan ? <InfoField label="Paket" value={String(acc.tariff_plan)} /> : null}
-            <InfoField label="MAC" value={String(acc.mac || playlist.stalkerMac || 'Belirlenemedi')} />
+            <InfoField label="MAC" copyable value={String(acc.mac || playlist.stalkerMac || 'Belirlenemedi')} />
             {/* v18.7.7 (P4): portal kullanıcı adı/şifre döndürürse göster (IPTV Extreme gibi). */}
             {acc.phone ? <InfoField label="Telefon" value={String(acc.phone)} /> : null}
           </>
@@ -2039,13 +2045,26 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
   );
 }
 
-function InfoField({ label, value, accent }: { label: string; value: string; accent?: "normal" | "warning" }) {
+function InfoField({ label, value, accent, copyable }: { label: string; value: string; accent?: "normal" | "warning"; copyable?: boolean }) {
   const { colors } = useTheme();
   const color = accent === "warning" ? colors.error : colors.onSurface;
+  const [copied, setCopied] = React.useState(false);
+  // v18.7.17 (K2): anlamlı değerler kopyalanabilir ("Belirlenemedi"/"Sınırsız" gibi yer tutucular hariç).
+  const canCopy = !!copyable && !!value && !/^(?:Belirlenemedi|Sınırsız|Süresi doldu|—|-)$/i.test(value.trim());
+  const copy = async () => {
+    try { await Clipboard.setStringAsync(value); setCopied(true); try { haptic.light?.(); } catch {} setTimeout(() => setCopied(false), 1200); } catch {}
+  };
   return (
     <View style={cardStyles.field}>
       <Text style={[cardStyles.fieldLabel, { color: colors.onSurfaceTertiary }]}>{label}</Text>
-      <Text style={[cardStyles.fieldValue, { color }]} numberOfLines={1}>{value}</Text>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.xs }}>
+        <Text style={[cardStyles.fieldValue, { color, flexShrink: 1 }]} numberOfLines={1}>{value}</Text>
+        {canCopy && (
+          <FocusButton testID={`copy-${label}`} accessibilityLabel={`${label} kopyala`} onPress={copy} style={{ padding: 4, borderRadius: RADIUS.sm }}>
+            <Ionicons name={copied ? "checkmark" : "copy-outline"} size={15} color={copied ? (colors.success || "#2ecc71") : colors.brandPrimary} />
+          </FocusButton>
+        )}
+      </View>
     </View>
   );
 }

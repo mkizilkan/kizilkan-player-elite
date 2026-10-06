@@ -8,9 +8,10 @@ export const MAG_DISCOVERY_LIMITS = {
 export class MagDiscoveryBudget {
   readonly controller = new AbortController();
   readonly startedAt = Date.now();
-  readonly deadlineAt: number;
-  readonly maxRequests: number;
+  deadlineAt: number;
+  maxRequests: number;
   requests = 0;
+  private granted = false;
   private reason?: 'deadline' | 'requests' | 'cancelled';
   private timer: ReturnType<typeof setTimeout>;
   private parent?: AbortSignal;
@@ -36,6 +37,22 @@ export class MagDiscoveryBudget {
   stop(reason: 'deadline' | 'requests' | 'cancelled'): void {
     if (this.reason) return;
     this.reason = reason; this.controller.abort();
+  }
+  /**
+   * v18.7.17 (P1): Portal KESİN bulunduğunda (version.js/fingerprint) asıl API yolunun deadline yüzünden
+   * denenememe sorununu çözer. Bir kez ek süre + istek bütçesi verir (iptal edilmemişse). Paylaşılan host
+   * bütçesi de uzatılır ki passive faz gerçekten nefes alsın. İptal (cancelled) GRANT'tan etkilenmez.
+   */
+  grant(extraMs: number, extraRequests = 6): void {
+    // Zaten durmuşsa (deadline/iptal) controller abort edilmiştir; geri alınamaz → grant yalnız HENÜZ
+    // durmamış bütçeyi uzatır. Bu yüzden portal doğrulandığı ANDA (deadline'dan önce) çağrılmalı.
+    if (this.granted || this.reason) return;
+    this.granted = true;
+    this.sharedBudget?.grant(extraMs, extraRequests);
+    this.deadlineAt = Math.max(this.deadlineAt, Date.now() + Math.max(0, extraMs));
+    this.maxRequests += Math.max(0, extraRequests);
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.stop('deadline'), Math.max(1, this.deadlineAt - Date.now()));
   }
   check(): void {
     this.sharedBudget?.check();

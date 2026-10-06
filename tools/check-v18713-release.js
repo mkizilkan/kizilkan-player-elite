@@ -37,7 +37,9 @@ need(/function accountMatchesMac[\s\S]*?decodeMacIfBase64\(p\[field\]\.trim\(\)\
 
 // #4 "Yalnız girilen" (exact) kati kapsam
 need(/scope === "exact"\) \{[\s\S]*?await sweep\(\[entered\]\)/.test(disc), '#4: exact kapsamda yalnız girilen endpoint denenmiyor (discovery)');
-need(/scope !== "exact" && response\.status >= 200/.test(disc), '#4: exact kapsamda version.js genişletmesi kapatılmamış');
+// v18.7.17 (P2): exact + ARAYÜZ yolu (`/c`) API çözümüne izin verir; literal .php yol hâlâ kati. version.js
+// gate artık `(scope !== "exact" || exactUiResolve)` — exact literal yolda genişleme YOK (exactUiResolve=false).
+need(/\(scope !== "exact" \|\| exactUiResolve\) && response\.status >= 200/.test(disc) && /const exactUiResolve = scope === "exact" && uiPath;/.test(disc), '#4: exact version.js genişletmesi yalnız arayüz yolunda açık değil');
 need(/\(scope === "exact" \|\| isLiteralPhp\) \? \[hostEntry\.host\]/.test(bulk), '#4: bulk handshake yedeği exact kapsamda yalnız girilen endpoint denemiyor');
 
 if (fail.length) { console.log(fail.map(f => '✗ ' + f).join('\n')); console.log('BAŞARISIZ'); process.exit(1); }

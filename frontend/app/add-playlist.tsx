@@ -38,6 +38,8 @@ import type { Playlist, AccountInfo, ServerCodeBinding, PlaylistContentSelection
 import { catalogCategories, applyContentSelection, allContentSelection } from "@/src/utils/contentSelection";
 import { playlistIdentityCanonical } from "@/src/utils/playlistManagement";
 import { FocusButton } from "@/src/components/FocusButton";
+import { CatalogPreparationModal } from "@/src/components/CatalogPreparationModal";
+import { applyCatalogProgress } from "@/src/utils/catalogProgress";
 import {
   DEFAULT_CODE_SOURCE,CODE_SOURCE_KEY,filterDirectory,canonicalPanelHost,validPanelHosts,type DirectoryScope,type PanelTarget,
   fetchPanelDirectory, discoverPanelsByCredentials, discoverServerCodeHosts,
@@ -253,6 +255,7 @@ export default function AddPlaylist() {
   const [m3uUrl, setM3uUrl] = useState("");
   const [xtServer, setXtServer] = useState("");
   const [catalogProgress,setCatalogProgress]=useState<RefreshProgress|null>(null);
+  const [stalkerAddStartedAt,setStalkerAddStartedAt]=useState(0); // v18.7.17 (E1): görsel hazırlık modalı için.
   const [xtUser, setXtUser] = useState("");
   const [xtPass, setXtPass] = useState("");
   const [stPortal, setStPortal] = useState("");
@@ -2497,7 +2500,7 @@ ${pub.path}`, [
     }
 
     setLoading(true);
-    if (method === "stalker") stalkerAddAbortRef.current = new AbortController(); // v18.7.14 (A): iptal edilebilir
+    if (method === "stalker") { stalkerAddAbortRef.current = new AbortController(); setStalkerAddStartedAt(Date.now()); setCatalogProgress(null); } // v18.7.14 (A): iptal edilebilir
     setProgress(method === "stalker" ? "MAG Portal hazırlanıyor · bağlantı ve cihaz profili doğrulanacak…" : "");
     try {
       // GPT v10.5.0: "Paneli bilmiyorum" yolunda kullanıcı yalnız kullanıcı
@@ -2677,7 +2680,9 @@ ${pub.path}`, [
           try {
             const catalog = await stalkerCatalog(cred, session, {
               liveOnly: true,
-              onProgress: interactiveSelection ? (progress) => setProgress(progress.message) : undefined,
+              // v18.7.17 (E1): tekli MAG eklemede de görsel hazırlık (Canlı/Film/Dizi kartları). onProgress
+              // hem metni hem yapılandırılmış ilerlemeyi günceller → CatalogPreparationModal canlı gösterir.
+              onProgress: (progress) => { setProgress(progress.message); setCatalogProgress(prev => applyCatalogProgress(prev, progress)); },
             });
             let contentSelection: PlaylistContentSelection|null = null;
             let liveCatalog={channels:catalog.channels,vod:[] as any[],series:[] as any[]};
@@ -3568,37 +3573,17 @@ ${pub.path}`, [
           </View>
         </ScrollView>
 
-        <Modal
-          /**
-           * v16.5.0 — MAG EKLEME "GİZLİ" GÖRÜNÜYORDU.
-           * Koşulda !!progress vardı: ilerleme metni henüz üretilmemişken
-           * (handshake/ilk istek aşaması) katman AÇILMIYOR, kullanıcı hiçbir
-           * şey görmüyor ve "Kaydet ve Yükle"ye tekrar tekrar basabiliyordu.
-           * Artık işlem başlar başlamaz görünür; metin gelene kadar
-           * "Bağlanılıyor…" yazar.
-           */
+        {/* v18.7.17 (E1): tekli MAG eklemede görsel hazırlık modalı (Canlı/Film/Dizi kartları + süre + iptal).
+            v18.7.14 (A): İptal + donanım geri tuşu işlemi durdurur (back-trap). */}
+        <CatalogPreparationModal
           visible={loading && method === "stalker"}
-          transparent
-          animationType="fade"
-          /* v18.7.14 (A): donanım geri tuşu da işlemi iptal eder (eskiden boştu → kullanıcı kilitleniyordu). */
-          onRequestClose={() => { stalkerAddAbortRef.current?.abort(); setLoading(false); setProgress(""); }}
-        >
-          <View style={styles.matchModalBackdrop}>
-            <View style={[styles.matchModalCard, { backgroundColor: colors.surface, borderColor: colors.border, maxWidth: 520 }]}>
-              <View style={{ alignItems: "center", gap: SPACING.md, paddingVertical: SPACING.md }}>
-                <ActivityIndicator size="large" color={colors.brandPrimary} />
-                <Text style={[styles.matchModalTitle, { color: colors.onSurface, textAlign: "center" }]}>MAG Portal hazırlanıyor</Text>
-                <Text style={{ color: colors.onSurfaceSecondary, textAlign: "center", lineHeight: 21 }}>{progress || "Portala bağlanılıyor… Lütfen bekleyin, tekrar dokunmayın."}</Text>
-                <Text style={{ color: colors.onSurfaceTertiary, textAlign: "center", fontSize: FONT.size.sm }}>Bu ekran bağlantı, katalog ve cihaz kayıt aşamalarını canlı gösterir.</Text>
-                {/* v18.7.14 (A): İPTAL — işlem takılırsa/uzarsa kullanıcı çıkabilsin (back-trap düzeltmesi). */}
-                <FocusButton testID="stalker-add-cancel" onPress={() => { stalkerAddAbortRef.current?.abort(); setLoading(false); setProgress(""); }} style={{ marginTop: SPACING.sm, alignSelf: "stretch", flexDirection: "row", gap: 8, alignItems: "center", justifyContent: "center", paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border }}>
-                  <Ionicons name="close-circle-outline" size={18} color={colors.onSurface} />
-                  <Text style={{ color: colors.onSurface, fontWeight: "600" }}>İptal et ve geri dön</Text>
-                </FocusButton>
-              </View>
-            </View>
-          </View>
-        </Modal>
+          presentation="modal"
+          title="MAG Portal hazırlanıyor"
+          message={progress || "Portala bağlanılıyor… Lütfen bekleyin, tekrar dokunmayın."}
+          progress={catalogProgress}
+          startedAt={stalkerAddStartedAt || Date.now()}
+          onCancel={() => { stalkerAddAbortRef.current?.abort(); setLoading(false); setProgress(""); }}
+        />
 
         <Modal
           visible={showBulkCandidates}
