@@ -180,9 +180,18 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.19 RC1 — dal `v18.7.19-rc1-stream-creds-persist`)
+## 9. Mevcut durum (v18.7.20 RC1 — dal `v18.7.20-rc1-catalog-speed-vod-class`)
 
-**v18.7.19 (bu sürüm — U4 kullanıcı adı kalıcılaştırma; PC doğrulandı, CİHAZ BEKLİYOR):**
+**v18.7.20 (bu sürüm — katalog hızı + filmler teşhisi; PC doğrulandı, CİHAZ BEKLİYOR):**
+Cihaz logu (hkpremium): VOD 22905 öğenin yüklenen 6244'ü HEPSİ diziye sınıflandı (Filmler boş); her tür 75 sn bütçeye takılıp %27 yükledi.
+- **S (hız):** MAG katalog `PAGE_CONCURRENCY` 6→**20** (kullanıcı isteği), `PAGE_BUDGET_MS` 75→100 sn, sayfa sınırı 600→2000. `get_ordered_list` salt-okunur liste (oynatma/create_link değil) → "tek upstream" bozulmaz, ban-makul. (Xtream katalog sayfasız — tür başına tek istek, zaten paralel; sayfalama paralelliği yalnız MAG'de.)
+- **V (kanıt-önce):** `STALKER_VOD_PARTITION` telemetrisi — hangi ölçüt (is_series/seriesArray/kategori adı/tip) kaç öğeyi diziye attı + örnek kategori adları (değer yok). Filmler sınıflama düzeltmesi bu kanıttan SONRA (kör düzeltme yok).
+- Doğrulama: tsc temiz · denetle TEMİZ · `check-v18720` PASS. `check-v18708` ileri-uyumlu (sabit conc/sayfa yerine >=). Native değişiklik YOK. Ayrıntı `AI-DEVIR-v18.7.20.md`.
+- **Bekleyen (kullanıcı "tamamını yap" dedi):** A (ekleme-anında kullanıcı adı), B (Xtream combo özel paralellik girişi), C (M3U linki üret+kopyala+görüntü testi), D (arka plan native servisi), filmler sınıflama düzeltmesi (V'den sonra).
+
+## 9-eski-18719. v18.7.19 RC1 (dal `v18.7.19-rc1-stream-creds-persist`)
+
+**v18.7.19 (U4 kullanıcı adı kalıcılaştırma; CİHAZDA DOĞRULANDI ✓ — `ud3B3yRH` göründü):**
 Cihaz kanıtı (18.7.18-dev kart): Şifre `vtRSvSDdnl` görünüyor (get_profile.password, kayıtlı) ama Kullanıcı Adı "Belirlenemedi". Kök neden: portal `login` boş → kullanıcı adı yalnız oynatma URL'inden (U4) gelir; eski U4 haritası BELLEK-İÇİ idi → yeniden açılışta kayboluyordu.
 - **Düzeltme:** türetilen kimlik storage'da (`kizilkan.streamCreds`) saklanır + açılışta `hydrateStreamDerivedCredentials` yüklenir → bir kez kanal açınca KALICI görünür. Değerler loglanmaz. `stalker.ts`, `_layout.tsx`.
 - Doğrulama: tsc temiz · denetle TEMİZ · `check-v18719` PASS. Native değişiklik YOK. Ayrıntı `AI-DEVIR-v18.7.19.md`.

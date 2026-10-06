@@ -23,11 +23,13 @@ need(code >= 180708, `expo.version (${ver}) >= 18.7.8 değil`);
 need(app.expo.ios.buildNumber === ver && Number(app.expo.android.versionCode) === code && app.expo.extra.kizilkanReleaseLabel === `GPT ELITE v${ver} RC1`, 'beş sürüm alanı tutarsız');
 need(JSON.parse(rd('frontend/package.json')).version === ver, 'package.json sürümü farklı');
 
-// B — paralel sayfalama
-need(/PAGE_CONCURRENCY\s*=\s*6/.test(stalker), 'B: paralel sayfalama eşzamanlılığı yok');
+// B — paralel sayfalama (v18.7.20: ileri uyumlu — eşzamanlılık >=6, sayfa üst sınırı >=600)
+const pageConc = Number((/PAGE_CONCURRENCY\s*=\s*(\d+)/.exec(stalker) || [])[1] || 0);
+need(pageConc >= 6, `B: paralel sayfalama eşzamanlılığı >=6 değil (${pageConc})`);
 need(/const fetchPage = async/.test(stalker) && /const processPage = async/.test(stalker), 'B: fetchPage/processPage ayrımı yok');
 need(/PARALEL FAZ/.test(stalker), 'B: paralel faz yok');
-need(/ORDERED_LIST_ABSOLUTE_MAX_PAGES = 600/.test(stalker), 'B: sayfa üst sınırı 600 değil');
+const maxPages = Number((/ORDERED_LIST_ABSOLUTE_MAX_PAGES\s*=\s*(\d+)/.exec(stalker) || [])[1] || 0);
+need(maxPages >= 600, `B: sayfa üst sınırı >=600 değil (${maxPages})`);
 
 // Keşif P0 — hiçbir portu yanlışlıkla eleme
 need(/function portClosedByError/.test(disc), 'keşif: portClosedByError (kesin-kapalı) yok');

@@ -2534,7 +2534,7 @@ export async function stalkerCategoryPreview(cred: StalkerCreds, ses: StalkerSes
 
 // v18.7.8: paralel sayfalama ile üst sınır 120→600 (14'erlik sayfada ~8400 öğe). Gerçek sınır
 // zaman bütçesidir; bu yalnız üst emniyet tavanıdır. Canlı get_all_channels tek seferdedir, etkilenmez.
-const ORDERED_LIST_ABSOLUTE_MAX_PAGES = 600;
+const ORDERED_LIST_ABSOLUTE_MAX_PAGES = 2000; // v18.7.20: büyük katalog (22905 film ~1636 sayfa) tam yüklenebilsin.
 const ORDERED_LIST_NO_NEW_LIMIT = 2;
 function pageFingerprint(rows:any[]):string {
   if (!rows.length) return "empty";
@@ -2583,8 +2583,12 @@ async function stalkerOrderedList(
    * ve total öğrenilir; kalan sayfalar parti parti PARALEL çekilir ama SIRAYLA işlenir
    * (dedup + onUniqueRow sırası korunur). 429/koruma görülünce genişleme durur.
    */
-  const PAGE_BUDGET_MS = 75000;      // paralel çekimle daha fazla sayfa sığar
-  const PAGE_CONCURRENCY = 6;        // salt-okunur liste; makul, ban-güvenli
+  // v18.7.20 (hız): cihaz kanıtı (hkpremium) — VOD 22905 öğe, 75 sn/conc6 ile yalnız %27 (6244) yüklendi,
+  // kalanı kayıp. get_ordered_list SALT-OKUNUR liste API'sidir (oynatma/create_link değil) → "tek upstream"
+  // oynatma kuralını bozmaz; liste eşzamanlılığını 6→10 ve bütçeyi 75→100 sn yaparak aynı/az fazla sürede
+  // KAT KAT fazla içerik yüklenir. Üst sayfa sınırı (600) büyük katalogları kesiyordu → 2000 (tam yüklenebilsin).
+  const PAGE_BUDGET_MS = 100000;     // daha çok içerik yüklensin (yavaş sunucu yarım bırakmasın)
+  const PAGE_CONCURRENCY = 20;       // v18.7.20: kullanıcı isteği 6→20; salt-okunur liste (oynatma değil)
   const budgetStartedAt = Date.now();
   const overBudget = () => Date.now() - budgetStartedAt > PAGE_BUDGET_MS;
   const seenFp = new Set<string>();   // sayfa-düzeyi yineleme (alias) tespiti
@@ -2738,6 +2742,11 @@ async function stalkerVodPartition(cred:StalkerCreds, ses:StalkerSession, opts?:
   try { cats=await stalkerCategories(cred,ses,"vod"); } catch (e) { if (!(e instanceof StalkerCatalogUnsupportedError)) throw e; }
   const vod:VodItem[]=[]; const fallbackSeries:SeriesItem[]=[];
   let rawCount=0;
+  // v18.7.20 (filmler kayboldu teşhisi): VOD öğelerinin hangi ölçütle diziye sınıflandığını say (DEĞER YOK,
+  // yalnız sayı). Cihaz kanıtı (hkpremium): 6244 VOD öğesinin HEPSİ dizi oldu, Filmler bölümü boş kaldı.
+  // sampleCategories: ilk birkaç kategori ADI (kategori adı hassas değil) → hangi ölçüt yanlış tetikliyor görünür.
+  const cls={isSeries:0,seriesArray:0,catTitle:0,typeWord:0,asVod:0};
+  const sampleCategories=new Set<string>();
   try {
     await stalkerOrderedList(cred,ses,"vod",{},
       (page,loaded,total)=>emitCatalogProgress(opts,{stage:"vod",message:`Film kataloğu yükleniyor · sayfa ${page} · ${loaded}${total != null ? `/${total}` : ""}`,page,loaded,total}),
@@ -2745,12 +2754,19 @@ async function stalkerVodPartition(cred:StalkerCreds, ses:StalkerSession, opts?:
       async (v,i)=>{
         rawCount=i+1;
         const group=cats.get(String(v?.category_id ?? v?.category)) || String(v?.category_name || "Genel");
-        if (rowLooksSeries(v,group)) fallbackSeries.push(mapSeriesRow(v,i,cats)); else vod.push(mapVodRow(v,i,cats));
+        if (sampleCategories.size<10) sampleCategories.add(String(group).slice(0,40));
+        if (rowLooksSeries(v,group)) {
+          if (truthyPortalFlag(v?.is_series)) cls.isSeries++; else if (Array.isArray(v?.series)) cls.seriesArray++;
+          else if (isSeriesCategoryTitle(group)) cls.catTitle++; else cls.typeWord++;
+          fallbackSeries.push(mapSeriesRow(v,i,cats));
+        } else { cls.asVod++; vod.push(mapVodRow(v,i,cats)); }
         await stalkerCatalogYield(i);
       },
       false,
     );
   } catch (e) { if (e instanceof StalkerCatalogUnsupportedError) return {vod:[],fallbackSeries:[],supported:false,rawCount:0,seriesFlagged:0}; throw e; }
+  void recordDiagnostic("catalog","STALKER_VOD_PARTITION",{rawCount,asVod:cls.asVod,asSeries:fallbackSeries.length,
+    byIsSeriesFlag:cls.isSeries,bySeriesArray:cls.seriesArray,byCategoryTitle:cls.catTitle,byTypeWord:cls.typeWord,sampleCategories:[...sampleCategories]});
   return {vod,fallbackSeries,supported:true,rawCount,seriesFlagged:fallbackSeries.length};
 }
 
