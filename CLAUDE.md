@@ -180,9 +180,15 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.21 RC1 — dal `v18.7.21-rc1-addtime-user-xtparallel-m3u`)
+## 9. Mevcut durum (v18.7.22 RC1 — dal `v18.7.22-rc1-vod-series-classification`)
 
-**v18.7.21 (bu sürüm — A+B+C+D; PC doğrulandı, NATIVE var → assembleDebug + CİHAZ BEKLİYOR):**
+**v18.7.22 (bu sürüm — "Filmler kayboldu" düzeltmesi; PC doğrulandı, CİHAZ BEKLİYOR):**
+Cihaz telemetrisi (`STALKER_VOD_PARTITION`): hkpremium'da TÜM filmler diziye gidiyordu — portal filmlere de BOŞ `series: []` koyuyor, `rowLooksSeries` `Array.isArray(v.series)`'i koşulsuz dizi sayıyordu. **Düzeltme:** `v.series.length > 0`. Boş → FİLM; dolu season/"Dizi" kategorisi/is_series → DİZİ. tsc temiz · denetle TEMİZ · `check-v18722` PASS. Native YOK. Ayrıntı `AI-DEVIR-v18.7.22.md`.
+- **Bekleyen:** ekleme-anında kullanıcı adı "eklenmiyor" (v18.7.21 A — ekran görüntüsü bekleniyor).
+
+## 9-eski-18721. v18.7.21 RC1 (dal `v18.7.21-rc1-addtime-user-xtparallel-m3u`)
+
+**v18.7.21 (A+B+C+D; cihazda açıldı; NATIVE assembleDebug BAŞARILI):**
 - **A:** Ekleme anında kullanıcı adı/şifre (`stalkerPrimeStreamCredentials` — ilk kanalın create_link'inden, oynatmasız). Tekli+çoklu. Yayın sunucusu da depolanır.
 - **B:** Xtream combo özel paralellik girişi (1–250, girilen=çalışan; boş→mod).
 - **C:** Kartta Xtream M3U get.php linki üret + kopyala + "Görüntü testi" (`get_live_streams`).

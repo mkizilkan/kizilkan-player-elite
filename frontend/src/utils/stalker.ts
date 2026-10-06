@@ -2719,7 +2719,11 @@ function truthyPortalFlag(v:any): boolean {
   const x=String(v ?? "").trim().toLowerCase(); return x === "1" || x === "true" || x === "yes" || x === "on";
 }
 function rowLooksSeries(v:any, group:string): boolean {
-  return truthyPortalFlag(v?.is_series) || Array.isArray(v?.series) || isSeriesCategoryTitle(group) || /\b(series|serial|dizi)\b/i.test(String(v?.type || v?.stream_type || ""));
+  // v18.7.22 (filmler kayboldu — KANIT: STALKER_VOD_PARTITION `bySeriesArray` TÜM filmleri diziye atıyordu):
+  // bazı portaller (hkpremium) HER VOD öğesine, FİLMLER dahil, BOŞ `series: []` koyuyor. Boş dizi "dizi"
+  // DEĞİLDİR → yalnız DOLU `series` dizisi (gerçek sezon/bölüm verisi) dizi işareti sayılır. Gerçek diziler
+  // ayrıca is_series bayrağı ve kategori adı ("Dizi"/"Series"/"Sezon") ile zaten yakalanır.
+  return truthyPortalFlag(v?.is_series) || (Array.isArray(v?.series) && v.series.length > 0) || isSeriesCategoryTitle(group) || /\b(series|serial|dizi)\b/i.test(String(v?.type || v?.stream_type || ""));
 }
 function mapVodRow(v:any, i:number, cats:Map<string,string>): VodItem {
   const sid=String(v?.id ?? v?.movie_id ?? v?.video_id ?? i);
