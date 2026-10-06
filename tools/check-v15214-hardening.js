@@ -122,6 +122,7 @@ async function testBackup() {
         if(id==='@/modules/kizilkan-native-core')return{KizilkanNativeCore:core};
         if(id==='@/src/utils/storage'||id==='./storage')return{storage};
         if(id==='@/src/utils/storage/bigStore'||id==='./storage/bigStore')return{bigStore};
+        if(id==='@/src/utils/diagnostics')return{recordDiagnostic:async()=>{},markTask:()=>()=>{}};
         if(id==='@/src/utils/backup')return load('src/utils/backup.ts');
         if(id.startsWith('./'))return load(path.posix.join(path.posix.dirname(rel),id+'.ts'));
         throw Error('Unmocked backup dependency '+id);

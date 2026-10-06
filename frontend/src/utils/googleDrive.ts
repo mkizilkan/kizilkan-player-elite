@@ -1,5 +1,6 @@
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
+import { storage } from '@/src/utils/storage';
 
 // Prevents "browser doesn't return" issue on iOS
 WebBrowser.maybeCompleteAuthSession();
@@ -7,20 +8,33 @@ WebBrowser.maybeCompleteAuthSession();
 /**
  * Google Drive OAuth service.
  *
- * REQUIREMENTS:
- *   1. Create OAuth 2.0 Client ID at https://console.cloud.google.com/apis/credentials
- *   2. Set env var EXPO_PUBLIC_GOOGLE_CLIENT_ID (or web/ios/android specific)
- *   3. Enable Google Drive API for the project
- *   4. Add authorized redirect URIs (see the console during first run)
- *
- * IMPORTANT: This works only in Native Build (Publish sonrası).
- * In Expo Go the redirect URI scheme differs.
+ * v18.7.18: OAuth Client ID artık KULLANICI tarafından uygulama içinde (Ayarlar → Google Drive)
+ * girilebilir — build/deploy sırasında env gerekmez. Kullanıcı kendi Google Cloud projesinden bir
+ * OAuth 2.0 Client ID (tip: Web uygulaması) oluşturur, uygulamanın gösterdiği yönlendirme (redirect)
+ * URI'sini Google Console'a ekler, Drive API'yi açar ve ID'yi Ayarlar'a yapıştırır. "Giriş yap"
+ * tarayıcıda Google oturumu açar. Env değeri (EXPO_PUBLIC_GOOGLE_CLIENT_ID) hâlâ yedek olarak okunur.
  */
 
-const CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID || '';
-const IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || CLIENT_ID;
-const ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || CLIENT_ID;
-const WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || CLIENT_ID;
+const ENV_CLIENT_ID =
+  process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID ||
+  process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID ||
+  process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || '';
+
+const GOOGLE_CLIENT_ID_KEY = 'kizilkan.googleDrive.clientId';
+let runtimeClientId: string | null = null; // Ayarlardan girilen ID (storage'dan hidratlanır).
+
+/** Uygulama açılışında çağrılır: kullanıcının girdiği client ID'yi belleğe yükler (senkron erişim için). */
+export async function hydrateGoogleDriveConfig(): Promise<void> {
+  try { runtimeClientId = String((await storage.getItem(GOOGLE_CLIENT_ID_KEY, '')) || '').trim() || null; } catch { runtimeClientId = null; }
+}
+/** Kullanıcının girdiği OAuth Client ID'yi kaydet (boş → sil). */
+export async function setGoogleDriveClientId(id: string): Promise<void> {
+  const value = String(id || '').trim();
+  runtimeClientId = value || null;
+  try { if (value) await storage.setItem(GOOGLE_CLIENT_ID_KEY, value); else await storage.removeItem(GOOGLE_CLIENT_ID_KEY); } catch {}
+}
+/** Kullanıcı ID'si → yoksa env. */
+export function getGoogleDriveClientId(): string { return runtimeClientId || ENV_CLIENT_ID || ''; }
 
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
@@ -31,7 +45,11 @@ const discovery = {
 };
 
 export function isGoogleDriveConfigured(): boolean {
-  return !!CLIENT_ID || !!ANDROID_CLIENT_ID || !!IOS_CLIENT_ID || !!WEB_CLIENT_ID;
+  return !!getGoogleDriveClientId();
+}
+/** Google Console'a eklenecek yönlendirme (redirect) URI'si — kullanıcıya gösterilir. */
+export function getGoogleDriveRedirectUri(): string {
+  try { return AuthSession.makeRedirectUri({ path: 'oauth/google' }); } catch { return ''; }
 }
 
 export interface DriveAuthResult {
@@ -45,19 +63,19 @@ export interface DriveAuthResult {
  * Throws if not configured or user cancels.
  */
 export async function authenticateGoogleDrive(): Promise<DriveAuthResult> {
-  if (!isGoogleDriveConfigured()) {
+  const clientId = getGoogleDriveClientId();
+  if (!clientId) {
     throw new Error(
-      'Google Drive henüz yapılandırılmadı. Uygulamayı Publish edip, Deployment paneli → Secrets bölümünden EXPO_PUBLIC_GOOGLE_CLIENT_ID değerini ekleyin.'
+      'Google Drive yapılandırılmadı. Ayarlar → Google Drive bölümünden kendi OAuth Client ID’nizi girin (Google Cloud → API ve Hizmetler → Kimlik Bilgileri).'
     );
   }
 
-  const redirectUri = AuthSession.makeRedirectUri({
-    scheme: 'frontend',
-    path: 'oauth/google',
-  });
+  // v18.7.18: scheme hardcode edilmez; expo-auth-session native build'de uygulamanın kendi scheme'ini
+  // (kizilkan-gpt) otomatik kullanır. Kullanıcı bu redirect URI'yi Google Console'a eklemelidir.
+  const redirectUri = AuthSession.makeRedirectUri({ path: 'oauth/google' });
 
   const request = new AuthSession.AuthRequest({
-    clientId: CLIENT_ID,
+    clientId,
     scopes: [DRIVE_SCOPE, 'openid', 'email', 'profile'],
     redirectUri,
     responseType: AuthSession.ResponseType.Token,

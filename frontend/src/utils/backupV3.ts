@@ -1,6 +1,7 @@
 import { File, Paths } from 'expo-file-system';
 import { KizilkanNativeCore } from '@/modules/kizilkan-native-core';
 import { bigStore } from '@/src/utils/storage/bigStore';
+import { recordDiagnostic } from '@/src/utils/diagnostics';
 import {
   backupPlaylistIds, createBackupMetadata, buildBackupMetadataPatch, backupRestoreResult, updateBackupCatalogCounts,
   prepareSelectedBackupRestore, setRestoredCatalogCounts, inspectBackupLists, isKizilkanBackup,
@@ -49,13 +50,22 @@ export async function exportFullBackupV3(opts?: { signal?: AbortSignal; onProgre
       for (const kind of ['live','vod','series'] as const) {
         if (KizilkanNativeCore.available) {
           let offset=0;
-          while (true) {
-            aborted(signal);
-            const page = await KizilkanNativeCore.queryItems<any>(id, kind, { offset, limit: PAGE });
-            if (page.items.length) { writeLine({ type:'chunk', playlistId:id, kind, items:page.items }); itemCount += page.items.length; }
-            onProgress?.({ phase:kind, current:itemCount, total:0, message:`${pi+1}/${ids.length} · ${kind} · ${offset + page.items.length}/${page.total}` });
-            if (!page.hasMore || !page.items.length) break;
-            offset += page.items.length;
+          try {
+            while (true) {
+              aborted(signal);
+              const page = await KizilkanNativeCore.queryItems<any>(id, kind, { offset, limit: PAGE });
+              if (page.items.length) { writeLine({ type:'chunk', playlistId:id, kind, items:page.items }); itemCount += page.items.length; }
+              onProgress?.({ phase:kind, current:itemCount, total:0, message:`${pi+1}/${ids.length} · ${kind} · ${offset + page.items.length}/${page.total}` });
+              if (!page.hasMore || !page.items.length) break;
+              offset += page.items.length;
+            }
+          } catch (e:any) {
+            // v18.7.18: yetim/boş-kabuk playlist (Room indeksi + legacy dosya yok) TÜM yedeği düşürmesin.
+            // Cihaz kanıtı: "queryItems rejected · IllegalStateException: Room indeksi ve legacy veri bulunamadı:
+            // pl-xt-...". O türü ATLA, uyarı yaz, yedeğe devam et (hesap meta verisi zaten yazıldı).
+            if (/İşlem iptal|aborted|AbortError/i.test(String(e?.name || e?.message || e))) throw e;
+            writeLine({ type:'chunk-error', playlistId:id, kind, message:String(e?.message || e).slice(0,200) });
+            void recordDiagnostic('backup','BACKUP_KIND_SKIPPED',{ playlistId:id, kind, message:String(e?.message || e).slice(0,160) });
           }
         } else {
           const heavy = await bigStore.read<any>(id, { channels:[], vod:[], series:[] });

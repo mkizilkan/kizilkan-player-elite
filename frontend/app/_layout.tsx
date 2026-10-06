@@ -298,6 +298,8 @@ export default function RootLayout() {
     const init = initializeDiagnostics();
     setDiagnosticAppState(AppState.currentState || "active");
     startMemorySampling(30000);
+    // v18.7.18: kullanıcının girdiği Google Drive client ID'sini belleğe yükle (senkron isGoogleDriveConfigured için).
+    void import("@/src/utils/googleDrive").then(m => m.hydrateGoogleDriveConfig()).catch(() => {});
     void recordDiagnostic("lifecycle", "APP_ROOT_READY", { path: pathnameRef.current, nativeBlackBox: init.native || {} });
   }, [loaded, error]);
 

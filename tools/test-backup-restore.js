@@ -45,6 +45,7 @@ function load(file) {
   vm.runInNewContext(source, { exports, require(name) {
     if (name === './storage' || name === '@/src/utils/storage') return { storage };
     if (name === './storage/bigStore' || name === '@/src/utils/storage/bigStore') return { bigStore };
+    if (name === '@/src/utils/diagnostics') return { recordDiagnostic: async () => {}, markTask: () => () => {} };
     if (name === '@/modules/kizilkan-native-core') return { KizilkanNativeCore: core };
     if (name === 'expo-file-system') return { File, Paths: { cache: 'cache' } };
     const local = name === '@/src/utils/backup' ? 'frontend/src/utils/backup.ts' : path.join(path.dirname(file), name + '.ts');

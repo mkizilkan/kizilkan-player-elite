@@ -11,7 +11,7 @@ import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { createBackupMetadata, restoreBackup, restoreBackupMetadata, restoreSelectedBackup, inspectBackupLists, BackupPayload, isKizilkanBackup, type BackupScope, type BackupListEntry } from "@/src/utils/backup";
 import { exportFullBackupV3, restoreFullBackupV3, previewFullBackupV3, isFullBackupV3Name } from "@/src/utils/backupV3";
-import { authenticateGoogleDrive, uploadJsonToDrive, isGoogleDriveConfigured } from "@/src/utils/googleDrive";
+import { authenticateGoogleDrive, uploadJsonToDrive, isGoogleDriveConfigured, getGoogleDriveClientId, setGoogleDriveClientId, getGoogleDriveRedirectUri } from "@/src/utils/googleDrive";
 import { useProfiles } from "@/src/store/ProfileContext";
 import { usePlaylists } from "@/src/store/PlaylistContext";
 import { FocusButton } from "@/src/components/FocusButton";
@@ -41,6 +41,16 @@ export default function BackupScreen() {
   const [exportPassword, setExportPassword] = useState('');
   const [encryptedAsset, setEncryptedAsset] = useState<{ uri: string; name?: string } | null>(null);
   const [importPassword, setImportPassword] = useState('');
+  // v18.7.18: kullanıcının Google Drive OAuth Client ID'si (Ayarlar yerine bu ekranda; kart genişletildi).
+  const [driveClientId, setDriveClientId] = useState(getGoogleDriveClientId());
+  const [driveConfigured, setDriveConfigured] = useState(isGoogleDriveConfigured());
+  const [driveClientSaved, setDriveClientSaved] = useState(false);
+  const driveRedirectUri = getGoogleDriveRedirectUri();
+  const saveDriveClientId = async () => {
+    await setGoogleDriveClientId(driveClientId);
+    setDriveConfigured(isGoogleDriveConfigured());
+    setDriveClientSaved(true); setTimeout(() => setDriveClientSaved(false), 1500);
+  };
   const mountedRef = React.useRef(true);
   const operationRef = React.useRef(0);
   const busyRef = React.useRef(false);
@@ -347,24 +357,35 @@ export default function BackupScreen() {
           </View>
         )}
 
-        <View style={[styles.driveCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
-          <Ionicons name="logo-google" size={22} color={colors.brandPrimary} />
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.driveTitle, { color: colors.onSurface }]}>Google Drive Yedeği</Text>
-            <Text style={[styles.driveSub, { color: colors.onSurfaceSecondary }]}>
-              {encryptedExport ? 'Şifreli .kzbe dosyasını Dışa Aktar ve Paylaş ile Drive’a gönderin. Buradan doğrudan yükleme şifresiz yedek seçilince kullanılabilir.' : isGoogleDriveConfigured()
-                ? "Hızlı (katalogsuz) yedeği doğrudan Google Drive'ınıza yükleyin."
-                : "Aktif etmek için Publish sonrası Deployment → Secrets bölümüne EXPO_PUBLIC_GOOGLE_CLIENT_ID ekleyin."}
-            </Text>
+        <View style={[styles.driveCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, flexDirection: "column", alignItems: "stretch", gap: SPACING.sm }]}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm }}>
+            <Ionicons name="logo-google" size={22} color={colors.brandPrimary} />
+            <Text style={[styles.driveTitle, { color: colors.onSurface, flex: 1 }]}>Google Drive Yedeği</Text>
+            {driveConfigured && <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}><Ionicons name="checkmark-circle" size={16} color={colors.success || "#2ecc71"} /><Text style={{ color: colors.success || "#2ecc71", fontSize: FONT.size.xs }}>Yapılandırıldı</Text></View>}
           </View>
-          <TouchableOpacity
-            testID="drive-upload-btn"
-            disabled={busy !== null || encryptedExport}
-            onPress={doDriveExport}
-            style={[styles.driveBtn, { backgroundColor: colors.brandPrimary, opacity: busy || encryptedExport ? 0.5 : 1 }]}
-          >
-            <Text style={{ color: colors.onBrandPrimary, fontSize: FONT.size.sm, fontWeight: FONT.weight.bold }}>Yükle</Text>
-          </TouchableOpacity>
+          {/* v18.7.18: kullanıcı KENDİ OAuth Client ID'sini girer; "Giriş yap" tarayıcıda Google oturumu açar. */}
+          <Text style={[styles.driveSub, { color: colors.onSurfaceSecondary }]}>
+            Google Cloud → API ve Hizmetler → Kimlik Bilgileri'nden bir OAuth 2.0 Client ID (Web uygulaması) oluşturun, Drive API'yi açın. Aşağıdaki yönlendirme URI'sini Console'daki "Yetkili yönlendirme URI'leri"ne ekleyin, ardından Client ID'yi buraya yapıştırın.
+          </Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.surface, borderRadius: RADIUS.sm, paddingHorizontal: SPACING.sm, paddingVertical: 6, borderWidth: 1, borderColor: colors.border }}>
+            <Text numberOfLines={1} style={{ flex: 1, color: colors.onSurfaceSecondary, fontSize: FONT.size.xs }}>{driveRedirectUri || "yönlendirme URI'si alınamadı"}</Text>
+            <TouchableOpacity testID="drive-copy-redirect" onPress={() => { Clipboard.setStringAsync(driveRedirectUri); setMsg({ type: "ok", text: "Yönlendirme URI'si kopyalandı." }); }} style={{ padding: 4 }}>
+              <Ionicons name="copy-outline" size={16} color={colors.brandPrimary} />
+            </TouchableOpacity>
+          </View>
+          <TextInput testID="drive-client-id-input" value={driveClientId} onChangeText={setDriveClientId} editable={busy === null}
+            autoCapitalize="none" autoCorrect={false} placeholder="OAuth Client ID (…apps.googleusercontent.com)" placeholderTextColor={colors.onSurfaceTertiary}
+            style={[styles.filterInput, { color: colors.onSurface, backgroundColor: colors.surface, borderColor: colors.border }]} />
+          <View style={{ flexDirection: "row", gap: SPACING.sm }}>
+            <TouchableOpacity testID="drive-save-client-id" disabled={busy !== null} onPress={saveDriveClientId} style={[styles.driveBtn, { flex: 1, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.brandPrimary, opacity: busy ? 0.5 : 1 }]}>
+              <Text style={{ color: colors.brandPrimary, fontSize: FONT.size.sm, fontWeight: FONT.weight.bold }}>{driveClientSaved ? "Kaydedildi ✓" : "Client ID Kaydet"}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity testID="drive-upload-btn" disabled={busy !== null || encryptedExport || !driveConfigured} onPress={doDriveExport}
+              style={[styles.driveBtn, { flex: 1, backgroundColor: colors.brandPrimary, opacity: busy || encryptedExport || !driveConfigured ? 0.5 : 1 }]}>
+              <Text style={{ color: colors.onBrandPrimary, fontSize: FONT.size.sm, fontWeight: FONT.weight.bold }}>Giriş yap ve Yükle</Text>
+            </TouchableOpacity>
+          </View>
+          {encryptedExport && <Text style={[styles.driveSub, { color: colors.onSurfaceTertiary, fontSize: FONT.size.xs }]}>Doğrudan yükleme "Şifresiz yedek" seçilince aktif olur (şifreli .kzbe için "Dışa Aktar ve Paylaş" kullanın).</Text>}
         </View>
       </ScrollView>
       <Modal visible={!!encryptedAsset} animationType="slide" onRequestClose={closePreview}>

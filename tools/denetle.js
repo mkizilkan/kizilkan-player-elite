@@ -46,6 +46,7 @@ const CHECKS = [
   ["check-v18715-release.js", "v18.7.15 D01-D04 account fields + D07 cancellable preparation + D08 endpoint lock + D11 alternate-scheme gate + D12 transport close + D13 shared budget + client-JS safety", ""],
   ["check-v18716-release.js", "v18.7.16 probable-addable accounts + visual bulk-add progress + global auto-refresh switch + pagination speed metrics + portal discovery family-first/version-js priority + base64 username + stream-URL credential derivation", ""],
   ["check-v18717-release.js", "v18.7.17 portal-confirm budget grant + exact /c API resolve + 1-100 parallelism + stream-username priority + copy buttons + single-add visual modal + destructive-diff shrink guard + clear-history notice + cold-start metric", ""],
+  ["check-v18718-release.js", "v18.7.18 backup orphan-playlist resilience (skip rejected queryItems) + Google Drive runtime OAuth client ID (user-entered, app-scheme redirect)", ""],
   ["check-v18713-release.js", "v18.7.13 manual portal pick (traces selectable) + username enrichment (full-param get_profile real login) + A01 base64 MAC decode in matcher + strict exact scope (only entered port/path)", ""],
   ["check-v18712-release.js", "v18.7.12 MAG multi-IP DNS failover (DoH all A-records + live IP pin + IP-at-boundary connect/logical translation; player had host failover, MAG scan did not)", ""],
   ["check-v18711-release.js", "v18.7.11 MAG profile-compat core (MAG320 full-param get_profile variants + empty-profile-yet-live-accessible = valid) + safe username presence telemetry + discovery wall budget", ""],

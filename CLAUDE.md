@@ -180,7 +180,17 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.17 RC1 — dal `v18.7.17-rc1-discovery-copy-update`)
+## 9. Mevcut durum (v18.7.18 RC1 — dal `v18.7.18-rc1-backup-drive`)
+
+**v18.7.18 (bu sürüm — yedek dayanıklılığı + Google Drive runtime; PC doğrulandı, CİHAZ BEKLİYOR):**
+Kaynak: cihaz (18.7.13) tam yedekleme hatası + Google Drive isteği. Ayrıntı `AI-DEVIR-v18.7.18.md`.
+- **B1:** Tam yedekte yetim/boş-kabuk playlist (`queryItems` IllegalStateException: "Room indeksi ve legacy veri bulunamadı") TÜM yedeği düşürmez; o tür atlanır (`chunk-error`/`BACKUP_KIND_SKIPPED`), yedeğe devam edilir. Abort hariç. **Bu hata tüm eski sürümlerde vardı.**
+- **G1:** Google Drive OAuth Client ID uygulama içinde girilir (env zorunlu değil). Kullanıcı kendi Web OAuth Client ID'sini Yedekleme ekranına yapıştırır, gösterilen redirect URI'yi Google Console'a ekler → "Giriş yap ve Yükle" tarayıcıda OAuth. Storage: `kizilkan.googleDrive.clientId`, açılışta `hydrateGoogleDriveConfig`. Redirect scheme artık uygulama scheme'i (`kizilkan-gpt`; eski yanlış `'frontend'` kaldırıldı).
+- **APK #1:** "güncelleyerek yüklenmedi" = imza kuralı: 18.7.13 release üstüne yalnız aynı anahtarlı `assembleRelease` kurulur; DEV ayrı paket (adb ile yanına). Kod hatası değil (§7).
+- **Yeni istek (v18.7.19'a bırakıldı):** arka planda çalışma (çoklu arama/ekleme/güncelleme app arkadayken) = native foreground service (§9 "PanelScanService'e bağlamak").
+- Doğrulama: tsc temiz · denetle TEMİZ · `check-v18718` PASS. Native değişiklik YOK. Kırılan 3 harness (diagnostics/googleDrive mock) düzeltildi.
+
+## 9-eski00000. v18.7.17 RC1 (dal `v18.7.17-rc1-discovery-copy-update`)
 
 **v18.7.17 (bu sürüm — portal keşfi + kopyala + güncelleme; PC doğrulandı, CİHAZ BEKLİYOR):**
 Kaynak: v18.7.16-dev cihaz logu (U4 ÇALIŞTI — hkpremium kullanıcı adı `ud3B3yRH` yayın adresinde kanıtlandı; portal keşfi 4 test; güncelleme 16800→6776 silme) + kullanıcı istekleri. Ayrıntı `AI-DEVIR-v18.7.17.md`.
