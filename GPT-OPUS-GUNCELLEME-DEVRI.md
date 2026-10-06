@@ -1,8 +1,26 @@
 # GPT DEVİR — KIZILKAN PLAYER ELITE (güncel durum ve talimatlar)
 
-**Son güncelleme:** 2026-10-04, Claude (Opus) oturumu. Bu dosya, token/bağlam azaldığında başka bir yapay zekânın
-(GPT) işi kaldığı yerden sürdürmesi için yazıldı. Önce `CLAUDE.md`'yi (özellikle §2 çalışma sözleşmesi, §3 doğrulama,
-§4 sürüm/dal, §5 mimari, §7 tuzaklar, §8 log analizi) oku; aşağıdakiler ona EKtir.
+**Son güncelleme:** 2026-10-06, Claude (Opus) oturumu — v18.7.19'a kadar güncel. Bu dosya, token/bağlam azaldığında
+başka bir yapay zekânın (GPT) işi kaldığı yerden sürdürmesi için yazıldı. Önce `CLAUDE.md`'yi (özellikle §2 çalışma
+sözleşmesi, §3 doğrulama, §4 sürüm/dal, §5 mimari, §7 tuzaklar, §8 log analizi) oku; aşağıdakiler ona EKtir.
+**EN GÜNCEL DURUM aşağıda "## 0. GÜNCEL (v18.7.16–v18.7.19)" bölümünde.**
+
+## 0. GÜNCEL DURUM (v18.7.16 → v18.7.19) — EN ÖNEMLİ BÖLÜM
+
+**Dal zinciri (her biri bir öncekinin dalından):** v18.7.15 `v18.7.15-rc1-mag-endpoint-lock` → v18.7.16 `v18.7.16-rc1-bulk-ux-portal-discovery` → v18.7.17 `v18.7.17-rc1-discovery-copy-update` → v18.7.18 `v18.7.18-rc1-backup-drive` → **v18.7.19 (AKTİF) `v18.7.19-rc1-stream-creds-persist`**.
+**Cihaz:** OnePlus 7 Pro `c3a4097e`. DEV paket `com.gpt.kizilkan.player.dev`. Her sürüm DEV APK adb ile kuruldu (`adb install -r`, ~460 MB). Release güncelleme SORUNU: telefondaki release imza anahtarı Actions Secrets anahtarından farklı olabilir (açık konu) → "Uygulama yüklenmedi"; test DEV'de yapılıyor.
+**Her sürüm:** PC doğrulandı (tsc temiz + `node tools/denetle.js` TÜM TEMİZ + `check-v<kod>-release.js` PASS), commit+push, Actions `release` tetiklendi, yerel DEV APK derlendi. Native değişiklik YOK (hepsi TS) — v18.7.16-19 arası.
+
+- **v18.7.16** (toplu UX + portal keşfi + kullanıcı adı): A) "probable" kategorisi (kimlik+bitiş var, içerik örneği yok → eklenebilir); B) toplu ekleme görsel `CatalogPreparationModal`; C) küresel otomatik yenileme ana anahtarı (`FRESHNESS_SKIP_GLOBAL_OFF`); D) katalog sayfalama hız ölçümü (`STALKER_PAGINATION_STOP.avgPageMs`); E) portal keşfi version.js yolları öne (`unshift`) + "all" aile-önce + deadline'da keşif telemetrisi; U1-U4 kullanıcı adı (base64 çözme, alan biçim telemetrisi, **U4: Xtream-şekilli yayın URL'inden kullanıcı adı/şifre çıkarma+kartta gösterme**). Ayrıntı `AI-DEVIR-v18.7.16.md`.
+- **v18.7.17** (keşif + kopyala + güncelleme): P1) portal version.js/xpcom doğrulanınca `MagDiscoveryBudget.grant(6000)` → API yolları deadline'dan önce denenir (çoklu+DNS "bulamadı" düzelir); P2) exact + arayüz yolu `/c` → aynı kurulumda API çözülür; P3) paralellik 1–100 (girilen=çalışan, `MAG_MAX_PARALLEL` 16→100); K1) kart kullanıcı adı önce U4 değeri; K2) kart+düzenleme kopyala butonları (expo-clipboard); E1) tekli MAG eklemede görsel modal; G1) **yıkıcı diff koruması** (`MAG_REFRESH_SHRINK_GUARD`: auto refresh'te eksik çekilen tür Room'u yarıdan aza düşüremez); S1) Flight Recorder sil bildirimi; M1) `APP_COLD_START` ölçümü. **Cihaz kanıtı: U4 ÇALIŞTI** — hkpremium yayın URL'i `.../ud3B3yRH(8)/şifre(10)/id`, `streamCredsFound:true`. Ayrıntı `AI-DEVIR-v18.7.17.md`.
+- **v18.7.18** (yedek + Drive): B1) tam yedekte yetim/boş-kabuk playlist (`queryItems` IllegalStateException) TÜM yedeği düşürmez — o tür atlanır (`chunk-error`/`BACKUP_KIND_SKIPPED`), yedeğe devam (bu hata TÜM eski sürümlerde vardı); G1) Google Drive OAuth Client ID uygulama içinde girilir (env zorunlu değil), Yedekleme ekranı → redirect URI kopyala → Console'a ekle → Client ID yapıştır → "Giriş yap ve Yükle" tarayıcı OAuth. Storage `kizilkan.googleDrive.clientId`, açılışta `hydrateGoogleDriveConfig`. Redirect scheme `kizilkan-gpt` (eski yanlış `'frontend'` kaldırıldı). Ayrıntı `AI-DEVIR-v18.7.18.md`.
+- **v18.7.19 (AKTİF)** (U4 kullanıcı adı görünmüyor düzeltmesi): **Kök neden log'dan KANITLANDI** — `STALKER_RESOLVE_DONE.streamCredsFound=true` (çıkarma çalışıyor) ama kart `magDerived` bir `useMemo`'ydu ve Ayarlar sekmesi mount kaldığından oynatmadan sonra yeniden okumuyordu → "Belirlenemedi". Düzeltme: (1) kart `state + useFocusEffect` ile ekrana her dönüşte yeniden okur [ASIL]; (2) türetilen kimlik storage'da (`kizilkan.streamCreds`) saklanır + açılışta `hydrateStreamDerivedCredentials` [kalıcılık]; (3) MAC-only yedek key. Değerler loglanmaz. Ayrıntı `AI-DEVIR-v18.7.19.md`.
+
+**CİHAZDA TEST BEKLEYEN (v18.7.19-dev):** (a) hkpremium kanal aç → Ayarlar → Kullanıcı Adı `ud3B3yRH` görünmeli + kapat/aç kalıcı; (b) portal keşfi çoklu+DNS+"Tüm adaylarda" → bulmalı (P1); (c) 100 paralel; (d) muhtemel geçerli ekleme; (e) güncelleme içerik silmemeli (G1); (f) tam yedek yetim listeyle tamamlanmalı (B1); (g) Google Drive OAuth.
+
+**ONAYLI AMA KODLANMAMIŞ — SIRADAKİ BÜYÜK İŞ:** Arka planda çalışma (çoklu arama/ekleme/güncelleme app arkadayken). Plan `AI-DEVIR` + sohbet: **Xtream çoklu ve panel ZATEN native foreground service kullanıyor** (`BulkPlaylistImportService.kt`, `PanelScanService.kt`); **MAG çoklu tarama/ekleme ve güncelleme saf JS** → arka planda duruyor. Önerilen yaklaşım A: genel "canlı tut" ön plan servisi (`startForegroundKeepAlive`/`stop`), Android 14 için `foregroundServiceType=dataSync`+izin; JS işi başında başlat/bitince durdur. **Native iş → prebuild+assembleDebug+cihaz testi şart.** Kullanıcı planı gördü, onayı bekliyor.
+
+**DİĞER BEKLEYEN:** release imza anahtarı eşitleme (`tools/imza-bul.ps1`); katalog/açılış hız (ölçüm var, iyileştirme kanıttan sonra, §5 ban riski); GPT G07-G10.
 
 ## 1. Çalışma kuralları (harfiyen)
 - **Önce PLAN sun, kullanıcı onaylayınca kodla.** Kör düzeltme yok: her sorunu önce log + kod ile KANITLA.
@@ -13,7 +31,7 @@
 - **Native (Kotlin) değişmedi** (v18.7.9–v18.7.12 tümü TS). Native'e dokunursan `expo prebuild` + `gradlew assembleDebug` şart.
 - Commit attribution satırı oturuma göre değişiyor; kullanıcının verdiği EN SON reminder'daki `Co-Authored-By` satırını kullan.
 
-## 2. Mevcut durum
+## 2. Mevcut durum (TARİHÎ — GÜNCEL DURUM İÇİN "## 0" BÖLÜMÜNE BAK; aşağısı v18.7.12 anındaki durumdur)
 - **Dal:** `v18.7.12-rc1-mag-ip-failover`. **Son commit:** `5d9e3b2f` (v18.7.12). Taban zinciri: v18.7.10 `6910a934` → v18.7.11 `1efefcfc` → v18.7.12.
 - **Cihaz:** OnePlus 7 Pro, `c3a4097e`. DEV paket `com.gpt.kizilkan.player.dev` ("KIZILKAN DEV"), debuggable. Release paket `com.gpt.kizilkan.player` (debuggable DEĞİL).
 - Telefonda kurulu: **18.7.12-dev**. Cihazda Özel DNS `DNS.google` yapıldı (kullanıcı ayarladı).
