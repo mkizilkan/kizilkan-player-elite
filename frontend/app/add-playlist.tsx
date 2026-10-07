@@ -307,6 +307,46 @@ export default function AddPlaylist() {
     return !(Number.isFinite(n) && n > 0 && n * 1000 < Date.now());
   }).map(c => c.key), [bulkCandidates]);
   const [selectedBulkCandidateKeys, setSelectedBulkCandidateKeys] = useState<string[]>([]);
+  // v18.7.24 (B — istek üzerine): Xtream combo'da bulunan hesaplara isteğe bağlı "görüntü var/yok" testi.
+  // Tarama login çeker (içerik çekmez); gerçek görüntü yalnız get_live_streams probe'u ile anlaşılır.
+  // Kullanıcı butonla başlatır (otomatik değil → ban/hız riski yok).
+  const [bulkContentTest, setBulkContentTest] = useState<Record<string, { state: "testing" | "yes" | "no" | "err"; count: number }>>({});
+  const [bulkContentTesting, setBulkContentTesting] = useState(false);
+  const [bulkContentTestProgress, setBulkContentTestProgress] = useState({ done: 0, total: 0 });
+  const bulkContentAbortRef = React.useRef<AbortController | null>(null);
+  const bulkContentYesKeys = useMemo(() => Object.keys(bulkContentTest).filter(k => bulkContentTest[k]?.state === "yes"), [bulkContentTest]);
+  const testBulkContent = React.useCallback(async () => {
+    const list = bulkCandidates.filter(c => c.server && c.username && c.password);
+    if (!list.length || bulkContentTesting) return;
+    const ctrl = new AbortController(); bulkContentAbortRef.current = ctrl;
+    setBulkContentTesting(true);
+    setBulkContentTestProgress({ done: 0, total: list.length });
+    setBulkContentTest(prev => { const next = { ...prev }; for (const c of list) next[c.key] = { state: "testing", count: 0 }; return next; });
+    void recordDiagnostic("scan", "BULK_CONTENT_TEST_START", { accounts: list.length });
+    let done = 0; let yes = 0; const CONC = 6; let idx = 0;
+    const worker = async () => {
+      while (idx < list.length && !ctrl.signal.aborted) {
+        const c = list[idx++];
+        let result: { state: "yes" | "no" | "err"; count: number } = { state: "no", count: 0 };
+        try {
+          const per = new AbortController(); const timer = setTimeout(() => per.abort(), 15000);
+          const onAbort = () => per.abort(); ctrl.signal.addEventListener("abort", onAbort);
+          try {
+            const streams = await xtreamLiveStreams({ server: c.server, username: c.username, password: c.password }, per.signal);
+            result = streams.length > 0 ? { state: "yes", count: streams.length } : { state: "no", count: 0 };
+          } finally { clearTimeout(timer); ctrl.signal.removeEventListener("abort", onAbort); }
+        } catch { result = { state: "err", count: 0 }; }
+        if (ctrl.signal.aborted) break;
+        if (result.state === "yes") yes++;
+        setBulkContentTest(prev => ({ ...prev, [c.key]: result }));
+        done++; setBulkContentTestProgress({ done, total: list.length });
+      }
+    };
+    try { await Promise.all(Array.from({ length: Math.min(CONC, list.length) }, worker)); } finally {
+      setBulkContentTesting(false); bulkContentAbortRef.current = null;
+      void recordDiagnostic("scan", "BULK_CONTENT_TEST_DONE", { tested: done, withContent: yes, aborted: ctrl.signal.aborted });
+    }
+  }, [bulkCandidates, bulkContentTesting, bulkContentTest]);
   const [bulkUseAllValidatedHosts, setBulkUseAllValidatedHosts] = useState(true);
   const [showBulkCandidates, setShowBulkCandidates] = useState(false);
   const bulkResultsDismissedRef = React.useRef(false);
@@ -3708,6 +3748,25 @@ ${pub.path}`, [
                 </FocusButton>
               </View>
 
+              {/* v18.7.24 (B): istek üzerine görüntü var/yok testi — her bulunan hesaba get_live_streams probe'u. */}
+              {bulkCandidates.length > 0 && (
+                <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md,flexWrap:"wrap"}}>
+                  <FocusButton focusable testID="bulk-content-test-btn" disabled={bulkAdding || bulkCandidates.length===0}
+                    onPress={() => { if (bulkContentTesting) bulkContentAbortRef.current?.abort(); else void testBulkContent(); }}
+                    style={[styles.bulkBtn,{borderColor:colors.brandPrimary,backgroundColor:colors.surfaceSecondary}]}>
+                    {bulkContentTesting ? <ActivityIndicator size="small" color={colors.brandPrimary} /> : <Ionicons name="tv-outline" size={16} color={colors.brandPrimary} />}
+                    <Text style={{color:colors.brandPrimary,fontWeight:FONT.weight.bold,marginLeft:6}}>{bulkContentTesting ? `Test ediliyor ${bulkContentTestProgress.done}/${bulkContentTestProgress.total} (durdur)` : "Görüntü Test Et"}</Text>
+                  </FocusButton>
+                  {bulkContentYesKeys.length > 0 && (
+                    <FocusButton focusable testID="bulk-select-content-btn" disabled={bulkAdding}
+                      onPress={() => setSelectedBulkCandidateKeys(bulkContentYesKeys)}
+                      style={[styles.bulkBtn,{borderColor:colors.success||"#2ecc71",backgroundColor:colors.surfaceSecondary}]}>
+                      <Text style={{color:colors.success||"#2ecc71",fontWeight:FONT.weight.bold}}>Görüntü Olanları Seç ({bulkContentYesKeys.length})</Text>
+                    </FocusButton>
+                  )}
+                </View>
+              )}
+
               <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md}}>
                 <FocusButton focusable disabled={bulkAdding || bulkCandidates.length===0}
                   onPress={() => setSelectedBulkCandidateKeys(selectedBulkCandidateKeys.length===bulkCandidates.length?[]:bulkCandidates.map(c=>c.key))}
@@ -3795,6 +3854,15 @@ ${pub.path}`, [
                         );
                       })()}
                       <Text style={{color:colors.onSurfaceTertiary,marginTop:2,fontSize:FONT.size.xs}}>{c.server}</Text>
+                      {(() => {
+                        // v18.7.24 (B): görüntü testi sonucu (istek üzerine). Test edilmemişse rozet gösterilmez.
+                        const ct = bulkContentTest[c.key]; if (!ct) return null;
+                        const info = ct.state === "testing" ? { t: "📺 Görüntü kontrol ediliyor…", c: colors.brandPrimary }
+                          : ct.state === "yes" ? { t: `📺 Görüntü var · ${ct.count} kanal`, c: colors.success || "#2ecc71" }
+                          : ct.state === "no" ? { t: "📺 Görüntü yok (içerik dönmedi)", c: colors.error }
+                          : { t: "📺 Görüntü testi başarısız", c: colors.onSurfaceTertiary };
+                        return <Text style={{ color: info.c, marginTop: 4, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>{info.t}</Text>;
+                      })()}
                       {!!importState && <Text style={{color: importState.state === "failed" ? colors.error : importState.state === "completed" ? colors.success : colors.brandPrimary, marginTop:6, fontSize:FONT.size.xs, fontWeight:FONT.weight.bold}}>{importState.state === "completed" ? "✓ " : importState.state === "failed" ? "✕ " : "• "}{importState.message}{importState.state === "completed" ? ` · ${importState.channels || 0} kanal · ${importState.vod || 0} film · ${importState.series || 0} dizi` : ""}</Text>}
                     </View>
                     <Ionicons name={selected?"checkbox":"square-outline"} size={26} color={selected?colors.brandPrimary:colors.onSurfaceTertiary}/>

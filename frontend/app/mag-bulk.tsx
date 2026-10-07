@@ -66,7 +66,7 @@ const DISCOVERY_MODES: Record<MagDiscoveryScope, { label: string; hint: string }
   fallback: { label: "Çalışmazsa diğerleri", hint: "Önce girilen port/yol ailesi keşfedilir. API bulunamazsa diğer adaylar yalnız bir kez denenir; MAC reddi yeniden keşif başlatmaz." },
   all: { label: "Tüm adaylarda keşif", hint: "Girilen ve yaygın port/yollar host başına bir kez keşfedilir. Bulunan API yollarından biri seçilir; MAC listesi yalnız bu yolda doğrulanır." },
 };
-type ResultFilter = "all" | "valid" | "probable" | "not_observed" | "present" | "unknown";
+type ResultFilter = "all" | "valid" | "probable" | "has-content" | "not_observed" | "present" | "unknown";
 function protectionLabel(r: MagScanResult): string {
   if (r.protection?.state === "present") return r.protection.kind === "rate_limit" ? "İstek sınırı gözlendi" : "Koruma gözlendi";
   return r.protection?.state === "not_observed" ? "Koruma görülmedi" : "Koruma belirlenemedi";
@@ -303,7 +303,9 @@ export default function MagBulkScreen() {
   // v18.7.16 (A): eklenebilir = geçerli + muhtemel geçerli. Muhtemel geçerli hesaplar (kimlik+bitiş var,
   // içerik örneği alınamadı) kullanıcı seçtiyse eklenir; "doğrulanmadı" etiketiyle işaretlenir.
   const selectedAddable = useMemo(() => [...selectedValid, ...selectedProbable], [selectedValid, selectedProbable]);
-  const visibleResults = useMemo(() => results.filter(r => resultFilter === "all" || (resultFilter === "valid" ? r.category === "valid" : resultFilter === "probable" ? r.category === "probable" : (r.protection?.state || "unknown") === resultFilter)), [results, resultFilter]);
+  const visibleResults = useMemo(() => results.filter(r => resultFilter === "all" ? true : resultFilter === "has-content" ? (r.liveCount || 0) > 0 : resultFilter === "valid" ? r.category === "valid" : resultFilter === "probable" ? r.category === "probable" : (r.protection?.state || "unknown") === resultFilter), [results, resultFilter]);
+  // v18.7.24: "görüntü var" = doğrulama anında gerçek canlı içerik örneği alındı (liveCount>0). Ücretsiz/dürüst sinyal.
+  const contentResults = useMemo(() => results.filter(r => (r.liveCount || 0) > 0), [results]);
   const toggleResult = useCallback((r: MagScanResult) => {
     const key = magIdentity(r.portal, r.mac);
     setSelected(prev => { const next = new Set(prev); next.has(key) ? next.delete(key) : next.add(key); return next; });
@@ -683,7 +685,7 @@ export default function MagBulkScreen() {
             </View>
             <Text style={S.count}>{selectedResults.length} seçili · {selectedValid.length} geçerli{selectedProbable.length ? ` + ${selectedProbable.length} muhtemel` : ""} · {visibleResults.length} görünen</Text>
             <View style={S.chipRow}>
-              {([["all", "Tüm sonuçlar"], ["valid", "Geçerli"], ["probable", "Muhtemel"], ["not_observed", "Koruma görülmedi"], ["present", "Koruma gözlendi"], ["unknown", "Belirlenemedi"]] as [ResultFilter, string][]).map(([value, label]) => (
+              {([["all", "Tüm sonuçlar"], ["valid", "Geçerli"], ["probable", "Muhtemel"], ["has-content", `Görüntü olanlar (${contentResults.length})`], ["not_observed", "Koruma görülmedi"], ["present", "Koruma gözlendi"], ["unknown", "Belirlenemedi"]] as [ResultFilter, string][]).map(([value, label]) => (
                 <FocusButton key={value} disabled={adding || saving} onPress={() => setResultFilter(value)} style={[S.chip, resultFilter === value && S.chipOn]}><Text style={[S.chipText, resultFilter === value && S.chipTextOn]}>{label}</Text></FocusButton>
               ))}
             </View>
@@ -691,6 +693,7 @@ export default function MagBulkScreen() {
               <FocusButton testID="mag-select-all" disabled={scanning || adding || saving} onPress={() => setSelected(new Set(results.map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Tümünü seç</Text></FocusButton>
               <FocusButton testID="mag-select-valid" disabled={scanning || adding || saving} onPress={() => setSelected(new Set(validResults.map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Geçerlileri seç</Text></FocusButton>
               {probableResults.length > 0 && <FocusButton testID="mag-select-probable" disabled={scanning || adding || saving} onPress={() => setSelected(new Set([...validResults, ...probableResults].map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Geçerli + muhtemelleri seç</Text></FocusButton>}
+              {contentResults.length > 0 && <FocusButton testID="mag-select-has-content" disabled={scanning || adding || saving} onPress={() => setSelected(new Set(contentResults.map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Görüntü olanları seç ({contentResults.length})</Text></FocusButton>}
               <FocusButton testID="mag-select-unprotected" disabled={scanning || adding || saving} onPress={() => setSelected(new Set(validResults.filter(r => r.protection?.state === "not_observed").map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Koruma görülmeyen geçerlileri seç</Text></FocusButton>
               <FocusButton testID="mag-clear-selection" disabled={scanning || adding || saving} onPress={() => setSelected(new Set())} style={S.chip}><Text style={S.chipText}>Seçimi kaldır</Text></FocusButton>
             </View>
@@ -724,6 +727,14 @@ export default function MagBulkScreen() {
                 <Text style={S.resultSub} numberOfLines={2}>{r.portal}</Text>
                 <Text style={S.resultSub}>{formatAccountExpiry(r.accountInfo || { tariff_expired_date: r.expiry }) || "Bitiş: Bilinmiyor / bildirilmedi"}</Text>
                 <Text style={S.resultSub}>{protectionLabel(r)}{r.protection ? ` · ${new Date(r.protection.observedAt).toLocaleString("tr-TR")}` : ""}</Text>
+                {(() => {
+                  // v18.7.24: görüntü var/yok — doğrulama anındaki gerçek canlı içerik örneğine (liveCount) göre.
+                  const n = r.liveCount || 0;
+                  const info = n > 0 ? { t: `📺 Görüntü: VAR · ${n} kanal`, c: colors.success || "#2ecc71" }
+                    : r.category === "probable" ? { t: "📺 Görüntü: Belirsiz (içerik örneği alınamadı)", c: colors.onSurfaceTertiary }
+                    : { t: "📺 Görüntü: Yok / erişilemedi", c: colors.onSurfaceTertiary };
+                  return <Text style={[S.resultSub, { color: info.c, fontWeight: FONT.weight.semibold }]}>{info.t}</Text>;
+                })()}
                 {r.message ? <Text style={S.resultSub} numberOfLines={3}>{r.message}</Text> : null}
               </View>
               <Text style={[S.resultCat, { color: meta.color(colors) }]}>{meta.label}</Text>

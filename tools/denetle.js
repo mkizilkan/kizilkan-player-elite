@@ -52,6 +52,7 @@ const CHECKS = [
   ["check-v18721-release.js", "v18.7.21 add-time username derivation + Xtream combo custom parallelism + account-card M3U link/content-test + background keep-alive foreground service", ""],
   ["check-v18722-release.js", "v18.7.22 films-disappeared fix: empty series array no longer classifies a VOD item as series (evidence: STALKER_VOD_PARTITION)", ""],
   ["check-v18723-release.js", "v18.7.23 account-card auto-prime (derive MAG username from a Room channel's create_link without playing) + auto-run content (görüntü var/yok) test", ""],
+  ["check-v18724-release.js", "v18.7.24 bulk-add selection screen content visibility: MAG per-result görüntü var/yok (liveCount) + filter; Xtream combo on-demand get_live_streams probe + 'select only with content'", ""],
   ["check-v18713-release.js", "v18.7.13 manual portal pick (traces selectable) + username enrichment (full-param get_profile real login) + A01 base64 MAC decode in matcher + strict exact scope (only entered port/path)", ""],
   ["check-v18712-release.js", "v18.7.12 MAG multi-IP DNS failover (DoH all A-records + live IP pin + IP-at-boundary connect/logical translation; player had host failover, MAG scan did not)", ""],
   ["check-v18711-release.js", "v18.7.11 MAG profile-compat core (MAG320 full-param get_profile variants + empty-profile-yet-live-accessible = valid) + safe username presence telemetry + discovery wall budget", ""],

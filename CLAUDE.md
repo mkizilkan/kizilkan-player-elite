@@ -180,9 +180,18 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.23 RC1 — dal `v18.7.23-rc1-card-autoprime-autotest`)
+## 9. Mevcut durum (v18.7.24 RC1 — dal `v18.7.24-rc1-bulk-content-visibility`)
 
-**v18.7.23 (bu sürüm — hesap kartı oto-prime + görüntü oto-testi; PC doğrulandı, CİHAZ BEKLİYOR):**
+**v18.7.24 (bu sürüm — çoklu ekleme seçim ekranı görüntü var/yok + süzme; PC doğrulandı, CİHAZ BEKLİYOR):**
+Kullanıcı isteği: Xtream+MAC çoklu eklemede bulunan hesapları listeye almadan önce seçim ekranındaki her kartta "görüntü var/yok" + süzmede "sadece görüntü olanları seç". **Dürüst sinyal farkı (§2.2):** MAG'de `liveCount` doğrulama anında zaten hesaplanır (gerçek içerik örneği) → **ücretsiz/otomatik**; Xtream tarama yalnız login çeker → gerçek görüntü ancak `get_live_streams` probe'uyla bilinir → **istek üzerine** (kullanıcı "B olsun").
+- **MAG (`mag-bulk.tsx`):** kartta `📺 Görüntü: VAR · N kanal`/Belirsiz/Yok; süzme "Görüntü olanlar (N)" + seçim "Görüntü olanları seç" (`liveCount>0`).
+- **Xtream (`add-playlist.tsx`):** "Görüntü Test Et" butonu → 6 paralel `xtreamLiveStreams` probe'u (15 sn timeout, iptal edilebilir) → kartta var/yok rozeti + "Görüntü Olanları Seç". Telemetri `BULK_CONTENT_TEST_START/DONE`.
+- Doğrulama: tsc temiz · denetle TEMİZ · `check-v18724` PASS. **Yalnız TS, native YOK.** Ayrıntı `AI-DEVIR-v18.7.24.md`.
+- **Bekleyen:** GPT G07-G10; v18.7.23 cihaz doğrulaması.
+
+## 9-eski-18723. v18.7.23 RC1 (dal `v18.7.23-rc1-card-autoprime-autotest`)
+
+**v18.7.23 (hesap kartı oto-prime + görüntü oto-testi; PC doğrulandı, CİHAZ BEKLİYOR):**
 Cihaz kanıtı (OnePlus 7 Pro, v18.7.22-dev): hkpremium **manuel güncellendi** ama kullanıcı adı yine "Belirlenemedi" — v18.7.21 **A** yalnız yeni eklemede çalışıyordu, mevcut hesapta kart açılınca türetme tetiklenmiyordu. Görüntü var/yok ise butona basınca geliyordu.
 - **Oto-prime:** `AccountInfoCard` `useFocusEffect` — MAG hesabında kullanıcı adı yoksa + hesap başına bir kez (`primeTriedRef`), Room'dan BİR canlı kanal (`queryItems(id,"live",{limit:1})`) alınıp `stalkerResolveStream(..., ch.url)` ile create_link çözülür → kullanıcı adı/şifre OYNATMASIZ türetilip kalıcılaştırılır (v18.7.19 altyapısı), kart yenilenir. En-iyi-çaba, değer loglanmaz.
 - **Oto-test:** `m3uLink` hazır olunca `autoTestedRef` ile `testM3u()` otomatik çalışır → "✓ Görüntü var · N kanal" / "✗ Görüntü yok" kendiliğinden görünür.
