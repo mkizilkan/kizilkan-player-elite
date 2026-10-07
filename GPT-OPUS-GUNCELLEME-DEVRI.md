@@ -1,6 +1,6 @@
 # GPT DEVİR — KIZILKAN PLAYER ELITE (güncel durum ve talimatlar)
 
-**Son güncelleme:** 2026-10-07, Claude (Opus) oturumu — v18.7.23'e kadar güncel. Bu dosya, token/bağlam azaldığında
+**Son güncelleme:** 2026-10-07, Claude (Opus) oturumu — v18.7.24'e kadar güncel + **v18.7.25 KATALOG HIZ PLANI** (aşağıda, onay bekliyor). Bu dosya, token/bağlam azaldığında
 başka bir yapay zekânın (GPT) işi kaldığı yerden sürdürmesi için yazıldı. Önce `CLAUDE.md`'yi (özellikle §2 çalışma
 sözleşmesi, §3 doğrulama, §4 sürüm/dal, §5 mimari, §7 tuzaklar, §8 log analizi) oku; aşağıdakiler ona EKtir.
 **EN GÜNCEL DURUM aşağıda "## 0. GÜNCEL (v18.7.16–v18.7.23)" bölümünde.**
@@ -24,8 +24,26 @@ sözleşmesi, §3 doğrulama, §4 sürüm/dal, §5 mimari, §7 tuzaklar, §8 log
 - **v18.7.18** (yedek + Drive): B1) tam yedekte yetim/boş-kabuk playlist (`queryItems` IllegalStateException) TÜM yedeği düşürmez — o tür atlanır (`chunk-error`/`BACKUP_KIND_SKIPPED`), yedeğe devam (bu hata TÜM eski sürümlerde vardı); G1) Google Drive OAuth Client ID uygulama içinde girilir (env zorunlu değil), Yedekleme ekranı → redirect URI kopyala → Console'a ekle → Client ID yapıştır → "Giriş yap ve Yükle" tarayıcı OAuth. Storage `kizilkan.googleDrive.clientId`, açılışta `hydrateGoogleDriveConfig`. Redirect scheme `kizilkan-gpt` (eski yanlış `'frontend'` kaldırıldı). Ayrıntı `AI-DEVIR-v18.7.18.md`.
 - **v18.7.19 (AKTİF)** (U4 kullanıcı adı görünmüyor düzeltmesi): **Kök neden log'dan KANITLANDI** — `STALKER_RESOLVE_DONE.streamCredsFound=true` (çıkarma çalışıyor) ama kart `magDerived` bir `useMemo`'ydu ve Ayarlar sekmesi mount kaldığından oynatmadan sonra yeniden okumuyordu → "Belirlenemedi". Düzeltme: (1) kart `state + useFocusEffect` ile ekrana her dönüşte yeniden okur [ASIL]; (2) türetilen kimlik storage'da (`kizilkan.streamCreds`) saklanır + açılışta `hydrateStreamDerivedCredentials` [kalıcılık]; (3) MAC-only yedek key. Değerler loglanmaz. Ayrıntı `AI-DEVIR-v18.7.19.md`.
 
-**CİHAZDA TEST BEKLEYEN (v18.7.23-dev):** (a) hkpremium hesabının kartını aç (oynatMADAN) → Kullanıcı Adı `ud3B3yRH` otomatik gelmeli; (b) kartta "✓ Görüntü var · N kanal" otomatik görünmeli; (c) filmler Film sekmesinde görünmeli (v18.7.22); (d) katalog hız (v18.7.20); (e) arka plan keep-alive (v18.7.21 D).
-**PLAN ONAYI BEKLEYEN:** Xtream+MAC çoklu ekleme seçim ekranında hesap başına "görüntü var/yok" + süzmede "sadece görüntü olanları seç" (MAG `liveCount` ücretsiz; Xtream `get_live_streams` probe'u ban/hız dengesi gerektirir).
+**CİHAZDA TEST BEKLEYEN (v18.7.24-dev — tek APK iki sürümü içerir):** (a) hkpremium kartını aç (oynatMADAN) → Kullanıcı Adı `ud3B3yRH` + "✓ Görüntü var · N kanal" OTOMATİK gelmeli (v18.7.23); (b) MAG çoklu tarama kartlarında "📺 Görüntü: VAR · N kanal / Yok" + "Görüntü olanlar" süzme + "Görüntü olanları seç" (v18.7.24); (c) Xtream combo "Görüntü Test Et" → rozet → "Görüntü Olanları Seç" (v18.7.24); (d) filmler Film sekmesinde (v18.7.22); (e) arka plan keep-alive (v18.7.21 D).
+**DEV APK (iki sürüm birlikte):** `frontend/android/app/build/outputs/apk/debug/app-debug.apk` (v18.7.24, ~460 MB). Kurulum `adb install -r <yol>`.
+
+---
+
+## 0.1 — v18.7.25 PLANI: KATALOG HIZI (MAG Film/Dizi Xtream-first) — **ONAY BEKLİYOR, KODLANMADI**
+
+**Kullanıcı şikayeti (2026-10-07, ekran görüntüsü):** hkpremium eklerken modal "Geçen süre: **17:35** · Aktif işlem" — Canlı 2.795 doğrulandı, Film **12.603** (başlıkta 16.243 → %78, bütçeye takıldı), Dizi 5.373. **IPTV Extreme Pro aynı hesabı 5-10 saniyede ekliyor.** Kullanıcı "kodlamadan bilgi ver" dedi → teşhis yapıldı, KOD YAZILMADI.
+
+**KANITLANMIŞ kök neden (koddan):**
+- Canlı HIZLI: `get_all_channels` = **tek** istek (`stalker.ts` ~1877). 2.795 anında.
+- Film/Dizi YAVAŞ: `stalkerEnrichment` → `stalkerOrderedList(cred,ses,"vod"/"series")` = Stalker `get_ordered_list`, **sayfa başı 14 öğe** (`stalker.ts` ~2550-2711, `expectedPageLimit(total,14)`). Bu hesap: Film ~1.160 sayfa + Dizi ~680 sayfa = **~1.840 HTTP isteği**. 20 paralel + tür başına 100 sn bütçe (PAGE_CONCURRENCY=20, PAGE_BUDGET_MS=100000) ile bile DAKİKALAR ve EKSİK (12.603/16.243).
+- **IPTV Extreme neden hızlı:** bu paneller **Xtream-tabanlı** (U4 kanıtı: `create_link` = `.../kullanıcı/şifre/id.ext` = Xtream yayın URL'i). O uygulama panelin Xtream API'sini kullanıyor: `get_vod_streams` + `get_series` = **2 tek-çağrı**, tüm katalog bir yanıtta. 2 istek vs ~1.840.
+
+**ÖNERİLEN ÇÖZÜM (v18.7.25):** MAG hesabı Xtream-tabanlıysa Film/Dizi'yi sayfalama yerine **Xtream tek-çağrı** ile çek → ~1.840 istek **2'ye** iner, 17 dk → saniyeler, hem TAM liste. Saf-Stalker paneller için `get_ordered_list` YEDEK kalır (probe: get_vod_streams boş/hatalıysa sayfalamaya düş).
+- **Altyapı HAZIR:** (1) Xtream kullanıcı adı/şifre MAG hesabından türetiliyor + saklanıyor (`kizilkan.streamCreds`, v18.7.19 + ekleme anında `stalkerPrimeStreamCredentials` v18.7.21 A); (2) `xtreamVod`/`xtreamSeries` tek-çağrı fonksiyonları var (`iptv.ts` 448/493), add-playlist'e import'lu (satır 34); (3) sunucu origin U4'ten.
+- **ASIL İŞ (dikkat — §5 mimari):** Xtream'le çekilen film/dizi **Xtream stream ID** taşır → oynatma `create_link` yerine **Xtream yayın URL'inden** gitmeli (creds elde var; U4 bunun çalıştığını gösterdi). Oynatma kimlik eşlemesi dikkatli bağlanmalı — 5 dk'lık değişiklik DEĞİL, gerçek plan ister. "Tek upstream/1 kullanıcı" (§5) BOZULMAZ, iyileşir (2 sıralı istek < 20 paralel sayfa).
+- **Açık soru (kullanıcıya soruldu, yanıt bekliyor):** enrichment arka planda mı (canlı 17 dk boyunca izlenebilir mi) yoksa modal blokluyor mu? `add-playlist.tsx` ~2755 `initialSyncState:"enriching"` arka plan niyeti ama modal görünüyor.
+
+**PLAN ONAYI BEKLEYEN (eski):** (kapsandı — v18.7.24'te yapıldı).
 
 **ONAYLI AMA KODLANMAMIŞ — SIRADAKİ BÜYÜK İŞ:** Arka planda çalışma (çoklu arama/ekleme/güncelleme app arkadayken). Plan `AI-DEVIR` + sohbet: **Xtream çoklu ve panel ZATEN native foreground service kullanıyor** (`BulkPlaylistImportService.kt`, `PanelScanService.kt`); **MAG çoklu tarama/ekleme ve güncelleme saf JS** → arka planda duruyor. Önerilen yaklaşım A: genel "canlı tut" ön plan servisi (`startForegroundKeepAlive`/`stop`), Android 14 için `foregroundServiceType=dataSync`+izin; JS işi başında başlat/bitince durdur. **Native iş → prebuild+assembleDebug+cihaz testi şart.** Kullanıcı planı gördü, onayı bekliyor.
 

@@ -187,7 +187,9 @@ Kullanıcı isteği: Xtream+MAC çoklu eklemede bulunan hesapları listeye almad
 - **MAG (`mag-bulk.tsx`):** kartta `📺 Görüntü: VAR · N kanal`/Belirsiz/Yok; süzme "Görüntü olanlar (N)" + seçim "Görüntü olanları seç" (`liveCount>0`).
 - **Xtream (`add-playlist.tsx`):** "Görüntü Test Et" butonu → 6 paralel `xtreamLiveStreams` probe'u (15 sn timeout, iptal edilebilir) → kartta var/yok rozeti + "Görüntü Olanları Seç". Telemetri `BULK_CONTENT_TEST_START/DONE`.
 - Doğrulama: tsc temiz · denetle TEMİZ · `check-v18724` PASS. **Yalnız TS, native YOK.** Ayrıntı `AI-DEVIR-v18.7.24.md`.
-- **Bekleyen:** GPT G07-G10; v18.7.23 cihaz doğrulaması.
+- **Bekleyen:** GPT G07-G10; v18.7.23+v18.7.24 cihaz doğrulaması.
+
+**⚠️ SIRADAKİ BÜYÜK İŞ — v18.7.25 KATALOG HIZI (ONAY BEKLİYOR, KODLANMADI):** Kullanıcı kanıtı (2026-10-07): hkpremium ekleme **17:35** sürüyor (Film %78'de bütçeye takıldı), IPTV Extreme Pro aynı hesabı **5-10 sn**. **Kanıtlı kök neden:** Canlı hızlı (`get_all_channels` tek istek), ama Film/Dizi `stalkerEnrichment`→`stalkerOrderedList` ile **sayfa başı 14 öğe** → bu hesapta **~1.840 istek**. IPTV Extreme panelin **Xtream API**'sini kullanıyor: `get_vod_streams`+`get_series` = **2 tek-çağrı** (U4 kanıtı: paneller Xtream-tabanlı). **Çözüm:** MAG Film/Dizi'yi Xtream tek-çağrı ile çek (altyapı hazır: creds `kizilkan.streamCreds`, `xtreamVod`/`xtreamSeries` import'lu), Stalker yedek. **Asıl iş:** oynatma Xtream-ID→Xtream-URL eşlemesi (§5 dikkat). Tam plan `GPT-OPUS-GUNCELLEME-DEVRI.md` §0.1.
 
 ## 9-eski-18723. v18.7.23 RC1 (dal `v18.7.23-rc1-card-autoprime-autotest`)
 
