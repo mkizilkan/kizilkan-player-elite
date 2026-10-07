@@ -45,6 +45,44 @@ sözleşmesi, §3 doğrulama, §4 sürüm/dal, §5 mimari, §7 tuzaklar, §8 log
 
 **PLAN ONAYI BEKLEYEN (eski):** (kapsandı — v18.7.24'te yapıldı).
 
+---
+
+## 0.2 — v18.7.24 CİHAZ KANITI (log `18.7.24`, 2026-10-07) + 4 YENİ TEŞHİS — **kör düzeltme yok, hepsi kanıtlı**
+
+Kullanıcı galaplaytv.shop combo taraması yaptı. Log `kizilkan-diagnostics-2026-10-07T16-08-36`. v18.7.24 CİHAZDA ÇALIŞTI (içerik testi, "Görüntü Olanları Seç", kartta "Görüntü var · N kanal" göründü). 4 sorun tespit edildi:
+
+### (A) "TXT'ye kaydet → 5-6 kaydetti" — ASLINDA 579 KAYDEDİLDİ (bug YOK, UX kafa karışıklığı)
+- Log: `BULK_CONTENT_TEST_DONE tested:582 withContent:579` → `BULK_TXT_EXPORT_VERIFIED records:579 contentChars:506436 storage:public_downloads verified:true`. **579 kayıt gerçekten yazıldı.**
+- Cihazdan DOĞRULANDI: `/sdcard/Download/KIZILKAN PLAYER ELITE/Hesap Arşivi/KIZILKAN-HESAP-ARSIVI-2026-10-07T10-13-15-587Z.txt` = **518 KB, 579 hesap**. Kullanıcı ESKİ 12 kayıtlık dosyaya (28.09) bakmış. `BULK_IMPORT_FINISHED ok:6` (ayrı: uygulamaya ekleme 6) ile karıştırmış.
+- `DOWNLOADS_ROOT_BLOCKED` başarılı kayıttan SONRA (kullanıcı "Başka klasöre kaydet"→İndirilenler kökü seçince; Android SAF sistem kısıtı, veri kaybı yok).
+
+### (B) Yavaşlık — kanıtlı süreler
+- **Görüntü analizi (v18.7.24, BENİM özelliğim): 582 hesap = 86,5 DK** (11:32→12:58). Kök: her hesap için `get_live_streams`'in TAMAMI indiriliyor (1247 kanallık JSON), 6 paralel, 15 sn timeout. "Var/yok" için >0 yeter. **Optimize edilmeli:** hafif probe (get_live_categories / sınırlı) + yüksek paralellik.
+- **Hesap analizi (tarama): ~32 dk** (26.176 adres brute-force). İyileştirme: ölü host erken ele, DNS varyasyon önbellek.
+
+### (C) ÜÇ örtüşen paralellik kontrolü (kullanıcı "fark ne?" diye sordu)
+1. **TARAMA HIZI** preset (Çok Güvenli…Turbo) = `scanConfigForSpeed()` temel profil (concurrency+timeout+accountConcurrency).
+2. **"Parça analiz sayısı" ("mod")** = `comboParallelText` → `requestedConcurrency` override (1-250).
+3. **"Özel paralellik → İstenen paralellik (1-250)"** = `requestedCustom` → AYNI `requestedConcurrency` (açıkken #2'yi EZER). **"Parti boyutu (5-15)"** = `batchSize` (farklı kavram: native öbek boyutu).
+- #2 ile #3 aynı değeri ayarlıyor → gereksiz tekrar. **Öneri:** tek "paralellik" alanı + ayrı "parti boyutu".
+
+### (D) ⚠️ EN CİDDİ: "Bulunan 7.340" iken listede 582 — ~6.758 SONUÇ MAHSUR/KAYIP
+- **Kanıtlı kök neden:** `PanelScanService.kt` — `persistentFound` (snapshot'ta `found`) = journal'daki benzersiz (hesap\|panel\|kod\|**host**) TOPLAM = **7.340** (`:216 if(added) persistentFound.inc`, `:490`). AMA snapshot'ın `matches` dizisi **yalnız SON 200 sonucu** serialize ediyor (`:799-801 start=matches.size-200`, `:1137 if(size>200) removeAt(0)`). JS'in TEK erişimi `getSnapshot()` (`index.ts:135`) — tam journal'a köprü YOK. JS kayan 200'lük pencereyi poll+merge ile **582**'ye ulaşmış; kalan ~6.758 journal'da kalıp seçim listesine HİÇ gelmemiş (journal'dan tam yükleme yalnız resume/recovery yolunda: `:725`, `:1029`).
+- **ÖNCEKİ YANLIŞIM:** "fazlalık yedek DNS'e gitti" dedim — YANLIŞ; TXT'de her hesapta tek host olması çürüttü. Doğrusu: 200-pencere sınırı yüzünden JS'e hiç ulaşmadılar.
+- **7.340 GERİ GETİRİLEMEZ (cihazdan doğrulandı):** (1) journal `payload_enc` = **AES-GCM, AndroidKeyStore** anahtarı (cihaza bağlı, dışa aktarılamaz → PC'de çözülemez, `ScanJournalStore.kt:58-70`); (2) journal ÇEKİLDİ → 07.10 taraması **silinmiş** (şimdi yalnız 2 eski "single" oturum, **0 scan_result satırı**). Sonraki tarama journal'ı temizlemiş. Kurtarılan tek şey JS'e ulaşan 582→579 (telefondaki TXT, kullanıcıya verildi).
+
+### DURUM (2026-10-07 akşam): İŞ BÖLÜNDÜ — Opus TS (v18.7.25) YAPILDI · GPT native (v18.7.26)
+**Neden bölündü:** Opus haftalık token %79 (→%21 kaldı, 09.10 12:00 yenilenir). Native derleme/test döngüleri pahalı → GPT'ye verildi.
+- **v18.7.25 (Opus, YAPILDI — TS):** B (görüntü testi 6→20 paralel + 10 sn + keep-alive) · C (paralellik tek alan) · A (son kaydedilen arşiv göstergesi) · E-MAG (MAC tarama emniyet sibobu → `Canlı Tarama Yedeği/<tarih>.txt`). tsc temiz · denetle TEMİZ · `check-v18725` PASS. Ayrıntı `AI-DEVIR-v18.7.25.md`.
+- **v18.7.26 (GPT-5.1, NATIVE — DEVİR VERİLDİ):** D (tam journal erişimi → 7.340 seçilebilir) + E-Xtream (native emniyet sibobu `persistScanResult`'ta). **Eksiksiz devir: `GPT-DEVIR-v18.7.26-NATIVE.md`** (dosya/satır referansları, build talimatları, gate, cihaz testi). GPT yaz+derle+test.
+
+### v18.7.25 PLANI (ESKİ — artık B/C/A/E-MAG Opus'ta yapıldı, D/E-Xtream GPT'de)
+1. **(D) Tam journal erişimi:** tarama BİTİNCE JS, native'den `getAllResults()` ile `ScanJournalStore.results(runId)` TAMAMINI çeksin (uygulama içinde decrypt edilir) → 7.340'ın hepsi seçilebilir/TXT olur. **Not:** off-device decrypt imkânsız + journal sonraki taramada silinir → tam listeyi yakalamanın TEK yolu tarama anında uygulama içinden.
+2. **(B) Görüntü testi hafifletme** (full katalog yerine kategori/sınırlı probe + paralellik).
+3. **(C) Paralellik UI sadeleştirme** (tek paralellik + parti boyutu).
+4. **(A) TXT UX:** "en son kaydedilen dosya: <ad> · N kayıt" net göster; eski dosyayla karışmasın.
+5. **(0.1) Katalog Xtream-first** (MAG Film/Dizi 17 dk → saniyeler).
+
 **ONAYLI AMA KODLANMAMIŞ — SIRADAKİ BÜYÜK İŞ:** Arka planda çalışma (çoklu arama/ekleme/güncelleme app arkadayken). Plan `AI-DEVIR` + sohbet: **Xtream çoklu ve panel ZATEN native foreground service kullanıyor** (`BulkPlaylistImportService.kt`, `PanelScanService.kt`); **MAG çoklu tarama/ekleme ve güncelleme saf JS** → arka planda duruyor. Önerilen yaklaşım A: genel "canlı tut" ön plan servisi (`startForegroundKeepAlive`/`stop`), Android 14 için `foregroundServiceType=dataSync`+izin; JS işi başında başlat/bitince durdur. **Native iş → prebuild+assembleDebug+cihaz testi şart.** Kullanıcı planı gördü, onayı bekliyor.
 
 **DİĞER BEKLEYEN:** release imza anahtarı eşitleme (`tools/imza-bul.ps1`); katalog/açılış hız (ölçüm var, iyileştirme kanıttan sonra, §5 ban riski); GPT G07-G10.

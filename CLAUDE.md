@@ -180,7 +180,18 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.24 RC1 — dal `v18.7.24-rc1-bulk-content-visibility`)
+## 9. Mevcut durum (v18.7.25 RC1 — dal `v18.7.25-rc1-contenttest-parallel-ui-macsafety`)
+
+**v18.7.25 (bu sürüm — combo tarama TS düzeltmeleri B+C+A+E-MAG; PC doğrulandı, CİHAZ BEKLİYOR):**
+Kaynak: galaplaytv combo log (2026-10-07). **Yalnız TS, native YOK.** Ayrıntı `AI-DEVIR-v18.7.25.md`.
+- **B (görüntü testi hızı):** `testBulkContent` paralellik **6→20**, timeout 15→10 sn, `startForegroundKeepAlive` sargısı (86,5 dk'nın çoğu arka plan throttle'ıydı) → dakikalara iner.
+- **C (paralellik UI):** "Paralel analiz sayısı" + "İstenen paralellik" TEK değer (`comboParallelText`); `bulkRequestedConcurrency` kaldırıldı; "Parti boyutu" ayrı.
+- **A (TXT UX):** kayıttan sonra "✓ Son kaydedilen: `<ad>` · N kayıt" net gösterilir (eski dosyayla karışmasın).
+- **E-MAG (emniyet sibobu):** MAC tarama bulunanları `Canlı Tarama Yedeği/<tarih>.txt`'ye düzenli yazılır (`allFoundRef`+`writeMagSafetyBackup`, 3 sn debounce + bitişte zorla) → app ölse de kayıp yok.
+- Doğrulama: tsc temiz · denetle TEMİZ · `check-v18725` PASS.
+- **Bekleyen — v18.7.26 (GPT-5.1, NATIVE):** D (tam journal → 7.340 seçilebilir, 200-pencere kaybı düzeltmesi) + E-Xtream (native emniyet sibobu). Devir: **`GPT-DEVIR-v18.7.26-NATIVE.md`** (eksiksiz, build talimatları dahil). GPT yaz+derle+test; Opus haftalık yenilenince (09.10 12:00) gerekirse düzeltir.
+
+## 9-eski-18724. v18.7.24 RC1 (dal `v18.7.24-rc1-bulk-content-visibility`)
 
 **v18.7.24 (bu sürüm — çoklu ekleme seçim ekranı görüntü var/yok + süzme; PC doğrulandı, CİHAZ BEKLİYOR):**
 Kullanıcı isteği: Xtream+MAC çoklu eklemede bulunan hesapları listeye almadan önce seçim ekranındaki her kartta "görüntü var/yok" + süzmede "sadece görüntü olanları seç". **Dürüst sinyal farkı (§2.2):** MAG'de `liveCount` doğrulama anında zaten hesaplanır (gerçek içerik örneği) → **ücretsiz/otomatik**; Xtream tarama yalnız login çeker → gerçek görüntü ancak `get_live_streams` probe'uyla bilinir → **istek üzerine** (kullanıcı "B olsun").

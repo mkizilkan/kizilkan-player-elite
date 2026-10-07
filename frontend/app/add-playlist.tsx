@@ -323,13 +323,15 @@ export default function AddPlaylist() {
     setBulkContentTestProgress({ done: 0, total: list.length });
     setBulkContentTest(prev => { const next = { ...prev }; for (const c of list) next[c.key] = { state: "testing", count: 0 }; return next; });
     void recordDiagnostic("scan", "BULK_CONTENT_TEST_START", { accounts: list.length });
-    let done = 0; let yes = 0; const CONC = 6; let idx = 0;
+    // v18.7.25 (B): hız — arka planda throttle olmasın diye ön plan servisi; paralellik 6→20, timeout 15→10 sn.
+    try { KizilkanNativeCore.startForegroundKeepAlive("Görüntü testi", `${list.length} hesap kontrol ediliyor`); } catch {}
+    let done = 0; let yes = 0; const CONC = 20; let idx = 0;
     const worker = async () => {
       while (idx < list.length && !ctrl.signal.aborted) {
         const c = list[idx++];
         let result: { state: "yes" | "no" | "err"; count: number } = { state: "no", count: 0 };
         try {
-          const per = new AbortController(); const timer = setTimeout(() => per.abort(), 15000);
+          const per = new AbortController(); const timer = setTimeout(() => per.abort(), 10000);
           const onAbort = () => per.abort(); ctrl.signal.addEventListener("abort", onAbort);
           try {
             const streams = await xtreamLiveStreams({ server: c.server, username: c.username, password: c.password }, per.signal);
@@ -344,6 +346,7 @@ export default function AddPlaylist() {
     };
     try { await Promise.all(Array.from({ length: Math.min(CONC, list.length) }, worker)); } finally {
       setBulkContentTesting(false); bulkContentAbortRef.current = null;
+      try { KizilkanNativeCore.stopForegroundKeepAlive(); } catch {}
       void recordDiagnostic("scan", "BULK_CONTENT_TEST_DONE", { tested: done, withContent: yes, aborted: ctrl.signal.aborted });
     }
   }, [bulkCandidates, bulkContentTesting, bulkContentTest]);
@@ -372,7 +375,7 @@ export default function AddPlaylist() {
   const [comboParallelText, setComboParallelText] = useState(""); // v18.7.21 (B): Xtream combo özel paralellik (boş→mod).
   // v17.1.0 ultra-scale: bulk tarama için kullanıcı kontrollü değerler.
   const [bulkCustomConcurrencyEnabled, setBulkCustomConcurrencyEnabled] = useState(false);
-  const [bulkRequestedConcurrency, setBulkRequestedConcurrency] = useState("32");
+  // v18.7.25 (C): kaldırıldı — paralellik tek alanda (comboParallelText). "İstenen paralellik" de onu kullanır.
   const [bulkBatchSize, setBulkBatchSize] = useState("15");
   const [error, setError] = useState<string | null>(null);
   const nativeScanTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
@@ -418,6 +421,8 @@ export default function AddPlaylist() {
   const [bulkArchiveSafe, setBulkArchiveSafe] = useState(false);
   const [bulkArchiveFileName, setBulkArchiveFileName] = useState("");
   const [bulkArchiveSaving, setBulkArchiveSaving] = useState(false);
+  // v18.7.25 (A): son kaydedilen arşiv dosyası ekranda net görünsün (kullanıcı eski dosyayla karıştırmasın).
+  const [lastSavedArchive, setLastSavedArchive] = useState<{ name: string; count: number } | null>(null);
   const [bulkManualRows, setBulkManualRows] = useState<Array<{ id: string; name: string; username: string; password: string; locator: string }>>([
     { id: "bulk-row-1", name: "", username: "", password: "", locator: "" },
   ]);
@@ -2032,7 +2037,8 @@ export default function AddPlaylist() {
     const directoryCache: { value?: PanelDirectoryItem[]; promise?: Promise<PanelDirectoryItem[]> } = {};
     const failures: string[] = [];
     const baseCfg = scanConfigForSpeed();
-    const requestedCustom = Math.max(1, Math.min(250, Number.parseInt(bulkRequestedConcurrency, 10) || 32));
+    // v18.7.25 (C): tek paralellik değeri — "Paralel analiz sayısı" (comboParallelText) ile "İstenen paralellik" aynı alan.
+    const requestedCustom = Math.max(1, Math.min(250, Number.parseInt(comboParallelText, 10) || 32));
     const configuredBatchSize = Math.max(5, Math.min(15, Number.parseInt(bulkBatchSize, 10) || 15));
     const cfg = bulkCustomConcurrencyEnabled
       ? { ...baseCfg, label: "Özel", requestedConcurrency: requestedCustom, batchSize: configuredBatchSize }
@@ -2162,6 +2168,7 @@ export default function AddPlaylist() {
       if (Platform.OS === "android" && !pickFolder && KizilkanNativeCore.available) {
         const pub = await KizilkanNativeCore.writePublicTextFile("Hesap Arşivi", fileName, "text/plain", text);
         if (pub.ok) {
+          setLastSavedArchive({ name: fileName, count: records.length });
           void recordDiagnostic("scan", "BULK_TXT_EXPORT_VERIFIED", {
             safe, records: records.length, contentChars: text.length, verified: true, storage: "public_downloads",
           }, { stage: "bulk-export", outcome: "success" });
@@ -2239,6 +2246,7 @@ ${pub.path}`, [
           if (readBack !== text) {
             throw new Error(`SAF_WRITE_VERIFY_FAILED expectedChars=${text.length} actualChars=${readBack.length}`);
           }
+          setLastSavedArchive({ name: fileName, count: records.length });
           void recordDiagnostic("scan", "BULK_TXT_EXPORT_VERIFIED", {
             safe, records: records.length, contentChars: text.length, verified: true, storage: "android_saf",
           }, { stage: "bulk-export", outcome: "success" });
@@ -3346,8 +3354,8 @@ ${pub.path}`, [
               {/* v18.7.21 (B): Xtream combo özel paralellik — ne yazarsan o çalışır (1–250); boş→mod varsayılanı. */}
               <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm, marginTop: SPACING.sm }}>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold, fontSize: FONT.size.sm }}>Paralel analiz sayısı</Text>
-                  <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs }}>Boş → mod varsayılanı. 1–250 arası; girilen = çalışan.</Text>
+                  <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold, fontSize: FONT.size.sm }}>Paralel analiz sayısı (tek ayar)</Text>
+                  <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs }}>Boş → mod varsayılanı. 1–250; girilen = çalışan. “Özel paralellik → İstenen paralellik” ile AYNI değer. “Parti boyutu” ayrı (motor öbek boyutu).</Text>
                 </View>
                 <TextInput testID="combo-parallel-input" value={comboParallelText} onChangeText={t => setComboParallelText(t.replace(/[^0-9]/g, "").slice(0, 3))}
                   placeholder="mod" placeholderTextColor={colors.onSurfaceTertiary} keyboardType="number-pad"
@@ -3370,11 +3378,11 @@ ${pub.path}`, [
               {bulkCustomConcurrencyEnabled && (
                 <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.sm }}>
                   <View style={{ flex: 1 }}>
-                    <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, marginBottom: 5 }}>İstenen paralellik (1–250)</Text>
+                    <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, marginBottom: 5 }}>İstenen paralellik (1–250) · yukarıdaki “Paralel analiz sayısı” ile AYNI alan</Text>
                     <TextInput
                       testID="bulk-requested-concurrency-input"
-                      value={bulkRequestedConcurrency}
-                      onChangeText={v => setBulkRequestedConcurrency(v.replace(/[^0-9]/g, "").slice(0, 3))}
+                      value={comboParallelText}
+                      onChangeText={v => setComboParallelText(v.replace(/[^0-9]/g, "").slice(0, 3))}
                       keyboardType="number-pad"
                       placeholder="32"
                       placeholderTextColor={colors.onSurfaceTertiary}
@@ -3747,6 +3755,13 @@ ${pub.path}`, [
                   <Text style={{color:colors.brandPrimary,fontWeight:FONT.weight.bold}}>TXT'ye Kaydet</Text>
                 </FocusButton>
               </View>
+
+              {/* v18.7.25 (A): son kaydedilen arşiv net göster — kullanıcı eski dosyayla karıştırmasın. */}
+              {lastSavedArchive && (
+                <Text style={{ color: colors.success || "#2ecc71", fontSize: FONT.size.xs, fontWeight: FONT.weight.bold, marginTop: SPACING.xs }}>
+                  ✓ Son kaydedilen: {lastSavedArchive.name} · {lastSavedArchive.count} kayıt{"\n"}İndirilenler/KIZILKAN PLAYER ELITE/Hesap Arşivi/
+                </Text>
+              )}
 
               {/* v18.7.24 (B): istek üzerine görüntü var/yok testi — her bulunan hesaba get_live_streams probe'u. */}
               {bulkCandidates.length > 0 && (

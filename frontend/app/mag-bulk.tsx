@@ -137,6 +137,11 @@ export default function MagBulkScreen() {
   const runRef = useRef(0);
   const resultBufferRef = useRef<MagScanResult[]>([]);
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // v18.7.25 (E-MAG): emniyet sibobu — bulunan her hesap biriktirilir ve düzenli olarak görünür klasöre
+  // yedek TXT'ye yazılır; app ölse/çökse bile sonuçlar kaybolmaz (MAC taramasında kalıcı depo yoktu).
+  const allFoundRef = useRef<MagScanResult[]>([]);
+  const backupNameRef = useRef("");
+  const lastBackupAtRef = useRef(0);
   // Invalidate before passive effects: returning A -> B -> A must not revive
   // callbacks from the previous visit to A, even if their await completes now.
   if (profileRef.current !== activeProfile.id) {
@@ -144,6 +149,19 @@ export default function MagBulkScreen() {
     profileEpochRef.current++; actionRunRef.current++; runRef.current++;
   }
   const profileEpoch = profileEpochRef.current;
+  // v18.7.25 (E-MAG): biriken tüm bulunanları görünür klasöre yedek TXT olarak yaz (tam liste, üzerine yazar).
+  const writeMagSafetyBackup = useCallback(async () => {
+    const list = allFoundRef.current;
+    if (!list.length || !backupNameRef.current) return;
+    try {
+      const lines = list.map(r => {
+        const exp = formatAccountExpiry(r.accountInfo || { tariff_expired_date: r.expiry }) || "";
+        return `${r.portal}|${r.mac}|${exp}|${r.category}|${r.liveCount || 0}`;
+      });
+      const text = `KIZILKAN CANLI TARAMA YEDEĞİ (MAC/Çoklu) — ${new Date().toISOString()}\nBulunan: ${list.length}\n${"=".repeat(52)}\n${lines.join("\n")}\n`;
+      await KizilkanNativeCore.writePublicTextFile("Canlı Tarama Yedeği", backupNameRef.current, "text/plain", text);
+    } catch {}
+  }, []);
   const flushResults = useCallback(() => {
     if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
     flushTimerRef.current = null;
@@ -151,7 +169,11 @@ export default function MagBulkScreen() {
     if (!mountedRef.current || !batch.length) return;
     setResults(prev => [...prev, ...batch]);
     setSelected(prev => { const next = new Set(prev); for (const r of batch) if (r.category === "valid") next.add(magIdentity(r.portal, r.mac)); return next; });
-  }, []);
+    // v18.7.25 (E-MAG): biriktir + debounce'lu yedek yaz (her 3 sn'de bir, app ölse bile diskte taze kalsın).
+    allFoundRef.current.push(...batch);
+    const now = Date.now();
+    if (backupNameRef.current && now - lastBackupAtRef.current > 3000) { lastBackupAtRef.current = now; void writeMagSafetyBackup(); }
+  }, [writeMagSafetyBackup]);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -215,6 +237,9 @@ export default function MagBulkScreen() {
     const mode = SCAN_MODES[scanMode];
     const parallel = parallelText.trim() ? Math.max(1, Math.min(MAG_MAX_PARALLEL, Number(parallelText) || mode.concurrency)) : mode.concurrency;
     resultBufferRef.current = []; setSelected(new Set()); setResultFilter("all");
+    // v18.7.25 (E-MAG): yeni tarama için yedek birikimini ve dosya adını sıfırla.
+    allFoundRef.current = []; lastBackupAtRef.current = 0;
+    backupNameRef.current = `KIZILKAN-MAC-TARAMA-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.txt`;
     setPortalReports([]); setPortalChoices({}); portalChoicesRef.current = {}; setScanPhase("discovery");
     setPaused(false); setScanning(true); setResults([]); setStageMsg("Portal kaynağı hazırlanıyor…"); setProgress({ done: 0, total: 0, current: "" });
     // v18.7.6 (A2): tarama sürerken ekran/CPU uykuya geçmesin (cihaz uykusu taramayı yarıda
@@ -268,7 +293,7 @@ export default function MagBulkScreen() {
     } finally {
       if (run === runRef.current) {
         portalPickerRef.current = null;
-        flushResults(); busyRef.current = false; scanAbortRef.current = null;
+        flushResults(); void writeMagSafetyBackup(); busyRef.current = false; scanAbortRef.current = null;
         try { KizilkanNativeCore.setKeepScreenOn(false); } catch {}
       try { KizilkanNativeCore.stopForegroundKeepAlive(); } catch {}
         if (mountedRef.current) { setScanning(false); setPaused(false); setStageMsg(controller.signal.aborted ? "Analiz iptal edildi. Tamamlanan sonuçlar korunuyor." : ""); }

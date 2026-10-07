@@ -15,5 +15,8 @@ frontend/ios/
 *.log
 .DS_Store
 
+# Kullanıcı adı/şifre içeren kişisel hesap arşivleri
+KIZILKAN-HESAP-ARSIVI-*.txt
+
 # Metro önbelleği
 frontend/.metro-cache/
