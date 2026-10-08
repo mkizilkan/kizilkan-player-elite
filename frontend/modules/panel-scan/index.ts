@@ -1,5 +1,6 @@
 import { requireNativeModule } from "expo-modules-core";
-import { storage } from "@/src/utils/storage";
+// v18.7.29 (Opus): `storage` üst-düzey import'u denetim VM'ini kırıyordu (@/ alias çözülemez, §7 tuzağı).
+// Tek kullanım async fonksiyon içinde → tembel (await import) yüklenir.
 
 export type NativeScanStartResult = {
   accepted: boolean;
@@ -50,6 +51,7 @@ function normalizeStartResult(value: any): NativeScanStartResult | null {
 }
 
 async function ownedScan(start: () => Promise<any>): Promise<NativeScanStartResult | null> {
+  const { storage } = await import("@/src/utils/storage");
   const profileId = await storage.getItem<string>('kizilkan.activeProfileId', 'default') || 'default';
   const result = normalizeStartResult(await start());
   if (result?.accepted && result.runId && native?.bindResultArchiveOwner) await native.bindResultArchiveOwner(result.runId, profileId);

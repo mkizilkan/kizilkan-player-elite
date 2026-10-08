@@ -36,7 +36,9 @@ async function compactFixture(){
     startUnifiedScan: async (json) => { payload = JSON.parse(json); return {accepted:true,state:'STARTING',runId:'r',activeRunId:'r'}; },
     getDiagnosticEvents:()=> '[]', getSnapshot:()=> '{}', getLastCrash:()=> '{}'
   };
-  const req = (id) => id === 'expo-modules-core' ? { requireNativeModule:()=>native } : require(id);
+  const req = (id) => id === 'expo-modules-core' ? { requireNativeModule:()=>native }
+    : id === '@/src/utils/storage' ? { storage: { getItem: async (_k, fb) => fb, setItem: async () => {}, removeItem: async () => {} } }
+    : require(id);
   const box={module:{exports:{}},exports:{},require:req,console,JSON,Map,URL,URLSearchParams}; box.exports=box.module.exports;
   vm.runInNewContext(js,box,{filename:'panel-scan/index.ts'});
   const m=box.module.exports;

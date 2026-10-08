@@ -2724,8 +2724,11 @@ async function stalkerOrderedList(
     // v18.7.16 (D): toplam süre + sayfa sayısı + sayfa başına ortalama ms (hız analizi; iyileştirme bu ölçümden sonra).
     elapsedMs:Date.now()-paginationStartMs,pagesFetched,concurrency:PAGE_CONCURRENCY,avgPageMs:pagesFetched?Math.round((Date.now()-paginationStartMs)/pagesFetched):0});
   if (stopReason === 'CANCELLED' || signal?.aborted) throw scopeCancelledError();
-  if (['TIME_BUDGET', 'PAGE_GOVERNOR', 'PAGE_ERROR', 'RATE_LIMIT', 'NO_NEW_IDS'].includes(stopReason)
-      || (Number.isFinite(total) && loadedCount < total)) {
+  // v18.7.29 düzeltmesi (Opus): YALNIZ gerçek kaynak-kesintisi "eksik katalog" sayılır → eski tam katalog korunur.
+  // DUPLICATE_PAGE / EMPTY_PAGE / NO_NEW_IDS / TOTAL_OR_END doğal bitiştir (tüm benzersiz içerik alındı); portal'ın
+  // `total` değeri çoğu zaman şişirilmiş olduğundan `loadedCount < total` güvenilir "eksik" sinyali DEĞİL
+  // (aksi hâlde DUPLICATE_PAGE'de VOD sıfırlanıp filmler kaybolurdu — regresyon). PAGE_ERROR tolere edilir (satır ~2699).
+  if (['TIME_BUDGET', 'PAGE_GOVERNOR', 'RATE_LIMIT'].includes(stopReason)) {
     throw Object.assign(new Error(`${type}: katalog kısmi (${loadedCount}/${Number.isFinite(total) ? total : '?'}), neden: ${stopReason}. Eski tam katalog korunuyor.`),
       { kind: 'CATALOG_INCOMPLETE', loaded: loadedCount, total: Number.isFinite(total) ? total : undefined, stopReason });
   }
