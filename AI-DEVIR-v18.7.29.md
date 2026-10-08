@@ -1,5 +1,43 @@
 # Devam eden çalışma — v18.7.29 RC1
 
+---
+
+## ★ OPUS DEVRALMA + DÜZELTMELERİ (2026-10-08 akşam) — GPT token bitince
+
+GPT token'ı bitince Opus (Claude) devraldı, **kontrol etti + 4 kırık kapıyı düzeltti + derledi + cihaza kurdu**. Yapılanlar:
+
+### 1) 🔴 KATALOG REGRESYONU — FİLMLER KAYBOLUYORDU (en kritik)
+- **Kök neden (kanıt: `check-v15225`/`v15227` fixture `vod: ERROR`):** GPT'nin `stalkerOrderedList` (`stalker.ts` ~2727) `CATALOG_INCOMPLETE` koruması `|| (loadedCount < total)` koşuluyla, portal'ın **şişirilmiş `total`** (ör. 999) değeri yüzünden **DUPLICATE_PAGE** (normal bitiş = tüm benzersiz içerik alındı) durumunda bile "eksik" sayıp fırlatıyor → **VOD sıfırlanıyor → filmler kayboluyor**.
+- **Düzeltme (Opus):** yalnız **gerçek kaynak-kesintisi** `['TIME_BUDGET','PAGE_GOVERNOR','RATE_LIMIT']` eksik sayılır; doğal bitiş (DUPLICATE_PAGE/EMPTY_PAGE/NO_NEW_IDS/TOTAL_OR_END) **çekilen katalogu döndürür**. `PAGE_ERROR` ve `NO_NEW_IDS` throw listesinden çıkarıldı, `|| loadedCount<total` kaldırıldı. GPT'nin "gerçek kesintide eski katalogu koru" niyeti korundu.
+- Doğrulama: `check-v15225` + `check-v15227` **TEMİZ**.
+
+### 2) check-v15217 (scan transport) — storage üst-düzey import'u VM'i kırıyordu
+- GPT `modules/panel-scan/index.ts:2`'ye `import { storage } from "@/src/utils/storage"` eklemiş → denetim VM `@/` alias'ını çözemiyor (§7 tuzağı).
+- **Düzeltme:** tek kullanım async `ownedScan` içinde → **tembel `await import`**; ayrıca gate'in `req`'ine storage mock'u eklendi. `check-v15217` **TEMİZ**.
+
+### 3) check-v18725 — timeout gate uyumu
+- GPT içerik testi timeout'unu 10→30 sn (hafif katalog probe dış bütçesi) yapmış ama kendi gate'ini güncellememiş. Gate 30000'e senkronlandı.
+
+### 4) Sürüm + dağıtım
+- 5 sürüm alanı **18.7.28 → 18.7.29** (dala uygun).
+- **tsc temiz · `node tools/denetle.js` TÜM TEMİZ.**
+- Commit `ef46e3d3` + push (`codex/v18.7.29-rc1-recovery-catalog-player`).
+- **Actions imzalı release** tetiklendi (run 37828331883).
+- **Native tam `assembleDebug` BUILD SUCCESSFUL** (17m33s — GPT yalnız panel-scan compile yapmıştı) → DEV APK cihaza (`c3a4097e`) **kuruldu (Success)**.
+
+### 5) KATALOG HIZI durumu (kanıtla incelendi — "tam yapıldı mı?")
+GPT ÇEKİRDEĞİ YAPMIŞ: `verifiedXtreamEnrichment` (`stalker.ts:3060`) türetilen Xtream creds ile `xtreamLiveSample` auth → `xtreamVod`+`xtreamSeries` **tek-çağrı** (17 dk→sn); başarısızsa Stalker sayfalama yedeği (`stalker.ts:3108`); oynatma `xtream-verified:` prefix ile çözülüyor (`stalker.ts:3412`, `detail.tsx:119-143`). **EKSİK:** (a) cihaz testi YOK; (b) 🔴 **ID devamlılığı çözülmedi** — mevcut MAG hesabı Stalker-ID→Xtream-ID geçince favori/izlendi/progress kaybolabilir (GPT item 4).
+
+### Cihazda test edilecek (öncelik)
+1. 🔴 Filmli MAG hesabı yenile → filmler **durmalı** (regresyon düzeltmesi).
+2. Katalog hızı: MAG film/dizi hızlı gelmeli (`STALKER_XTREAM_API_VERIFIED` log'u) + oynama çalışmalı.
+3. Mevcut hesapta favori/izlendi kaybı var mı (ID devamlılığı riski).
+4. v18.7.25 B/C/A/E-MAG + GPT recovery/7.340/safety.
+
+**Opus'un DOKUNMADIĞI:** GPT'nin aşağıdaki açık maddeleri (ID eşlemesi, TXT yarış, test kuyruğu bağlama) — kanıtla, cihaz testinden sonra.
+
+---
+
 08.10.2026. Kullanıcı 14 maddelik planın tamamını tek buildde uygulamayı, kontrollerden sonra commit/push yapmayı onayladı. Dal: `codex/v18.7.29-rc1-recovery-catalog-player`. İş tamamlanmadı; commit/push/APK henüz yok. Sürüm alanları henüz 18.7.28; yayın hazırlığında beşi birlikte 18.7.29 yapılacak.
 
 Şimdiye kadar yapılan kaynak değişiklikleri:

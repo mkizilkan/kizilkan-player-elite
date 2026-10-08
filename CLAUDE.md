@@ -180,7 +180,16 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.28 RC1 — dal `codex/v18.7.28-rc1-proxy-sources`)
+## 9. Mevcut durum (v18.7.29 RC1 — dal `codex/v18.7.29-rc1-recovery-catalog-player`)
+
+**v18.7.29 (08.10.2026 — GPT büyük recovery/katalog/player + Opus devralma/düzeltme; CİHAZA KURULDU, test bekliyor):**
+GPT (token bitene kadar) 14 maddelik recovery/katalog/player işini yaptı (v18.7.26→29): native emniyet sibobu `ScanSafetyBackup.kt`, tam journal erişimi `getResultsPage` (**7.340 kaybı düzeltmesi**), `hostRequestPolicy.ts` (Retry-After), gerçek ilk-kare test kuyruğu, **MAG katalog Xtream tek-çağrı hızı** (`verifiedXtreamEnrichment` — 17 dk→sn, auth+Stalker yedek+`xtream-verified:` oynatma). Token bitince Opus devraldı. Ayrıntı `AI-DEVIR-v18.7.29.md` (★ OPUS bölümü).
+- **Opus düzeltmeleri:** 🔴 **katalog regresyonu (filmler kaybolması)** — `CATALOG_INCOMPLETE` DUPLICATE_PAGE'de VOD sıfırlıyordu; yalnız gerçek kesinti (TIME_BUDGET/PAGE_GOVERNOR/RATE_LIMIT) eksik sayılacak (`stalker.ts` ~2727); `check-v15217` storage import (tembel+mock); `check-v18725` timeout; sürüm 18.7.28→**18.7.29**.
+- Doğrulama: tsc temiz · **denetle TÜM TEMİZ** · native **assembleDebug BUILD SUCCESSFUL** · DEV APK cihaza kuruldu · Actions imzalı release (run 37828331883) · commit `ef46e3d3`.
+- **🔴 AÇIK/RİSKLİ (kanıt gerektirir, körce yapma):** (1) **Katalog ID devamlılığı** — mevcut MAG hesabı Stalker-ID→Xtream-ID geçince favori/izlendi/progress kaybolabilir (GPT item 4); (2) `xtream-verified:` oynatma cihazda doğrulanmadı; (3) TXT yazıcı yarış; (4) Xtream arşiv profil sahipliği; (5) MAG oynatma test kuyruğu bağlama; (6) MAG JSON-lines geri içe-alma; (7) `add-playlist.tsx:452` harf-duyarlı hesap anahtarı (GPT bildirdi).
+- **İLK CİHAZ TESTİ:** filmli MAG hesabı yenile → filmler DURMALI.
+
+## 9-eski-18728. v18.7.28 RC1 (dal `codex/v18.7.28-rc1-proxy-sources` — AYRI iş)
 
 **v18.7.28 (08.10.2026 — kullanıcı onayıyla proxy kaynakları):** ALPHA TEAM/WOLFS kaynakları canlı HTTPS ve gerçek uygulama parser'ıyla kontrol edildi. Katalog 11→19 kaynak, 30→47 URL; 8 yeni kaynak ve TheSpeedX HTTP eklendi. 5 eski kaynak `fresh:false` ve görünür “Eski liste” etiketiyle seçilebilir. 404/502 dönen URL'ler eklenmedi; mevcut URL'ler ve kullanıcı seçimleri korundu. Beş sürüm alanı birlikte güncellendi, bağımlılık/native değişikliği yok. `yarn tsc --noEmit`, tam `node tools/denetle.js`, 17 URL'nin gerçek parser kontrolü ve `git diff --check` PASS. **APK/cihaz doğrulaması ve commit/push henüz yapılmadı.** Ayrıntı `AI-DEVIR-v18.7.28.md`, `GPT-ALPHA-TEAM-WOLFS-EK-INCELEME-2026-10-08.md`.
 
