@@ -4,7 +4,7 @@ Tarih: **8 Ekim 2026**. Dal: `v18.7.26-rc1-data-dns-player-corrective`. Temiz ta
 
 Kullanıcı 12 maddelik planı, MAC ve Xtream kapsamını, kodlamayı, ayrı dala commit/push, yerel DEV APK ve manuel GitHub derlemesini onayladı. Telefon yoksa uzaktan indirilebilir APK istedi. Daha önce yapılmış Opus özellikleri koddan doğrulanıp korundu. Bu dosya 7 Ekim ara notunun güncel devamıdır.
 
-**Şimdiki durum:** Son kaynakla yerel `assembleDebug` başarılı; ilk clean build 14 dakika 32 saniye, son paketleme 3 dakika 58 saniye. **Tam `node tools/denetle.js` bütün kontroller geçti**, iki gerçek TypeScript proje kontrolü dahil. Son ADB kontrolünde telefon bağlı değil; .26 telefona kurulmuş değildir. Commit/push/Actions teslim kayıtları aşağıya kesinleşince eklenecek. Gerçek sağlayıcı, ilk kare hız kıyaslaması ve Drive hesabı için cihaz testi yapılmış sayılmaz.
+**Şimdiki durum:** Son kaynakla yerel `assembleDebug` başarılı; ilk clean build 14 dakika 32 saniye, son paketleme 3 dakika 58 saniye. **Tam `node tools/denetle.js` bütün kontroller ve `yarn tsc --noEmit` geçti.** Kaynak commit/push tamamlandı; manuel Actions **147** doğru kaynak commit'inde başladı. Son ADB kontrolünde telefon bağlı değil; .26 telefona kurulmuş değildir. Gerçek sağlayıcı, ilk kare hız kıyaslaması ve Drive hesabı için cihaz testi yapılmış sayılmaz.
 
 ## Plan, sebep, işlem, sonuç
 
@@ -124,4 +124,9 @@ DEV imza sertifikası SHA-256: `FAC61745DC0903786FB9EDE62A962B399F7348F0BB6F899B
 
 Son tam gate **geçti**: `.codex-review-delivery-v18726.log` exit 0. APK MPV/ABI ve signature logları da başarılı. `git diff --check` temiz. Kişisel arşiv ignored; sahnelenen 61 kaynak/test/MD dosyası arasında hesap TXT'si, APK, socket ve log yok.
 
-Commit/push, manuel run ve indirme adresi burada tamamlanacak. Henüz push/kurulum başarı iddiası yoktur.
+- Kaynak commit: **`eff555cde4175784778ca21d4e6f8d43f468af72`**, 61 dosya, 1.791 ekleme/216 silme. Dal **`v18.7.26-rc1-data-dns-player-corrective`**, origin'e push başarılı. Ana/.25 dalı değiştirilmedi.
+- Son ayrı `yarn tsc --noEmit`: **exit 0, 20.68 saniye**; `.codex-tsc-delivery-v18726.log`. Önceki failed loglar ara teşhis içindir; son teslim sonucu değildir.
+- Manuel `workflow_dispatch`: **build147**, [Actions run37751994761](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/37751994761), new_architecture=true/build_type=debug/make_release=true. Run headSha kaynak `eff555cd` ile birebir doğrulandı. Son okumada **in_progress / bağımlılık kurulumu**, uzak build henüz geçti sayılamaz. İlk API bağlantı hatasından sonra run listesi boş olduğu doğrulanıp tek başarılı dispatch yapıldı; yinelenen run yok.
+- Yerelde doğrulanmış APK için ön sürüm: [dev-v18.7.26](https://github.com/mkizilkan/kizilkan-player-elite/releases/tag/dev-v18.7.26). Yükleme sonucu ayrıca doğrulanacak; özel depo GitHub oturumu ister. Bu asset yerel APK'dır, CI build147 farklı ortamda ayrıca derlenir.
+- ADB devices boş: bağlı telefon yok; kurulum denenmedi, mevcut normal/DEV uygulama kaldırılmadı. Son cihaz/provider/Drive matrisi kullanıcı testinde doğrulanmalıdır.
+- Bu belgeye son teslim durumunu ekleyen ek commit yalnız dokümanı değiştirir; kaynak APK `eff555cd` uygulama ağacındandır. Doküman için uygulama tekrar derlenmez.
