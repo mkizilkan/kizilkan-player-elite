@@ -1,6 +1,7 @@
 import { storage } from './storage';
 import { bigStore } from './storage/bigStore';
 import { KizilkanNativeCore } from '@/modules/kizilkan-native-core';
+import { endpointProjection } from './playlistEndpoints';
 import type { SelectedRestorePlan } from './backupSelection';
 
 const JOURNAL_KEY = 'kizilkan.backup.restoreJournal.v1';
@@ -32,6 +33,10 @@ async function writeKV(values: KV) {
   for (const [key, value] of Object.entries(values)) {
     const ok = value === null ? await storage.removeItem(key) : await storage.setItem(key, value);
     if (!ok) throw new Error('Geri yükleme bilgisi cihaza yazılamadı. Depolama alanını kontrol edin.');
+    if (KizilkanNativeCore.available && key.startsWith('kizilkan.playlists.meta.')) {
+      const profileId = key.slice('kizilkan.playlists.meta.'.length);
+      await KizilkanNativeCore.syncProfileEndpoints(profileId, endpointProjection(profileId, value === null ? [] : JSON.parse(String(value))));
+    }
   }
 }
 async function save(journal: Journal) {

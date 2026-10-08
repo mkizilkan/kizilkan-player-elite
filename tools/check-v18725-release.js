@@ -25,7 +25,7 @@ need(JSON.parse(rd('frontend/package.json')).version === ver, 'package.json sür
 // B — görüntü testi hızı
 need(/const CONC = 20/.test(addPl), 'B: içerik testi paralelliği 20 değil');
 need(/per\.abort\(\), 10000\)/.test(addPl), 'B: içerik testi timeout 10 sn değil');
-need(/startForegroundKeepAlive\("Görüntü testi"/.test(addPl) && /stopForegroundKeepAlive\(\); \} catch \{\}\s*\n\s*void recordDiagnostic\("scan", "BULK_CONTENT_TEST_DONE"/.test(addPl), 'B: içerik testi keep-alive sargısı yok');
+need(/startForegroundKeepAlive\("Katalog testi"/.test(addPl) && /stopForegroundKeepAlive\(keepAliveOwner\); \} catch \{\}\s*\n\s*void recordDiagnostic\("scan", "BULK_CONTENT_TEST_DONE"/.test(addPl), 'B: içerik testi sahipli keep-alive sargısı yok');
 
 // C — paralellik birleştirme
 need(/Number\.parseInt\(comboParallelText, 10\) \|\| 32/.test(addPl), 'C: requestedCustom comboParallelText kullanmıyor');
@@ -40,9 +40,10 @@ need(/Son kaydedilen:/.test(addPl), 'A: "Son kaydedilen" göstergesi yok');
 // E-MAG — MAC emniyet sibobu
 need(/const writeMagSafetyBackup = useCallback/.test(magBulk), 'E-MAG: writeMagSafetyBackup yok');
 need(/allFoundRef/.test(magBulk) && /backupNameRef/.test(magBulk), 'E-MAG: yedek birikim ref\'leri yok');
-need(/writePublicTextFile\("Canlı Tarama Yedeği"/.test(magBulk), 'E-MAG: görünür klasöre yedek yazımı yok');
+const nativeBackup = rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/ScanSafetyBackup.kt');
+need(/flushResultArchive/.test(magBulk) && /Canlı Tarama Yedeği/.test(nativeBackup) && /uri:\$runId/.test(nativeBackup) && /contentEquals/.test(nativeBackup), 'E-MAG: tek native dosya / geri okuma doğrulaması yok');
 need(/allFoundRef\.current\.push\(\.\.\.batch\)/.test(magBulk), 'E-MAG: bulunanlar biriktirilmiyor');
-need(/flushResults\(\); void writeMagSafetyBackup\(\)/.test(magBulk), 'E-MAG: tarama bitişinde son yedek yazılmıyor');
+need(/await writeMagSafetyBackup\(archiveId\)/.test(magBulk), 'E-MAG: tarama bitişinde son yedek beklenmiyor');
 
 if (fail.length) { console.log(fail.map(f => '✗ ' + f).join('\n')); console.log('BAŞARISIZ'); process.exit(1); }
 console.log('PASS: v18.7.25 B görüntü testi hızı + C paralellik birleştirme + A TXT UX + E-MAG emniyet sibobu TEMİZ');

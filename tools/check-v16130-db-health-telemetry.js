@@ -25,7 +25,13 @@ function transpile(file, jsx=false){
 function checks(){
  const semverAtLeast=(v,min)=>{const a=String(v).split('.').map(Number),b=String(min).split('.').map(Number); if(a.length!==3||a.some(Number.isNaN))return false; for(let i=0;i<3;i++){if(a[i]>b[i])return true;if(a[i]<b[i])return false;}return true;};
  if(!semverAtLeast(pkg.version,'16.13.0')||app.expo?.version!==pkg.version||app.expo?.android?.versionCode<161300||app.expo?.ios?.buildNumber!==pkg.version) fail('version >=16.13.0 preservation contract');
- must(db,/version\s*=\s*4/, 'Room schema v4 missing');
+ const schema = Number(/version\s*=\s*(\d+)/.exec(db)?.[1]);
+ if (!Number.isInteger(schema) || schema < 4) fail('Room schema >=v4 required');
+ if (schema === 5) {
+   must(db,/MIGRATION_4_5/, 'explicit 4->5 endpoint migration missing');
+   must(db,/CREATE TABLE IF NOT EXISTS `playlist_endpoints`/, 'endpoint relation migration missing');
+   must(ent,/PlaylistEndpointEntity/, 'endpoint entity missing');
+ }
  must(db,/MIGRATION_3_4/, 'explicit 3->4 migration missing');
  must(db,/ALTER TABLE `diagnostic_events` ADD COLUMN `traceId`/, 'traceId migration missing');
  must(db,/ALTER TABLE `diagnostic_events` ADD COLUMN `operationId`/, 'operationId migration missing');

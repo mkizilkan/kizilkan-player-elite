@@ -212,9 +212,14 @@ class PanelScanService : Service() {
     resultCountRunId = currentRunId
   }
 
-  private fun persistScanResult(key: String, hit: JSONObject): Boolean {
-    val added = ScanJournalStore.get(applicationContext).addResult(currentRunId, key, hit.toString())
-    if (added) persistentFound.incrementAndGet()
+  private fun persistScanResult(key: String, hit: JSONObject, username: String = hit.optString("username"), password: String = hit.optString("password")): Boolean {
+    // Credentials belong in the encrypted journal, never in the progress snapshot.
+    val durable = JSONObject(hit.toString()).put("username", username).put("password", password)
+    val added = ScanJournalStore.get(applicationContext).addResult(currentRunId, key, durable.toString())
+    if (added) {
+      persistentFound.incrementAndGet()
+      ScanSafetyBackup.flush(applicationContext, ScanJournalStore.get(applicationContext), currentRunId, false)
+    }
     return added
   }
 
@@ -228,6 +233,14 @@ class PanelScanService : Service() {
   }
 
   override fun onBind(intent: Intent?): IBinder? = null
+  override fun onTimeout(startId: Int, fgsType: Int) {
+    cancelled.set(true); paused.set(false); abortActiveNetworkWork()
+    val snapshot = JSONObject(getSharedPreferences(PREFS, 0).getString(KEY_SNAPSHOT, "{}") ?: "{}")
+      .put("running", false).put("cancelled", true).put("state", "FAILED").put("terminalReason", "ANDROID_FOREGROUND_TIMEOUT")
+      .put("error", "Android arka plan süre sınırı; kalıcı tarama sonuçları korundu.")
+    writeSnapshot(snapshot)
+    stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
+  }
 
   override fun onCreate() {
     super.onCreate()
@@ -505,6 +518,7 @@ class PanelScanService : Service() {
       obj.put("state", state)
     }
     obj.put("updatedAt", System.currentTimeMillis())
+    obj.optJSONArray("matches")?.let { rows -> for (i in 0 until rows.length()) rows.optJSONObject(i)?.remove("password") }
     getSharedPreferences(PREFS, 0).edit().putString(KEY_SNAPSHOT, obj.toString()).apply()
     val stateNow = obj.optString("state", "")
     val bucket = obj.optInt("tested", 0) / 100
@@ -750,7 +764,7 @@ class PanelScanService : Service() {
             if (login != null) { val hit=JSONObject()
               .put("accountIndex", ai).put("sourceRow", account.optInt("row", ai + 1)).put("username", account.optString("username"))
               .put("name", account.optString("name")).put("panelName", candidate.optString("panelName")).put("code", candidate.optString("code"))
-              .put("server", candidate.optString("server")).put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login)); if (persistScanResult("$ai|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit)) matches.add(hit) }
+              .put("server", candidate.optString("server")).put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login)); if (persistScanResult("$ai|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit, account.optString("username"), account.optString("password"))) matches.add(hit) }
             if (completedByAccount[ai].incrementAndGet() == candidateCount) accountDone.incrementAndGet()
             val done = tested.incrementAndGet()
             checkpointTracker.finish(workerId)
@@ -1474,7 +1488,7 @@ class PanelScanService : Service() {
                     .put("code", candidate.optString("code"))
                     .put("server", candidate.optString("server"))
                     .put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login))
-                  if (persistScanResult("$accountIndex|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit)) {
+                  if (persistScanResult("$accountIndex|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit, account.optString("username"), account.optString("password"))) {
                     matches.add(hit)
                     synchronized(foundCounts) { foundCounts[local]++ }
                   }
@@ -1728,7 +1742,7 @@ class PanelScanService : Service() {
                 .put("panelName", candidate.optString("panelName"))
                 .put("code", candidate.optString("code"))
                 .put("server", candidate.optString("server"))
-                .put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login)); if (persistScanResult("$accountIndex|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit)) matches.add(hit) }
+                .put("sources",candidate.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(login)); if (persistScanResult("$accountIndex|${candidate.optString("panelName")}|${candidate.optString("code")}|${candidate.optString("server")}", hit, account.optString("username"), account.optString("password"))) matches.add(hit) }
               if (completedByAccount[accountIndex].incrementAndGet() == expectedByAccount[accountIndex]) accountDone.incrementAndGet()
               val done = tested.incrementAndGet()
               checkpointTracker.finish(workerId)
@@ -1827,7 +1841,7 @@ class PanelScanService : Service() {
             if (cancelled.get() || workerFailure.get() != null) break
             if (Thread.currentThread().isInterrupted) throw InterruptedException("Tarama işçisi kesildi")
             if (data != null) {
-              val hit=JSONObject().put("panelName", panelName).put("code", c.optString("code")).put("server", server).put("sources",c.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(data)); if (persistScanResult("$panelName|${c.optString("code")}|$server",hit)) matches.add(hit)
+              val hit=JSONObject().put("panelName", panelName).put("code", c.optString("code")).put("server", server).put("sources",c.optJSONArray("sources")?:JSONArray()).put("login",sanitizeLogin(data)); if (persistScanResult("$panelName|${c.optString("code")}|$server",hit, user, pass)) matches.add(hit)
             }
             val done = tested.incrementAndGet()
             checkpointTracker.finish(workerId)

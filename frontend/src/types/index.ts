@@ -165,7 +165,25 @@ export interface PlaylistContentSelection {
   updatedAt?: string;
 }
 
+export interface PlaylistEndpoint {
+  url: string;
+  kind: 'xtream' | 'stalker';
+  primary?: boolean;
+  source: 'metadata' | 'manual' | 'scan' | 'playback';
+  accountVerifiedAt?: string;
+  catalogVerifiedAt?: string;
+  firstFrameAt?: string;
+  playbackObservedAt?: string;
+  lastTestAt?: string;
+  lastError?: string;
+  /** Content ID correspondence is a separate fact from authentication. */
+  contentMapping?: 'unverified' | 'verified';
+  resolvedPortal?: import('@/src/utils/magEndpointRegistry').ResolvedMagPortal;
+}
+
 export interface Playlist {
+  /** Missing kinds remain explicit when a partial backup/live-first import is opened again. */
+  catalogMissingKinds?: Array<'live' | 'vod' | 'series'>;
   catalogRevision?:number;
   cleanedKinds?:Array<"live"|"vod"|"series"|"epg">;
   /** v17.10.0: otomatik katalog yenileme. undefined eski davranışı (açık) korur; false kullanıcı tarafından kapatılmıştır. */
@@ -189,6 +207,8 @@ export interface Playlist {
    * yenileme, birincil adres başarısız olunca bunları sırayla dener.
    */
   backupHosts?: string[];
+  endpoints?: PlaylistEndpoint[];
+  stalkerBackupPortals?: string[];
   stalkerPortal?: string;
   /** Doğrulanmış API yolu; ham /c UI yolu ile karıştırılmaz. */
   stalkerResolvedPortal?: import('@/src/utils/magEndpointRegistry').ResolvedMagPortal;

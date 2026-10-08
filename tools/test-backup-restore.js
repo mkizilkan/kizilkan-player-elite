@@ -15,6 +15,7 @@ const storage = { getItem: async (key, fallback) => kv.has(key) ? kv.get(key) : 
   removeItem: async key => { kv.delete(key); return true; } };
 const summary = id => { const row = rows.get(id); if (!row) throw new Error('Missing Room index'); return { id, roomIndexed: true, channels: row.channels.length, vod: row.vod.length, series: row.series.length }; };
 const core = { available: true,
+  syncProfileEndpoints: async () => {},
   getSnapshotInventory: async () => [...rows.keys()].map(playlistId => ({ playlistId })),
   hasPlaylistIndex: async id => rows.has(id), getPlaylistSummary: async id => summary(id), getPlaylistSummaryVerified: async id => summary(id),
   beginChunkedPlaylistImport: async id => { stageWrites++; chunks.set(id, { channels: [], vod: [], series: [] }); return true; },
@@ -195,5 +196,17 @@ function v3Text(payload) {
     assert.deepEqual(Object.fromEntries(kv), original); assert.deepEqual(Object.fromEntries(rows), originalRows);
     assert.equal(metadataWrites, 0); assert.equal(stageWrites, 0); pass++;
   }
-  console.log(`PASS: Yedek akışı: ${pass} grup geçti (seçmeli/cihaz JSON, .kzb, kişisel/hızlı, gerçek sayılar, boş katalog, rollback, iptal, süreç ölümü).`);
+  for (const mode of ['selected', 'full']) {
+    reset(); incoming = fixture(['B']);
+    const text = v3Text(incoming).replace('{"type":"playlist-end"', '{"type":"chunk-error","playlistId":"B","kind":"vod","message":"missing"}\n{"type":"playlist-end"');
+    assert.match(text, /chunk-error/); files.set('file://partial.kzb', text);
+    result = await V3.restoreFullBackupV3({ uri: 'file://partial.kzb' }, mode === 'selected' ? { selectedKeys: selected(incoming, ['B']), targetProfileId: 'p' } : undefined);
+    assert.equal(result.warnings.length, 1); assert.equal(rows.get('B').channels.length, 1);
+    const key = mode === 'selected' ? 'kizilkan.playlists.meta.p' : 'kizilkan.playlists.meta.backup-profile';
+    restored = JSON.parse(kv.get(key)).find(x => x.id === 'B');
+    assert.equal(restored.channelsCount, 1); assert.equal(restored.catalogLocalState, 'missing');
+    assert.equal(restored.catalogSync.initialSyncState, 'partial_error');
+    if (mode === 'selected') verifyUntouched(); pass++;
+  }
+  console.log(`PASS: Yedek akışı: ${pass} grup geçti (seçmeli/cihaz JSON, .kzb, kişisel/hızlı, gerçek sayılar, boş/eksik katalog, rollback, iptal, süreç ölümü).`);
 })().catch(error => { console.error(error); process.exitCode = 1; });

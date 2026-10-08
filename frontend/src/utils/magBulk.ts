@@ -13,6 +13,8 @@
 */
 
 import { MAG_REGISTERED_DISCOVERY_PATHS } from '@/src/utils/magEndpointRegistry';
+import type { PlaylistEndpoint } from '@/src/types';
+import { endpointProofLabel } from '@/src/utils/playlistEndpoints';
 
 /**
  * Portal keşfi için portlar (kullanıcı port vermezse). Verilen port her zaman ilk denenir.
@@ -128,6 +130,8 @@ export type MagArchiveEntry = {
   expiryDisplay?: string; username?: string; tariffPlan?: string;
   protection?: { state: string; kind: string; evidence: string[]; observedAt: string; endpoint: string; transport: string };
   liveCategories: string[]; vodCategories: string[]; seriesCategories: string[]; warnings: string[];
+  endpoints?: PlaylistEndpoint[];
+  password?: string;
 };
 /** İnsan tarafından okunabilir TXT, JSON ile aynı hesap/kategori bilgisini taşır. */
 export function formatMagArchiveTxt(entries: MagArchiveEntry[], stamp: string): string {
@@ -144,6 +148,9 @@ export function formatMagArchiveTxt(entries: MagArchiveEntry[], stamp: string): 
       `SONUC=${clean(entry.category)} · DURUM=${clean(entry.status) || "Bilinmiyor"}`,
       `BITIS=${clean(entry.expiryDisplay || entry.expiry) || "Bilinmiyor / bildirilmedi"}`,
       `KULLANICI=${clean(entry.username) || "Bildirilmedi"}`, `TARIFE=${clean(entry.tariffPlan) || "Bildirilmedi"}`,
+      `SIFRE=${clean(entry.password) || 'Bildirilmedi'}`,
+      ...(entry.endpoints || []).map(e => `ADRES=${clean(e.url)} · ${endpointProofLabel(e)}`),
+      `ADRES_KANITLARI_JSON=${JSON.stringify(entry.endpoints || [])}`,
       `KORUMA=${protection}${p ? ` · ${clean(p.kind)} · ${clean(p.observedAt)} · ${clean(p.transport)}` : ""}`,
       p?.evidence.length ? `KORUMA_KANITI=${p.evidence.map(clean).join(" | ")}` : "",
       cats("CANLI", entry.liveCategories, "Canlı"), cats("FILM", entry.vodCategories, "VOD"), cats("DIZI", entry.seriesCategories, "Series"),

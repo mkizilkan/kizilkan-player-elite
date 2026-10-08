@@ -35,6 +35,7 @@ import {
 } from "@/src/utils/magBulk";
 import { chooseMagPortals, createMagRequestGate, runMagBulkScan, type MagScanResult } from "@/src/utils/magBulkScan";
 import { PanelScan } from "@/modules/panel-scan";
+import { createScanResultReader } from "@/src/utils/scanResultReader";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import type { MagPortalDiscovery } from "@/src/utils/magPortalDiscovery";
 
@@ -150,40 +151,56 @@ export default function MagBulkScreen() {
   }
   const profileEpoch = profileEpochRef.current;
   // v18.7.25 (E-MAG): biriken tüm bulunanları görünür klasöre yedek TXT olarak yaz (tam liste, üzerine yazar).
-  const writeMagSafetyBackup = useCallback(async () => {
-    const list = allFoundRef.current;
-    if (!list.length || !backupNameRef.current) return;
-    try {
-      const lines = list.map(r => {
-        const exp = formatAccountExpiry(r.accountInfo || { tariff_expired_date: r.expiry }) || "";
-        return `${r.portal}|${r.mac}|${exp}|${r.category}|${r.liveCount || 0}`;
-      });
-      const text = `KIZILKAN CANLI TARAMA YEDEĞİ (MAC/Çoklu) — ${new Date().toISOString()}\nBulunan: ${list.length}\n${"=".repeat(52)}\n${lines.join("\n")}\n`;
-      await KizilkanNativeCore.writePublicTextFile("Canlı Tarama Yedeği", backupNameRef.current, "text/plain", text);
-    } catch {}
+  const writeMagSafetyBackup = useCallback(async (archiveId = backupNameRef.current) => {
+    if (!archiveId) return;
+    const status = await PanelScan.flushResultArchive(archiveId);
+    if (!status.ok) throw new Error(status.error || "Emniyet yedeği yazılamadı. Sonuçlar kalıcı journal'da korunuyor.");
+    return status;
   }, []);
   const flushResults = useCallback(() => {
     if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
     flushTimerRef.current = null;
     const batch = resultBufferRef.current.splice(0);
-    if (!mountedRef.current || !batch.length) return;
+    if (!batch.length) return;
+    allFoundRef.current.push(...batch);
+    if (!mountedRef.current) return;
     setResults(prev => [...prev, ...batch]);
     setSelected(prev => { const next = new Set(prev); for (const r of batch) if (r.category === "valid") next.add(magIdentity(r.portal, r.mac)); return next; });
     // v18.7.25 (E-MAG): biriktir + debounce'lu yedek yaz (her 3 sn'de bir, app ölse bile diskte taze kalsın).
-    allFoundRef.current.push(...batch);
-    const now = Date.now();
-    if (backupNameRef.current && now - lastBackupAtRef.current > 3000) { lastBackupAtRef.current = now; void writeMagSafetyBackup(); }
+    // Each result has already reached the encrypted journal before this UI batch.
   }, [writeMagSafetyBackup]);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
+      flushResults();
       mountedRef.current = false; cancelRef.current = true; runRef.current++; actionRunRef.current++;
       scanAbortRef.current?.abort(); actionAbortRef.current?.abort();
       if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
       try { KizilkanNativeCore.setKeepScreenOn(false); } catch {}
-      try { KizilkanNativeCore.stopForegroundKeepAlive(); } catch {}
+      try { KizilkanNativeCore.stopForegroundKeepAlive(`mac-scan:${backupNameRef.current}`); KizilkanNativeCore.stopForegroundKeepAlive(`mac-add:${profileRef.current}`); } catch {}
     };
   }, []);
+  useEffect(() => {
+    let alive = true;
+    const owner = activeProfile.id;
+    void (async () => {
+      try {
+        const archiveId = await PanelScan.getLatestResultArchive(owner);
+        if (!archiveId || !alive || busyRef.current) return;
+        const read = createScanResultReader(PanelScan.getResultsPage);
+        await read(archiveId, true, rows => {
+          if (alive && !busyRef.current) {
+            setResults(prev => { const map = new Map(prev.map(r => [magIdentity(r.portal, r.mac), r])); rows.forEach(r => map.set(magIdentity(r.portal, r.mac), r)); return [...map.values()]; });
+          }
+        }, () => alive && !busyRef.current);
+        if (alive && !busyRef.current) {
+          const status = await PanelScan.flushResultArchive(archiveId);
+          if (alive) setStageMsg(status.ok ? `Son analiz sonuçları geri alındı. Emniyet yedeği: ${status.path || '0 sonuç'}` : `Sonuçlar geri alındı; TXT: ${status.error}`);
+        }
+      } catch (e: any) { if (alive) setStageMsg(`Kalıcı sonuçlar okunamadı: ${e?.message || e}`); }
+    })();
+    return () => { alive = false; };
+  }, [activeProfile.id]);
   useEffect(() => {
     if (profileEpoch !== profileEpochRef.current || resetProfileEpochRef.current === profileEpoch) return;
     resetProfileEpochRef.current = profileEpoch;
@@ -239,15 +256,17 @@ export default function MagBulkScreen() {
     resultBufferRef.current = []; setSelected(new Set()); setResultFilter("all");
     // v18.7.25 (E-MAG): yeni tarama için yedek birikimini ve dosya adını sıfırla.
     allFoundRef.current = []; lastBackupAtRef.current = 0;
-    backupNameRef.current = `KIZILKAN-MAC-TARAMA-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.txt`;
+    const archiveId = `mac-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    backupNameRef.current = archiveId;
     setPortalReports([]); setPortalChoices({}); portalChoicesRef.current = {}; setScanPhase("discovery");
     setPaused(false); setScanning(true); setResults([]); setStageMsg("Portal kaynağı hazırlanıyor…"); setProgress({ done: 0, total: 0, current: "" });
     // v18.7.6 (A2): tarama sürerken ekran/CPU uykuya geçmesin (cihaz uykusu taramayı yarıda
     // kesiyordu). Ayrı keep-awake paketi yok; native pencere bayrağı kullanılır.
     try { KizilkanNativeCore.setKeepScreenOn(true); } catch {}
     // v18.7.21 (D): uygulama arka plana alınsa da tarama sürsün (foreground keep-alive servisi).
-    try { KizilkanNativeCore.startForegroundKeepAlive("KIZILKAN · Çoklu MAC", "Portal taraması çalışıyor…"); } catch {}
+    try { KizilkanNativeCore.startForegroundKeepAlive("KIZILKAN · Çoklu MAC", "Portal taraması çalışıyor…", `mac-scan:${archiveId}`, () => { controller.abort(); if (mountedRef.current) setStageMsg('Android arka plan süre sınırı; bulunan kayıtlar korunuyor.'); }); } catch {}
     try {
+      await PanelScan.createResultArchive(archiveId, profileRef.current);
       const hosts = await resolveHosts();
       if (controller.signal.aborted || run !== runRef.current) return;
       if (hosts.length === 0) { Alert.alert("Portal yok", hostMode === "manual" ? "En az bir portal adresi girin." : "Rehberde eşleşen host bulunamadı."); return; }
@@ -275,12 +294,14 @@ export default function MagBulkScreen() {
           controller.signal.addEventListener("abort", stop, { once: true });
           if (controller.signal.aborted) stop();
         }) : undefined,
-        onResult: r => {
+        onResult: async r => {
+          const backup = await PanelScan.appendResultArchive(archiveId, magIdentity(r.portal, r.mac), r);
           if (!mountedRef.current || run !== runRef.current) return;
+          if (!backup.ok) setStageMsg(`Sonuç kalıcı kayıtta; emniyet TXT yazımı başarısız: ${backup.error}`);
           resultBufferRef.current.push(r);
           if (!flushTimerRef.current) flushTimerRef.current = setTimeout(flushResults, 150);
         },
-        onProgress: (done, total, current) => { if (mountedRef.current && run === runRef.current) { setProgress({ done, total, current: current || "" }); try { KizilkanNativeCore.updateForegroundKeepAlive(`Tarama · ${done}/${total}`, done, total); } catch {} } },
+        onProgress: (done, total, current) => { if (mountedRef.current && run === runRef.current) { setProgress({ done, total, current: current || "" }); try { KizilkanNativeCore.updateForegroundKeepAlive(`Tarama · ${done}/${total}`, done, total, `mac-scan:${archiveId}`); } catch {} } },
         onStage: msg => { if (mountedRef.current && run === runRef.current) setStageMsg(msg); },
         control: {
           isCancelled: () => cancelRef.current,
@@ -291,12 +312,15 @@ export default function MagBulkScreen() {
     } catch (e: any) {
       if (!controller.signal.aborted && mountedRef.current) Alert.alert("Tarama hatası", String(e?.message || e));
     } finally {
+      let backupNote = "";
+      try { const status = await writeMagSafetyBackup(archiveId); backupNote = status?.path ? `Emniyet yedeği: ${status.path}` : ""; }
+      catch (e: any) { backupNote = `TXT başarısız; kalıcı sonuçlar korunuyor: ${e?.message || e}`; }
+      try { KizilkanNativeCore.stopForegroundKeepAlive(`mac-scan:${archiveId}`); } catch {}
       if (run === runRef.current) {
         portalPickerRef.current = null;
-        flushResults(); void writeMagSafetyBackup(); busyRef.current = false; scanAbortRef.current = null;
+        flushResults(); busyRef.current = false; scanAbortRef.current = null;
         try { KizilkanNativeCore.setKeepScreenOn(false); } catch {}
-      try { KizilkanNativeCore.stopForegroundKeepAlive(); } catch {}
-        if (mountedRef.current) { setScanning(false); setPaused(false); setStageMsg(controller.signal.aborted ? "Analiz iptal edildi. Tamamlanan sonuçlar korunuyor." : ""); }
+        if (mountedRef.current) { setScanning(false); setPaused(false); setStageMsg(`${controller.signal.aborted ? "Analiz iptal edildi. Tamamlanan sonuçlar korunuyor. " : ""}${backupNote}`); }
       }
     }
   }, [parsed.macs, resolveHosts, hostMode, useProxy, scanMode, parallelText, discoveryScope, scopeChosen, portalChoiceMode, flushResults]);
@@ -341,9 +365,10 @@ export default function MagBulkScreen() {
     const toAdd = selectedAddable.filter(r => !playlists.some(pl => pl.stalkerPortal && pl.stalkerMac && magIdentity(pl.stalkerPortal, pl.stalkerMac) === magIdentity(r.portal, r.mac)));
     if (toAdd.length === 0) { Alert.alert("Eklenecek yok", "Seçili geçerli/muhtemel geçerli sonuç yok ya da hepsi zaten ekli."); return; }
     busyRef.current = true; setAdding(true);
-    try { KizilkanNativeCore.startForegroundKeepAlive("KIZILKAN · Hesap ekleme", "Hesaplar ekleniyor…"); } catch {} // v18.7.21 (D): arka planda sürsün.
     const owner = profileRef.current;
+    const keepAliveOwner = `mac-add:${owner}`;
     const controller = new AbortController(); actionAbortRef.current = controller;
+    try { KizilkanNativeCore.startForegroundKeepAlive("KIZILKAN · Hesap ekleme", "Hesaplar ekleniyor…", keepAliveOwner, () => controller.abort()); } catch {}
     const action = ++actionRunRef.current;
     const ownsAction = () => mountedRef.current && owner === profileRef.current && profileEpoch === profileEpochRef.current && action === actionRunRef.current && actionAbortRef.current === controller;
     const stillOwned = () => ownsAction() && !controller.signal.aborted;
@@ -439,7 +464,8 @@ export default function MagBulkScreen() {
     } catch (e: any) {
       if (stillOwned()) Alert.alert("Ekleme hatası", String(e?.message || e));
     } finally {
-      if (ownsAction()) { busyRef.current = false; actionAbortRef.current = null; setAdding(false); setActionProgress(""); try { KizilkanNativeCore.stopForegroundKeepAlive(); } catch {} }
+      try { KizilkanNativeCore.stopForegroundKeepAlive(keepAliveOwner); } catch {}
+      if (ownsAction()) { busyRef.current = false; actionAbortRef.current = null; setAdding(false); setActionProgress(""); }
     }
   }, [selectedAddable, playlists, addPlaylist, enrichPlaylistMedia, updatePlaylist, router, useProxy, profileEpoch]);
 
@@ -461,7 +487,7 @@ export default function MagBulkScreen() {
     try {
       const { KizilkanNativeCore } = await import("@/modules/kizilkan-native-core");
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const { stalkerLogin, stalkerCategoryPreview } = await import("@/src/utils/stalker");
+      const { stalkerLogin, stalkerCategoryPreview, getStreamDerivedCredentials } = await import("@/src/utils/stalker");
       const gate = createMagRequestGate({ signal: controller.signal }, msg => { if (stillOwned()) setActionProgress(msg); });
       const summary: MagArchiveEntry[] = [];
       for (const r of selectedResults) {
@@ -469,8 +495,13 @@ export default function MagBulkScreen() {
         setActionProgress(`${summary.length + 1}/${selectedResults.length} · ${r.mac} · kategori özeti`);
         const entry: MagArchiveEntry = { portal: r.portal, mac: r.mac, category: r.category, expiry: r.expiry,
           expiryDisplay: formatAccountExpiry(r.accountInfo || { tariff_expired_date: r.expiry }) || "Bilinmiyor / bildirilmedi",
-          status: r.status, username: r.accountInfo?.username, tariffPlan: r.accountInfo?.tariff_plan,
+          status: r.status, username: r.accountInfo?.username, password: r.accountInfo?.password, tariffPlan: r.accountInfo?.tariff_plan,
           protection: r.protection, liveCategories: [], vodCategories: [], seriesCategories: [], warnings: [] };
+        const { playlistEndpoints, canonicalEndpointUrl } = await import('@/src/utils/playlistEndpoints');
+        const stored = playlists.find(p => p.source === 'stalker' && p.stalkerMac?.toUpperCase() === r.mac.toUpperCase() && playlistEndpoints(p).some(e => canonicalEndpointUrl(e.url) === canonicalEndpointUrl(r.portal)));
+        entry.endpoints = stored ? playlistEndpoints(stored) : [{ url: r.portal, kind: 'stalker', primary: true, source: 'scan', ...(r.category === 'valid' ? { accountVerifiedAt: new Date().toISOString() } : {}) }];
+        const derived = getStreamDerivedCredentials(r.mac, r.portal, owner);
+        if (derived) { entry.username = derived.username; entry.password = derived.password; }
         try {
           if (r.category !== "valid") throw new Error("Analiz sonucu geçerli hesap değil; kategori sorgusu gönderilmedi.");
           const cred = { portal: r.portal, mac: r.mac, deviceModel: "MAG320" as const, endpointPolicy: "exact" as const,
@@ -503,7 +534,7 @@ export default function MagBulkScreen() {
     } finally {
       if (ownsAction()) { busyRef.current = false; actionAbortRef.current = null; setSaving(false); setActionProgress(""); }
     }
-  }, [selectedResults, useProxy, profileEpoch]);
+  }, [selectedResults, useProxy, profileEpoch, playlists]);
 
   const S = makeStyles(colors);
   const catCounts = useMemo(() => {
@@ -708,9 +739,9 @@ export default function MagBulkScreen() {
                 </View>
               ))}
             </View>
-            <Text style={S.count}>{selectedResults.length} seçili · {selectedValid.length} geçerli{selectedProbable.length ? ` + ${selectedProbable.length} muhtemel` : ""} · {visibleResults.length} görünen</Text>
+            <Text style={S.count}>{selectedResults.length} seçili · {selectedValid.length} geçerli{selectedProbable.length ? ` + ${selectedProbable.length} muhtemel` : ""} · {visibleResults.length} görünen · {new Set(results.map(r => r.portal)).size} portal</Text>
             <View style={S.chipRow}>
-              {([["all", "Tüm sonuçlar"], ["valid", "Geçerli"], ["probable", "Muhtemel"], ["has-content", `Görüntü olanlar (${contentResults.length})`], ["not_observed", "Koruma görülmedi"], ["present", "Koruma gözlendi"], ["unknown", "Belirlenemedi"]] as [ResultFilter, string][]).map(([value, label]) => (
+              {([["all", "Tüm sonuçlar"], ["valid", "Geçerli"], ["probable", "Muhtemel"], ["has-content", `Katalog olanlar (${contentResults.length})`], ["not_observed", "Koruma görülmedi"], ["present", "Koruma gözlendi"], ["unknown", "Belirlenemedi"]] as [ResultFilter, string][]).map(([value, label]) => (
                 <FocusButton key={value} disabled={adding || saving} onPress={() => setResultFilter(value)} style={[S.chip, resultFilter === value && S.chipOn]}><Text style={[S.chipText, resultFilter === value && S.chipTextOn]}>{label}</Text></FocusButton>
               ))}
             </View>
@@ -718,7 +749,7 @@ export default function MagBulkScreen() {
               <FocusButton testID="mag-select-all" disabled={scanning || adding || saving} onPress={() => setSelected(new Set(results.map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Tümünü seç</Text></FocusButton>
               <FocusButton testID="mag-select-valid" disabled={scanning || adding || saving} onPress={() => setSelected(new Set(validResults.map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Geçerlileri seç</Text></FocusButton>
               {probableResults.length > 0 && <FocusButton testID="mag-select-probable" disabled={scanning || adding || saving} onPress={() => setSelected(new Set([...validResults, ...probableResults].map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Geçerli + muhtemelleri seç</Text></FocusButton>}
-              {contentResults.length > 0 && <FocusButton testID="mag-select-has-content" disabled={scanning || adding || saving} onPress={() => setSelected(new Set(contentResults.map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Görüntü olanları seç ({contentResults.length})</Text></FocusButton>}
+              {contentResults.length > 0 && <FocusButton testID="mag-select-has-content" disabled={scanning || adding || saving} onPress={() => setSelected(new Set(contentResults.map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Katalog olanları seç ({contentResults.length})</Text></FocusButton>}
               <FocusButton testID="mag-select-unprotected" disabled={scanning || adding || saving} onPress={() => setSelected(new Set(validResults.filter(r => r.protection?.state === "not_observed").map(r => magIdentity(r.portal, r.mac))))} style={S.chip}><Text style={S.chipText}>Koruma görülmeyen geçerlileri seç</Text></FocusButton>
               <FocusButton testID="mag-clear-selection" disabled={scanning || adding || saving} onPress={() => setSelected(new Set())} style={S.chip}><Text style={S.chipText}>Seçimi kaldır</Text></FocusButton>
             </View>
@@ -755,9 +786,9 @@ export default function MagBulkScreen() {
                 {(() => {
                   // v18.7.24: görüntü var/yok — doğrulama anındaki gerçek canlı içerik örneğine (liveCount) göre.
                   const n = r.liveCount || 0;
-                  const info = n > 0 ? { t: `📺 Görüntü: VAR · ${n} kanal`, c: colors.success || "#2ecc71" }
-                    : r.category === "probable" ? { t: "📺 Görüntü: Belirsiz (içerik örneği alınamadı)", c: colors.onSurfaceTertiary }
-                    : { t: "📺 Görüntü: Yok / erişilemedi", c: colors.onSurfaceTertiary };
+                  const info = n > 0 ? { t: `📺 Katalog: ${n} kanal · ilk kare sınanmadı`, c: colors.success || "#2ecc71" }
+                    : r.category === "probable" ? { t: "📺 Katalog örneği alınamadı · yayın belirsiz", c: colors.onSurfaceTertiary }
+                    : { t: "📺 Katalog boş / erişilemedi · yayın sınanmadı", c: colors.onSurfaceTertiary };
                   return <Text style={[S.resultSub, { color: info.c, fontWeight: FONT.weight.semibold }]}>{info.t}</Text>;
                 })()}
                 {r.message ? <Text style={S.resultSub} numberOfLines={3}>{r.message}</Text> : null}

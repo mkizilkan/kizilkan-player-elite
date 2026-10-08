@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Debug
 import android.os.SystemClock
 import expo.modules.kotlin.modules.Module
+import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.ModuleDefinition
 import org.json.JSONArray
 import org.json.JSONObject
@@ -48,6 +49,8 @@ import java.util.concurrent.CancellationException
  * üzerinde indeksli çalışır ve React'e yalnız görünen sayfa döner.
  */
 class KizilkanNativeCoreModule : Module() {
+  private val driveAuthorizationDelegate = lazy { GoogleDriveAuthorization(context()) }
+  private val googleDriveAuthorization by driveAuthorizationDelegate
   private val backupCryptoCancelled = ConcurrentHashMap<String, AtomicBoolean>()
   private val liveTimeshiftManager by lazy { LiveTimeshiftManager(context()) }
   // v18.1.0 — yerel medya: tek sorguda SAF klasör listesi + kapak/süre bilgisi.
@@ -177,7 +180,31 @@ class KizilkanNativeCoreModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("KizilkanNativeCore")
-    OnDestroy { backupCryptoCancelled.values.forEach { it.set(true) }; backupCryptoCancelled.clear() }
+    AsyncFunction("syncProfileEndpoints") { profileId: String, playlistsJson: String ->
+      require(profileId.isNotBlank()) { "Adres kaydı için profil gerekli" }
+      val playlists = JSONArray(playlistsJson)
+      val rows = mutableListOf<PlaylistEndpointEntity>()
+      for (i in 0 until playlists.length()) {
+        val playlist = playlists.getJSONObject(i)
+        val id = playlist.getString("playlistId"); require(id.isNotBlank())
+        val endpoints = playlist.getJSONArray("endpoints")
+        for (j in 0 until endpoints.length()) {
+          val proof = endpoints.getJSONObject(j)
+          val url = URL(proof.getString("url")); require(url.protocol in listOf("http", "https") && url.userInfo == null)
+          rows.add(PlaylistEndpointEntity(profileId, id, url.toString(), proof.toString()))
+        }
+      }
+      val db = KizilkanNativeDatabase.get(context())
+      db.runInTransaction { db.endpointDao().deleteProfile(profileId); db.endpointDao().insertAll(rows) }
+      true
+    }
+    AsyncFunction("getPlaylistEndpoints") { profileId: String, playlistId: String ->
+      JSONArray(KizilkanNativeDatabase.get(context()).endpointDao().get(profileId, playlistId).map { JSONObject(it.proofJson) }).toString()
+    }
+    OnDestroy { backupCryptoCancelled.values.forEach { it.set(true) }; backupCryptoCancelled.clear(); if (driveAuthorizationDelegate.isInitialized()) googleDriveAuthorization.cancel() }
+    Function("getGoogleDriveClientConfiguration") { googleDriveAuthorization.config() }
+    AsyncFunction("authorizeGoogleDrive") { promise: Promise -> googleDriveAuthorization.authorize(appContext.currentActivity, promise) }
+    OnActivityResult { activity, result -> if (driveAuthorizationDelegate.isInitialized()) googleDriveAuthorization.onActivityResult(activity, result.requestCode, result.resultCode, result.data) }
 
     // v16.13.8 — Native MAG exact-wire transport.
     // JS'nin "göndermek istediği" başlıklar yerine OkHttp Request'in gerçekten
@@ -966,14 +993,15 @@ class KizilkanNativeCoreModule : Module() {
     }
     // v18.7.21 (D): JS işleri (MAG çoklu tarama/ekleme/güncelleme) uygulama arka plandayken de sürsün diye
     // genel "canlı tut" ön plan servisi. İş başında start, ilerledikçe update, bittiğinde stop çağrılır.
-    Function("startForegroundKeepAlive") { title: String, text: String ->
-      try { ForegroundKeepAliveService.start(context(), title, text); true } catch (_: Throwable) { false }
+    Function("getForegroundKeepAliveTimeoutAt") { context().getSharedPreferences("kizilkan_keepalive_state", 0).getLong("timeoutAt", 0L).toDouble() }
+    Function("startForegroundKeepAlive") { title: String, text: String, owner: String ->
+      try { ForegroundKeepAliveService.start(context(), title, text, owner); true } catch (_: Throwable) { false }
     }
-    Function("updateForegroundKeepAlive") { text: String, done: Int, total: Int ->
-      try { ForegroundKeepAliveService.update(context(), text, done, total); true } catch (_: Throwable) { false }
+    Function("updateForegroundKeepAlive") { text: String, done: Int, total: Int, owner: String ->
+      try { ForegroundKeepAliveService.update(context(), text, done, total, owner); true } catch (_: Throwable) { false }
     }
-    Function("stopForegroundKeepAlive") {
-      try { ForegroundKeepAliveService.stop(context()); true } catch (_: Throwable) { false }
+    Function("stopForegroundKeepAlive") { owner: String ->
+      try { ForegroundKeepAliveService.stop(context(), owner); true } catch (_: Throwable) { false }
     }
     // v18.4.0: Medya Merkezi — cihazdaki tüm video/müzik/fotoğraf (MediaStore) + küçük resim.
     AsyncFunction("queryDeviceMediaJson") { kind: String, offset: Int, limit: Int ->

@@ -41,6 +41,7 @@ if (process.cwd() !== PROJECT_ROOT) process.chdir(PROJECT_ROOT);
 // TypeScript artık tools/_ts.js ile taşınabilir şekilde çözülür (sabit yol yok).
 
 const CHECKS = [
+  ["test-v18726-data.js", "v18.7.26 journal delivery, endpoint TXT proofs, scoped cache and verified API mapping", ""],
   ["test-mag-action-ownership.js", "v18.7.4 MAG add/export action ownership and profile ABA", ""],
   ["check-v18714-release.js", "v18.7.14 back-trap cancel (abort MAG add) + G01 get_all_channels verify fallback + G02 preserve real login + G03 decode-before-MAC username + G04 real enrichment budget + G05 strict exact (portless too) + G06 snapshot MAC authority", ""],
   ["check-v18715-release.js", "v18.7.15 D01-D04 account fields + D07 cancellable preparation + D08 endpoint lock + D11 alternate-scheme gate + D12 transport close + D13 shared budget + client-JS safety", ""],

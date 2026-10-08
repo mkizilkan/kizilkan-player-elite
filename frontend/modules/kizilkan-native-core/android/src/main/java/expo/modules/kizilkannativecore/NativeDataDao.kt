@@ -6,6 +6,16 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 
 @Dao
+interface PlaylistEndpointDao {
+  @Query("SELECT * FROM playlist_endpoints WHERE profileId=:profileId AND playlistId=:playlistId")
+  fun get(profileId: String, playlistId: String): List<PlaylistEndpointEntity>
+  @Query("DELETE FROM playlist_endpoints WHERE profileId=:profileId")
+  fun deleteProfile(profileId: String)
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  fun insertAll(endpoints: List<PlaylistEndpointEntity>)
+}
+
+@Dao
 interface PlaylistSnapshotDao {
   @Query("SELECT * FROM playlist_snapshots WHERE playlistId = :playlistId LIMIT 1")
   fun get(playlistId: String): PlaylistSnapshotEntity?

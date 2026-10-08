@@ -102,7 +102,7 @@ async function testBackup() {
     const kv=new Map([['kizilkan.profiles',JSON.stringify([{id:'p',name:'Profile'}])],['kizilkan.playlists.meta.p',metadata('old')]]);
     const storage={getItem:async(k,f)=>kv.has(k)?kv.get(k):f,getItemStrict:async(k,f)=>strictValue(kv.get(k),f,kv.has(k)),setItem:async(k,v)=>{if(failOnce&&k==='kizilkan.playlists.meta.p'){failOnce=false;return false;}kv.set(k,v);return true;},removeItem:async k=>{kv.delete(k);return true;}};
     const summary=id=>({roomIndexed:true,channels:(staged.get(id)||live.get(id)||[]).length,vod:0,series:0});
-    const core={available:true,
+    const core={available:true, async syncProfileEndpoints(){ return true; },
       async beginChunkedPlaylistImport(id){staged.set(id,[]);return true},
       async appendPlaylistChunk(id,k,j){const a=JSON.parse(j);staged.get(id).push(...a);return a.length},
       async finishChunkedPlaylistImport(id){return summary(id)},async getPlaylistSummaryVerified(id){return summary(id)},

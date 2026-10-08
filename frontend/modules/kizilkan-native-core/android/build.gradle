@@ -32,6 +32,8 @@ dependencies {
   implementation "androidx.room:room-ktx:${roomVersion}"
   // v16.13.8: MAG exact-wire transport; request headers/cookies are built natively.
   implementation "com.squareup.okhttp3:okhttp:4.12.0"
+  // Android Drive authorization; access token stays on the device.
+  implementation "com.google.android.gms:play-services-auth:22.0.0"
   ksp "androidx.room:room-compiler:${roomVersion}"
 }
 

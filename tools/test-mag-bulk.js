@@ -12,6 +12,7 @@ function load(file) {
   const exports = {};
   vm.runInNewContext(js, { exports, require: id => {
     if (id === '@/src/utils/magEndpointRegistry') return load('frontend/src/utils/magEndpointRegistry.ts');
+    if (id === '@/src/utils/playlistEndpoints') return load('frontend/src/utils/playlistEndpoints.ts');
     throw Error('Saf MAG modeline platform/ağ bağımlılığı eklendi: ' + id);
   }, console, Map, Set, Array, String, Number, Math, URL, parseInt }, { filename: file });
   return exports;

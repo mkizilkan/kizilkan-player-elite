@@ -66,8 +66,16 @@ class BulkPlaylistImportService : Service() {
   @Volatile private var running = false
   @Volatile private var currentRunId = ""
   private val statusMap = ConcurrentHashMap<String, JSONObject>()
+  private val activeConnections = ConcurrentHashMap.newKeySet<HttpURLConnection>()
 
   override fun onBind(intent: Intent?): IBinder? = null
+  override fun onTimeout(startId: Int, fgsType: Int) {
+    cancelled.set(true); paused.set(false)
+    activeConnections.forEach { runCatching { it.disconnect() } }; activeConnections.clear()
+    statusMap.values.filter { it.optString("state") != "completed" }.forEach { it.put("state", "failed").put("message", "Android arka plan süre sınırı; canlı/kayıtlı katalog korundu.") }
+    publishSnapshot(runningValue = false, cancelledValue = true)
+    stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
+  }
 
   override fun onCreate() {
     super.onCreate()
@@ -103,6 +111,7 @@ class BulkPlaylistImportService : Service() {
       ACTION_CANCEL -> {
         cancelled.set(true)
         paused.set(false)
+        activeConnections.forEach { runCatching { it.disconnect() } }; activeConnections.clear()
         publishSnapshot(cancelledValue = true)
       }
       ACTION_START -> if (!running) {
@@ -217,7 +226,7 @@ class BulkPlaylistImportService : Service() {
     val login = fetchObject(apiUrl(server, username, password, null), 30_000)
     val ui = login.optJSONObject("user_info") ?: throw IllegalStateException("Geçersiz Xtream yanıtı")
     val auth = ui.opt("auth")?.toString()
-    if (auth == "0" || auth == "false") throw IllegalStateException("Kullanıcı adı veya şifre hatalı")
+    if (auth != "1" && auth != "true") throw IllegalStateException("Kullanıcı adı veya şifre doğrulanamadı")
 
     updateStatus(key, displayName, "downloading", "Kataloglar paralel indiriliyor")
     val ioPool = Executors.newFixedThreadPool(6)
@@ -231,6 +240,17 @@ class BulkPlaylistImportService : Service() {
 
       val liveR = liveF.get(); val liveCatsR = liveCatsF.get()
       val liveRaw = liveR.data; val liveCats = categoryMap(liveCatsR.data)
+      if (liveR.error != null) throw IllegalStateException("Xtream canlı katalog alınamadı; mevcut veri korunuyor: ${liveR.error}")
+      val channels = normalizeLive(liveRaw, liveCats, server, username, password)
+      // Only a NEW catalog can be published early. Refresh failures never replace existing VOD/series.
+      if (channels.length() > 0 && KizilkanNativeDatabase.get(applicationContext).snapshotDao().get(playlistId) == null) {
+        awaitIfPaused()
+        persistPlaylist(playlistId, channels, JSONArray(), JSONArray())
+        statusMap[key]?.put("liveReady", true)?.put("playlistId", playlistId)?.put("channels", channels.length())
+          ?.put("vod", 0)?.put("series", 0)?.put("liveReadyAt", System.currentTimeMillis())
+          ?.put("userInfo", sanitizeUserInfo(ui))?.put("serverInfo", sanitizeJson(login.optJSONObject("server_info") ?: JSONObject()))
+        updateStatus(key, displayName, "live_ready", "Canlı hazır; film ve dizi arka planda yükleniyor")
+      }
       updateStatus(key, displayName, "normalizing", "Canlı ${liveRaw.length()} · Film/Dizi bekleniyor")
       awaitIfPaused()
       val vodR = vodF.get(); val vodCatsR = vodCatsF.get()
@@ -251,7 +271,6 @@ class BulkPlaylistImportService : Service() {
       statusMap[key]?.put("endpointDiagnostics", diagnostics)
       publishSnapshot()
 
-      val channels = normalizeLive(liveRaw, liveCats, server, username, password)
       val vod = normalizeVod(vodRaw, vodCats, server, username, password)
       val series = normalizeSeries(seriesRaw, seriesCats)
       if (channels.length() + vod.length() + series.length() == 0) {
@@ -265,6 +284,7 @@ class BulkPlaylistImportService : Service() {
 
       return status(key, displayName, "completed", "Kaydedildi")
         .put("playlistId", playlistId)
+        .put("liveReady", channels.length() > 0)
         .put("channels", channels.length())
         .put("vod", vod.length())
         .put("series", series.length())
@@ -395,6 +415,7 @@ class BulkPlaylistImportService : Service() {
     var conn: HttpURLConnection? = null
     try {
       conn = URL(url).openConnection() as HttpURLConnection
+      activeConnections.add(conn)
       conn.connectTimeout = timeout
       conn.readTimeout = timeout
       conn.requestMethod = "GET"
@@ -403,7 +424,7 @@ class BulkPlaylistImportService : Service() {
       val code = conn.responseCode
       if (code !in 200..299) throw IllegalStateException("HTTP $code")
       return conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-    } finally { conn?.disconnect() }
+    } finally { conn?.let { activeConnections.remove(it); it.disconnect() } }
   }
 
   private fun categoryMap(arr: JSONArray): Map<String, String> {

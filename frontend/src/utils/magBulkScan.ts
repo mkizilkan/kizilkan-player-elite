@@ -25,7 +25,7 @@ export type MagScanOptions = {
   onPhase?: (phase: "discovery" | "selection" | "accounts") => void;
   onPortalDiscovery?: (reports: MagPortalDiscovery[]) => void;
   selectPortals?: (reports: MagPortalDiscovery[]) => Promise<Record<string, string>>;
-  onResult?: (r: MagScanResult) => void;
+  onResult?: (r: MagScanResult) => void | Promise<void>;
   onProgress?: (done: number, total: number, current?: string) => void;
   onStage?: (msg: string) => void;
   control?: MagScanControl;
@@ -344,7 +344,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
         const result = await scanOne(job);
         if (cancelled(opts.control)) return;
         results.push(result); done++;
-        opts.onResult?.(result); opts.onProgress?.(done, accountJobs.length, job.hostRaw + " · " + job.mac);
+        await opts.onResult?.(result); opts.onProgress?.(done, accountJobs.length, job.hostRaw + " · " + job.mac);
       } catch (error: any) { if (aborted(error) || cancelled(opts.control)) return; throw error; }
     }
   };

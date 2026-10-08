@@ -27,8 +27,8 @@ need(/function persistStreamDerivedCreds/.test(stalker) && /export async functio
 need(/if \(derived\) \{[\s\S]{0,300}persistStreamDerivedCreds\(\);/.test(stalker), 'U4: türetme anında persist çağrısı yok');
 need(/hydrateStreamDerivedCredentials\(\)/.test(layout), 'U4: açılışta hydrate çağrısı yok');
 // Kök neden (cihaz kanıtı): kart oynatmadan sonra yeniden okumuyordu → useFocusEffect ile yeniden oku + MAC-only yedek key.
-need(/useFocusEffect\(React\.useCallback\(\(\) => \{ setMagDerived\(readDerived\(\)\)/.test(settings), 'U4: kart odaklanınca yeniden okumuyor (useFocusEffect)');
-need(/streamDerivedCreds\.set\(macN, \{ \.\.\.derived, at \}\)/.test(stalker), 'U4: MAC-only yedek key yazılmıyor');
+need(/useFocusEffect\(React\.useCallback\(\(\) => \{[\s\S]{0,400}setMagDerived\(readDerived\(\)\)/.test(settings), 'U4: kart odaklanınca yeniden okumuyor (useFocusEffect)');
+need(/streamCredentialScope\(macN, cred.portal, cred.profileId\)/.test(stalker) && /streamDerivedCreds\.set\(key,/.test(stalker) && !/streamDerivedCreds\.set\(macN,/.test(stalker), 'U4: profil/portal/port/yol kapsamlı cache şart; MAC-only kayıt yasak');
 // Güvenlik: değer loglanmaz (yalnız uzunluk/boolean telemetri)
 need(!/recordDiagnostic\([^)]*derived\.username/.test(stalker), 'GÜVENLİK: türetilen kullanıcı adı DEĞERİ loglanıyor olabilir');
 

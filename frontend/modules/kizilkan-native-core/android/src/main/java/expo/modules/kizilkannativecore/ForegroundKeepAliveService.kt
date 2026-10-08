@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 
 /**
  * v18.7.21 (D) — GENEL "CANLI TUT" ÖN PLAN SERVİSİ.
@@ -31,25 +32,30 @@ class ForegroundKeepAliveService : Service() {
     const val EXTRA_TITLE = "title"
     const val EXTRA_DONE = "done"
     const val EXTRA_TOTAL = "total"
+    const val EXTRA_OWNER = "owner"
 
-    fun start(context: Context, title: String, text: String) {
+    fun start(context: Context, title: String, text: String, owner: String) {
       val i = Intent(context, ForegroundKeepAliveService::class.java).apply {
         action = ACTION_START; putExtra(EXTRA_TITLE, title); putExtra(EXTRA_TEXT, text)
+        putExtra(EXTRA_OWNER, owner)
       }
       if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
     }
-    fun update(context: Context, text: String, done: Int, total: Int) {
+    fun update(context: Context, text: String, done: Int, total: Int, owner: String) {
       val i = Intent(context, ForegroundKeepAliveService::class.java).apply {
         action = ACTION_UPDATE; putExtra(EXTRA_TEXT, text); putExtra(EXTRA_DONE, done); putExtra(EXTRA_TOTAL, total)
+        putExtra(EXTRA_OWNER, owner)
       }
       if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
     }
-    fun stop(context: Context) {
-      context.startService(Intent(context, ForegroundKeepAliveService::class.java).apply { action = ACTION_STOP })
+    fun stop(context: Context, owner: String) {
+      context.startService(Intent(context, ForegroundKeepAliveService::class.java).apply { action = ACTION_STOP; putExtra(EXTRA_OWNER, owner) })
     }
   }
 
   @Volatile private var title = "KIZILKAN PLAYER ELITE"
+  private val owners = mutableMapOf<String, Notification>()
+  private var wakeLock: PowerManager.WakeLock? = null
   override fun onBind(intent: Intent?): IBinder? = null
 
   override fun onCreate() {
@@ -77,22 +83,32 @@ class ForegroundKeepAliveService : Service() {
     } else {
       startForeground(NOTIF_ID, n)
     }
+    val lock = wakeLock ?: getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:catalog-job").apply { setReferenceCounted(false) }.also { wakeLock = it }
+    lock.acquire(10 * 60 * 1000L)
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    val owner = intent?.getStringExtra(EXTRA_OWNER).orEmpty().ifBlank { "legacy" }
     when (intent?.action) {
       ACTION_START -> {
         title = intent.getStringExtra(EXTRA_TITLE) ?: title
-        goForeground(notification(intent.getStringExtra(EXTRA_TEXT) ?: "Arka planda çalışıyor…", 0, 0))
+        val n = notification(intent.getStringExtra(EXTRA_TEXT) ?: "Arka planda çalışıyor…", 0, 0)
+        owners[owner] = n; goForeground(n)
       }
       ACTION_UPDATE -> {
-        // Güncelleme START'tan önce gelirse servis yine foreground'a geçer (bildirim gerekliliği).
-        goForeground(notification(
+        if (!owners.containsKey(owner)) {
+          if (owners.isEmpty()) { goForeground(notification("İş sona erdi", 0, 0)); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
+          return START_NOT_STICKY
+        }
+        val n = notification(
           intent.getStringExtra(EXTRA_TEXT) ?: "Arka planda çalışıyor…",
           intent.getIntExtra(EXTRA_DONE, 0), intent.getIntExtra(EXTRA_TOTAL, 0)
-        ))
+        )
+        owners[owner] = n; goForeground(n)
       }
       ACTION_STOP -> {
+        owners.remove(owner)
+        if (owners.isNotEmpty()) { goForeground(owners.values.last()); return START_NOT_STICKY }
         if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE) else @Suppress("DEPRECATION") stopForeground(true)
         stopSelf()
         return START_NOT_STICKY
@@ -100,5 +116,15 @@ class ForegroundKeepAliveService : Service() {
     }
     // İş bitince JS stop çağırır; süreç ölürse yeniden başlatma (STICKY) istemiyoruz — iş JS'te, yeniden kuramaz.
     return START_NOT_STICKY
+  }
+
+  override fun onTimeout(startId: Int, fgsType: Int) {
+    getSharedPreferences("kizilkan_keepalive_state", MODE_PRIVATE).edit().putLong("timeoutAt", System.currentTimeMillis()).commit()
+    owners.clear(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
+  }
+
+  override fun onDestroy() {
+    wakeLock?.let { if (it.isHeld) it.release() }; wakeLock = null; owners.clear()
+    super.onDestroy()
   }
 }

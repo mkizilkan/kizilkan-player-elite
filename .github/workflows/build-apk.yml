@@ -142,6 +142,7 @@ jobs:
           APKSIGNER="$BUILD_TOOLS/apksigner"; AAPT="$BUILD_TOOLS/aapt"
           [ -x "$APKSIGNER" ] && [ -x "$AAPT" ]
           EXPECTED_PACKAGE=$(node -p "require('./app.json').expo.android.package")
+          if [ "$BUILD_TYPE" = debug ]; then EXPECTED_PACKAGE="${EXPECTED_PACKAGE}.dev"; fi
           EXPECTED_VERSION_CODE=$(node -p "String(require('./app.json').expo.android.versionCode)")
           "$AAPT" dump badging "$SRC" > /tmp/kizilkan-badging.txt
           BADGING=$(sed -n '1p' /tmp/kizilkan-badging.txt)
@@ -151,7 +152,12 @@ jobs:
           "$APKSIGNER" verify --verbose --print-certs "$SRC" > /tmp/kizilkan-apksigner.txt 2>&1
           CERT_SHA=$(sed -n -e 's/^Signer #1 certificate SHA-256 digest: *//p' -e 's/^V[0-9][^:]* Signer: certificate SHA-256 digest: *//p' /tmp/kizilkan-apksigner.txt | sed -n '1p' | tr -d '[:space:]')
           NORMALIZED_CERT_SHA=$(printf '%s' "$CERT_SHA" | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')
-          EXPECTED_CERT_SHA256=$(printf '%s' "${ANDROID_CERT_SHA256:-}" | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')
+          if [ "$BUILD_TYPE" = debug ]; then
+            keytool -list -v -keystore android/app/debug.keystore -storepass android -alias androiddebugkey > /tmp/kizilkan-debug-key.txt
+            EXPECTED_CERT_SHA256=$(sed -n 's/^[[:space:]]*SHA256: *//p' /tmp/kizilkan-debug-key.txt | head -n1 | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')
+          else
+            EXPECTED_CERT_SHA256=$(printf '%s' "${ANDROID_CERT_SHA256:-}" | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')
+          fi
           printf '%s' "$EXPECTED_CERT_SHA256" | grep -Eq '^[0-9A-F]{64}$'
           [ "$NORMALIZED_CERT_SHA" = "$EXPECTED_CERT_SHA256" ]
           echo "cert_sha256=$CERT_SHA" >> "$GITHUB_OUTPUT"
@@ -161,6 +167,7 @@ jobs:
           VERSION=$(node -p "require('./app.json').expo.version")
           SRC=$(find android/app/build/outputs/apk -type f -name '*.apk' -print -quit)
           NAME="KIZILKAN-PLAYER-ELITE-v${VERSION}-build${{ github.run_number }}.apk"
+          if [ "$BUILD_TYPE" = debug ]; then NAME="KIZILKAN-PLAYER-ELITE-v${VERSION}-DEV-build${{ github.run_number }}.apk"; fi
           mkdir -p ../artifacts
           cp "$SRC" "../artifacts/$NAME"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"

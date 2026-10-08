@@ -120,7 +120,7 @@ export default function BackupScreen() {
         if (!canShare) throw new Error("Bu cihazda dosya paylaşımı kullanılamıyor.");
         await shareFile(uri, encryptedExport ? 'application/octet-stream' : "application/x-ndjson", "KIZILKAN PLAYER ELITE Tam Yedeğini Paylaş");
         checkOwned(token, abort.signal);
-        setMsg({ type:"ok", text:`${encryptedExport ? 'Şifreli tam' : 'Tam'} yedek hazır: ${result.playlists} playlist · ${result.items} medya kaydı · ${(result.bytes/1024/1024).toFixed(1)} MB.` });
+        setMsg({ type: result.warnings.length ? "err" : "ok", text:`${encryptedExport ? 'Şifreli tam' : 'Tam'} yedek hazır: ${result.playlists} playlist · ${result.items} medya kaydı · ${(result.bytes/1024/1024).toFixed(1)} MB.${result.warnings.length ? '\nEksik katalog uyarıları:\n' + result.warnings.join('\n') : ''}` });
         return;
       }
       const effectiveScope: BackupScope = scope === "full" ? "quick" : scope;
@@ -361,14 +361,14 @@ export default function BackupScreen() {
           <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm }}>
             <Ionicons name="logo-google" size={22} color={colors.brandPrimary} />
             <Text style={[styles.driveTitle, { color: colors.onSurface, flex: 1 }]}>Google Drive Yedeği</Text>
-            {driveConfigured && <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}><Ionicons name="checkmark-circle" size={16} color={colors.success || "#2ecc71"} /><Text style={{ color: colors.success || "#2ecc71", fontSize: FONT.size.xs }}>Yapılandırıldı</Text></View>}
+            {driveConfigured && <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}><Ionicons name="checkmark-circle" size={16} color={colors.success || "#2ecc71"} /><Text style={{ color: colors.success || "#2ecc71", fontSize: FONT.size.xs }}>{Platform.OS === 'android' ? 'Android akışı hazır' : 'Yapılandırıldı'}</Text></View>}
           </View>
           {/* v18.7.18: kullanıcı KENDİ OAuth Client ID'sini girer; "Giriş yap" tarayıcıda Google oturumu açar. */}
           <Text style={[styles.driveSub, { color: colors.onSurfaceSecondary }]}>
-            Google Cloud → API ve Hizmetler → Kimlik Bilgileri'nden bir OAuth 2.0 Client ID (Web uygulaması) oluşturun, Drive API'yi açın. Aşağıdaki yönlendirme URI'sini Console'daki "Yetkili yönlendirme URI'leri"ne ekleyin, ardından Client ID'yi buraya yapıştırın.
+            {Platform.OS === 'android' ? 'Google Cloud projesinde Drive API’yi açın. Android türünde OAuth istemcisine aşağıdaki paket adını ve SHA-1 imzasını kaydedin. DEV ve asıl uygulama için ayrı Android istemcisi gerekir. Drive izni Google’ın Android hesap ekranından alınır; yönlendirme URI’si veya Android’e Web Client ID girmek gerekmez.' : 'Google Cloud projesinde Drive API’yi açın. Web/iOS OAuth istemcinizi ve uygun yönlendirme URI’sini yapılandırın.'}
           </Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.surface, borderRadius: RADIUS.sm, paddingHorizontal: SPACING.sm, paddingVertical: 6, borderWidth: 1, borderColor: colors.border }}>
-            <Text numberOfLines={1} style={{ flex: 1, color: colors.onSurfaceSecondary, fontSize: FONT.size.xs }}>{driveRedirectUri || "yönlendirme URI'si alınamadı"}</Text>
+            <Text selectable style={{ flex: 1, color: colors.onSurfaceSecondary, fontSize: FONT.size.xs }}>{driveRedirectUri || "yapılandırma alınamadı"}</Text>
             <TouchableOpacity testID="drive-copy-redirect" onPress={() => { Clipboard.setStringAsync(driveRedirectUri); setMsg({ type: "ok", text: "Yönlendirme URI'si kopyalandı." }); }} style={{ padding: 4 }}>
               <Ionicons name="copy-outline" size={16} color={colors.brandPrimary} />
             </TouchableOpacity>
@@ -378,7 +378,7 @@ export default function BackupScreen() {
             style={[styles.filterInput, { color: colors.onSurface, backgroundColor: colors.surface, borderColor: colors.border }]} />
           <View style={{ flexDirection: "row", gap: SPACING.sm }}>
             <TouchableOpacity testID="drive-save-client-id" disabled={busy !== null} onPress={saveDriveClientId} style={[styles.driveBtn, { flex: 1, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.brandPrimary, opacity: busy ? 0.5 : 1 }]}>
-              <Text style={{ color: colors.brandPrimary, fontSize: FONT.size.sm, fontWeight: FONT.weight.bold }}>{driveClientSaved ? "Kaydedildi ✓" : "Client ID Kaydet"}</Text>
+              <Text style={{ color: colors.brandPrimary, fontSize: FONT.size.sm, fontWeight: FONT.weight.bold }}>{driveClientSaved ? "Kaydedildi ✓" : Platform.OS === 'android' ? 'Web/iOS Client ID Kaydet' : 'Client ID Kaydet'}</Text>
             </TouchableOpacity>
             <TouchableOpacity testID="drive-upload-btn" disabled={busy !== null || encryptedExport || !driveConfigured} onPress={doDriveExport}
               style={[styles.driveBtn, { flex: 1, backgroundColor: colors.brandPrimary, opacity: busy || encryptedExport || !driveConfigured ? 0.5 : 1 }]}>

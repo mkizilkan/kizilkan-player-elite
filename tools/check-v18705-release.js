@@ -28,7 +28,7 @@ need(/emitMedia3Audio\("readyToPlay"\)/.test(player), 'readyToPlay aşaması kay
 need(/emitMedia3Audio\("sourceLoad"\)/.test(player), 'sourceLoad aşaması kaydedilmiyor');
 need(/emitMedia3Audio\("post-first-frame"\)/.test(player), 'ilk-kare sonrası aşama kaydedilmiyor');
 // İlk-kare telemetrisi timeshift moduyla etiketli (Kapalı vs Her zaman ilk-kare kıyası).
-need(/timeshiftMode: liveTimeshiftModeRef\.current,\n\s*\}, \{ sessionId: playerDiagnosticSessionRef\.current \}\);/.test(player) || /FIRST_FRAME[\s\S]{0,400}timeshiftMode: liveTimeshiftModeRef\.current/.test(player), 'FIRST_FRAME timeshift moduyla etiketlenmiyor');
+need(/FIRST_FRAME[\s\S]{0,800}timeshiftMode: liveTimeshiftModeRef\.current/.test(player), 'FIRST_FRAME timeshift moduyla etiketlenmiyor');
 
 if (fail.length) { console.log(fail.map(f => '✗ ' + f).join('\n')); console.log('BAŞARISIZ'); process.exit(1); }
 console.log('PASS: v18.7.5 Media3 ses telemetrisi (readyToPlay/sourceLoad/post-first-frame) kapısı TEMİZ');

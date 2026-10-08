@@ -16,6 +16,7 @@ type NativeSnapshot = {
   batchIndex?: number; batchCount?: number; batchSize?: number; batchStart?: number; batchEnd?: number;
   requestedConcurrency?: number; effectiveConcurrency?: number; sourceFingerprint?: string;
   streamingFile?: boolean; producerDone?: boolean; queueDepth?: number; queueCapacity?: number; producerBackpressure?: boolean; skippedNoCandidate?: number; directoryPanels?: number;
+  safetyBackup?: { ok?: boolean; path?: string; error?: string; count?: number };
 };
 
 
@@ -49,6 +50,17 @@ function normalizeStartResult(value: any): NativeScanStartResult | null {
 
 export const PanelScan = {
   available: !!native,
+  createResultArchive: async (runId: string, profileId: string) => native ? await native.createResultArchive(runId, profileId) : runId,
+  appendResultArchive: async (runId: string, key: string, payload: any): Promise<{ok?:boolean;error?:string;path?:string}> => native ? JSON.parse(await native.appendResultArchive(runId, key, JSON.stringify(payload))) : { ok: false, error: 'Otomatik kalıcı tarama yedeği Android Native gerektirir; bu sonuçları TXT ile kaydedin.' },
+  flushResultArchive: async (runId: string): Promise<{ok?:boolean;error?:string;path?:string;count?:number}> => native ? JSON.parse(await native.flushResultArchive(runId)) : { ok: false, error: 'Bu platformda otomatik native yedek yok; TXT kaydı kullanın.' },
+  getLatestResultArchive: async (profileId: string): Promise<string> => native ? await native.getLatestResultArchive(profileId) : '',
+  getResultsPage: async (runId: string, afterId = 0, limit = 100): Promise<{ runId: string; matches: any[]; nextCursor: number; total: number; hasMore: boolean }> => {
+    if (!native?.getResultsPage) throw new Error('Kalıcı tarama kayıtları için güncel DEV sürümü gerekli.');
+    const page = JSON.parse(await native.getResultsPage(runId, afterId, limit));
+    if (page.runId !== runId || !Array.isArray(page.matches) || !Number.isSafeInteger(page.nextCursor) || page.nextCursor < afterId) throw new Error('Tarama kayıt sayfası doğrulanamadı.');
+    if (page.hasMore && page.nextCursor === afterId) throw new Error('Tarama cursor ilerlemiyor; kayıtlar korunuyor.');
+    return page;
+  },
   parseBulkAccountsFile: async (uri: string): Promise<any> => native ? await native.parseBulkAccountsFile(uri) : { supported: false, reason: "native-unavailable" },
   inspectBulkAccountsFile: async (uri: string, sampleLimit = 12): Promise<any> => native ? await native.inspectBulkAccountsFile(uri, sampleLimit) : { supported: false, reason: "native-unavailable" },
   startStreamingFileScanV172: async (uri: string, directory: any[], requestedConcurrency: number, timeoutMs: number, batchSize: number, sourceFingerprint: string): Promise<NativeScanStartResult | null> =>

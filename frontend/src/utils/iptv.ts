@@ -440,6 +440,26 @@ export async function xtreamLiveStreams(cred: XtreamCredentials, signal?: AbortS
   return out;
 }
 
+/** Catalogue presence only; avoids category lookup and playback claims. */
+export async function xtreamLiveSample(cred: XtreamCredentials, signal?: AbortSignal): Promise<{ url: string; count: number }> {
+  const base = cred.server.replace(/\/+$/, '');
+  const login = await xtreamLogin(cred, signal);
+  if (![1, '1', true, 'true'].includes((login?.user_info as any)?.auth)) throw new Error('Xtream hesabı doğrulanamadı.');
+  const rows = await xtGet<unknown>(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_streams`, 10000, signal);
+  if (!Array.isArray(rows)) throw new Error('Canlı katalog yanıtı geçersiz.');
+  const valid = rows.filter(r => r && /^\d+$/.test(String(r.stream_id)));
+  if (!valid.length) throw new Error('Test edilecek canlı kanal bulunamadı.');
+  const row = valid[0]; const ext = /^(ts|m3u8|mp4)$/i.test(String(row.container_extension)) ? row.container_extension : 'ts';
+  return { url: `${base}/live/${encodeURIComponent(cred.username)}/${encodeURIComponent(cred.password)}/${row.stream_id}.${ext}`, count: valid.length };
+}
+
+export async function xtreamLiveCatalogProbe(cred: XtreamCredentials, signal?: AbortSignal): Promise<number> {
+  const base = normalizeServer(cred.server);
+  const rows = await xtGet<unknown>(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_streams`, 10000, signal);
+  if (!Array.isArray(rows)) throw new Error('Canlı katalog API yanıtı dizi değil.');
+  return rows.filter(row => row && typeof row === 'object' && /^\d+$/.test(String(row.stream_id))).length;
+}
+
 export async function xtreamVodCategories(cred: XtreamCredentials, signal?: AbortSignal): Promise<XtreamCategory[]> {
   const base = normalizeServer(cred.server);
   return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_vod_categories`, 60000, signal);
@@ -527,10 +547,10 @@ export async function xtreamSeries(cred: XtreamCredentials, signal?: AbortSignal
   return out;
 }
 
-export async function xtreamSeriesInfo(cred: XtreamCredentials, series_id: string): Promise<{ info: any; seasons: { season: string; episodes: any[] }[] }> {
+export async function xtreamSeriesInfo(cred: XtreamCredentials, series_id: string, signal?: AbortSignal): Promise<{ info: any; seasons: { season: string; episodes: any[] }[] }> {
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_series_info&series_id=${encodeURIComponent(series_id)}`;
-  const data = await xtGet<any>(url, 60000);
+  const data = await xtGet<any>(url, 60000, signal);
   const eps = data?.episodes || {};
   const seasons = Object.keys(eps).map(k => ({
     season: k,
@@ -542,10 +562,10 @@ export async function xtreamSeriesInfo(cred: XtreamCredentials, series_id: strin
   return { info: data?.info || {}, seasons };
 }
 
-export async function xtreamVodInfo(cred: XtreamCredentials, vod_id: string): Promise<{ info: any; movie_data: any }> {
+export async function xtreamVodInfo(cred: XtreamCredentials, vod_id: string, signal?: AbortSignal): Promise<{ info: any; movie_data: any }> {
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_vod_info&vod_id=${encodeURIComponent(vod_id)}`;
-  const data = await xtGet<any>(url, 60000);
+  const data = await xtGet<any>(url, 60000, signal);
   return { info: data?.info || {}, movie_data: data?.movie_data || {} };
 }
 

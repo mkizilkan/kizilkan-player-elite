@@ -1,6 +1,8 @@
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import { storage } from '@/src/utils/storage';
+import { Platform } from 'react-native';
+import { KizilkanNativeCore } from '@/modules/kizilkan-native-core';
 
 // Prevents "browser doesn't return" issue on iOS
 WebBrowser.maybeCompleteAuthSession();
@@ -45,10 +47,15 @@ const discovery = {
 };
 
 export function isGoogleDriveConfigured(): boolean {
+  if (Platform.OS === 'android') return KizilkanNativeCore.available;
   return !!getGoogleDriveClientId();
 }
 /** Google Console'a eklenecek yönlendirme (redirect) URI'si — kullanıcıya gösterilir. */
 export function getGoogleDriveRedirectUri(): string {
+  if (Platform.OS === 'android') {
+    const config = KizilkanNativeCore.getGoogleDriveClientConfiguration();
+    return config ? `Android OAuth · Paket: ${config.packageName}\nSHA-1: ${config.sha1}` : 'Android yetkilendirme yapılandırması kullanılamıyor.';
+  }
   try { return AuthSession.makeRedirectUri({ path: 'oauth/google' }); } catch { return ''; }
 }
 
@@ -63,6 +70,7 @@ export interface DriveAuthResult {
  * Throws if not configured or user cancels.
  */
 export async function authenticateGoogleDrive(): Promise<DriveAuthResult> {
+  if (Platform.OS === 'android') return await KizilkanNativeCore.authorizeGoogleDrive();
   const clientId = getGoogleDriveClientId();
   if (!clientId) {
     throw new Error(

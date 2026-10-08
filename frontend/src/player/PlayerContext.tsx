@@ -11,6 +11,7 @@
  * source !== null  → player görünür, o kanalı oynatır.
  */
 import React, { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { playbackProbeActive } from './playbackProbeLease';
 
 export type PlayerSessionKind = "live" | "vod" | "series" | "catchup" | "external";
 
@@ -88,6 +89,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [source, setSource] = useState<PlayerSource>(null);
 
   const openPlayer = useCallback((s: { id: string; ext?: string; kind?: PlayerSessionKind; resumeAt?: number; nav?: PlayerNavigationContext }) => {
+    if (playbackProbeActive()) return;
     const kind = s.kind ?? inferSessionKind(s.id, s.ext);
     const resumeAt = Number.isFinite(Number(s.resumeAt)) ? Math.max(0, Number(s.resumeAt)) : undefined;
     setSource({ id: s.id, ext: s.ext, kind, ...(resumeAt ? { resumeAt } : {}), ...(s.nav ? { nav: s.nav } : {}) });
@@ -99,6 +101,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   // Zap: katmanı yeniden mount ETME, sadece kanal id'sini değiştir.
   const switchChannel = useCallback((id: string, nav?: PlayerNavigationContext) => {
+    if (playbackProbeActive()) return;
     // Zap yalnız canlı kanallarda kullanılır. Önceki VOD/ext bayrağını
     // taşımak eski synthetic oturumu yeni kanala sızdırıyordu. Navigation scope korunur.
     setSource(prev => {
@@ -109,6 +112,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const switchContent = useCallback((s: { id: string; ext?: string; kind: PlayerSessionKind; nav?: PlayerNavigationContext }) => {
+    if (playbackProbeActive()) return;
     setSource(prev => {
       const baseNav = s.nav || prev?.nav;
       const nextNav = navigationForItem(baseNav, s.id, s.kind);

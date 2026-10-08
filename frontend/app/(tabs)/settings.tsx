@@ -1885,6 +1885,20 @@ function SectionTitle({ text }: { text: string }) {
 
 function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any; provider?: any; onEditProvider?: () => void }) {
   const { colors } = useTheme();
+  const { activeProfile } = useProfiles();
+  const [addressProofs, setAddressProofs] = React.useState<import('@/src/types').PlaylistEndpoint[]>([]);
+  useFocusEffect(React.useCallback(() => {
+    let alive = true;
+    void (async () => {
+      const { playlistEndpoints } = await import('@/src/utils/playlistEndpoints');
+      let endpoints = playlistEndpoints(playlist);
+      if (KizilkanNativeCore.available) {
+        try { const stored = await KizilkanNativeCore.getPlaylistEndpoints(activeProfile.id, playlist.id); if (stored.length) endpoints = stored; } catch {}
+      }
+      if (alive) setAddressProofs(endpoints);
+    })();
+    return () => { alive = false; };
+  }, [activeProfile.id, playlist.id, playlist.endpoints, playlist.xtreamServer, playlist.stalkerPortal]));
   const acc = playlist.accountInfo || {};
   const isXtream = playlist.source === "xtream";
   const isStalker = playlist.source === "stalker";
@@ -1894,27 +1908,32 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
   // useMemo boş haritayla hesaplanıp öyle kalıyordu (kanal açtıktan sonra güncellenmiyordu). Artık state +
   // useFocusEffect ile ekrana her dönüşte yeniden okunur → türetilen kullanıcı adı görünür.
   const readDerived = React.useCallback(() => (isStalker && playlist.stalkerMac && playlist.stalkerPortal)
-    ? getStreamDerivedCredentials(playlist.stalkerMac, playlist.stalkerPortal) : null, [isStalker, playlist.stalkerMac, playlist.stalkerPortal]);
+    ? getStreamDerivedCredentials(playlist.stalkerMac, playlist.stalkerPortal, activeProfile.id) : null, [isStalker, playlist.stalkerMac, playlist.stalkerPortal, activeProfile.id]);
   const [magDerived, setMagDerived] = React.useState(readDerived);
-  const primeTriedRef = React.useRef(false);
+  const primeTriedRef = React.useRef('');
+  const cardAbortRef = React.useRef<AbortController | null>(null);
+  const testAbortRef = React.useRef<AbortController | null>(null);
   // v18.7.23: kart açılınca kullanıcı adı yoksa (mevcut MAG hesabı, henüz oynatılmadı) Room'daki BİR kanalın
   // create_link'ini çözüp kullanıcı adını türet — oynatmaya/yeni eklemeye gerek yok. En-iyi-çaba, hesap başına
   // bir kez (primeTriedRef). Cihaz kanıtı: A yalnız yeni eklemede çalışıyordu; mevcut hesapta kart boş kalıyordu.
-  useFocusEffect(React.useCallback(() => { setMagDerived(readDerived());
-    if (!isStalker || !playlist.stalkerMac || !playlist.stalkerPortal || primeTriedRef.current) return;
-    if (readDerived()?.username) return;
-    primeTriedRef.current = true;
+  useFocusEffect(React.useCallback(() => {
+    const controller = new AbortController(); cardAbortRef.current = controller;
+    const owner = `${activeProfile.id}|${playlist.id}|${playlist.stalkerPortal}|${playlist.stalkerMac}`;
+    setMagDerived(readDerived());
+    const cleanup = () => { controller.abort(); testAbortRef.current?.abort(); };
+    if (!isStalker || !playlist.stalkerMac || !playlist.stalkerPortal || primeTriedRef.current === owner || readDerived()?.username) return cleanup;
     (async () => {
       try {
         if (!KizilkanNativeCore.available) return;
         const page = await KizilkanNativeCore.queryItems<any>(playlist.id, "live", { limit: 1 });
-        const ch = page.items?.[0]; if (!ch?.url) return;
+        const ch = page.items?.[0]; if (!ch?.url || controller.signal.aborted) return;
         const stalker = await import("@/src/utils/stalker");
-        await stalker.stalkerResolveStream({ portal: String(playlist.stalkerResolvedPortal?.endpoint || playlist.stalkerPortal), mac: String(playlist.stalkerMac), serial: playlist.stalkerSerial, deviceModel: "MAG320" }, null, String(ch.url));
-        setMagDerived(readDerived());
+        await stalker.stalkerResolveStream({ ...stalker.stalkerCredsFromPlaylist(playlist), profileId: activeProfile.id, deviceModel: "MAG320", requestScope: { transport: 'direct', signal: controller.signal } }, null, String(ch.url));
+        if (!controller.signal.aborted) { const derived = readDerived(); if (derived?.username) primeTriedRef.current = owner; setMagDerived(derived); }
       } catch {}
     })();
-  }, [readDerived, isStalker, playlist.id, playlist.stalkerMac, playlist.stalkerPortal]));
+    return cleanup;
+  }, [readDerived, isStalker, playlist.id, playlist.stalkerMac, playlist.stalkerPortal, activeProfile.id]));
   // v18.7.17 (K1): MAG hesabında kullanıcı adı için ÖNCE U4'ün yayın adresinden çıkardığı GERÇEK değer.
   // Ayrıca eski sürümden kalan bayat `username` (aslında görünen ad = name; "1787") gerçek kullanıcı adı
   // sayılmaz — display_name'e eşitse gösterilmez (gerçek login ya da stream'den geleni tercih edilir).
@@ -1931,22 +1950,28 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
   const copyM3u = async () => { try { await Clipboard.setStringAsync(m3uLink); setM3uCopied(true); try { haptic.light?.(); } catch {} setTimeout(() => setM3uCopied(false), 1200); } catch {} };
   const testM3u = async () => {
     if (!m3uServer || !shownUsername || !shownPassword) return;
-    setM3uTest({ state: "testing", msg: "Görüntü kontrol ediliyor…" });
+    testAbortRef.current?.abort();
+    const ctrl = new AbortController(); testAbortRef.current = ctrl;
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    const owns = () => testAbortRef.current === ctrl && !ctrl.signal.aborted;
+    setM3uTest({ state: "testing", msg: "Canlı katalog kontrol ediliyor…" });
     try {
       // player_api.php get_live_streams (JSON, hafif) → kanal dönerse "görüntü var".
       const api = `${m3uServer}/player_api.php?username=${encodeURIComponent(shownUsername)}&password=${encodeURIComponent(shownPassword)}&action=get_live_streams`;
-      const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 15000);
-      const res = await fetch(api, { signal: ctrl.signal }); clearTimeout(timer);
+      const res = await fetch(api, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
-      let count = 0; try { const arr = JSON.parse(text); count = Array.isArray(arr) ? arr.length : 0; } catch {}
-      if (count > 0) setM3uTest({ state: "ok", msg: `✓ Görüntü var · ${count} kanal` });
-      else setM3uTest({ state: "fail", msg: "✗ Görüntü yok (içerik dönmedi / hesap aktif değil)" });
-    } catch (e: any) { setM3uTest({ state: "fail", msg: "✗ Test başarısız: " + String(e?.message || e).slice(0, 60) }); }
+      const arr = JSON.parse(text); if (!Array.isArray(arr)) throw new Error('Katalog API yanıtı geçersiz.');
+      if (owns()) setM3uTest(arr.length > 0 ? { state: "ok", msg: `✓ Katalog var · ${arr.length} kanal · ilk kare sınanmadı` } : { state: "fail", msg: "Canlı katalog boş; yayın/ilk kare sınanmadı" });
+    } catch (e: any) { if (testAbortRef.current === ctrl && !cardAbortRef.current?.signal.aborted) setM3uTest({ state: "fail", msg: ctrl.signal.aborted ? 'Katalog testi zaman aşımı; yayın durumu belirsiz' : "Test başarısız: " + String(e?.message || e).slice(0, 60) }); }
+    finally { clearTimeout(timer); }
   };
   // v18.7.23: M3U linki hazır olur olmaz görüntü testini OTOMATİK çalıştır (kullanıcı butona basmak zorunda kalmasın).
   const autoTestedRef = React.useRef("");
   React.useEffect(() => {
-    if (m3uLink && autoTestedRef.current !== m3uLink && m3uTest.state === "idle") { autoTestedRef.current = m3uLink; void testM3u(); }
+    testAbortRef.current?.abort(); setM3uTest({ state: 'idle', msg: '' });
+    if (m3uLink && autoTestedRef.current !== m3uLink) { autoTestedRef.current = m3uLink; void testM3u(); }
+    return () => { testAbortRef.current?.abort(); };
   }, [m3uLink]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const expiryAt = accountExpiryMs(acc);
@@ -1972,6 +1997,7 @@ function AccountInfoCard({ playlist, provider, onEditProvider }: { playlist: any
       </View>
       <View style={cardStyles.grid}>
         <InfoField label="Sunucu" copyable value={String(isStalker ? playlist.stalkerPortal || 'Belirlenemedi' : playlist.serverInfo?.url || playlist.xtreamServer || 'Belirlenemedi')} />
+        {addressProofs.map(e => <InfoField key={e.url} label={`${e.primary ? 'Birincil' : 'Alternatif'} ${e.kind === 'stalker' ? 'portal' : 'DNS'}`} copyable value={`${e.url}\n${e.firstFrameAt ? `İlk kare görüldü · ${e.firstFrameAt}` : e.playbackObservedAt ? `Video oynatma gözlendi · ${e.playbackObservedAt}` : e.catalogVerifiedAt ? 'Katalog alındı; ilk kare sınanmadı' : e.accountVerifiedAt ? 'Hesap doğrulandı; ilk kare sınanmadı' : 'Henüz doğrulanmadı'}${e.lastError ? `\nSon test: ${e.lastError}` : ''}`} />)}
         <InfoField label="Kullanıcı Adı" copyable value={shownUsername || "Belirlenemedi"} />
         {acc.display_name ? <InfoField label="Görünen Ad" value={String(acc.display_name)} /> : null}
         <InfoField label="Şifre" copyable value={shownPassword || 'Belirlenemedi'} />

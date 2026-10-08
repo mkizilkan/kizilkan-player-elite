@@ -319,6 +319,33 @@ class PanelScanModule : Module() {
     }
 
 
+    AsyncFunction("getResultsPage") { runId: String, afterId: Double, limit: Int ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Tarama kayıtları için Android context yok")
+      ScanJournalStore.get(context).resultsPage(runId, afterId.toLong(), limit).toString()
+    }
+
+    AsyncFunction("createResultArchive") { runId: String, profileId: String ->
+      val context = appContext.reactContext ?: error("Android context yok")
+      val journal = ScanJournalStore.get(context)
+      journal.createSession(runId, "MAG_RESULTS", org.json.JSONObject().put("profileId", profileId).toString(), 1, 0, 0)
+      journal.finish(runId, "ARCHIVED")
+      true
+    }
+    AsyncFunction("appendResultArchive") { runId: String, key: String, payload: String ->
+      val context = appContext.reactContext ?: error("Android context yok")
+      val journal = ScanJournalStore.get(context)
+      journal.addResult(runId, key, payload)
+      ScanSafetyBackup.flush(context, journal, runId, false).toString()
+    }
+    AsyncFunction("flushResultArchive") { runId: String ->
+      val context = appContext.reactContext ?: error("Android context yok")
+      ScanSafetyBackup.flush(context, ScanJournalStore.get(context), runId).toString()
+    }
+    AsyncFunction("getLatestResultArchive") { profileId: String ->
+      val context = appContext.reactContext ?: error("Android context yok")
+      ScanJournalStore.get(context).latestResultArchive(profileId) ?: ""
+    }
+
     Function("getRecoverableScan") {
       val context = appContext.reactContext ?: return@Function "{}"
       val rec = ScanJournalStore.get(context).recoverable() ?: return@Function "{}"
@@ -381,6 +408,7 @@ class PanelScanModule : Module() {
       val prefs = context.getSharedPreferences(PanelScanService.PREFS, 0)
       val raw = prefs.getString(PanelScanService.KEY_SNAPSHOT, "{}") ?: "{}"
       val obj = try { org.json.JSONObject(raw) } catch (_: Throwable) { org.json.JSONObject() }
+      obj.put("safetyBackup", ScanSafetyBackup.status(context, obj.optString("runId")))
       val state = obj.optString("state", "")
       val transient = state in setOf("STARTING", "RUNNING", "PAUSED", "CANCELLING") || obj.optBoolean("running", false)
       if (transient && PanelScanService.activeRunId().isBlank()) {

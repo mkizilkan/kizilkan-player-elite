@@ -58,7 +58,7 @@ need(/profileFieldShapes:/.test(stalker) && /mainInfoFieldShapes:/.test(stalker)
 need(/function streamUrlShape/.test(stalker) && /streamShape: streamUrlShape\(url/.test(stalker), 'U3: yayın URL yapı telemetrisi yok');
 // U4 — kimlik çıkarma + kart
 need(/function extractStreamCredentials/.test(stalker) && /export function getStreamDerivedCredentials/.test(stalker), 'U4: stream kimlik çıkarma/getter yok');
-need(/getStreamDerivedCredentials\(playlist\.stalkerMac, playlist\.stalkerPortal\)/.test(settings), 'U4: kart stream kimliğini okumuyor');
+need(/getStreamDerivedCredentials\(playlist\.stalkerMac, playlist\.stalkerPortal, activeProfile.id\)/.test(settings), 'U4: kart profil/portal kapsamlı stream kimliğini okumuyor');
 // GÜVENLİK: U4 değerleri loglanmaz (yalnız uzunluk)
 need(/streamUsernameLen: derived\?\.username\.length/.test(stalker) && !/streamUsername: derived\.username/.test(stalker), 'GÜVENLİK: U4 kimlik DEĞERİ loglanıyor olabilir');
 

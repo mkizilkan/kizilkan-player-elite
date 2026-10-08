@@ -27,15 +27,15 @@ need(/"has-content"/.test(magBulk), 'MAG: ResultFilter has-content yok');
 need(/const contentResults = useMemo\(\(\) => results\.filter\(r => \(r\.liveCount \|\| 0\) > 0\)/.test(magBulk), 'MAG: contentResults (liveCount>0) yok');
 need(/resultFilter === "has-content" \? \(r\.liveCount \|\| 0\) > 0/.test(magBulk), 'MAG: has-content süzme filtresi yok');
 need(/mag-select-has-content/.test(magBulk), 'MAG: "görüntü olanları seç" butonu yok');
-need(/Görüntü: VAR · \$\{n\} kanal/.test(magBulk), 'MAG: kartta görüntü var/yok satırı yok');
+need(/Katalog: \$\{n\} kanal/.test(magBulk) && /ilk kare sınanmadı/.test(magBulk), 'MAG: katalog / ilk kare ayrı gösterilmiyor');
 
 // Xtream combo tarafı (istek üzerine probe)
 need(/const \[bulkContentTest, setBulkContentTest\]/.test(addPl), 'Xtream: bulkContentTest state yok');
 need(/const testBulkContent = React\.useCallback/.test(addPl), 'Xtream: testBulkContent yok');
-need(/xtreamLiveStreams\(\{ server: c\.server, username: c\.username, password: c\.password \}, per\.signal\)/.test(addPl), 'Xtream: get_live_streams probe çağrısı yok');
+need(/xtreamLiveCatalogProbe\(\{ server: c\.server, username: c\.username, password: c\.password \}, per\.signal\)/.test(addPl), 'Xtream: hafif canlı katalog probe çağrısı yok');
 need(/bulk-content-test-btn/.test(addPl), 'Xtream: "Görüntü Test Et" butonu yok');
 need(/bulk-select-content-btn/.test(addPl) && /bulkContentYesKeys/.test(addPl), 'Xtream: "Görüntü Olanları Seç" butonu/anahtar seti yok');
-need(/const ct = bulkContentTest\[c\.key\]/.test(addPl) && /Görüntü var · \$\{ct\.count\} kanal/.test(addPl), 'Xtream: kartta görüntü rozeti yok');
+need(/const ct = bulkContentTest\[c\.key\]/.test(addPl) && /Katalog var · \$\{ct\.count\} kanal/.test(addPl), 'Xtream: dürüst katalog rozeti yok');
 
 if (fail.length) { console.log(fail.map(f => '✗ ' + f).join('\n')); console.log('BAŞARISIZ'); process.exit(1); }
 console.log('PASS: v18.7.24 çoklu ekleme seçim ekranı görüntü var/yok + süzme (MAG liveCount ücretsiz · Xtream istek-üzerine probe) TEMİZ');

@@ -12,7 +12,7 @@
  * Kaydetme, ekranın kendi "Kaydet" akışıyla yapılır (onChange ile üst bileşene
  * bildirilir); birincil adres değişikliği mevcut SUNUCU alanına yazılır.
  */
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useState, useEffect, useRef } from "react";
 import { ActivityIndicator, StyleSheet, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/src/theme/ThemeContext";
@@ -21,6 +21,9 @@ import { FocusButton } from "@/src/components/FocusButton";
 import { normalizeHost } from "@/src/player/hostFailover";
 import { xtreamLogin } from "@/src/utils/iptv";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
+import { canonicalEndpointUrl, endpointProofLabel } from '@/src/utils/playlistEndpoints';
+import type { PlaylistEndpoint } from '@/src/types';
+import { EndpointPlaybackTest } from './EndpointPlaybackTest';
 
 type TestState = { status: "idle" | "testing" | "ok" | "auth" | "fail"; ms?: number; note?: string };
 
@@ -31,47 +34,78 @@ type Props = {
   password: string;
   onChange: (hosts: string[]) => void;
   onMakePrimary: (host: string) => void;
+  kind?: 'xtream' | 'stalker';
+  mac?: string;
+  serial?: string;
+  profileId?: string;
+  endpoints?: PlaylistEndpoint[];
+  onEvidence?: (evidence: PlaylistEndpoint) => void;
 };
 
 const TEST_TIMEOUT_MS = 9000;
 
-export function DnsManager({ primary, hosts, username, password, onChange, onMakePrimary }: Props) {
+export function DnsManager({ primary, hosts, username, password, onChange, onMakePrimary, kind = 'xtream', mac, serial, profileId, endpoints = [], onEvidence }: Props) {
   const { colors } = useTheme();
   const [input, setInput] = useState("");
   const [tests, setTests] = useState<Record<string, TestState>>({});
   const [inputError, setInputError] = useState("");
-  const primaryNorm = normalizeHost(primary);
+  const [probeHost, setProbeHost] = useState<string | null>(null);
+  const normalize = kind === 'stalker' ? canonicalEndpointUrl : normalizeHost;
+  const primaryNorm = normalize(primary);
   const all = [primaryNorm, ...hosts.filter(h => h && h !== primaryNorm)].filter(Boolean);
+  const requests = useRef(new Set<AbortController>());
+  const generation = useRef(0);
+  useEffect(() => { generation.current++; setTests({}); setProbeHost(null); return () => { generation.current++; requests.current.forEach(c => c.abort()); requests.current.clear(); }; }, [username, password, mac, serial, primary, profileId]);
 
   const testOne = useCallback(async (host: string) => {
+    const owner = generation.current;
     setTests(t => ({ ...t, [host]: { status: "testing" } }));
     const ctrl = new AbortController();
+    requests.current.add(ctrl);
     const timer = setTimeout(() => ctrl.abort(), TEST_TIMEOUT_MS);
     const started = Date.now();
     let state: TestState;
     try {
-      const res = await xtreamLogin({ server: host, username, password }, ctrl.signal);
+      let auth = false;
+      let resolvedPortal: PlaylistEndpoint['resolvedPortal'];
+      if (kind === 'stalker') {
+        const { stalkerLogin, stalkerVerifyAccount } = await import('@/src/utils/stalker');
+        const cred = { portal: host, mac: mac || '', serial, profileId, endpointPolicy: 'exact' as const, requestScope: { transport: 'direct' as const, signal: ctrl.signal } };
+        const login = await stalkerLogin(cred, { signal: ctrl.signal });
+        const verified = await stalkerVerifyAccount(cred, login.session, login.profile, { signal: ctrl.signal });
+        auth = verified.state === 'verified'; resolvedPortal = login.session.resolvedPortal;
+      } else {
+        const res = await xtreamLogin({ server: host, username, password }, ctrl.signal);
+        auth = [1, '1', true, 'true'].includes((res?.user_info as any)?.auth);
+      }
       const ms = Date.now() - started;
-      const auth = Number((res?.user_info as any)?.auth ?? 1);
-      state = auth === 1 ? { status: "ok", ms, note: String((res?.user_info as any)?.status || "") } : { status: "auth", ms, note: "Giriş reddedildi" };
+      state = auth ? { status: "ok", ms, note: "Hesap doğrulandı; ilk kare sınanmadı" } : { status: "auth", ms, note: "Hesap doğrulanamadı" };
+      if (auth && owner === generation.current && !ctrl.signal.aborted) onEvidence?.({ url: canonicalEndpointUrl(host), kind, source: 'manual', lastTestAt: new Date().toISOString(), accountVerifiedAt: new Date().toISOString(), contentMapping: 'unverified', resolvedPortal, lastError: undefined });
     } catch (e: any) {
       const ms = Date.now() - started;
       const aborted = ctrl.signal.aborted;
       state = { status: "fail", ms, note: aborted ? "Zaman aşımı" : String(e?.message || e).slice(0, 60) };
     } finally {
       clearTimeout(timer);
+      requests.current.delete(ctrl);
     }
+    if (owner !== generation.current) return;
+    if (state.status !== 'ok') onEvidence?.({ url: canonicalEndpointUrl(host), kind, source: 'manual', lastTestAt: new Date().toISOString(), lastError: state.note || 'Test tamamlanamadı' });
     setTests(t => ({ ...t, [host]: state }));
     void recordDiagnostic("network", "DNS_MANAGER_TEST", { host: host.replace(/\/\/([^/:]+)/, "//<host>"), status: state.status, ms: state.ms, primary: host === primaryNorm }, { stage: "dns-manager", outcome: state.status });
-  }, [username, password, primaryNorm]);
+  }, [username, password, primaryNorm, kind, mac, serial, profileId, onEvidence]);
 
   const testAll = useCallback(async () => {
     // Sağlayıcıyı yormamak için sırayla (paralel değil).
-    for (const h of all) await testOne(h);
+    const owner = generation.current;
+    for (const h of all) {
+      if (owner !== generation.current) break;
+      await testOne(h);
+    }
   }, [all, testOne]);
 
   const add = () => {
-    const h = normalizeHost(input);
+    const h = normalize(input);
     if (!h) { setInputError("Geçerli bir adres yazın (ör. http://ornek.com:8080)"); return; }
     if (all.includes(h)) { setInputError("Bu adres zaten listede."); return; }
     setInputError("");
@@ -84,15 +118,17 @@ export function DnsManager({ primary, hosts, username, password, onChange, onMak
 
   const badge = (h: string) => {
     const t = tests[h];
-    if (!t || t.status === "idle") return null;
+    if (!t || t.status === "idle") { const proof = endpoints.find(e => canonicalEndpointUrl(e.url) === canonicalEndpointUrl(h)); return proof ? <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs }}>{endpointProofLabel(proof)}</Text> : null; }
     if (t.status === "testing") return <ActivityIndicator size="small" color={colors.brandPrimary} />;
     const color = t.status === "ok" ? colors.success : t.status === "auth" ? "#F59E0B" : colors.error;
-    const text = t.status === "ok" ? `Çalışıyor · ${t.ms} ms` : t.status === "auth" ? `${t.note} · ${t.ms} ms` : (t.note || "Yanıt yok");
+    const text = t.status === "ok" ? `Hesap doğrulandı · ${t.ms} ms · ilk kare sınanmadı` : t.status === "auth" ? `${t.note} · ${t.ms} ms` : (t.note || "Yanıt yok");
     return <Text style={{ color, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }} numberOfLines={1}>{text}</Text>;
   };
 
   return (
     <View style={{ marginTop: SPACING.lg }}>
+      {probeHost && <EndpointPlaybackTest key={`${profileId}|${kind}|${probeHost}|${username}|${mac}`} endpoint={probeHost} kind={kind} username={username} password={password} mac={mac} serial={serial} profileId={profileId}
+        onEvidence={e => onEvidence?.(e)} onClose={() => setProbeHost(null)} />}
       <View style={styles.headRow}>
         <Text style={[styles.label, { color: colors.onSurfaceSecondary }]}>SUNUCU ADRESLERİ (YEDEK DNS)</Text>
         <FocusButton testID="dns-test-all" onPress={() => void testAll()} focusRadius={RADIUS.pill} style={[styles.smallBtn, { borderColor: colors.brandPrimary }]}>
@@ -113,6 +149,9 @@ export function DnsManager({ primary, hosts, username, password, onChange, onMak
             </View>
             <FocusButton testID={`dns-test-${h}`} onPress={() => void testOne(h)} hitSlop={8} focusRadius={16} style={styles.iconBtn}>
               <Ionicons name="pulse-outline" size={18} color={colors.onSurfaceSecondary} />
+            </FocusButton>
+            <FocusButton testID={`dns-frame-${h}`} onPress={() => setProbeHost(h)} hitSlop={8} focusRadius={16} style={styles.iconBtn}>
+              <Text style={{ color: colors.brandPrimary, fontSize: FONT.size.xs }}>İlk kare</Text>
             </FocusButton>
             {!isPrimary ? (
               <>
@@ -144,7 +183,7 @@ export function DnsManager({ primary, hosts, username, password, onChange, onMak
       </View>
       {inputError ? <Text style={{ color: colors.error, fontSize: FONT.size.xs, marginTop: 4 }}>{inputError}</Text> : null}
       <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: 6 }}>
-        Kanal açılmazsa oynatıcı sırayla bu adresleri dener; en son çalışan adres bir sonraki açılışta önce denenir.
+        {kind === 'stalker' ? 'MAC portalında yol ve oturum her adres için ayrı doğrulanır. ' : 'Kanal açılmazsa oynatıcı yedek adresleri dener; en son çalışan adres hatırlanır. '}
         ★ ile birincil yapılan adres "Kaydet"e basınca geçerli olur.
       </Text>
     </View>

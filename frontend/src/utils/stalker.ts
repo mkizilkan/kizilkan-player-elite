@@ -82,6 +82,8 @@ export interface StalkerCreds {
   requestScope?: StalkerRequestScope;
   endpointPolicy?: "exact" | "auto";
   resolvedPortal?: ResolvedMagPortal;
+  /** Cache ownership, never sent to the portal. */
+  profileId?: string;
 }
 
 export type MagProtectionObservation = {
@@ -193,7 +195,7 @@ export function stalkerCredsFromPlaylist(pl: Pick<Playlist, "stalkerPortal" | "s
 export interface StalkerPlaybackContext {
   url: string;
   headers: Record<string, string>;
-  session: StalkerSession;
+  session: StalkerSession | null;
   mediaType: "itv" | "vod";
   refreshed: boolean;
 }
@@ -2492,6 +2494,18 @@ function isExplicitListShape(data:any): boolean {
   const js=data?.js;
   return Array.isArray(js) || (!!js && typeof js === "object" && (Array.isArray(js.data) || js.total_items !== undefined || js.max_page_items !== undefined));
 }
+/** Bounded catalog sample; no category download or full-page iteration for a renderer test. */
+export async function stalkerLiveSample(cred: StalkerCreds, signal?: AbortSignal): Promise<StalkerPlaybackContext> {
+  const scoped = { ...cred, endpointPolicy: 'exact' as const, requestScope: { ...cred.requestScope, transport: cred.requestScope?.transport || 'direct' as const, signal } };
+  const { session } = await stalkerLogin(scoped, { signal });
+  const data = await req(buildUrl(session.endpoint, { type: 'itv', action: 'get_ordered_list', p: '0' }), headersFor(scoped, session.token, session.endpoint, session.compatProfile), {
+    timeoutMs: 10000, maxResponseBytes: 1_048_576, signal, exactEndpoint: true,
+  });
+  const sample = rowsFromListShape(data).find(r => r && typeof r.cmd === 'string' && r.cmd.trim());
+  if (!sample) throw new Error('Sınırlı katalog örneğinde yayın komutu bulunamadı; görüntü sonucu belirlenemedi.');
+  return stalkerResolveStream(scoped, session, sample.cmd);
+}
+
 function rowsFromListShape(data:any): any[] {
   const js=data?.js;
   return Array.isArray(js?.data) ? js.data : (Array.isArray(js) ? js : []);
@@ -2760,7 +2774,7 @@ async function stalkerVodPartition(cred:StalkerCreds, ses:StalkerSession, opts?:
         const group=cats.get(String(v?.category_id ?? v?.category)) || String(v?.category_name || "Genel");
         if (sampleCategories.size<10) sampleCategories.add(String(group).slice(0,40));
         if (rowLooksSeries(v,group)) {
-          if (truthyPortalFlag(v?.is_series)) cls.isSeries++; else if (Array.isArray(v?.series)) cls.seriesArray++;
+          if (truthyPortalFlag(v?.is_series)) cls.isSeries++; else if (Array.isArray(v?.series) && v.series.length > 0) cls.seriesArray++;
           else if (isSeriesCategoryTitle(group)) cls.catTitle++; else cls.typeWord++;
           fallbackSeries.push(mapSeriesRow(v,i,cats));
         } else { cls.asVod++; vod.push(mapVodRow(v,i,cats)); }
@@ -3043,6 +3057,30 @@ export async function stalkerEnrichment(cred:StalkerCreds, ses:StalkerSession, o
     }
   };
   try {
+    // A stream-shaped URL alone is not API proof. Authenticate and validate a real live response.
+    const bridge = getStreamDerivedCredentials(cred.mac, cred.portal, cred.profileId || (await storage.getItem<string>('kizilkan.activeProfileId', 'default') || 'default'));
+    if (bridge?.server && bridge.username && bridge.password) {
+      const api = await import('@/src/utils/iptv');
+      const controller = new AbortController();
+      const abort = () => controller.abort(); opts.signal?.addEventListener('abort', abort, { once: true });
+      const timer = setTimeout(abort, 20000);
+      try {
+        if (opts.signal?.aborted) throw scopeCancelledError();
+        const credentials = { server: bridge.server, username: bridge.username, password: bridge.password };
+        await api.xtreamLiveSample(credentials, controller.signal);
+        clearTimeout(timer);
+        const [movies, shows] = await Promise.all([api.xtreamVod(credentials, opts.signal), api.xtreamSeries(credentials, opts.signal)]);
+        const vod = movies.map(v => ({ ...v, url: `xtream-verified:${v.url}`, catalogBackend: 'xtream-verified', catalogApiServer: bridge.server }));
+        const series = shows.map(s => ({ ...s, catalogBackend: 'xtream-verified', catalogApiServer: bridge.server }));
+        const diagnostics: StalkerCatalogDiagnostics = { live: 'EMPTY', vod: vod.length ? 'OK' : 'EMPTY', seriesNative: series.length ? 'OK' : 'EMPTY', seriesFromVod: 0, warnings: [] };
+        void recordDiagnostic('catalog', 'STALKER_XTREAM_API_VERIFIED', { elapsedMs: Date.now() - started, vod: vod.length, series: series.length, accountAuthenticated: true });
+        emitCatalogProgress(opts, { stage: 'final', message: `Doğrulanmış Xtream API · ${vod.length} film · ${series.length} dizi` });
+        return { vod, series, diagnostics };
+      } catch (e) {
+        if (opts.signal?.aborted) throw scopeCancelledError();
+        void recordDiagnostic('catalog', 'STALKER_XTREAM_API_FALLBACK', { apiVerified: false });
+      } finally { clearTimeout(timer); opts.signal?.removeEventListener('abort', abort); }
+    }
     emitCatalogProgress(opts,{stage:"vod",message:"Film kataloğu arka planda tamamlanıyor..."});
     let vodPart:VodPartition, vodError="";
     try { vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses,opts),refreshSession); }
@@ -3283,12 +3321,22 @@ const streamDerivedCreds = new Map<string, { username: string; password: string;
 // storage'da (`kizilkan.streamCreds`) saklanır, açılışta `hydrateStreamDerivedCredentials` ile yüklenir →
 // bir kez kanal açınca kalıcı görünür. Değerler loglanmaz; kullanıcının kendi hesabı; storage cihaz-yerel.
 const STREAM_CREDS_KEY = "kizilkan.streamCreds";
-function persistStreamDerivedCreds(): void {
+function streamCredentialScope(mac: string, portal: string, profileId = ''): string | null {
   try {
+    const u = new URL(portal);
+    if (!/^https?:$/.test(u.protocol)) return null;
+    return `v2|${encodeURIComponent(profileId)}|${normalizeMac(mac)}|${u.origin.toLowerCase()}${u.pathname.replace(/\/+$/, '')}`;
+  } catch { return null; }
+}
+let streamCredentialWrite: Promise<void> = Promise.resolve();
+async function persistStreamDerivedCreds(): Promise<void> {
+  const write = streamCredentialWrite.then(async () => {
     const obj: Record<string, { username: string; password: string; server?: string; at: number }> = {};
     for (const [k, v] of streamDerivedCreds) obj[k] = v;
-    void storage.setItem(STREAM_CREDS_KEY, JSON.stringify(obj)).catch(() => {});
-  } catch {}
+    if (!(await storage.setItem(STREAM_CREDS_KEY, JSON.stringify(obj)))) throw new Error('Türetilmiş hesap kimliği kalıcılaştırılamadı.');
+  });
+  streamCredentialWrite = write.catch(() => {});
+  try { await write; } catch { void recordDiagnostic('catalog', 'STREAM_CREDENTIAL_SAVE_FAILED', { recoverable: true }); }
 }
 /** Açılışta çağrılır: kayıtlı türetilmiş kimlikleri belleğe yükler (senkron getter için). */
 export async function hydrateStreamDerivedCredentials(): Promise<void> {
@@ -3297,18 +3345,16 @@ export async function hydrateStreamDerivedCredentials(): Promise<void> {
     if (!raw) return;
     const obj = JSON.parse(raw) as Record<string, { username?: string; password?: string; server?: string; at?: number }>;
     for (const [k, v] of Object.entries(obj || {})) {
-      if (v && typeof v.username === "string" && typeof v.password === "string") streamDerivedCreds.set(k, { username: v.username, password: v.password, server: typeof v.server === "string" ? v.server : undefined, at: Number(v.at) || Date.now() });
+      if (k.startsWith('v2|') && v && typeof v.username === "string" && typeof v.password === "string") streamDerivedCreds.set(k, { username: v.username, password: v.password, server: typeof v.server === "string" ? v.server : undefined, at: Number(v.at) || Date.now() });
     }
   } catch {}
 }
 /** v18.7.16 (U4): oynatmadan türetilen Xtream kullanıcı adı/şifre (+ yayın sunucusu; kullanıcının kendi hesabı). */
-export function getStreamDerivedCredentials(mac: string, portalOrHost: string): { username: string; password: string; server?: string } | null {
+export function getStreamDerivedCredentials(mac: string, portalOrHost: string, profileId = ''): { username: string; password: string; server?: string } | null {
   try {
     const macN = normalizeMac(mac);
-    let host = ""; try { host = (/^https?:\/\//i.test(portalOrHost) ? new URL(portalOrHost).hostname : String(portalOrHost).split("/")[0].split(":")[0]).toLowerCase(); } catch {}
-    // v18.7.19: önce host-özel key, sonra MAC-only yedek (oynatma host'u portal host'undan farklıysa — ör.
-    // failover IP / farklı yayın sunucusu — kart yine de gösterir). MAC hesabın kimliğidir.
-    const v = (host && streamDerivedCreds.get(`${macN}|${host}`)) || streamDerivedCreds.get(macN);
+    const key = streamCredentialScope(macN, portalOrHost, profileId);
+    const v = key ? streamDerivedCreds.get(key) : undefined;
     return v ? { username: v.username, password: v.password, server: v.server } : null;
   } catch { return null; }
 }
@@ -3321,12 +3367,13 @@ export async function stalkerPrimeStreamCredentials(
   cred: StalkerCreds, ses: StalkerSession, channels: Channel[], signal?: AbortSignal,
 ): Promise<{ username: string; password: string; server?: string } | null> {
   try {
+    cred = { ...cred, profileId: cred.profileId ?? (await storage.getItem<string>('kizilkan.activeProfileId', 'default') || 'default') };
     if (signal?.aborted) return null;
     const ch = channels.find(c => !!c?.url);
     if (!ch) return null;
-    await stalkerResolveStream(cred, ses, String(ch.url));
-    const host = (() => { try { return new URL(ses.endpoint || cred.portal).hostname; } catch { return cred.portal; } })();
-    return getStreamDerivedCredentials(cred.mac, host);
+    await stalkerResolveStream({ ...cred, requestScope: { ...cred.requestScope, transport: cred.requestScope?.transport || 'direct', signal: signal || cred.requestScope?.signal } }, ses, String(ch.url));
+    if (signal?.aborted) return null;
+    return getStreamDerivedCredentials(cred.mac, cred.portal, cred.profileId);
   } catch { return null; }
 }
 export async function stalkerResolveStream(
@@ -3335,6 +3382,18 @@ export async function stalkerResolveStream(
   cmd: string,
   opts: { forceFresh?: boolean } = {},
 ): Promise<StalkerPlaybackContext> {
+  cred = { ...cred, profileId: cred.profileId ?? (await storage.getItem<string>('kizilkan.activeProfileId', 'default') || 'default') };
+  if (cmd.startsWith('xtream-verified:')) {
+    const target = new URL(cmd.slice('xtream-verified:'.length));
+    const derived = getStreamDerivedCredentials(cred.mac, cred.portal, cred.profileId);
+    if (!derived?.server || target.origin !== new URL(derived.server).origin || !/^https?:$/.test(target.protocol) || target.username || target.password || target.search || target.hash) throw new Error('Xtream katalog kaynağı bu MAC hesabıyla eşleşmedi.');
+    const parts = target.pathname.split('/').filter(Boolean);
+    if (parts.length !== 4 || !['movie', 'series'].includes(parts[0]) || !/^\d+\.[a-z0-9]+$/i.test(parts[3]) || decodeURIComponent(parts[1] || '') !== derived.username || decodeURIComponent(parts[2] || '') !== derived.password) throw new Error('Xtream yayın kimliği katalog hesabıyla eşleşmedi.');
+    const { xtreamLogin } = await import('@/src/utils/iptv');
+    const login = await xtreamLogin({ server: derived.server, username: derived.username, password: derived.password }, cred.requestScope?.signal);
+    if (![1, '1', true, 'true'].includes((login?.user_info as any)?.auth)) throw new Error('Xtream API hesabı yeniden doğrulanamadı.');
+    return { url: target.toString(), headers: {}, session: ses, mediaType: 'vod', refreshed: false };
+  }
   const started = Date.now();
   let session = opts.forceFresh ? null : (ses || getCachedSession(cred)?.session || null);
   const cacheHit = !!session;
@@ -3366,9 +3425,9 @@ export async function stalkerResolveStream(
     const streamHost = (() => { try { return new URL(activeSession.endpoint || cred.portal).hostname.toLowerCase(); } catch { return ""; } })();
     if (derived) {
       const at = Date.now(), macN = normalizeMac(cred.mac);
-      if (streamHost) streamDerivedCreds.set(`${macN}|${streamHost}`, { ...derived, at });
-      streamDerivedCreds.set(macN, { ...derived, at }); // v18.7.19: MAC-only yedek (host uyuşmazlığına karşı).
-      persistStreamDerivedCreds();
+      const key = streamCredentialScope(macN, cred.portal, cred.profileId);
+      if (key) streamDerivedCreds.set(key, { ...derived, at });
+      await persistStreamDerivedCreds();
     }
     void recordDiagnostic("player", "STALKER_RESOLVE_DONE", {
       elapsedMs: Date.now()-started, cacheHit, linkCacheHit: false, mediaType: parsed.kind, refreshed: didRefresh,

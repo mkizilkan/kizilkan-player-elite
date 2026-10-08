@@ -68,6 +68,7 @@ import Animated, { useSharedValue } from "react-native-reanimated";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
+import { registerPlaybackRelease } from './playbackProbeLease';
 import { useProfiles } from "@/src/store/ProfileContext";
 import { useParental } from "@/src/store/ParentalContext";
 import { categoryAccess } from "./categoryAccess";
@@ -331,7 +332,7 @@ export default function PlayerHost() {
       return () => clearTimeout(timer);
     }
   }, [visible, requestRestore, requestRouteRestore]);
-  const { activePlaylist, toggleFavorite, isFavorite, ensureHeavyLoaded, addToRecent } = usePlaylists();
+  const { activePlaylist, toggleFavorite, isFavorite, ensureHeavyLoaded, addToRecent, updatePlaylist } = usePlaylists();
   const { activeProfile } = useProfiles();
   const selectedSourceOwnerRef = useRef({ source, profileId: activeProfile.id, playlistId: activePlaylist?.id || "" });
   if (selectedSourceOwnerRef.current.source !== source) selectedSourceOwnerRef.current = { source, profileId: activeProfile.id, playlistId: activePlaylist?.id || "" };
@@ -1350,6 +1351,7 @@ export default function PlayerHost() {
     }
     const requestedKey=`${String(activePlaylist?.id || "")}|${String(channel.id || "")}|${String(channel.url)}`;
     let alive = true;
+    const resolveController = new AbortController();
     // Kanal değişir değişmez eski resolve sonucu render yolundan çıkar.
     setResolvedUrl(null);
     setResolvedHeaders({});
@@ -1359,7 +1361,7 @@ export default function PlayerHost() {
       try {
         const { stalkerResolveStream, stalkerCredsFromPlaylist, stripStreamPrefix } = await import("@/src/utils/stalker");
         const pl: any = activePlaylist;
-        const cred = stalkerCredsFromPlaylist(pl);
+        const cred = { ...stalkerCredsFromPlaylist(pl), profileId: activeProfile.id, requestScope: { transport: 'direct' as const, signal: resolveController.signal } };
         const forceFresh = stalkerForceFreshRequestedRef.current;
         stalkerForceFreshRequestedRef.current = false;
         const traceId = lifecycleTraceRef.current || getCurrentFlightRecorderTrace();
@@ -1394,8 +1396,8 @@ export default function PlayerHost() {
         if (alive && generation===stalkerResolveGenerationRef.current) setResolving(false);
       }
     })();
-    return () => { alive = false; };
-  }, [channel?.url, activePlaylist?.id, playlistSource, stalkerFreshResolveNonce, channelAllowed]);
+    return () => { alive = false; resolveController.abort(); };
+  }, [channel?.url, activePlaylist?.id, activeProfile.id, playlistSource, stalkerFreshResolveNonce, channelAllowed]);
 
 
   /**
@@ -1538,6 +1540,9 @@ export default function PlayerHost() {
       lastMedia3IdentityRef.current = "";
     }
   };
+  React.useEffect(() => registerPlaybackRelease(async () => {
+    await releaseLocalSourceRef.current?.();
+  }), []);
 
   /**
    * v15.2.24 — ADAPTIVE MEDIA3 TIME UPDATE.
@@ -4048,7 +4053,7 @@ export default function PlayerHost() {
    * metadata/track + ilerleyen playback clock olaylarının birleşiminden türetilir.
    * HW -> SW geçişi yalnız gerçek native onError olayında yapılır.
    */
-  const recordFirstFrameDiagnostic = React.useCallback((profile: EngineProfile, firstFrameMs: number) => {
+  const recordFirstFrameDiagnostic = React.useCallback((profile: EngineProfile, firstFrameMs: number, renderer = false) => {
     /**
      * v17.9.0 — ÇALIŞAN DNS HATIRLANIR.
      * İlk kare geldi = bu adres gerçekten çalışıyor. Yedek DNS'e geçilerek
@@ -4056,6 +4061,14 @@ export default function PlayerHost() {
      * bir sonraki açılışta önce o denenir, çalışmayan DNS'le vakit kaybedilmez.
      */
     const workingUrl = String(playbackCandidates[playbackUrlIndex] || "");
+    if (activePlaylist && (playlistSource === 'xtream' || playlistSource === 'stalker') && playbackRequest?.expectsVideo !== false) {
+      const now = new Date().toISOString();
+      const { playlistEndpoints, canonicalEndpointUrl } = require('@/src/utils/playlistEndpoints') as typeof import('@/src/utils/playlistEndpoints');
+      const urls = playlistEndpoints(activePlaylist);
+      const endpointUrl = playlistSource === 'stalker' ? canonicalEndpointUrl(activePlaylist.stalkerPortal || '') : canonicalEndpointUrl(originOf(workingUrl));
+      const endpoints = urls.map(e => canonicalEndpointUrl(e.url) === endpointUrl ? { ...e, source: 'playback' as const, ...(renderer ? { firstFrameAt: now } : { playbackObservedAt: now }), lastError: '' } : e);
+      if (endpoints.some(e => e.firstFrameAt === now || e.playbackObservedAt === now)) void updatePlaylist(activePlaylist.id, { endpoints }).catch(e => { void recordDiagnostic('database', 'ENDPOINT_PROOF_WRITE_FAILED', { message: String(e?.message || e).slice(0, 120) }); });
+    }
     if (playlistSource === "xtream" && workingUrl && activePlaylist) {
       const workingHost = originOf(workingUrl);
       if (workingHost && workingHost !== preferredHost) {
@@ -4090,6 +4103,7 @@ export default function PlayerHost() {
       source: playlistSource || "",
       engine: profile.engine,
       firstFrameMs,
+      evidence: renderer ? 'renderer-first-frame' : playbackRequest?.expectsVideo === false ? 'audio-playing' : 'video-and-clock',
       totalFromSelectionMs: Math.max(0, Date.now() - playerSelectionStartedAtRef.current),
       // v18.7.5: ilk-kareyi timeshift moduyla etiketle (Kapalı vs Her zaman ilk-kare kıyası için).
       timeshiftMode: liveTimeshiftModeRef.current,
@@ -4097,7 +4111,7 @@ export default function PlayerHost() {
       // = kaynak ÖNCESİ (çözümleme/handshake/motor hazırlığı) süresi. Media3 geç açılma teşhisi.
       sinceSourceSetMs: profile.engine === "media3" && media3SourceSetAtRef.current ? Math.max(0, Date.now() - media3SourceSetAtRef.current) : undefined,
     }, { sessionId: playerDiagnosticSessionRef.current });
-  }, [channel?.id, playlistSource, activePlaylist?.id, activeProfile?.id, sessionKind, playbackCandidates, playbackUrlIndex, preferredHost]);
+  }, [channel?.id, playlistSource, activePlaylist, activeProfile?.id, sessionKind, playbackCandidates, playbackUrlIndex, preferredHost, updatePlaylist, playbackRequest?.expectsVideo]);
 
   const markVlcHealthy = React.useCallback((
     sid: number,
@@ -4595,7 +4609,7 @@ export default function PlayerHost() {
                   successfulSessionRef.current = activeSessionId;
                   successfulSessionAtRef.current = Date.now();
                   recordEngineSuccess(String(channel?.id || ""), v2Profile, firstFrameMs).catch(() => {});
-                  recordFirstFrameDiagnostic(v2Profile, firstFrameMs);
+                  recordFirstFrameDiagnostic(v2Profile, firstFrameMs, true);
                 }
               }}
             />

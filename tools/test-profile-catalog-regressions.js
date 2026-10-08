@@ -30,6 +30,8 @@ function harness(providerName, initial = {}, options = {}) {
     hashPin: async pin => { if (state.hashGate) { const gate = state.hashGate; state.hashGate = null; await gate.promise; } if (state.failHash) throw new Error('fixture PIN protection failed'); return 'kzpin:fixture:' + Buffer.from(pin).toString('hex'); },
     verifyProtectedPin: async (entered, saved) => { if (state.verifyGate) { const gate = state.verifyGate; state.verifyGate = null; await gate.promise; } return saved === 'kzpin:fixture:' + Buffer.from(entered).toString('hex'); },
     getPlaylistSummaryVerified: async id => { if (state.summaryGate?.id === id) { const gate = state.summaryGate; state.summaryGate = null; await gate.promise; } if (!summaries.has(id)) throw new Error('fixture missing snapshot'); return summaries.get(id); },
+    syncProfileEndpoints: async () => { if (state.endpointWriteFail) throw new Error('fixture endpoint Room write failed'); },
+    getBulkImportSnapshot: () => ({ jobs: [] }),
     getPlaylistSummary: async id => summaries.get(id),
     getSnapshotInventory: async () => [], warmPlaylist: async () => {}, getTelemetry: () => ({}),
     syncPlaylistKindsJson: async (id, patch) => { const before = summaries.get(id) || { id, channels: 0, vod: 0, series: 0, roomIndexed: true }; const next = { ...before };
@@ -127,6 +129,13 @@ async function playlistTruthfulCountsAndWrites() {
   await assert.rejects(h.value.setActivePlaylist('missing'), /kaynağı|metadata|onarım/); await h.flush(); assert.equal(h.value.activePlaylist.id, 'empty');
   h.state.failKey = 'kizilkan.playlists.meta.A'; await assert.rejects(h.value.updatePlaylist('empty', { name: 'Bad' }), /kaydedilemedi/); await h.flush(); assert.equal(h.value.playlists.find(row => row.id === 'empty').name, 'empty');
   h.state.failKey = ''; await Promise.all([h.value.addPlaylist(playlist('one')), h.value.addPlaylist(playlist('two'))]); await h.flush(); assert.ok(h.value.playlists.some(row => row.id === 'one')); assert.ok(h.value.playlists.some(row => row.id === 'two'));
+  const beforeEndpointFailure = h.disk.get('kizilkan.playlists.meta.A');
+  h.state.endpointWriteFail = true;
+  await assert.rejects(h.value.updatePlaylist('empty', { name: 'Rejected by Room' }), /endpoint Room write failed/);
+  await h.flush();
+  assert.equal(h.disk.get('kizilkan.playlists.meta.A'), beforeEndpointFailure, 'Room projection failure must roll metadata back');
+  assert.equal(h.value.playlists.find(row => row.id === 'empty').name, 'empty');
+  h.state.endpointWriteFail = false;
   const oldActive = h.value.activePlaylist.id; h.state.failKey = 'kizilkan.activePlaylistId.A'; await assert.rejects(h.value.setActivePlaylist('empty'), /kaydedilemedi/); await h.flush(); assert.equal(h.value.activePlaylist.id, oldActive);
   h.state.failKey = ''; const release = await h.value.beginExternalRestore(); await assert.rejects(h.value.addPlaylist(playlist('blocked')), /geri yüklenirken/); await assert.rejects(h.value.toggleFavorite('blocked'), /Yedek/); release();
   h.unmount(); groups++;

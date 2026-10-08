@@ -26,6 +26,7 @@ import javax.crypto.spec.GCMParameterSpec
  * - eski v1 DB şeması migration ile korunur.
  */
 class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(context.applicationContext, "kizilkan-panel-scan-journal.db", null, 3) {
+  private val applicationContext = context.applicationContext
   override fun onCreate(db: SQLiteDatabase) {
     db.execSQL("CREATE TABLE scan_session(run_id TEXT PRIMARY KEY, mode TEXT NOT NULL, payload_enc TEXT NOT NULL, concurrency INTEGER NOT NULL, timeout_ms INTEGER NOT NULL, committed_cursor INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, committed_account INTEGER NOT NULL DEFAULT 0, committed_tested INTEGER NOT NULL DEFAULT 0, batch_size INTEGER NOT NULL DEFAULT 0, requested_concurrency INTEGER NOT NULL DEFAULT 0, effective_concurrency INTEGER NOT NULL DEFAULT 0, source_fingerprint TEXT NOT NULL DEFAULT '')")
     db.execSQL("CREATE TABLE scan_result(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, result_key TEXT NOT NULL, payload_enc TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(run_id,result_key) ON CONFLICT IGNORE)")
@@ -168,6 +169,30 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
     }
   }
 
+  /** Cursor pagination is independent of the rolling notification/snapshot window. */
+  @Synchronized fun resultsPage(runId: String, afterId: Long, requestedLimit: Int): JSONObject {
+    require(runId.isNotBlank() && afterId >= 0) { "Geçersiz tarama/cursor" }
+    val matches = JSONArray()
+    var cursor = afterId
+    var bytes = 0
+    readableDatabase.rawQuery(
+      "SELECT id,payload_enc FROM scan_result WHERE run_id=? AND id>? ORDER BY id LIMIT ?",
+      arrayOf(runId, afterId.toString(), requestedLimit.coerceIn(1, 200).toString()),
+    ).use { rows ->
+      while (rows.moveToNext()) {
+        // A damaged encrypted row must produce an actionable error, never disappear.
+        val raw = dec(rows.getString(1))
+        val size = raw.toByteArray(Charsets.UTF_8).size
+        check(size <= 512 * 1024) { "Tarama sonucu aktarım sınırını aşıyor; kayıt journal'da korunuyor" }
+        if (matches.length() > 0 && bytes + size > 512 * 1024) break
+        matches.put(JSONObject(raw)); bytes += size; cursor = rows.getLong(0)
+      }
+    }
+    val more = readableDatabase.rawQuery("SELECT 1 FROM scan_result WHERE run_id=? AND id>? LIMIT 1", arrayOf(runId, cursor.toString())).use { it.moveToFirst() }
+    return JSONObject().put("runId", runId).put("matches", matches).put("nextCursor", cursor)
+      .put("total", resultCount(runId)).put("hasMore", more)
+  }
+
   /** Old scan versions accepted missing/unknown auth as a match. Validate decoded rows in bounded pages. */
   @Synchronized fun pruneUnverifiedResults(runId: String): Int {
     val db = writableDatabase
@@ -217,6 +242,13 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
     }
   }
 
+  @Synchronized fun latestResultArchive(profileId: String): String? {
+    readableDatabase.rawQuery("SELECT run_id,payload_enc FROM scan_session WHERE mode='MAG_RESULTS' AND EXISTS (SELECT 1 FROM scan_result WHERE scan_result.run_id=scan_session.run_id) ORDER BY created_at DESC", null).use { rows ->
+      while (rows.moveToNext()) if (JSONObject(dec(rows.getString(1))).optString("profileId") == profileId) return rows.getString(0)
+    }
+    return null
+  }
+
   @Synchronized fun markInterrupted() {
     writableDatabase.execSQL(
       "UPDATE scan_session SET state='INTERRUPTED',updated_at=? WHERE state IN ('RUNNING','PAUSED')",
@@ -224,11 +256,12 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
     )
   }
 
-  @Synchronized fun finish(runId:String,state:String) {
+  fun finish(runId:String,state:String) {
     writableDatabase.execSQL(
       "UPDATE scan_session SET state=?,updated_at=? WHERE run_id=?",
       arrayOf<Any>(state,System.currentTimeMillis(),runId)
     )
+    ScanSafetyBackup.flush(applicationContext, this, runId)
   }
 
   @Synchronized fun delete(runId:String) {

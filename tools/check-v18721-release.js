@@ -42,15 +42,15 @@ need(/manual \? \{ \.\.\.base, requestedConcurrency: manual \}/.test(addPl), 'B:
 // C — M3U link + test
 need(/const m3uLink = /.test(settings) && /get\.php\?username=/.test(settings), 'C: M3U linki üretilmiyor');
 need(/copy-m3u-link/.test(settings) && /test-m3u-link/.test(settings), 'C: M3U kopyala/test butonu yok');
-need(/get_live_streams/.test(settings) && /Görüntü var/.test(settings), 'C: görüntü var/yok testi yok');
+need(/get_live_streams/.test(settings) && /katalog/i.test(settings) && /ilk kare sınanmadı/i.test(settings), 'C: katalog testi / ilk kare ayrımı yok');
 
 // D — arka plan servisi
 need(ex('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/ForegroundKeepAliveService.kt'), 'D: ForegroundKeepAliveService.kt yok');
 need(/ForegroundKeepAliveService/.test(manifest) && /foregroundServiceType="dataSync"/.test(manifest), 'D: manifest servis kaydı/dataSync yok');
 need(/Function\("startForegroundKeepAlive"\)/.test(nativeMod) && /Function\("stopForegroundKeepAlive"\)/.test(nativeMod), 'D: native keep-alive fonksiyonları yok');
 need(/startForegroundKeepAlive:/.test(nativeIdx) && /stopForegroundKeepAlive:/.test(nativeIdx), 'D: JS köprüsü yok');
-need(/startForegroundKeepAlive\(/.test(magBulkUi) && /stopForegroundKeepAlive\(\)/.test(magBulkUi), 'D: mag-bulk keep-alive çağrısı yok');
-need(/startForegroundKeepAlive\(/.test(plCtx) && /stopForegroundKeepAlive\(\)/.test(plCtx), 'D: güncelleme keep-alive çağrısı yok');
+need(/startForegroundKeepAlive\(/.test(magBulkUi) && /stopForegroundKeepAlive\(keepAliveOwner\)/.test(magBulkUi), 'D: mag-bulk sahipli keep-alive çağrısı yok');
+need(/startForegroundKeepAlive\(/.test(plCtx) && /stopForegroundKeepAlive\(keepAliveOwner\)/.test(plCtx), 'D: güncelleme sahipli keep-alive çağrısı yok');
 
 if (fail.length) { console.log(fail.map(f => '✗ ' + f).join('\n')); console.log('BAŞARISIZ'); process.exit(1); }
 console.log('PASS: v18.7.21 A ekleme-anında kullanıcı adı + B Xtream combo paralellik + C M3U link/test + D arka plan keep-alive servisi TEMİZ');

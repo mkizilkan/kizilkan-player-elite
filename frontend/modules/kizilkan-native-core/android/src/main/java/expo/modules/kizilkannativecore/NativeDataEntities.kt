@@ -4,6 +4,10 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
+// No FK to catalog snapshots: metadata-only accounts exist before the first catalog import.
+@Entity(tableName = "playlist_endpoints", primaryKeys = ["profileId", "playlistId", "endpoint"])
+data class PlaylistEndpointEntity(val profileId: String, val playlistId: String, val endpoint: String, val proofJson: String)
+
 /**
  * Playlist'in diskteki kaynak blobuyla Room indeksinin birebir aynı sürümü
  * temsil ettiğini kanıtlayan snapshot. stamp+size değişirse index yeniden kurulur.

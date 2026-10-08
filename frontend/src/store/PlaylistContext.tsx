@@ -1,5 +1,6 @@
 import {withCatalogLock,freshnessDue,beginCatalogRestore,isCatalogRestoreActive,isCatalogRestoreWriting} from "@/src/utils/catalogOperations";
 import { libraryItemKey, libraryScopePrefix, libraryScopedIds } from '@/src/utils/libraryScope';
+import { endpointProjection } from '@/src/utils/playlistEndpoints';
 import { claimLibraryLegacyOwner } from '@/src/utils/libraryLegacyOwner';
 import {refreshPlaylistContent,type CatalogKind,type RefreshProgress,type IncrementalCatalogDelivery} from "@/src/utils/refreshPlaylist";
 /**
@@ -395,7 +396,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
               if (!summary?.roomIndexed) throw new Error('Katalog indeksi bulunamadı.');
               const total = (summary.channels ?? 0) + (summary.vod ?? 0) + (summary.series ?? 0);
               verified.push({ ...entry, channelsCount: summary.channels, vodCount: summary.vod, seriesCount: summary.series,
-                catalogLocalState: total > 0 ? 'ready' : entry.catalogLocalState === 'empty' ? 'empty' : 'missing' });
+                catalogLocalState: entry.catalogMissingKinds?.length ? 'missing' : total > 0 ? 'ready' : entry.catalogLocalState === 'empty' ? 'empty' : 'missing' });
             } catch {
               verified.push({ ...entry, catalogExpectedCounts: entry.catalogExpectedCounts || { channels: entry.channelsCount || 0, vod: entry.vodCount || 0, series: entry.seriesCount || 0 },
                 channelsCount: 0, vodCount: 0, seriesCount: 0, catalogLocalState: 'missing' });
@@ -404,6 +405,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           initial = verified;
           if (profileLoadGeneration.current !== generation || currentPid() !== requestedPid || isCatalogRestoreActive()) return;
           if (!(await storage.setItem(metaKey(requestedPid), JSON.stringify(initial.map(toMeta))))) throw new Error('Doğrulanan liste sayaçları kaydedilemedi.');
+          await KizilkanNativeCore.syncProfileEndpoints(requestedPid, endpointProjection(requestedPid, initial));
         }
         if (profileLoadGeneration.current !== generation || currentPid() !== requestedPid) return;
         playlistsRef.current = initial;
@@ -629,6 +631,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     const pid = currentPid();
     if (opts?.expectedProfile && opts.expectedProfile !== pid) throw new Error('İşlem sırasında profil değişti.');
     const key = metaKey(pid);
+    const previousMeta = await storage.getItemStrict<string>(key, '');
     let metas = await Promise.all(list.map(async entry=>{const meta=toMeta(entry);return meta.pin?{...meta,pin:await protectPin(meta.pin)}:meta;}));
 
     // --- SİLME KORUMASI ---
@@ -665,6 +668,14 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     const ok = await storage.setItem(key, JSON.stringify(metas));
     if (!ok) {
       throw new Error('Liste bilgisi kaydedilemedi (meta yazma hatası).');
+    }
+    if (KizilkanNativeCore.available) {
+      try { await KizilkanNativeCore.syncProfileEndpoints(pid, endpointProjection(pid, metas)); }
+      catch (e) {
+        const restored = previousMeta ? await storage.setItem(key, previousMeta) : await storage.removeItem(key);
+        if (!restored) throw new Error('Room adres kaydı başarısız; liste metadata geri alma da başarısız. Yeniden açılışta uzlaştırma gerekli.');
+        throw e;
+      }
     }
     /**
      * v17.9.6 — İlk liste eklendi işareti. playlist-select ekranı bunu okuyup
@@ -985,8 +996,10 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
       const pl=playlistsRef.current.find(p=>p.id===id)!;
       const catalogKinds=kinds.filter((k):k is CatalogKind=>k!=='epg');
       if(catalogKinds.length){
+        const keepAliveOwner = `refresh:${pid}:${id}:${Date.now()}`;
+        const refreshController = new AbortController();
         // v18.7.21 (D): liste güncelleme uygulama arka plandayken de sürsün (foreground keep-alive).
-        try { KizilkanNativeCore.startForegroundKeepAlive("KIZILKAN · Güncelleme", `${pl.name} güncelleniyor…`); } catch {}
+        try { KizilkanNativeCore.startForegroundKeepAlive("KIZILKAN · Güncelleme", `${pl.name} güncelleniyor…`, keepAliveOwner, () => refreshController.abort()); } catch {}
         try {
         /**
          * v17.4.1 — FARK RAPORU MERKEZİ YOLA TAŞINDI.
@@ -997,7 +1010,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
          * yerde üretilir.
          */
         const beforeSnapshot={channels:pl.channels,vod:pl.vod,series:pl.series};
-        const result=await refreshPlaylistContent(pl,progress,{kinds:catalogKinds,forceUnconditional});
+        const result=await refreshPlaylistContent(pl,progress,{kinds:catalogKinds,forceUnconditional,signal:refreshController.signal});
         if(!owns())return;
         if(!result.ok||!result.patch)throw new Error(result.message);
         // v18.7.17 (G1): YIKICI DİFF KORUMASI. Cihaz kanıtı: yavaş MAG sunucuda yenileme TIME_BUDGET'e
@@ -1041,7 +1054,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         }catch(e:any){
           void recordDiagnostic('catalog','PLAYLIST_REFRESH_DIFF_ERROR',{playlistId:id,error:String(e?.message||e)});
         }
-        } finally { try { KizilkanNativeCore.stopForegroundKeepAlive(); } catch {} } // v18.7.21 (D): iş bitince/hatada servisi durdur.
+        } finally { refreshController.abort(); try { KizilkanNativeCore.stopForegroundKeepAlive(keepAliveOwner); } catch {} }
       }
       if(kinds.includes('epg')&&owns()){
         if(!pl.epgUrl)throw new Error('Bu liste için EPG adresi tanımlı değil.');
@@ -1576,6 +1589,39 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   const clearRecent = useCallback(()=>mutateAux('recent',()=>[]),[mutateAux]);
 
   const activePlaylist = playlists.find(p => p.id === activeId) || null;
+
+  // Native importer continues after the add screen closes; publish final verified Room counts.
+  useEffect(() => {
+    if (!KizilkanNativeCore.available) return;
+    const pid = currentPid(); let stopped = false; let busy = false;
+    const delivered = new Set<string>();
+    const sync = async () => {
+      if (busy || stopped || currentPid() !== pid || isCatalogRestoreActive()) return;
+      busy = true;
+      try {
+        const snap = KizilkanNativeCore.getBulkImportSnapshot();
+        for (const row of snap.jobs || []) {
+          if (stopped || currentPid() !== pid || isCatalogRestoreActive()) return;
+          const pl = playlistsRef.current.find(p => p.id === row.playlistId && p.source === 'xtream');
+          if (!pl || !row.liveReady) continue;
+          const state = row.state === 'completed' ? 'ready' : row.state === 'failed' || snap.cancelled ? 'partial_error' : 'enriching';
+          const key = `${snap.runId}|${pl.id}|${state}|${row.channels}|${row.vod}|${row.series}`;
+          if (delivered.has(key)) continue;
+          const summary = await KizilkanNativeCore.getPlaylistSummaryVerified(pl.id);
+          if (!summary?.roomIndexed || stopped || currentPid() !== pid) continue;
+          await updatePlaylist(pl.id, { channelsCount: summary.channels, vodCount: summary.vod, seriesCount: summary.series,
+            catalogSync: { ...pl.catalogSync, initialSyncState: state, initialSyncError: state === 'partial_error' ? row.message : undefined },
+            catalogMissingKinds: state === 'partial_error' ? ['vod', 'series'] : undefined,
+            catalogLocalState: state === 'partial_error' ? 'missing' : 'ready' });
+          if (!stopped && currentPid() === pid && activeIdRef.current === pl.id) setNativeSummary(summary);
+          delivered.add(key);
+        }
+      } catch (e: any) { void recordDiagnostic('catalog', 'NATIVE_LIVE_READY_SYNC_ERROR', { message: String(e?.message || e).slice(0, 160) }); }
+      finally { busy = false; }
+    };
+    void sync(); const timer = setInterval(() => { void sync(); }, 1200);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [profileId, updatePlaylist]);
 
   return (
     <PlaylistContext.Provider

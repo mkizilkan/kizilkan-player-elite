@@ -8,8 +8,8 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-  entities = [PlaylistSnapshotEntity::class, MediaItemEntity::class, EpgProgramEntity::class, DiagnosticEventEntity::class],
-  version = 4,
+  entities = [PlaylistSnapshotEntity::class, MediaItemEntity::class, EpgProgramEntity::class, DiagnosticEventEntity::class, PlaylistEndpointEntity::class],
+  version = 5,
   exportSchema = false,
 )
 abstract class KizilkanNativeDatabase : RoomDatabase() {
@@ -17,6 +17,7 @@ abstract class KizilkanNativeDatabase : RoomDatabase() {
   abstract fun mediaDao(): MediaItemDao
   abstract fun epgDao(): EpgProgramDao
   abstract fun diagnosticDao(): DiagnosticEventDao
+  abstract fun endpointDao(): PlaylistEndpointDao
 
   companion object {
     @Volatile private var instance: KizilkanNativeDatabase? = null
@@ -54,6 +55,12 @@ abstract class KizilkanNativeDatabase : RoomDatabase() {
       }
     }
 
+    private val MIGRATION_4_5 = object : Migration(4, 5) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS `playlist_endpoints` (`profileId` TEXT NOT NULL, `playlistId` TEXT NOT NULL, `endpoint` TEXT NOT NULL, `proofJson` TEXT NOT NULL, PRIMARY KEY(`profileId`, `playlistId`, `endpoint`))")
+      }
+    }
+
     fun get(context: Context): KizilkanNativeDatabase = instance ?: synchronized(this) {
       instance ?: Room.databaseBuilder(
         context.applicationContext,
@@ -62,7 +69,7 @@ abstract class KizilkanNativeDatabase : RoomDatabase() {
       )
         // Okuma/yazma paralelligi ve UI disi worker sorgulari icin WAL.
         .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
-        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
         .build()
         .also { instance = it }
     }

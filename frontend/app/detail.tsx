@@ -62,6 +62,11 @@ export default function DetailScreen() {
   /** v18.6.0: indirilecek öğe (film VEYA bölüm). */
   const [dlItem, setDlItem] = useState<{ id: string; name: string; url: string; ext: string; subdir: string; poster?: string; kind: "vod" | "episode" } | null>(null);
   const [nativeItem, setNativeItem] = useState<any>(null);
+  const downloadResolveRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    setDlDialog(false); setDlItem(null);
+    return () => { downloadResolveRef.current?.abort(); downloadResolveRef.current = null; };
+  }, [detailScope]);
 
   // Kayıtlı varsayılan indirme hedefini oku.
   useEffect(() => {
@@ -90,32 +95,63 @@ export default function DetailScreen() {
 
   useEffect(() => {
     if (!activePlaylist || !item) { setLoading(false); return; }
+    const controller = new AbortController(); const owner = detailScope;
+    const owns = () => !controller.signal.aborted && detailScopeRef.current === owner;
+    setInfo(null); setSeasons([]); setError(null); setSelectedSeasonIdx(0);
     if (activePlaylist.source === "xtream") {
       setLoading(true);
       const { xtreamServer, xtreamUsername, xtreamPassword } = activePlaylist;
       const cred = { server: xtreamServer!, username: xtreamUsername!, password: xtreamPassword! };
       const call = isSeries
-        ? xtSeriesInfoLocal(cred, String((item as any).series_id))
-        : xtVodInfoLocal(cred, String((item as any).stream_id));
+        ? xtSeriesInfoLocal(cred, String((item as any).series_id), controller.signal)
+        : xtVodInfoLocal(cred, String((item as any).stream_id), controller.signal);
       call.then((res: any) => {
+        if (!owns()) return;
         setInfo(res.info || {});
         if (isSeries) setSeasons(res.seasons || []);
-      }).catch(e => setError(e.message)).finally(() => setLoading(false));
-      return;
+      }).catch(e => { if (owns()) setError(e.message); }).finally(() => { if (owns()) setLoading(false); });
+      return () => controller.abort();
     }
     if (activePlaylist.source === "stalker" && isSeries && (item as any).series_id) {
       setLoading(true);
       (async () => {
         const { stalkerLogin, stalkerSeriesInfo, stalkerCredsFromPlaylist } = await import("@/src/utils/stalker");
-        const cred = stalkerCredsFromPlaylist(activePlaylist);
+        if ((item as any).catalogBackend === 'xtream-verified') {
+          const { getStreamDerivedCredentials } = await import('@/src/utils/stalker');
+          const credentials = getStreamDerivedCredentials(activePlaylist.stalkerMac || '', activePlaylist.stalkerPortal || '', activeProfile.id);
+          if (!credentials?.server || credentials.server !== (item as any).catalogApiServer) throw new Error('Dizi API kaynağı bu MAC hesabıyla eşleşmedi.');
+          const result = await xtSeriesInfoLocal({ server: credentials.server, username: credentials.username, password: credentials.password }, String((item as any).series_id), controller.signal);
+          return { ...result, seasons: result.seasons.map(s => ({ ...s, episodes: s.episodes.map(e => ({ ...e, url: `xtream-verified:${e.url}` })) })) };
+        }
+        const cred = { ...stalkerCredsFromPlaylist(activePlaylist), profileId: activeProfile.id, requestScope: { transport: 'direct' as const, signal: controller.signal } };
         const { session } = await stalkerLogin(cred);
         return stalkerSeriesInfo(cred, session, String((item as any).series_id));
-      })().then(res => { setInfo(res.info || {}); setSeasons(res.seasons || []); })
-        .catch(e => setError(e.message)).finally(() => setLoading(false));
-      return;
+      })().then(res => { if (owns()) { setInfo(res.info || {}); setSeasons(res.seasons || []); } })
+        .catch(e => { if (owns()) setError(e.message); }).finally(() => { if (owns()) setLoading(false); });
+      return () => controller.abort();
     }
     setLoading(false);
-  }, [activePlaylist, item, isSeries]);
+    return () => controller.abort();
+  }, [activePlaylist, item, isSeries, detailScope]);
+
+  const prepareDownload = async (entry: NonNullable<typeof dlItem>) => {
+    downloadResolveRef.current?.abort();
+    const controller = new AbortController(); downloadResolveRef.current = controller;
+    const owner = detailScope; const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      let url = entry.url;
+      if (activePlaylist?.source === 'stalker' && (url.startsWith('xtream-verified:') || !/^https?:\/\//i.test(url))) {
+        const { stalkerCredsFromPlaylist, stalkerResolveStream } = await import('@/src/utils/stalker');
+        const cred = { ...stalkerCredsFromPlaylist(activePlaylist), profileId: activeProfile.id, requestScope: { transport: 'direct' as const, signal: controller.signal } };
+        url = (await stalkerResolveStream(cred, null, url)).url;
+      }
+      if (controller.signal.aborted || owner !== detailScopeRef.current) return;
+      if (!/^https?:\/\//i.test(url)) throw new Error('İndirme için geçerli HTTP yayın bağlantısı çözülemedi.');
+      setDlItem({ ...entry, url }); setDlDialog(true);
+    } catch (e: any) {
+      if (owner === detailScopeRef.current && downloadResolveRef.current === controller) Alert.alert('İndirme bağlantısı', controller.signal.aborted ? 'Bağlantı çözümü zaman aşımına uğradı.' : String(e?.message || e));
+    } finally { clearTimeout(timer); if (downloadResolveRef.current === controller) downloadResolveRef.current = null; }
+  };
 
   if (!item) {
     return (
@@ -459,8 +495,7 @@ export default function DetailScreen() {
                     }
                   } else {
                     haptic.medium();
-                    setDlItem({ id: item.id, name: item.name, url: (item as any).url, ext: (item as any).container_ext || "mp4", subdir: "Filmler", poster: item.poster, kind: "vod" });
-                    setDlDialog(true);
+                    await prepareDownload({ id: item.id, name: item.name, url: (item as any).url, ext: (item as any).container_ext || "mp4", subdir: "Filmler", poster: item.poster, kind: "vod" });
                   }
                 }}
                 activeOpacity={0.75}
@@ -586,12 +621,11 @@ export default function DetailScreen() {
                     <FocusButton
                       testID={`episode-${ep.id}-dl`}
                       focusable
-                      onPress={() => {
+                      onPress={async () => {
                         haptic.medium();
                         const sNum = seasons[selectedSeasonIdx]?.season_number ?? seasons[selectedSeasonIdx]?.season ?? "";
                         const label = `${item.name} S${String(sNum).padStart(2, "0")}E${String(ep.episode_num || "").padStart(2, "0")}${ep.title ? ` ${ep.title}` : ""}`;
-                        setDlItem({ id: `ep-${ep.id}`, name: label, url: ep.url, ext: ep.container_ext || "mp4", subdir: `Diziler/${item.name}`, poster: item.poster, kind: "episode" });
-                        setDlDialog(true);
+                        await prepareDownload({ id: `ep-${ep.id}`, name: label, url: ep.url, ext: ep.container_ext || "mp4", subdir: `Diziler/${item.name}`, poster: item.poster, kind: "episode" });
                       }}
                       style={[styles.epRow, { width: 52, justifyContent: "center", alignItems: "center", paddingHorizontal: 0, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
                     >

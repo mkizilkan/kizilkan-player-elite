@@ -25,7 +25,7 @@ function bytes(text: string): Uint8Array {
 }
 
 
-export interface BackupV3ExportResult { uri: string; fileName: string; playlists: number; items: number; bytes: number; }
+export interface BackupV3ExportResult { uri: string; fileName: string; playlists: number; items: number; bytes: number; warnings: string[]; }
 
 export async function exportFullBackupV3(opts?: { signal?: AbortSignal; onProgress?: ProgressFn }): Promise<BackupV3ExportResult> {
   const signal = opts?.signal; const onProgress = opts?.onProgress;
@@ -39,6 +39,7 @@ export async function exportFullBackupV3(opts?: { signal?: AbortSignal; onProgre
   tmp.create();
   const handle = tmp.open();
   let itemCount = 0;
+  const warnings: string[] = [];
   const writeLine = (value:any) => handle.writeBytes(bytes(JSON.stringify(value) + '\n'));
   try {
     writeLine({ magic: MAGIC, version: 3, createdAt: new Date().toISOString(), metadata: meta });
@@ -63,7 +64,9 @@ export async function exportFullBackupV3(opts?: { signal?: AbortSignal; onProgre
             // v18.7.18: yetim/boş-kabuk playlist (Room indeksi + legacy dosya yok) TÜM yedeği düşürmesin.
             // Cihaz kanıtı: "queryItems rejected · IllegalStateException: Room indeksi ve legacy veri bulunamadı:
             // pl-xt-...". O türü ATLA, uyarı yaz, yedeğe devam et (hesap meta verisi zaten yazıldı).
-            if (/İşlem iptal|aborted|AbortError/i.test(String(e?.name || e?.message || e))) throw e;
+            aborted(signal);
+            if (/İşlem iptal|durduruldu|aborted|AbortError/i.test(`${e?.name || ''} ${e?.message || e}`)) throw e;
+            warnings.push(`${id} · ${kind}: katalog eksik; hesap bilgileri korunuyor.`);
             writeLine({ type:'chunk-error', playlistId:id, kind, message:String(e?.message || e).slice(0,200) });
             void recordDiagnostic('backup','BACKUP_KIND_SKIPPED',{ playlistId:id, kind, message:String(e?.message || e).slice(0,160) });
           }
@@ -83,7 +86,7 @@ export async function exportFullBackupV3(opts?: { signal?: AbortSignal; onProgre
     const final = new File(Paths.cache, finalName);
     if (final.exists) final.delete();
     tmp.move(final);
-    return { uri: final.uri, fileName: finalName, playlists: ids.length, items: itemCount, bytes: final.size };
+    return { uri: final.uri, fileName: finalName, playlists: ids.length, items: itemCount, bytes: final.size, warnings };
   } catch (e) {
     try { handle.close(); } catch {}
     try { if (tmp.exists) tmp.delete(); } catch {}
@@ -146,6 +149,8 @@ async function restoreSelectedFullBackupV3(asset: { uri: string; name?: string }
   const declaredIds = new Set(backupPlaylistIds(metadata));
   const begun = new Set<string>(), finished = new Set<string>();
   const counts = new Map<string, number>();
+  const warnings: string[] = [];
+  const incomplete = new Map<string, Set<string>>();
   let headerSeen = false, endSeen = false, chunks = 0;
   await commitSelectedPlaylistRestore(plan, sessionId, async mappings => {
     const stages = new Map(plan.items.map((item, index) => [item.sourceId, mappings[index].stageId!]));
@@ -173,13 +178,19 @@ async function restoreSelectedFullBackupV3(asset: { uri: string; name?: string }
           const message = `${String(wanted.get(id)!.metadata.name || 'Liste')} · ${rec.kind} · ${counts.get(id)} kayıt`;
           opts.onProgress?.(message); opts.onProgressDetail?.({ phase: 'restore-stage', current: chunks, total: 0, message });
         }
+      } else if (rec.type === 'chunk-error') {
+        validateChunkError(rec, begun, finished, incomplete);
+        if (wanted.has(id)) warnings.push(`${wanted.get(id)!.metadata.name || id} · ${rec.kind}: yedekte katalog eksik; mevcut kayıtlar geri alındı.`);
       } else if (rec.type === 'playlist-end') {
         if (!begun.has(id) || finished.has(id)) throw new Error('Tam yedek liste bitişi geçersiz.');
         if (wanted.has(id)) {
           const finishedSummary = await KizilkanNativeCore.finishChunkedPlaylistImport(stages.get(id)!);
           const summary = finishedSummary?.roomIndexed ? await KizilkanNativeCore.getPlaylistSummaryVerified(stages.get(id)!) : null;
           if (!summary?.roomIndexed || Number(summary.channels || 0) + Number(summary.vod || 0) + Number(summary.series || 0) !== counts.get(id)) throw new Error('Seçilen Room kataloğu doğrulanamadı.');
+          const expected = wanted.get(id)!.metadata;
+          const oldCounts = { channels: Number(expected.channelsCount || 0), vod: Number(expected.vodCount || 0), series: Number(expected.seriesCount || 0) };
           setRestoredCatalogCounts(wanted.get(id)!, { channels: Number(summary.channels || 0), vod: Number(summary.vod || 0), series: Number(summary.series || 0) }, true);
+          if (incomplete.has(id)) markPartialCatalog(expected, oldCounts, [...incomplete.get(id)!]);
         }
         finished.add(id);
       } else if (rec.type === 'end') {
@@ -191,7 +202,7 @@ async function restoreSelectedFullBackupV3(asset: { uri: string; name?: string }
     if (!headerSeen || !endSeen || begun.size !== finished.size || declaredIds.size !== finished.size || [...declaredIds].some(id => !finished.has(id))) throw new Error('Tam yedek tamamlanmamış veya metadata/katalog seti uyuşmuyor.');
     opts.onProgress?.('Seçilen listeler doğrulandı; geri yükleniyor');
   }, { catalog: true, signal: opts.signal });
-  return { restored: 3, profiles: 0, playlists: plan.items.length, heavyPlaylists: plan.items.length, warnings: [] };
+  return { restored: 3, profiles: 0, playlists: plan.items.length, heavyPlaylists: plan.items.length, warnings };
 }
 
 export async function restoreFullBackupV3(asset: { uri:string; name?:string }, opts?: { onProgress?:ProgressFn; selectedKeys?: string[]; targetProfileId?: string; authorizedProfileId?: string; signal?: AbortSignal }): Promise<RestoreResult> {
@@ -206,6 +217,8 @@ export async function restoreFullBackupV3(asset: { uri:string; name?:string }, o
   const stages = new Map(mappings.filter(mapping => mapping.stageId).map(mapping => [mapping.targetId, mapping.stageId!]));
   const begun = new Set<string>(), finished = new Set<string>();
   const counts = new Map<string, number>();
+  const warnings: string[] = [];
+  const incomplete = new Map<string, Set<string>>();
   let headerSeen = false, endSeen = false, chunks = 0;
   // The journal is durable before any temporary catalogue is created. Only a
   // fully validated file can reach the native live swap and metadata commit.
@@ -230,6 +243,9 @@ export async function restoreFullBackupV3(asset: { uri:string; name?:string }, o
         if (written !== rec.items.length) throw new Error('Katalog parçası eksik yazıldı.');
         counts.set(id, (counts.get(id) || 0) + written); chunks++;
         opts?.onProgress?.({ phase: 'restore-stage', current: chunks, total: 0, message: id + ' · ' + rec.kind + ' staging' });
+      } else if (rec.type === 'chunk-error') {
+        validateChunkError(rec, begun, finished, incomplete);
+        warnings.push(`${id} · ${rec.kind}: yedekte katalog eksik; mevcut kayıtlar geri alındı.`);
       } else if (rec.type === 'playlist-end') {
         if (!begun.has(id) || finished.has(id)) throw new Error('Tam yedek liste bitişi geçersiz.');
         const indexed = await KizilkanNativeCore.finishChunkedPlaylistImport(stages.get(id)!);
@@ -237,6 +253,15 @@ export async function restoreFullBackupV3(asset: { uri:string; name?:string }, o
         const verifiedCounts = { channels: Number(actual?.channels || 0), vod: Number(actual?.vod || 0), series: Number(actual?.series || 0) };
         if (!actual?.roomIndexed || verifiedCounts.channels + verifiedCounts.vod + verifiedCounts.series !== counts.get(id)) throw new Error('Room staging kayıt sayısı doğrulanamadı.');
         updateBackupCatalogCounts(metadata, patch, id, verifiedCounts, verifiedCounts.channels + verifiedCounts.vod + verifiedCounts.series ? 'ready' : 'empty');
+        if (incomplete.has(id)) {
+          for (const [key, value] of Object.entries(patch)) {
+            if (!key.startsWith('kizilkan.playlists.meta.') || typeof value !== 'string') continue;
+            const metas = JSON.parse(value);
+            const original = Object.values(metadata.playlists?.profiles || {}).flatMap(p => JSON.parse(p.metadata)).find(p => String(p.id) === id);
+            for (const meta of metas) if (String(meta.id) === id) markPartialCatalog(meta, { channels: Number(original?.channelsCount || 0), vod: Number(original?.vodCount || 0), series: Number(original?.seriesCount || 0) }, [...incomplete.get(id)!]);
+            patch[key] = JSON.stringify(metas);
+          }
+        }
         finished.add(id);
       } else if (rec.type === 'end') {
         const total = [...counts.values()].reduce((a, b) => a + b, 0);
@@ -248,7 +273,22 @@ export async function restoreFullBackupV3(asset: { uri:string; name?:string }, o
     opts?.onProgress?.({ phase: 'restore-commit', current: 0, total: mappings.length, message: 'Doğrulanan yedek atomik olarak uygulanıyor' });
   }, { signal: opts?.signal });
   opts?.onProgress?.({ phase: 'restore-done', current: mappings.length, total: mappings.length, message: 'Tam yedek doğrulandı ve uygulandı' });
-  return backupRestoreResult(metadata, patch, finished.size);
+  return backupRestoreResult(metadata, patch, finished.size, warnings);
+}
+
+function validateChunkError(rec: any, begun: Set<string>, finished: Set<string>, incomplete: Map<string, Set<string>>) {
+  const id = String(rec.playlistId || '');
+  if (!begun.has(id) || finished.has(id) || !['live', 'vod', 'series'].includes(rec.kind) || typeof rec.message !== 'string') throw new Error('Tam yedek eksik katalog kaydı geçersiz.');
+  const kinds = incomplete.get(id) || new Set<string>();
+  if (kinds.has(rec.kind)) throw new Error('Tekrarlanan eksik katalog kaydı.');
+  kinds.add(rec.kind); incomplete.set(id, kinds);
+}
+
+function markPartialCatalog(meta: Record<string, any>, expected: { channels: number; vod: number; series: number }, kinds: string[]) {
+  // Counts remain the verified local counts, not the historical remote counts.
+  Object.assign(meta, { catalogExpectedCounts: expected, catalogLocalState: 'missing', catalogMissingKinds: kinds,
+    catalogSync: { ...meta.catalogSync, initialSyncState: 'partial_error', lastError: 'Yedekte eksik katalog var' } });
+  delete meta.catalogRecovery;
 }
 
 export function isFullBackupV3Name(name?:string) { return String(name || '').toLowerCase().endsWith('.kzb'); }

@@ -2,10 +2,13 @@
  * KIZILKAN PLAYER ELITE v17.0.5 — taşınabilir, insan-okunur hesap arşivi.
  * Tam arşiv tekrar içe aktarılabilir; güvenli rapor credential alanlarını maskeler.
  */
+import type { PlaylistEndpoint } from '@/src/types';
+import { canonicalEndpointUrl, endpointProofLabel } from './playlistEndpoints';
 export type AccountArchiveRecord = {
   name?: string; username: string; password: string; server: string;
   panelName?: string; serverCode?: string; primaryHost?: string; validatedHosts?: string[];
   login?: any;
+  endpoints?: PlaylistEndpoint[];
 };
 
 function field(v: any, fallback = "Sunucu bildirmedi"): string {
@@ -49,7 +52,9 @@ export function buildKizilkanAccountArchive(records: AccountArchiveRecord[], saf
       // kalan gün hesabı bu alandan yapılır; biçimli metin yalnız okuma içindir.
       `Bitiş (epoch)          : ${field(ui.exp_date)}`,
       `Birincil Sunucu       : ${server}`, `Doğrulanmış Sunucular  : ${hosts.length}`,
-      ...hosts.map((h, hi) => `  [${hi + 1}] ${h}`), ""
+      ...hosts.map((h, hi) => `  [${hi + 1}] ${h}`),
+      ...(r.endpoints || []).map(e => `Adres Kanıtı          : ${e.url} · ${endpointProofLabel(e)}`),
+      `Adres Kanıtları JSON  : ${JSON.stringify(r.endpoints || [])}`, ""
     );
   });
   return lines.join("\n") + "\n";
@@ -77,6 +82,7 @@ export interface ParsedArchiveAccount {
   panelName: string;
   serverCode: string;
   validatedHosts: string[];
+  endpoints?: PlaylistEndpoint[];
   /** Arşivdeki bilgilendirme alanları (yeniden doğrulanana kadar gösterilir). */
   status: string;
   maxConnections: string;
@@ -163,6 +169,7 @@ export function parseKizilkanAccountArchive(text: string): ParsedArchive {
         panelName: String(cur.panelName || ""),
         serverCode: String(cur.serverCode || ""),
         validatedHosts: hosts.length ? [...hosts] : [server],
+        endpoints: cur.endpoints,
         status: String(cur.status || ""),
         maxConnections: String(cur.maxConnections || ""),
         expiryText: String(cur.expiryText || ""),
@@ -203,6 +210,11 @@ export function parseKizilkanAccountArchive(text: string): ParsedArchive {
     else if (/^Bitiş Tarihi$/i.test(k)) cur.expiryText = kv.value;
     else if (/^Bitiş \(epoch\)$/i.test(k)) { const n = Number(kv.value); if (Number.isFinite(n) && n > 0) (cur as any).expiryEpoch = n; }
     else if (/^Doğrulanmış Sunucular$/i.test(k)) collectingHosts = true;
+    else if (/^Adres Kanıtları JSON$/i.test(k)) {
+      collectingHosts = false;
+      try { const values = JSON.parse(kv.value); if (Array.isArray(values)) cur.endpoints = values.filter(e => e && e.kind === 'xtream' && canonicalEndpointUrl(e.url) && (hosts.length ? hosts : [cur?.server]).includes(e.url)); }
+      catch { warnings.push('Adres kanıtı okunamadı; hesap ve sunucu listesi korunuyor.'); }
+    }
   }
   flush();
 

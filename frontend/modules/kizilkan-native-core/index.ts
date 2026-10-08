@@ -113,11 +113,26 @@ export type NativeQueryPage<T = any> = {
 };
 
 let native: any = null;
+const keepAliveTimeoutWatches = new Map<string, ReturnType<typeof setInterval>>();
 try {
   if (Platform.OS === "android") native = requireOptionalNativeModule("KizilkanNativeCore");
 } catch {}
 
 export const KizilkanNativeCore = {
+  getGoogleDriveClientConfiguration: (): { packageName: string; sha1: string; scope: string } | null => native?.getGoogleDriveClientConfiguration?.() || null,
+  authorizeGoogleDrive: async (): Promise<{accessToken: string; expiresIn?: number}> => {
+    if (!native?.authorizeGoogleDrive) throw new Error('Android Drive yetkilendirmesi için güncel uygulama gerekli.');
+    return await native.authorizeGoogleDrive();
+  },
+  syncProfileEndpoints: async (profileId: string, playlists: any[]): Promise<void> => {
+    if (!native) return;
+    if (!native.syncProfileEndpoints || !(await native.syncProfileEndpoints(profileId, JSON.stringify(playlists)))) throw new Error('Playlist adresleri Room kaydına yazılamadı.');
+  },
+  getPlaylistEndpoints: async (profileId: string, playlistId: string): Promise<import('@/src/types').PlaylistEndpoint[]> => {
+    if (!native) return [];
+    if (!native.getPlaylistEndpoints) throw new Error('Playlist adres köprüsü kullanılamıyor.');
+    return JSON.parse(await native.getPlaylistEndpoints(profileId, playlistId));
+  },
   available: !!native,
   magExactRequest: async (url: string, headers: Record<string,string>, timeoutMs = 20000): Promise<Record<string, any> | null> => native ? native.magExactRequest(url, JSON.stringify(headers), timeoutMs) : null,
   /**
@@ -334,9 +349,19 @@ export const KizilkanNativeCore = {
   /** v18.4.0 — Ekranı açık tut (slayt gösterisi). */
   setKeepScreenOn: (on: boolean): boolean => native?.setKeepScreenOn ? !!native.setKeepScreenOn(on) : false,
   // v18.7.21 (D): genel "canlı tut" ön plan servisi — JS işleri (MAG çoklu/güncelleme) arka planda sürsün.
-  startForegroundKeepAlive: (title: string, text: string): boolean => native?.startForegroundKeepAlive ? !!native.startForegroundKeepAlive(title, text) : false,
-  updateForegroundKeepAlive: (text: string, done: number, total: number): boolean => native?.updateForegroundKeepAlive ? !!native.updateForegroundKeepAlive(text, Math.floor(done) || 0, Math.floor(total) || 0) : false,
-  stopForegroundKeepAlive: (): boolean => native?.stopForegroundKeepAlive ? !!native.stopForegroundKeepAlive() : false,
+  startForegroundKeepAlive: (title: string, text: string, owner = 'legacy', onTimeout?: () => void): boolean => {
+    const previous = keepAliveTimeoutWatches.get(owner); if (previous) clearInterval(previous);
+    const before = Number(native?.getForegroundKeepAliveTimeoutAt?.() || 0);
+    const started = native?.startForegroundKeepAlive ? !!native.startForegroundKeepAlive(title, text, owner) : false;
+    if (started && onTimeout) keepAliveTimeoutWatches.set(owner, setInterval(() => {
+      if (Number(native?.getForegroundKeepAliveTimeoutAt?.() || 0) > before) {
+        const timer = keepAliveTimeoutWatches.get(owner); if (timer) clearInterval(timer); keepAliveTimeoutWatches.delete(owner); onTimeout();
+      }
+    }, 2000));
+    return started;
+  },
+  updateForegroundKeepAlive: (text: string, done: number, total: number, owner = 'legacy'): boolean => native?.updateForegroundKeepAlive ? !!native.updateForegroundKeepAlive(text, Math.floor(done) || 0, Math.floor(total) || 0, owner) : false,
+  stopForegroundKeepAlive: (owner = 'legacy'): boolean => { const timer = keepAliveTimeoutWatches.get(owner); if (timer) clearInterval(timer); keepAliveTimeoutWatches.delete(owner); return native?.stopForegroundKeepAlive ? !!native.stopForegroundKeepAlive(owner) : false; },
   /** v18.4.0 — MediaStore küçük resmi (file:// JPEG, önbellekli) veya "". */
   getDeviceMediaThumbnail: async (uri: string, sizePx = 256): Promise<string> =>
     native?.getDeviceMediaThumbnail ? String(await native.getDeviceMediaThumbnail(uri, sizePx) || "") : "",

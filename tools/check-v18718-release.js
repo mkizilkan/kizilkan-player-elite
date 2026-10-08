@@ -28,11 +28,11 @@ need(JSON.parse(rd('frontend/package.json')).version === ver, 'package.json sür
 need(/try \{[\s\S]{0,400}await KizilkanNativeCore\.queryItems<any>\(id, kind/.test(backup), 'B1: queryItems try/catch ile sarılmadı');
 need(/chunk-error/.test(backup) && /BACKUP_KIND_SKIPPED/.test(backup), 'B1: yetim playlist atlama (chunk-error) yok');
 // abort hâlâ yedeği durdurur (yutulmaz)
-need(/İşlem iptal\|aborted\|AbortError[\s\S]{0,80}\)\) throw e;/.test(backup), 'B1: abort yutulmamalı (yedeği durdurmalı)');
+need(/aborted\(signal\);\s*if \(\/İşlem iptal\|durduruldu\|aborted\|AbortError[\s\S]{0,150}throw e;/.test(backup), 'B1: abort yutulmamalı (yedeği durdurmalı)');
 
 // G1 — Google Drive runtime client ID
 need(/export async function hydrateGoogleDriveConfig/.test(drive) && /export async function setGoogleDriveClientId/.test(drive) && /export function getGoogleDriveClientId/.test(drive), 'G1: runtime client ID fonksiyonları yok');
-need(/isGoogleDriveConfigured\(\): boolean \{\s*return !!getGoogleDriveClientId\(\);/.test(drive), 'G1: isGoogleDriveConfigured runtime ID kullanmıyor');
+need(/isGoogleDriveConfigured\(\): boolean \{[\s\S]{0,160}return !!getGoogleDriveClientId\(\);/.test(drive) && /Platform.OS === 'android'[\s\S]{0,90}KizilkanNativeCore.available/.test(drive), 'G1: Android native authorization / diğer platform runtime ID ayrımı yok');
 need(/export function getGoogleDriveRedirectUri/.test(drive), 'G1: redirect URI gösterimi yok');
 need(!/scheme: 'frontend'/.test(drive), 'G1: redirect scheme hâlâ hardcode "frontend"');
 need(/clientId,\s*\n\s*scopes: \[DRIVE_SCOPE/.test(drive), 'G1: authenticate runtime clientId kullanmıyor');

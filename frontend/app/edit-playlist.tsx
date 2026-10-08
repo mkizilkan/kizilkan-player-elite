@@ -32,12 +32,16 @@ import * as Clipboard from "expo-clipboard";
 import { haptic } from "@/src/utils/haptic";
 import { normalizeHost } from "@/src/player/hostFailover";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
+import { canonicalEndpointUrl, playlistEndpoints } from '@/src/utils/playlistEndpoints';
+import { useProfiles } from '@/src/store/ProfileContext';
+import type { PlaylistEndpoint } from '@/src/types';
 
 export default function EditPlaylist() {
   const router = useRouter();
   const { colors } = useTheme();
   const params = useLocalSearchParams<{ id: string }>();
   const { playlists, updatePlaylist } = usePlaylists();
+  const { activeProfile } = useProfiles();
   const pl = playlists.find(p => p.id === params.id);
 
   const [name, setName] = useState(pl?.name || "");
@@ -63,6 +67,9 @@ export default function EditPlaylist() {
   /** v18.2.0: panel DNS'leri + kullanıcı yedekleri (birincil hariç tutulur, DnsManager ekler). */
   const [dnsHosts, setDnsHosts] = useState<string[]>(() =>
     Array.from(new Set([...(pl?.serverCodeBinding?.validatedHosts || []), ...((pl as any)?.backupHosts || [])].map(normalizeHost).filter(Boolean))));
+  const [macPortals, setMacPortals] = useState<string[]>(pl?.stalkerBackupPortals || []);
+  const [endpointEvidence, setEndpointEvidence] = useState<PlaylistEndpoint[]>(playlistEndpoints(pl || {}));
+  const acceptEvidence = (e: PlaylistEndpoint) => setEndpointEvidence(prev => { const map = new Map(prev.map(p => [canonicalEndpointUrl(p.url), p])); map.set(canonicalEndpointUrl(e.url), { ...map.get(canonicalEndpointUrl(e.url)), ...e }); return [...map.values()]; });
   const [playbackUserAgent, setPlaybackUserAgent] = useState(pl?.playbackHeaders?.userAgent || "");
   const [playbackReferer, setPlaybackReferer] = useState(pl?.playbackHeaders?.referer || "");
   const [playbackOrigin, setPlaybackOrigin] = useState(pl?.playbackHeaders?.origin || "");
@@ -118,6 +125,7 @@ export default function EditPlaylist() {
         patch.xtreamServer = xtServer.trim() || pl.xtreamServer;
         patch.xtreamUsername = xtUser.trim() || pl.xtreamUsername;
         patch.xtreamPassword = xtPass.trim() || pl.xtreamPassword;
+        if (patch.xtreamUsername !== pl.xtreamUsername || patch.xtreamPassword !== pl.xtreamPassword) patch.endpoints = [];
 
         // v15.2.4: Sunucu kodu kullanıcı tarafından değiştirilebilsin; fakat
         // doğrulanmamış kod çalışan hesabın binding'ini bozmasın. Yeni kod önce
@@ -175,6 +183,7 @@ export default function EditPlaylist() {
           const primaryNorm = normalizeHost(patch.xtreamServer || pl.xtreamServer || "");
           const kept = Array.from(new Set(dnsHosts.map(normalizeHost).filter(h => !!h && h !== primaryNorm)));
           patch.backupHosts = kept;
+          patch.endpoints = patch.xtreamUsername !== pl.xtreamUsername || patch.xtreamPassword !== pl.xtreamPassword ? [] : endpointEvidence.filter(e => e.kind === 'xtream' && [primaryNorm, ...kept].includes(canonicalEndpointUrl(e.url)));
           const binding = patch.serverCodeBinding || pl.serverCodeBinding;
           if (binding && requestedCode === currentCode) {
             const allowed = new Set([primaryNorm, ...kept]);
@@ -249,8 +258,12 @@ export default function EditPlaylist() {
          * aynı kanıtlanmış yol): handshake -> profile -> get_all_channels.
          */
         patch.stalkerPortal = stPortal.trim() || pl.stalkerPortal;
+        patch.stalkerBackupPortals = macPortals.filter(p => canonicalEndpointUrl(p) !== canonicalEndpointUrl(String(patch.stalkerPortal || '')));
+        patch.endpoints = endpointEvidence.filter(e => e.kind === 'stalker' && [patch.stalkerPortal, ...macPortals].map(p => canonicalEndpointUrl(String(p || ''))).includes(canonicalEndpointUrl(e.url)));
+        if (canonicalEndpointUrl(String(patch.stalkerPortal || '')) !== canonicalEndpointUrl(String(pl.stalkerPortal || ''))) patch.stalkerResolvedPortal = endpointEvidence.find(e => canonicalEndpointUrl(e.url) === canonicalEndpointUrl(String(patch.stalkerPortal)))?.resolvedPortal;
         patch.stalkerMac = (stMac.trim().toUpperCase()) || pl.stalkerMac;
         patch.stalkerSerial = stSerial.trim() || pl.stalkerSerial;
+        if (patch.stalkerMac !== pl.stalkerMac || patch.stalkerSerial !== pl.stalkerSerial) { patch.endpoints = []; patch.stalkerResolvedPortal = undefined; }
         patch.stalkerTimezoneMode = stTimezoneMode;
         patch.stalkerTimezone = stTimezoneMode === "manual" ? stTimezone.trim() || undefined : undefined;
         // A previously verified portal timezone is preserved until a new profile proves another value.
@@ -472,6 +485,7 @@ export default function EditPlaylist() {
               </View>
               <DnsManager
                 primary={xtServer || pl.xtreamServer || ""}
+                endpoints={endpointEvidence} onEvidence={acceptEvidence} profileId={activeProfile.id}
                 hosts={dnsHosts}
                 username={xtUser || pl.xtreamUsername || ""}
                 password={xtPass || pl.xtreamPassword || ""}
@@ -487,6 +501,10 @@ export default function EditPlaylist() {
 
           {pl.source === "stalker" && (
             <>
+              <DnsManager kind="stalker" primary={stPortal || pl.stalkerPortal || ''} hosts={macPortals}
+                username="" password="" mac={stMac || pl.stalkerMac || ''} serial={stSerial || pl.stalkerSerial}
+                profileId={activeProfile.id} endpoints={endpointEvidence} onEvidence={acceptEvidence} onChange={setMacPortals}
+                onMakePrimary={url => { const old = canonicalEndpointUrl(stPortal || pl.stalkerPortal || ''); setMacPortals(prev => [...new Set([...prev.filter(p => p !== url), old].filter(Boolean))]); setStPortal(url); }} />
               <Label text="PORTAL URL" mt copy={stPortal || pl.stalkerPortal || ""} />
               <TextInput testID="edit-st-portal-input" value={stPortal} onChangeText={setStPortal}
                 autoCapitalize="none" autoCorrect={false} keyboardType="url"

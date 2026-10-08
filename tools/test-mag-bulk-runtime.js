@@ -203,6 +203,7 @@ async function selectedActionsAndArchive() {
     stalkerCategoryPreview: async () => ({ live: ['Haber'], vod: ['Aksiyon'], series: [], warnings: ['Series kategori önizleme: desteklenmiyor'] }),
     stalkerCatalog: async () => ({ channels: [{ id: 'live' }], diagnostics: { warnings: [] } }),
     stalkerEnrichment: async () => ({ vod: [{ id: 'movie' }], series: [], diagnostics: { warnings: [] } }),
+    getStreamDerivedCredentials: () => null,
   };
   const env = environment({ '@/src/utils/stalker': fake, '@/modules/kizilkan-native-core': { KizilkanNativeCore: { writePublicTextFile: async (_subdir, name, _mime, data) => { writes.push({ name, data }); return name.endsWith('.txt') && txtFails || name.endsWith('.json') && jsonFails ? { ok: false, error: 'fixture write failed' } : { ok: true, uri: 'content://fixture/' + name, path: name }; } } } });
   const values = {

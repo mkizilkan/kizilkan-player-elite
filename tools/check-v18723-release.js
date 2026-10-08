@@ -30,7 +30,7 @@ need(/setMagDerived\(readDerived\(\)\)/.test(settings), 'oto-prime: prime sonras
 
 // M3U görüntü testi oto-çalışma
 need(/autoTestedRef/.test(settings), 'oto-test: autoTestedRef yok');
-need(/autoTestedRef\.current !== m3uLink && m3uTest\.state === "idle"/.test(settings) && /void testM3u\(\)/.test(settings), 'oto-test: m3uLink hazır olunca testM3u otomatik çalışmıyor');
+need(/autoTestedRef\.current !== m3uLink/.test(settings) && /void testM3u\(\)/.test(settings) && /return \(\) =>.*abort/.test(settings), 'oto-test: m3uLink değişince test / eski test iptali yok');
 
 if (fail.length) { console.log(fail.map(f => '✗ ' + f).join('\n')); console.log('BAŞARISIZ'); process.exit(1); }
 console.log('PASS: v18.7.23 kart oto-prime (kullanıcı adı oynatmasız) + görüntü oto-testi TEMİZ');

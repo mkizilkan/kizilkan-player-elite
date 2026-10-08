@@ -1,8 +1,8 @@
 /** Eski izole fixture'lar için yeni saf MAG modüllerini gerçek kaynaklarından yükler. */
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm'), ts = require('./_ts');
-const names = new Set(['magEndpointRegistry', 'magClientJsResolver', 'magDiscoveryBudget', 'magResponseFingerprint', 'catalogProgress']);
+const names = new Set(['magEndpointRegistry', 'magClientJsResolver', 'magDiscoveryBudget', 'magResponseFingerprint', 'catalogProgress', 'playlistEndpoints']);
 exports.load = function load(id, globals = {}) {
-  const name = id.replace(/^@\/src\/utils\//, '');
+  const name = id.replace(/^(?:@\/src\/utils\/|\.\/)/, '');
   if (!names.has(name)) return undefined;
   const filename = path.join(__dirname, '..', 'frontend', 'src', 'utils', name + '.ts');
   const code = ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;

@@ -31,10 +31,10 @@ import { api } from "@/src/utils/api";
 import {
   fetchAndParseM3U, parseM3U,
   xtreamLogin as xtLoginLocal,
-  xtreamLiveStreams, xtreamVod as xtVodLocal, xtreamSeries as xtSeriesLocal,
+  xtreamLiveStreams, xtreamLiveCatalogProbe, xtreamVod as xtVodLocal, xtreamSeries as xtSeriesLocal,
   detectXtreamFromM3U,
 } from "@/src/utils/iptv";
-import type { Playlist, AccountInfo, ServerCodeBinding, PlaylistContentSelection } from "@/src/types";
+import type { Playlist, AccountInfo, ServerCodeBinding, PlaylistContentSelection, PlaylistEndpoint } from "@/src/types";
 import { catalogCategories, applyContentSelection, allContentSelection } from "@/src/utils/contentSelection";
 import { playlistIdentityCanonical } from "@/src/utils/playlistManagement";
 import { FocusButton } from "@/src/components/FocusButton";
@@ -47,6 +47,7 @@ import {
   type PanelDirectoryItem, type PanelCredentialMatch, type ScanExecutionControl,
 } from "@/src/utils/serverCode";
 import { PanelScan, type NativeScanStartResult } from "@/modules/panel-scan";
+import { createScanResultReader } from "@/src/utils/scanResultReader";
 import { loadScanProxyConfig, saveScanProxyConfig, setScanProxyUse } from "@/src/utils/scanProxy";
 import { ScanProxyLiveLine, ScanProxyToggleRow } from "@/src/components/ScanProxyControls";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
@@ -78,6 +79,7 @@ type BulkResolvedCandidate = {
   server: string;
   login: any;
   validatedHosts: string[];
+  endpoints?: import('@/src/types').PlaylistEndpoint[];
   direct: boolean;
 };
 
@@ -314,6 +316,7 @@ export default function AddPlaylist() {
   const [bulkContentTesting, setBulkContentTesting] = useState(false);
   const [bulkContentTestProgress, setBulkContentTestProgress] = useState({ done: 0, total: 0 });
   const bulkContentAbortRef = React.useRef<AbortController | null>(null);
+  React.useEffect(() => () => { bulkContentAbortRef.current?.abort(); }, []);
   const bulkContentYesKeys = useMemo(() => Object.keys(bulkContentTest).filter(k => bulkContentTest[k]?.state === "yes"), [bulkContentTest]);
   const testBulkContent = React.useCallback(async () => {
     const list = bulkCandidates.filter(c => c.server && c.username && c.password);
@@ -324,7 +327,8 @@ export default function AddPlaylist() {
     setBulkContentTest(prev => { const next = { ...prev }; for (const c of list) next[c.key] = { state: "testing", count: 0 }; return next; });
     void recordDiagnostic("scan", "BULK_CONTENT_TEST_START", { accounts: list.length });
     // v18.7.25 (B): hız — arka planda throttle olmasın diye ön plan servisi; paralellik 6→20, timeout 15→10 sn.
-    try { KizilkanNativeCore.startForegroundKeepAlive("Görüntü testi", `${list.length} hesap kontrol ediliyor`); } catch {}
+    const keepAliveOwner = `catalog-test-${Date.now()}`;
+    try { KizilkanNativeCore.startForegroundKeepAlive("Katalog testi", `${list.length} hesap kontrol ediliyor`, keepAliveOwner, () => ctrl.abort()); } catch {}
     let done = 0; let yes = 0; const CONC = 20; let idx = 0;
     const worker = async () => {
       while (idx < list.length && !ctrl.signal.aborted) {
@@ -334,8 +338,8 @@ export default function AddPlaylist() {
           const per = new AbortController(); const timer = setTimeout(() => per.abort(), 10000);
           const onAbort = () => per.abort(); ctrl.signal.addEventListener("abort", onAbort);
           try {
-            const streams = await xtreamLiveStreams({ server: c.server, username: c.username, password: c.password }, per.signal);
-            result = streams.length > 0 ? { state: "yes", count: streams.length } : { state: "no", count: 0 };
+            const count = await xtreamLiveCatalogProbe({ server: c.server, username: c.username, password: c.password }, per.signal);
+            result = count > 0 ? { state: "yes", count } : { state: "no", count: 0 };
           } finally { clearTimeout(timer); ctrl.signal.removeEventListener("abort", onAbort); }
         } catch { result = { state: "err", count: 0 }; }
         if (ctrl.signal.aborted) break;
@@ -345,8 +349,8 @@ export default function AddPlaylist() {
       }
     };
     try { await Promise.all(Array.from({ length: Math.min(CONC, list.length) }, worker)); } finally {
-      setBulkContentTesting(false); bulkContentAbortRef.current = null;
-      try { KizilkanNativeCore.stopForegroundKeepAlive(); } catch {}
+      if (bulkContentAbortRef.current === ctrl) { bulkContentAbortRef.current = null; setBulkContentTesting(false); }
+      try { KizilkanNativeCore.stopForegroundKeepAlive(keepAliveOwner); } catch {}
       void recordDiagnostic("scan", "BULK_CONTENT_TEST_DONE", { tested: done, withContent: yes, aborted: ctrl.signal.aborted });
     }
   }, [bulkCandidates, bulkContentTesting, bulkContentTest]);
@@ -384,6 +388,7 @@ export default function AddPlaylist() {
   const nativeScanRunIdRef = React.useRef<string>("");
   const bulkScanRunIdRef = React.useRef<string>("");
   const [nativeScanRunning, setNativeScanRunning] = useState(false);
+  const [scanSafetyStatus, setScanSafetyStatus] = useState("");
   const [nativeScanPaused, setNativeScanPaused] = useState(false);
   const [nativeScanStopping, setNativeScanStopping] = useState(false);
   const nativePreparationAbortRef = React.useRef<AbortController | null>(null);
@@ -1088,6 +1093,8 @@ export default function AddPlaylist() {
     serverCodeBinding?: ServerCodeBinding,
     navigateAfter = true,
     manageLoading = true,
+    backupHosts: string[] = [],
+    endpointEvidence: PlaylistEndpoint[] = [],
   ): Promise<boolean> => {
     const normalizedServer = cred.server.replace(/\/+$/, "").toLowerCase();
     const accountKey = `${cred.username}\u0000${normalizedServer}`;
@@ -1115,7 +1122,7 @@ export default function AddPlaylist() {
           key: jobKey, sourceRow: 1, name: displayName?.trim() || name.trim() || "Xtream Codes",
           username: cred.username, password: cred.password,
           panelName: serverCodeBinding?.panelName || hostName(cred.server), code: serverCodeBinding?.code || "",
-          server: cred.server, login: {}, validatedHosts: serverCodeBinding?.validatedHosts || [cred.server], direct: !serverCodeBinding,
+          server: cred.server, login: {}, validatedHosts: Array.from(new Set([cred.server, ...(serverCodeBinding?.validatedHosts || []), ...backupHosts])), direct: !serverCodeBinding, endpoints: endpointEvidence,
         };
         await storage.secureSet(PENDING_BULK_IMPORT_KEY, JSON.stringify([candidate]));
         bulkImportOwnedByScreenRef.current = true;
@@ -1132,7 +1139,7 @@ export default function AddPlaylist() {
           if(row){
             setCatalogProgress({phase:row.state==='completed'?'done':row.state==='failed'?'error':'content',message:row.message||'Katalog yükleniyor…',liveCount:row.channels,vodCount:row.vod,seriesCount:row.series});
             setProgress(`${row.message || "Native playlist ekleniyor"}${row.channels ? `\n${row.channels} kanal · ${row.vod || 0} film · ${row.series || 0} dizi` : ""}`);
-            if (row.state === "completed") { completedRow = row; break; }
+            if (row.state === "completed" || row.liveReady) { completedRow = row; break; }
             if (row.state === "failed") throw new Error(String(row.message || "Native Xtream ekleme başarısız"));
           }
           if (!snap.running && !row) throw new Error("Native Xtream işi beklenmedik biçimde sona erdi.");
@@ -1141,11 +1148,12 @@ export default function AddPlaylist() {
         if (!(await commitPreparedPlaylist({
           id, name: candidate.name, source: "xtream",
           xtreamServer: cred.server, xtreamUsername: cred.username, xtreamPassword: cred.password,
-          serverCodeBinding, accountInfo: (completedRow?.userInfo || null) as AccountInfo, serverInfo: completedRow?.serverInfo || null,
+          serverCodeBinding, backupHosts: candidate.validatedHosts.filter(h => h !== cred.server), endpoints: endpointEvidence, accountInfo: (completedRow?.userInfo || null) as AccountInfo, serverInfo: completedRow?.serverInfo || null,
           channels: [], vod: [], series: [], channelsCount: Number(completedRow?.channels || 0), vodCount: Number(completedRow?.vod || 0), seriesCount: Number(completedRow?.series || 0),
           createdAt: new Date().toISOString(),
+          catalogSync: { initialSyncState: completedRow?.state === 'completed' ? 'ready' : 'enriching' },
         }))) return false;
-        await storage.secureRemove(PENDING_BULK_IMPORT_KEY);
+        if (completedRow?.state === 'completed') await storage.secureRemove(PENDING_BULK_IMPORT_KEY);
         playlistServerKeysRef.current.add(accountKey);
         setProgress("Playlist Room/SQLite üzerinde hazır.");
         if (navigateAfter) router.replace("/(tabs)");
@@ -1173,7 +1181,7 @@ export default function AddPlaylist() {
       const playlist: Playlist = {
         id, name: displayName?.trim() || name.trim() || "Xtream Codes", source: "xtream",
         xtreamServer: cred.server, xtreamUsername: cred.username, xtreamPassword: cred.password,
-        serverCodeBinding,
+        serverCodeBinding, backupHosts: Array.from(new Set(backupHosts.filter(h => h !== cred.server))), endpoints: endpointEvidence,
         catalogCapabilities: { live: "supported", vod: isUnsupported404(vodRes) ? "unsupported_404" : "supported", series: isUnsupported404(serRes) ? "unsupported_404" : "supported", updatedAt: new Date().toISOString() },
         accountInfo: login.user_info as AccountInfo,
         serverInfo: login.server_info || null,
@@ -1270,6 +1278,7 @@ export default function AddPlaylist() {
         panelName: a.panelName || a.name,
         code: a.serverCode || "",
         validatedHosts: a.validatedHosts.map(h => canonicalPanelHost(h) || h).filter(Boolean),
+        endpoints: a.endpoints,
         // v17.5.0: exp_date HAM epoch olarak aktarılır; kart "kalan gün"ü
         // bu alandan hesaplıyor. Daha önce yalnız biçimli metin vardı ve kart
         // "Bitiş: bilinmiyor" yazıyordu.
@@ -1429,12 +1438,25 @@ export default function AddPlaylist() {
   React.useEffect(() => {
     if (Platform.OS !== "android") return;
     let cancelled = false;
+    let syncing = false;
+    const readJournal = createScanResultReader(PanelScan.getResultsPage);
     let timer: ReturnType<typeof setInterval> | null = null;
 
     const syncSnapshots = async () => {
+      if (syncing || cancelled) return;
+      syncing = true;
       try {
         const scan = PanelScan.available ? PanelScan.getSnapshot() : {};
+        if (!cancelled && scan.safetyBackup) setScanSafetyStatus(scan.safetyBackup.ok
+          ? `Emniyet kaydı: ${scan.safetyBackup.count || 0} sonuç · ${scan.safetyBackup.path || ''}`
+          : `Emniyet dosyası yazılamadı: ${scan.safetyBackup.error || 'Depolamayı kontrol edin'}. Sonuçlar kalıcı veritabanında korunuyor.`);
         const scanTerminal = ["COMPLETED", "CANCELLED", "FAILED"].includes(String(scan.state || ""));
+        if (scan.runId) {
+          const durable: any[] = [];
+          await readJournal(scan.runId, scanTerminal, rows => { durable.push(...rows); }, () => !cancelled);
+          if (cancelled) return;
+          if (durable.length) scan.matches = durable;
+        }
 
         // v17.0.7: Process gerçekten öldüyse journal'daki şifreli session + konservatif
         // checkpoint kullanılarak tarama yeniden başlatılır. Sonuçlar DB'den korunur.
@@ -1483,10 +1505,13 @@ export default function AddPlaylist() {
         if ((scan.mode === "bulk" || scan.mode === "unified" || scan.mode === "streaming-file-v172") && (scan.running || scanTerminal || (scan.matches?.length || 0) > 0)) {
           const saved = await storage.secureGet<string>(PENDING_BULK_SCAN_KEY, "");
           const accounts: BulkAccountInput[] = saved ? JSON.parse(saved) : [];
-          if (!cancelled && (accounts.length || scan.mode === "streaming-file-v172")) {
+          if (!cancelled) {
             const resolved: BulkResolvedCandidate[] = [];
             for (const m of (scan.matches || [])) {
-              const ai=Number(m.accountIndex); const a=accounts[ai] || accounts.find(x=>x.row===Number(m.sourceRow)) || (scan.mode === "streaming-file-v172" ? {row:Number(m.sourceRow),name:String(m.name||""),username:String(m.username||""),password:String(m.password||""),server:""} : null); if(!a) continue;
+              const ai=Number(m.accountIndex);
+              const pending = accounts[ai] || accounts.find(x=>x.row===Number(m.sourceRow));
+              const a = m.username && m.password ? { row: Number(m.sourceRow) || pending?.row || ai + 1, name: String(m.name || pending?.name || ''), username: String(m.username), password: String(m.password), server: pending?.server || '' } : pending;
+              if (!a) continue;
               const server=String(m.server||""); if(!server) continue;
               const panelName=String(m.panelName||"") || hostName(server), code=String(m.code||"");
               resolved.push({ key:bulkCandidateKey(a.row,a.username,code,panelName,server), sourceRow:a.row, name:a.name||panelName, username:a.username, password:a.password, panelName, code, server,login:m.login,sources:m.sources, validatedHosts:[server], direct:!!a.server || panelName === "Doğrudan DNS" });
@@ -1622,20 +1647,24 @@ export default function AddPlaylist() {
           const chosen: BulkResolvedCandidate[] = chosenRaw ? JSON.parse(chosenRaw) : [];
           const byKey = new Map(chosen.map(c => [c.key, c]));
           for (const row of rows) {
-            if (row.state !== "completed" || !row.playlistId || restoredImportAdoptedRef.current.has(String(row.playlistId))) continue;
+            if ((row.state !== "completed" && !row.liveReady) || !row.playlistId || restoredImportAdoptedRef.current.has(String(row.playlistId))) continue;
             if (playlists.some(pl => pl.id === String(row.playlistId))) { restoredImportAdoptedRef.current.add(String(row.playlistId)); continue; }
             const c = byKey.get(String(row.jobKey || "")); if (!c) continue;
             if (!(await commitPreparedPlaylist({
               id:String(row.playlistId), name:String(row.displayName||c.name), source:"xtream",
               xtreamServer:c.server, xtreamUsername:c.username, xtreamPassword:c.password,
               serverCodeBinding:c.direct ? undefined : makeBinding(c.code,c.panelName,c.server,c.validatedHosts,c.sources),
+              backupHosts: c.validatedHosts.filter(h => h !== c.server),
+              endpoints: c.endpoints,
               accountInfo:(row.userInfo||c.login?.user_info||null) as AccountInfo, serverInfo:row.serverInfo||c.login?.server_info||null,
               channels:[], vod:[], series:[], channelsCount:Number(row.channels||0), vodCount:Number(row.vod||0), seriesCount:Number(row.series||0), createdAt:new Date().toISOString(),
+              catalogSync: { initialSyncState: row.state === 'completed' ? 'ready' : 'enriching' },
             }))) return false;
             restoredImportAdoptedRef.current.add(String(row.playlistId));
           }
         }
-      } catch (e) { console.warn("[v15.2.3 restore] native job snapshot", e); }
+      } catch (e: any) { readJournal.reset(); if (!cancelled) setError(`Kalıcı sonuç aktarımı tamamlanamadı: ${e?.message || e}`); }
+      finally { syncing = false; }
     };
 
     void syncSnapshots();
@@ -1869,14 +1898,16 @@ export default function AddPlaylist() {
       throw e;
     }
     let lastFound=-1, completed=0;
+    const readJournal = createScanResultReader(PanelScan.getResultsPage);
     const snapshotDeadline=Date.now()+30000;
     while (true) {
       const snap=PanelScan.getSnapshot();
       if (snap.runId !== runId) { if(Date.now()>snapshotDeadline)throw new Error("Native tarama 30 saniyede durum bildirmedi; yeniden deneyin.");await new Promise(resolve=>setTimeout(resolve,120)); continue; }
-      if (snap.error) throw new Error(snap.error);
       if (Array.isArray(snap.accountStatuses)) setBulkAccountProgress(snap.accountStatuses);
-      const raw=Array.isArray(snap.matches)?snap.matches:[];
-      if (raw.length !== lastFound) {
+      const raw: any[] = [];
+      await readJournal(runId, !snap.running, rows => { raw.push(...rows); });
+      if (snap.error && !raw.length) throw new Error(snap.error);
+      if (raw.length) {
         const resolved: BulkResolvedCandidate[]=[];
         for (const m of raw) {
           const ai=Number(m.accountIndex); const account=Number.isInteger(ai)?accounts[ai]:accounts.find(a=>a.row===Number(m.sourceRow)); if(!account) continue;
@@ -1901,7 +1932,7 @@ export default function AddPlaylist() {
         // Activity/process yeniden oluşsa bile bulunan sonuçlar tekrar hydrate edilir.
         bulkNativeScanRef.current = false;
         if (bulkScanRunIdRef.current === runId) bulkScanRunIdRef.current = "";
-        return { found:raw.length, completed, cancelled:!!snap.cancelled };
+        return { found:Number(snap.found || 0), completed, cancelled:!!snap.cancelled };
       }
       await new Promise(resolve=>setTimeout(resolve,350));
     }
@@ -1967,14 +1998,16 @@ export default function AddPlaylist() {
         throw e;
       }
       let lastFound = -1;
+      const readJournal = createScanResultReader(PanelScan.getResultsPage);
       let completed = 0;
       const snapshotDeadline=Date.now()+30000;
       while (true) {
         const snap = PanelScan.getSnapshot();
         if (snap.runId !== runId) { if(Date.now()>snapshotDeadline)throw new Error("Dosya taraması 30 saniyede durum bildirmedi; yeniden deneyin.");await new Promise(resolve => setTimeout(resolve, 120)); continue; }
-        if (snap.error) throw new Error(snap.error);
-        const raw = Array.isArray(snap.matches) ? snap.matches : [];
-        if (raw.length !== lastFound) {
+        const raw: any[] = [];
+        await readJournal(runId, !snap.running, rows => { raw.push(...rows); });
+        if (snap.error && !raw.length) throw new Error(snap.error);
+        if (raw.length) {
           const resolved: BulkResolvedCandidate[] = [];
           for (const m of raw) {
             const username=String(m.username||"").trim(), password=String(m.password||"");
@@ -2004,7 +2037,7 @@ export default function AddPlaylist() {
         if (!snap.running) {
           bulkNativeScanRef.current = false;
           if (bulkScanRunIdRef.current === runId) bulkScanRunIdRef.current = "";
-          return { found:raw.length, completed, cancelled:!!snap.cancelled, unmatched:Number(snap.skippedNoCandidate||0) };
+          return { found:Number(snap.found || 0), completed, cancelled:!!snap.cancelled, unmatched:Number(snap.skippedNoCandidate||0) };
         }
         await new Promise(resolve => setTimeout(resolve, 350));
       }
@@ -2014,6 +2047,8 @@ export default function AddPlaylist() {
   };
 
   const submitBulkAccounts = async () => {
+    bulkContentAbortRef.current?.abort(); bulkContentAbortRef.current = null;
+    setBulkContentTest({}); setBulkContentTesting(false);
     const parsed = bulkParsed;
     if (!parsed.accounts.length && !bulkFileStreamSource) throw new Error(parsed.warnings[0] || "Geçerli toplu hesap bulunamadı.");
 
@@ -2149,7 +2184,8 @@ export default function AddPlaylist() {
       const preferred=rows.find(isActiveBulkCandidate)||rows[0];
       const allRows=bulkCandidates.filter(c=>bulkSubscriptionKey(c)===bulkSubscriptionKey(preferred));
       const hosts=Array.from(new Set(bulkUseAllValidatedHosts ? allRows.flatMap(c=>c.validatedHosts?.length?c.validatedHosts:[c.server]) : rows.map(c=>c.server)));
-      return { name:preferred.name, username:preferred.username, password:preferred.password, server:preferred.server, primaryHost:preferred.server, panelName:preferred.panelName, serverCode:preferred.code, validatedHosts:hosts, login:preferred.login };
+      const stored = playlists.find(p => p.source === 'xtream' && p.xtreamUsername === preferred.username && p.xtreamPassword === preferred.password && p.xtreamServer === preferred.server);
+      return { name:preferred.name, username:preferred.username, password:preferred.password, server:preferred.server, primaryHost:preferred.server, panelName:preferred.panelName, serverCode:preferred.code, validatedHosts:hosts, login:preferred.login, endpoints: stored?.endpoints || allRows.flatMap(c => c.endpoints || [{ url: c.server, kind: 'xtream' as const, source: 'scan' as const, accountVerifiedAt: new Date().toISOString() }]) };
     });
     const text=buildKizilkanAccountArchive(records,safe);
     const baseName=normalizeBulkArchiveBaseName(requestedFileName,safe);
@@ -2328,6 +2364,7 @@ ${pub.path}`, [
       return {
         ...preferred,
         validatedHosts: Array.from(new Set(bulkUseAllValidatedHosts ? allRows.flatMap(x => x.validatedHosts?.length ? x.validatedHosts : [x.server]) : rows.map(x => x.server))),
+        endpoints: (bulkUseAllValidatedHosts ? allRows : rows).flatMap(x => x.endpoints || ([1, '1', true, 'true'].includes(x.login?.user_info?.auth) ? [{ url: x.server, kind: 'xtream' as const, source: 'scan' as const, accountVerifiedAt: new Date().toISOString() }] : [])),
       };
     });
     if (!chosen.length) return;
@@ -2424,7 +2461,7 @@ ${pub.path}`, [
               state: String(row.state || "waiting"), message: String(row.message || ""),
               channels: Number(row.channels || 0), vod: Number(row.vod || 0), series: Number(row.series || 0),
             };
-            if (row.state === "completed" && row.playlistId && !adopted.has(row.playlistId)) {
+            if ((row.state === "completed" || row.liveReady) && row.playlistId && !adopted.has(row.playlistId)) {
               const c = byKey.get(key);
               if (!c) continue;
               const playlist: Playlist = {
@@ -2433,11 +2470,14 @@ ${pub.path}`, [
                 source: "xtream",
                 xtreamServer: c.server, xtreamUsername: c.username, xtreamPassword: c.password,
                 serverCodeBinding: c.direct ? undefined : makeBinding(c.code, c.panelName, c.server, c.validatedHosts, c.sources),
+                backupHosts: c.validatedHosts.filter(h => h !== c.server),
+                endpoints: c.endpoints,
                 accountInfo: (row.userInfo || c.login?.user_info || null) as AccountInfo,
                 serverInfo: row.serverInfo || c.login?.server_info || null,
                 channels: [], vod: [], series: [],
                 channelsCount: Number(row.channels || 0), vodCount: Number(row.vod || 0), seriesCount: Number(row.series || 0),
                 createdAt: new Date().toISOString(),
+                catalogSync: { initialSyncState: row.state === 'completed' ? 'ready' : 'enriching' },
               };
               await addPreparedPlaylist(playlist);
               playlistServerKeysRef.current.add(`${c.username}\u0000${String(c.server).replace(/\/+$/, "").toLowerCase()}`);
@@ -2493,7 +2533,7 @@ ${pub.path}`, [
         setProgress(`${i + 1}/${chosen.length} · ${displayName} yeniden doğrulanıyor ve ekleniyor…`);
         const added = await submitXtreamDirect(
           { server: c.server, username: c.username, password: c.password }, displayName,
-          c.direct ? undefined : makeBinding(c.code, c.panelName, c.server, c.validatedHosts, c.sources), false, false,
+          c.direct ? undefined : makeBinding(c.code, c.panelName, c.server, c.validatedHosts, c.sources), false, false, c.validatedHosts, c.endpoints,
         );
         if (added) ok++; else failed.push(displayName);
       }
@@ -2869,6 +2909,7 @@ ${pub.path}`, [
             paddingBottom: SPACING.xxxl + (keyboardHeight > 0 ? SPACING.xxl : 0),
           }}
         >
+          {!!scanSafetyStatus && <Text selectable style={{ color: colors.onSurfaceSecondary, marginBottom: SPACING.md }}>{scanSafetyStatus}</Text>}
           <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary }]}>KAYNAK TÜRÜ</Text>
           <View style={styles.methodGrid}>
             {methods.map(m => {
@@ -3668,7 +3709,7 @@ ${pub.path}`, [
                       : `Tarama sürüyor. Bulunan sonuçlar canlı ekleniyor; seçimleriniz korunur.`}
                   </Text>
                   <Text style={[styles.bulkFoundTotal,{ color: bulkCandidates.length > 0 ? colors.brandPrimary : colors.onSurfaceSecondary }]}>
-                    Bulunan {bulkCandidates.length}
+                    {new Set(bulkCandidates.map(bulkSubscriptionKey)).size} abonelik · {bulkCandidates.length} DNS sonucu
                   </Text>
                 </View>
                 <FocusButton focusable disabled={bulkAdding} onPress={() => { bulkResultsDismissedRef.current = true; if (bulkScanFinished) void acknowledgeBulkScanResult(); setShowBulkCandidates(false); }} style={styles.matchCloseBtn}>
@@ -3770,13 +3811,13 @@ ${pub.path}`, [
                     onPress={() => { if (bulkContentTesting) bulkContentAbortRef.current?.abort(); else void testBulkContent(); }}
                     style={[styles.bulkBtn,{borderColor:colors.brandPrimary,backgroundColor:colors.surfaceSecondary}]}>
                     {bulkContentTesting ? <ActivityIndicator size="small" color={colors.brandPrimary} /> : <Ionicons name="tv-outline" size={16} color={colors.brandPrimary} />}
-                    <Text style={{color:colors.brandPrimary,fontWeight:FONT.weight.bold,marginLeft:6}}>{bulkContentTesting ? `Test ediliyor ${bulkContentTestProgress.done}/${bulkContentTestProgress.total} (durdur)` : "Görüntü Test Et"}</Text>
+                    <Text style={{color:colors.brandPrimary,fontWeight:FONT.weight.bold,marginLeft:6}}>{bulkContentTesting ? `Test ediliyor ${bulkContentTestProgress.done}/${bulkContentTestProgress.total} (durdur)` : "Canlı Katalog Test Et"}</Text>
                   </FocusButton>
                   {bulkContentYesKeys.length > 0 && (
                     <FocusButton focusable testID="bulk-select-content-btn" disabled={bulkAdding}
                       onPress={() => setSelectedBulkCandidateKeys(bulkContentYesKeys)}
                       style={[styles.bulkBtn,{borderColor:colors.success||"#2ecc71",backgroundColor:colors.surfaceSecondary}]}>
-                      <Text style={{color:colors.success||"#2ecc71",fontWeight:FONT.weight.bold}}>Görüntü Olanları Seç ({bulkContentYesKeys.length})</Text>
+                      <Text style={{color:colors.success||"#2ecc71",fontWeight:FONT.weight.bold}}>Katalog Olanları Seç ({bulkContentYesKeys.length})</Text>
                     </FocusButton>
                   )}
                 </View>
@@ -3872,10 +3913,10 @@ ${pub.path}`, [
                       {(() => {
                         // v18.7.24 (B): görüntü testi sonucu (istek üzerine). Test edilmemişse rozet gösterilmez.
                         const ct = bulkContentTest[c.key]; if (!ct) return null;
-                        const info = ct.state === "testing" ? { t: "📺 Görüntü kontrol ediliyor…", c: colors.brandPrimary }
-                          : ct.state === "yes" ? { t: `📺 Görüntü var · ${ct.count} kanal`, c: colors.success || "#2ecc71" }
-                          : ct.state === "no" ? { t: "📺 Görüntü yok (içerik dönmedi)", c: colors.error }
-                          : { t: "📺 Görüntü testi başarısız", c: colors.onSurfaceTertiary };
+                        const info = ct.state === "testing" ? { t: "📺 Canlı katalog kontrol ediliyor…", c: colors.brandPrimary }
+                          : ct.state === "yes" ? { t: `📺 Katalog var · ${ct.count} kanal · ilk kare sınanmadı`, c: colors.success || "#2ecc71" }
+                          : ct.state === "no" ? { t: "📺 Canlı katalog boş · yayın sınanmadı", c: colors.onSurfaceTertiary }
+                          : { t: "📺 Katalog testi tamamlanamadı · yayın belirsiz", c: colors.onSurfaceTertiary };
                         return <Text style={{ color: info.c, marginTop: 4, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>{info.t}</Text>;
                       })()}
                       {!!importState && <Text style={{color: importState.state === "failed" ? colors.error : importState.state === "completed" ? colors.success : colors.brandPrimary, marginTop:6, fontSize:FONT.size.xs, fontWeight:FONT.weight.bold}}>{importState.state === "completed" ? "✓ " : importState.state === "failed" ? "✕ " : "• "}{importState.message}{importState.state === "completed" ? ` · ${importState.channels || 0} kanal · ${importState.vod || 0} film · ${importState.series || 0} dizi` : ""}</Text>}
