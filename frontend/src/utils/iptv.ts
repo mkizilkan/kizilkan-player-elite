@@ -350,9 +350,12 @@ function normalizeServer(server: string): string {
 }
 
 async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSignal): Promise<T> {
+  const { acquireHostRequest, deferHost, retryAfterMilliseconds, abortableDelay } = await import('./hostRequestPolicy');
+  const host = new URL(url).origin;
   let last: any = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     throwIfExternallyAborted(externalSignal);
+    const release = await acquireHostRequest(host, externalSignal);
     const { controller, cleanup } = linkedAbortController(timeoutMs, externalSignal);
     try {
       const res = await fetch(url, {
@@ -360,15 +363,20 @@ async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSi
         headers: { 'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16', 'Accept': 'application/json,*/*' },
       });
       throwIfExternallyAborted(externalSignal);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        if (res.status === 429 || res.status === 503) deferHost(host, retryAfterMilliseconds(res.headers.get('Retry-After')));
+        throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status, kind: res.status === 429 ? 'RATE_LIMIT' : res.status === 401 || res.status === 403 ? 'ACCOUNT_REJECTED' : 'HTTP' });
+      }
       const text = await res.text();
       throwIfExternallyAborted(externalSignal);
-      try { return JSON.parse(text) as T; } catch { throw new Error('Geçersiz JSON'); }
+      try { return JSON.parse(text) as T; } catch { throw Object.assign(new Error(/^\s*</.test(text) ? 'API yerine HTML / doğrulama sayfası döndü.' : 'Geçersiz JSON'), { kind: /^\s*</.test(text) ? 'HTML_RESPONSE' : 'INVALID_JSON' }); }
     } catch (e:any) {
       if (externalSignal?.aborted) throwIfExternallyAborted(externalSignal);
       last = e;
-      if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 350));
-    } finally { cleanup(); }
+      if (e?.kind === 'ACCOUNT_REJECTED' || e?.kind === 'HTML_RESPONSE' || e?.kind === 'INVALID_JSON' || (e?.status && ![429, 500, 502, 503, 504].includes(e.status))) throw e;
+      if (controller.signal.aborted) last = Object.assign(new Error('API yanıtı zaman aşımına uğradı.'), { kind: 'TIMEOUT' });
+    } finally { cleanup(); release(); }
+    if (attempt === 0) await abortableDelay(500, externalSignal);
   }
   throw last || new Error('Xtream isteği başarısız');
 }

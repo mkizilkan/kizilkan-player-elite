@@ -17,6 +17,7 @@ import {
   Platform,
   Alert,
   Modal,
+  BackHandler,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -39,6 +40,7 @@ import { catalogCategories, applyContentSelection, allContentSelection } from "@
 import { playlistIdentityCanonical } from "@/src/utils/playlistManagement";
 import { FocusButton } from "@/src/components/FocusButton";
 import { CatalogPreparationModal } from "@/src/components/CatalogPreparationModal";
+import { AccountPlaybackTestQueue, type PlaybackTestAccount } from '@/src/components/AccountPlaybackTestQueue';
 import { applyCatalogProgress } from "@/src/utils/catalogProgress";
 import {
   DEFAULT_CODE_SOURCE,CODE_SOURCE_KEY,filterDirectory,canonicalPanelHost,validPanelHosts,type DirectoryScope,type PanelTarget,
@@ -53,7 +55,8 @@ import { ScanProxyLiveLine, ScanProxyToggleRow } from "@/src/components/ScanProx
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { storage } from "@/src/utils/storage";
 import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
-import { clearScanRecoveryIntent } from "@/src/utils/appSession";
+import { clearScanRecoveryIntent, deferScanRecovery, scanRecoveryDeferred } from "@/src/utils/appSession";
+import { useProfiles } from "@/src/store/ProfileContext";
 import { buildKizilkanAccountArchive } from "@/src/utils/accountArchive";
 import {
   BULK_ACCOUNT_EXAMPLE,
@@ -201,6 +204,12 @@ export default function AddPlaylist() {
   const router = useRouter();
   const { colors } = useTheme();
   const { playlists, addPlaylist, addPreparedPlaylist, enrichPlaylistMedia, updatePlaylist, setActivePlaylist } = usePlaylists();
+  const { activeProfile } = useProfiles();
+  const leavingRef = React.useRef(false);
+  const screenOwnerRef = React.useRef(activeProfile.id);
+  const screenAliveRef = React.useRef(true);
+  if (screenOwnerRef.current !== activeProfile.id) leavingRef.current = true;
+  React.useEffect(() => () => { screenAliveRef.current = false; leavingRef.current = true; }, []);
 
   // v16.13.6 — Aynı sağlayıcı hesabının yanlışlıkla tekrar eklenmesini görünür kıl.
   // Parola/token fingerprint'e girmez; canonical kimlik yalnız kaynak + normalize endpoint + kullanıcı/MAC bilgisidir.
@@ -224,15 +233,17 @@ export default function AddPlaylist() {
   }, [playlists, router, setActivePlaylist]);
 
   const commitPlaylist = React.useCallback(async (candidate: Playlist): Promise<boolean> => {
+    if (leavingRef.current || !screenAliveRef.current) return false;
     const decision = await resolveDuplicateTarget(candidate);
-    if (decision.action === "cancel") return false;
+    if (decision.action === "cancel" || leavingRef.current || !screenAliveRef.current) return false;
     await addPlaylist(decision.target);
     return true;
   }, [addPlaylist, resolveDuplicateTarget]);
 
   const commitPreparedPlaylist = React.useCallback(async (candidate: Playlist): Promise<boolean> => {
+    if (leavingRef.current || !screenAliveRef.current) return false;
     const decision = await resolveDuplicateTarget(candidate, false);
-    if (decision.action === "cancel") return false;
+    if (decision.action === "cancel" || leavingRef.current || !screenAliveRef.current) return false;
     await addPreparedPlaylist(decision.target);
     return true;
   }, [addPreparedPlaylist, resolveDuplicateTarget]);
@@ -312,15 +323,17 @@ export default function AddPlaylist() {
   // v18.7.24 (B — istek üzerine): Xtream combo'da bulunan hesaplara isteğe bağlı "görüntü var/yok" testi.
   // Tarama login çeker (içerik çekmez); gerçek görüntü yalnız get_live_streams probe'u ile anlaşılır.
   // Kullanıcı butonla başlatır (otomatik değil → ban/hız riski yok).
-  const [bulkContentTest, setBulkContentTest] = useState<Record<string, { state: "testing" | "yes" | "no" | "err"; count: number }>>({});
+  const [bulkContentTest, setBulkContentTest] = useState<Record<string, { state: "testing" | "yes" | "no" | "err"; count: number; error?: string }>>({});
+  const [bulkTestScope, setBulkTestScope] = useState<'selected' | 'all'>('selected');
+  const [playbackTests, setPlaybackTests] = useState<PlaybackTestAccount[]>([]);
   const [bulkContentTesting, setBulkContentTesting] = useState(false);
   const [bulkContentTestProgress, setBulkContentTestProgress] = useState({ done: 0, total: 0 });
   const bulkContentAbortRef = React.useRef<AbortController | null>(null);
   React.useEffect(() => () => { bulkContentAbortRef.current?.abort(); }, []);
   const bulkContentYesKeys = useMemo(() => Object.keys(bulkContentTest).filter(k => bulkContentTest[k]?.state === "yes"), [bulkContentTest]);
   const testBulkContent = React.useCallback(async () => {
-    const list = bulkCandidates.filter(c => c.server && c.username && c.password);
-    if (!list.length || bulkContentTesting) return;
+    const list = bulkCandidates.filter(c => c.server && c.username && c.password && (bulkTestScope === 'all' || selectedBulkCandidateKeys.includes(c.key)));
+    if (!list.length || bulkContentTesting) { if (!list.length) Alert.alert('Hesap seçin', 'Test edilecek hesapları seçin veya Tümü kapsamını açın.'); return; }
     const ctrl = new AbortController(); bulkContentAbortRef.current = ctrl;
     setBulkContentTesting(true);
     setBulkContentTestProgress({ done: 0, total: list.length });
@@ -333,15 +346,15 @@ export default function AddPlaylist() {
     const worker = async () => {
       while (idx < list.length && !ctrl.signal.aborted) {
         const c = list[idx++];
-        let result: { state: "yes" | "no" | "err"; count: number } = { state: "no", count: 0 };
+        let result: { state: "yes" | "no" | "err"; count: number; error?: string } = { state: "no", count: 0 };
         try {
-          const per = new AbortController(); const timer = setTimeout(() => per.abort(), 10000);
+          const per = new AbortController(); const timer = setTimeout(() => per.abort(), 30000);
           const onAbort = () => per.abort(); ctrl.signal.addEventListener("abort", onAbort);
           try {
             const count = await xtreamLiveCatalogProbe({ server: c.server, username: c.username, password: c.password }, per.signal);
             result = count > 0 ? { state: "yes", count } : { state: "no", count: 0 };
           } finally { clearTimeout(timer); ctrl.signal.removeEventListener("abort", onAbort); }
-        } catch { result = { state: "err", count: 0 }; }
+        } catch (e: any) { result = { state: "err", count: 0, error: `${e?.kind || e?.name || 'NETWORK'}${e?.status ? ` · HTTP ${e.status}` : ''}` }; }
         if (ctrl.signal.aborted) break;
         if (result.state === "yes") yes++;
         setBulkContentTest(prev => ({ ...prev, [c.key]: result }));
@@ -353,7 +366,7 @@ export default function AddPlaylist() {
       try { KizilkanNativeCore.stopForegroundKeepAlive(keepAliveOwner); } catch {}
       void recordDiagnostic("scan", "BULK_CONTENT_TEST_DONE", { tested: done, withContent: yes, aborted: ctrl.signal.aborted });
     }
-  }, [bulkCandidates, bulkContentTesting, bulkContentTest]);
+  }, [bulkCandidates, bulkContentTesting, bulkTestScope, selectedBulkCandidateKeys]);
   const [bulkUseAllValidatedHosts, setBulkUseAllValidatedHosts] = useState(true);
   const [showBulkCandidates, setShowBulkCandidates] = useState(false);
   const bulkResultsDismissedRef = React.useRef(false);
@@ -449,7 +462,7 @@ export default function AddPlaylist() {
     const accounts: BulkAccountInput[] = [];
     for (const a of [...formAccounts, ...manual.accounts, ...file.accounts]) {
       const locator = a.server || a.serverCode || a.panelName || "auto";
-      const key = `${a.username}\u0000${a.password}\u0000${locator}`.toLocaleLowerCase("tr");
+      const key = `${a.username}\u0000${a.password}\u0000${locator}`;
       if (seen.has(key)) {
         warnings.push(`${a.name || a.username}: aynı hesap/konum birden fazla kez girildi; tek kez işlenecek.`);
         continue;
@@ -697,7 +710,7 @@ export default function AddPlaylist() {
   };
 
   const mergeStreamingMatches = React.useCallback((incoming: PanelCredentialMatch[], title: string, subtitle: string) => {
-    if (!incoming.length) return;
+    if (!incoming.length || leavingRef.current || !screenAliveRef.current) return;
     setDiscoveryTitle(title);
     setDiscoverySubtitle(subtitle);
     setDiscoveryMatches(prev => {
@@ -712,7 +725,7 @@ export default function AddPlaylist() {
     // Canlı sonuçlar seçim durumunu değiştirmez. Kullanıcının mevcut seçimleri
     // korunur ve yeni bulunan adaylar kendiliğinden seçilmez.
     for (const m of incoming) nativeScanSeenRef.current.add(discoveryKey(m));
-    setShowDiscoveryMatches(true);
+    if (!bulkResultsDismissedRef.current) setShowDiscoveryMatches(true);
   }, []);
 
   const askReplaceRunningScan = (activeRunId?: string): Promise<boolean> =>
@@ -1435,6 +1448,8 @@ export default function AddPlaylist() {
     if (reveal) setShowBulkCandidates(true);
   }, []);
 
+  const recoveryContextRef = React.useRef({ playlists, bulkAdding, commitPreparedPlaylist });
+  recoveryContextRef.current = { playlists, bulkAdding, commitPreparedPlaylist };
   React.useEffect(() => {
     if (Platform.OS !== "android") return;
     let cancelled = false;
@@ -1443,19 +1458,33 @@ export default function AddPlaylist() {
     let timer: ReturnType<typeof setInterval> | null = null;
 
     const syncSnapshots = async () => {
-      if (syncing || cancelled) return;
+      if (syncing || cancelled || leavingRef.current) return;
       syncing = true;
       try {
         const scan = PanelScan.available ? PanelScan.getSnapshot() : {};
-        if (!cancelled && scan.safetyBackup) setScanSafetyStatus(scan.safetyBackup.ok
-          ? `Emniyet kaydı: ${scan.safetyBackup.count || 0} sonuç · ${scan.safetyBackup.path || ''}`
-          : `Emniyet dosyası yazılamadı: ${scan.safetyBackup.error || 'Depolamayı kontrol edin'}. Sonuçlar kalıcı veritabanında korunuyor.`);
+        if (scan.profileId && scan.profileId !== activeProfile.id) return;
+        if (scan.runId && await scanRecoveryDeferred(activeProfile.id, scan.runId)) bulkResultsDismissedRef.current = true;
+        const { playlists, bulkAdding, commitPreparedPlaylist } = recoveryContextRef.current;
+        if (!cancelled && scan.safetyBackup) {
+          const backup = scan.safetyBackup;
+          setScanSafetyStatus(backup.ok === true
+            ? `TXT doğrulandı: ${backup.count || 0} · DB: ${scan.found || 0} · ${backup.path || ''}`
+            : backup.ok === false ? `TXT yazım hatası: ${backup.error || 'Yazım doğrulanamadı'}. DB sonuçları korunuyor.`
+            : `Emniyet TXT hazırlanıyor · DB: ${scan.found || 0} sonuç`);
+        }
         const scanTerminal = ["COMPLETED", "CANCELLED", "FAILED"].includes(String(scan.state || ""));
         if (scan.runId) {
-          const durable: any[] = [];
-          await readJournal(scan.runId, scanTerminal, rows => { durable.push(...rows); }, () => !cancelled);
+          await readJournal(scan.runId, scanTerminal, rows => {
+            if (scan.mode === 'single') mergeStreamingMatches(rows, 'Panel taraması', 'Kalıcı sonuçlar yükleniyor…');
+            else mergeBulkCandidates(rows.filter(m => m.username && m.password && m.server).map(m => {
+              const row = Number(m.sourceRow) || Number(m.accountIndex) + 1 || 1;
+              const panelName = String(m.panelName || hostName(m.server)), code = String(m.code || '');
+              return { key: bulkCandidateKey(row, m.username, code, panelName, m.server), sourceRow: row, name: String(m.name || panelName),
+                username: String(m.username), password: String(m.password), panelName, code, server: String(m.server), login: m.login,
+                sources: m.sources, endpoints: m.endpoints, validatedHosts: m.validatedHosts || [m.server], direct: panelName === 'Doğrudan DNS' };
+            }), !bulkResultsDismissedRef.current);
+          }, () => !cancelled && !leavingRef.current);
           if (cancelled) return;
-          if (durable.length) scan.matches = durable;
         }
 
         // v17.0.7: Process gerçekten öldüyse journal'daki şifreli session + konservatif
@@ -1473,8 +1502,11 @@ export default function AddPlaylist() {
             setError("Yarım kalan tarama farklı bir kaynak dosyasına ait; güvenlik için otomatik devam ettirilmedi.");
             void recordDiagnostic("scan", "V171_RECOVERY_FINGERPRINT_REJECTED", { journal: String(scan.sourceFingerprint).slice(0,32), expected: expectedFingerprint.slice(0,32) }, { stage: "scan-recovery", outcome: "rejected" });
           } else {
-            const resumed = await PanelScan.recoverInterruptedScan();
-            if (resumed) { setError(null); setProgress("Yarım kalan tarama güvenli checkpoint'ten devam ediyor…"); return; }
+            Alert.alert('Yarım kalan tarama', 'Kalıcı sonuçlar korunuyor. Nasıl devam edilsin?', [
+              { text: 'Daha sonra', style: 'cancel', onPress: () => { bulkResultsDismissedRef.current = true; setShowBulkCandidates(false); } },
+              { text: 'Sonuçları aç', onPress: () => { bulkResultsDismissedRef.current = false; setShowBulkCandidates(true); } },
+              { text: 'Kaldığı yerden devam', onPress: () => { void PanelScan.recoverInterruptedScan().catch(() => setError('Tarama devam ettirilemedi; kalıcı sonuçlar korundu.')); } },
+            ]);
           }
         }
 
@@ -1486,7 +1518,7 @@ export default function AddPlaylist() {
           if (!cancelled) {
             setDiscoveryTitle("Panel taraması");
             setDiscoverySubtitle(scan.running ? "Arka plandaki tarama geri yüklendi." : "Tarama sonucu geri yüklendi.");
-            setShowDiscoveryMatches(true);
+            if (!bulkResultsDismissedRef.current) setShowDiscoveryMatches(true);
             mergeStreamingMatches(matches, "Panel taraması", scan.running ? "Arka plandaki tarama geri yüklendi." : "Tarama sonucu geri yüklendi.");
             setNativeScanRunning(!!scan.running);
             setNativeScanPaused(!!scan.paused);
@@ -1670,7 +1702,7 @@ export default function AddPlaylist() {
     void syncSnapshots();
     timer = setInterval(() => { void syncSnapshots(); }, 850);
     return () => { cancelled = true; if (timer) clearInterval(timer); };
-  }, [mergeStreamingMatches, mergeBulkCandidates, addPreparedPlaylist, playlists, bulkAdding]);
+  }, [mergeStreamingMatches, mergeBulkCandidates, activeProfile.id]);
 
   const resolveOneBulkAccount = async (
     account: BulkAccountInput,
@@ -2885,19 +2917,50 @@ ${pub.path}`, [
     { key: "bulk", label: "Çoklu Hesap", icon: "people" },
   ];
 
+  const forceExit = React.useCallback(() => {
+    if (leavingRef.current) return;
+    leavingRef.current = true;
+    bulkResultsDismissedRef.current = true;
+    bulkContentAbortRef.current?.abort(); setPlaybackTests([]);
+    bulkPreparationAbortRef.current?.abort();
+    nativePreparationAbortRef.current?.abort();
+    stalkerAddAbortRef.current?.abort();
+    const scan = PanelScan.available ? PanelScan.getSnapshot() : {};
+    if (scan.runId && (!scan.profileId || scan.profileId === activeProfile.id)) {
+      void deferScanRecovery(activeProfile.id, scan.runId);
+      if (scan.running) void PanelScan.pauseScan(scan.runId).catch(() => {});
+      void PanelScan.flushResultArchive(scan.runId).catch(() => {});
+    }
+    if (KizilkanNativeCore.available && bulkImportOwnedByScreenRef.current) void KizilkanNativeCore.pauseBulkImport().catch(() => {});
+    void clearScanRecoveryIntent();
+    setShowBulkCandidates(false); setShowDiscoveryMatches(false); setLoading(false);
+    void recordDiagnostic('scan', 'ADD_PLAYLIST_FORCE_EXIT', { runId: scan.runId, preserved: true, profileId: activeProfile.id });
+    router.replace(Platform.isTV ? '/tv-home' : '/(tabs)');
+  }, [router, activeProfile.id]);
+  React.useEffect(() => {
+    const listener = BackHandler.addEventListener('hardwareBackPress', () => { forceExit(); return true; });
+    return () => listener.remove();
+  }, [forceExit]);
+  const exitButton = () => <FocusButton testID="force-exit-add-playlist" onPress={forceExit} style={{ padding: 12 }}>
+    <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>Zorla çık</Text>
+  </FocusButton>;
+
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top", "bottom"]} testID="add-playlist-screen">
+      {!!playbackTests.length && <AccountPlaybackTestQueue accounts={playbackTests} onClose={() => setPlaybackTests([])} onEvidence={(key, evidence) => {
+        setBulkCandidates(prev => prev.map(c => c.key === key ? { ...c, endpoints: [...(c.endpoints || []).filter(e => e.url !== evidence.url), evidence] } : c));
+      }} />}
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 16}
       >
         <View style={styles.header}>
-          <FocusButton testID="close-btn" onPress={() => router.back()} hitSlop={12}>
+          <FocusButton testID="close-btn" onPress={() => { if (router.canGoBack() && !loading) router.back(); else forceExit(); }} hitSlop={12}>
             <Ionicons name="chevron-back" size={26} color={colors.onSurface} />
           </FocusButton>
           <Text style={[styles.title, { color: colors.onSurface }]}>Oynatma Listesi Ekle</Text>
-          <View style={{ width: 26 }} />
+          {exitButton()}
         </View>
 
         <ScrollView
@@ -3683,6 +3746,7 @@ ${pub.path}`, [
         {/* v18.7.17 (E1): tekli MAG eklemede görsel hazırlık modalı (Canlı/Film/Dizi kartları + süre + iptal).
             v18.7.14 (A): İptal + donanım geri tuşu işlemi durdurur (back-trap). */}
         <CatalogPreparationModal
+          onExit={forceExit}
           visible={loading && method === "stalker"}
           presentation="modal"
           title="MAG Portal hazırlanıyor"
@@ -3696,11 +3760,12 @@ ${pub.path}`, [
           visible={showBulkCandidates}
           transparent
           animationType="fade"
-          onRequestClose={() => { if (!bulkAdding) { bulkResultsDismissedRef.current = true; if (bulkScanFinished) void acknowledgeBulkScanResult(); setShowBulkCandidates(false); } }}
+          onRequestClose={forceExit}
         >
           <View style={styles.matchModalBackdrop}>
             <View style={[styles.matchModalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <View style={styles.matchModalHeader}>
+                {exitButton()}
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.matchModalTitle, { color: colors.onSurface }]}>Bulunan Çoklu Hesaplar</Text>
                   <Text style={{ color: colors.onSurfaceSecondary, marginTop: 4, lineHeight: 18 }}>
@@ -3804,7 +3869,17 @@ ${pub.path}`, [
                 </Text>
               )}
 
-              {/* v18.7.24 (B): istek üzerine görüntü var/yok testi — her bulunan hesaba get_live_streams probe'u. */}
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                <FocusButton onPress={() => setBulkTestScope(v => v === 'selected' ? 'all' : 'selected')} style={{ padding: 12 }}>
+                  <Text style={{ color: colors.brandPrimary }}>Test kapsamı: {bulkTestScope === 'selected' ? 'Seçili hesaplar' : 'Tümü'}</Text>
+                </FocusButton>
+                <FocusButton disabled={bulkAdding || bulkContentTesting} onPress={() => {
+                  const list = bulkCandidates.filter(c => bulkTestScope === 'all' || selectedBulkCandidateKeys.includes(c.key));
+                  if (!list.length) { Alert.alert('Hesap seçin', 'Önce test edilecek hesapları seçin.'); return; }
+                  setPlaybackTests(list.map(c => ({ key: c.key, endpoint: c.server, kind: 'xtream', username: c.username, password: c.password, profileId: activeProfile.id })));
+                }} style={{ padding: 12 }}><Text style={{ color: colors.brandPrimary }}>Gerçek ilk kare testi</Text></FocusButton>
+              </View>
+              {/* Katalog kontrolü ilk kare kanıtı değildir. */}
               {bulkCandidates.length > 0 && (
                 <View style={{flexDirection:"row",gap:SPACING.sm,marginTop:SPACING.md,flexWrap:"wrap"}}>
                   <FocusButton focusable testID="bulk-content-test-btn" disabled={bulkAdding || bulkCandidates.length===0}
@@ -3916,7 +3991,7 @@ ${pub.path}`, [
                         const info = ct.state === "testing" ? { t: "📺 Canlı katalog kontrol ediliyor…", c: colors.brandPrimary }
                           : ct.state === "yes" ? { t: `📺 Katalog var · ${ct.count} kanal · ilk kare sınanmadı`, c: colors.success || "#2ecc71" }
                           : ct.state === "no" ? { t: "📺 Canlı katalog boş · yayın sınanmadı", c: colors.onSurfaceTertiary }
-                          : { t: "📺 Katalog testi tamamlanamadı · yayın belirsiz", c: colors.onSurfaceTertiary };
+                          : { t: `📺 Katalog testi tamamlanamadı · ${ct.error || 'yayın belirsiz'}`, c: colors.onSurfaceTertiary };
                         return <Text style={{ color: info.c, marginTop: 4, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>{info.t}</Text>;
                       })()}
                       {!!importState && <Text style={{color: importState.state === "failed" ? colors.error : importState.state === "completed" ? colors.success : colors.brandPrimary, marginTop:6, fontSize:FONT.size.xs, fontWeight:FONT.weight.bold}}>{importState.state === "completed" ? "✓ " : importState.state === "failed" ? "✕ " : "• "}{importState.message}{importState.state === "completed" ? ` · ${importState.channels || 0} kanal · ${importState.vod || 0} film · ${importState.series || 0} dizi` : ""}</Text>}
@@ -3933,9 +4008,7 @@ ${pub.path}`, [
           visible={showDiscoveryMatches}
           transparent
           animationType="fade"
-          onRequestClose={() => {
-            if (!nativeScanRunning && !bulkAdding) { void acknowledgeDiscoveryResult(); setShowDiscoveryMatches(false); }
-          }}
+          onRequestClose={forceExit}
         >
           <View style={styles.matchModalBackdrop}>
             <View style={[styles.matchModalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -3944,6 +4017,7 @@ ${pub.path}`, [
                   <Text style={[styles.matchModalTitle, { color: colors.onSurface }]}>
                     {discoveryTitle}
                   </Text>
+                  {exitButton()}
                   <Text style={{ color: colors.onSurfaceSecondary, marginTop: 4, lineHeight: 18 }}>
                     {discoverySubtitle}
                   </Text>
@@ -4137,8 +4211,9 @@ ${pub.path}`, [
       </Modal>
 
       {/* v16.5.0: MAG için üstteki özel katman var; burada çift göstermiyoruz. */}
-      <Modal visible={loading && method !== "stalker"} transparent animationType="fade" onRequestClose={() => {}}>
+      <Modal visible={loading && method !== "stalker"} transparent animationType="fade" onRequestClose={forceExit}>
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.88)", alignItems: "center", justifyContent: "center", padding: SPACING.lg }}>
+          {exitButton()}
           <ActivityIndicator size="large" color={colors.brandPrimary} />
           <Text style={{ color: colors.onSurface, fontSize: FONT.size.lg, fontWeight: "700", marginTop: SPACING.lg, textAlign: "center" }}>
             {method === "stalker" ? "MAG Portal ekleniyor" : "Liste ekleniyor"}

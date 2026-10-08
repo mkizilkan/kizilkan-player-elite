@@ -9,7 +9,7 @@ import { usePlaylists } from "@/src/store/PlaylistContext";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { useProfiles } from "@/src/store/ProfileContext";
 import { KizilkanLogo } from "@/src/components/KizilkanLogo";
-import { getRecentResumePath, setScanRecoveryIntent } from "@/src/utils/appSession";
+import { getRecentResumePath, setScanRecoveryIntent, scanRecoveryDeferred } from "@/src/utils/appSession";
 import { PanelScan } from "@/modules/panel-scan";
 
 export default function Index() {
@@ -74,7 +74,7 @@ export default function Index() {
         // terminal snapshot varsa hedef route kaybolmasın. PIN kapısı yine atlanmaz.
         const scan = Platform.OS === "android" && PanelScan.available ? PanelScan.getSnapshot() : {};
         const scanState = String(scan.state || "");
-        const recoverableScan = !!scan.runId && (
+        const recoverableScan = !!scan.runId && (!scan.profileId || scan.profileId === activeProfile.id) && !(await scanRecoveryDeferred(activeProfile.id, scan.runId)) && (
           !!scan.running || ["STARTING", "RUNNING", "PAUSED", "CANCELLING", "COMPLETED", "FAILED", "CANCELLED"].includes(scanState)
         );
         if (recoverableScan) {
@@ -93,7 +93,8 @@ export default function Index() {
           router.replace("/onboarding");
         } else {
           // Tek ve PIN'siz profilde kısa process recreation konforu korunur.
-          const resume = await getRecentResumePath();
+          const recentPath = await getRecentResumePath();
+          const resume = recentPath === '/add-playlist' && scan.runId && await scanRecoveryDeferred(activeProfile.id, scan.runId) ? null : recentPath;
           /**
            * v17.10.3 — Tek ve PIN'siz profilde kapı tasarım gereği atlanır;
            * doğrudan ana ekrana dönülüyorsa bu da bir profil girişidir.

@@ -9,6 +9,7 @@ export type AccountArchiveRecord = {
   panelName?: string; serverCode?: string; primaryHost?: string; validatedHosts?: string[];
   login?: any;
   endpoints?: PlaylistEndpoint[];
+  categories?: { live?: string[]; vod?: string[]; series?: string[]; warnings?: string[] };
 };
 
 function field(v: any, fallback = "Sunucu bildirmedi"): string {
@@ -56,6 +57,11 @@ export function buildKizilkanAccountArchive(records: AccountArchiveRecord[], saf
       ...(r.endpoints || []).map(e => `Adres Kanıtı          : ${e.url} · ${endpointProofLabel(e)}`),
       `Adres Kanıtları JSON  : ${JSON.stringify(r.endpoints || [])}`, ""
     );
+    for (const [key, label] of [['live', 'Canlı'], ['vod', 'Film'], ['series', 'Dizi']] as const) {
+      const names = r.categories?.[key];
+      lines.push(`${label} Kategorileri    : ${names ? names.length ? names.join(' | ') : 'Boş' : 'Henüz alınmadı'}`);
+    }
+    if (r.categories?.warnings?.length) lines.push(`Kategori Uyarıları     : ${r.categories.warnings.join(' | ')}`);
   });
   return lines.join("\n") + "\n";
 }
@@ -135,6 +141,7 @@ function epochFromTrDate(text: string): number | null {
 
 /** Arşiv metnini ayrıştırır. Biçim tanınmazsa accounts boş döner. */
 export function parseKizilkanAccountArchive(text: string): ParsedArchive {
+  if (/^KIZILKAN TARAMA EMNIYET YEDEGI/m.test(text)) return parseScanSafetyArchive(text);
   const warnings: string[] = [];
   const lines = String(text || "").split(/\r?\n/);
   const out: ParsedArchiveAccount[] = [];
@@ -229,5 +236,27 @@ export function parseKizilkanAccountArchive(text: string): ParsedArchive {
 /** Dosyanın arşiv biçiminde olup olmadığını hızlı sınar (tam ayrıştırma yapmadan). */
 export function looksLikeKizilkanArchive(text: string): boolean {
   const head = String(text || "").slice(0, 2000);
-  return /KIZILKAN PLAYER ELITE — HESAP ARŞİVİ/i.test(head) || /KIZILKAN PLAYER ELITE — HESAP #/i.test(head);
+  return /KIZILKAN PLAYER ELITE — HESAP ARŞİVİ/i.test(head) || /KIZILKAN PLAYER ELITE — HESAP #/i.test(head) || /^KIZILKAN TARAMA EMNIYET YEDEGI/m.test(head);
+}
+
+/** Replay native JSON-lines without accepting HTML, partial credentials or a foreign URL. */
+export function parseScanSafetyArchive(text: string): ParsedArchive {
+  const records: AccountArchiveRecord[] = []; const warnings: string[] = [];
+  let declaredCount = 0;
+  for (const [index, raw] of text.split(/\r?\n/).entries()) {
+    const line = raw.trim(); if (!line.startsWith('{')) continue;
+    declaredCount++;
+    try {
+      const row = JSON.parse(line);
+      const server = canonicalEndpointUrl(String(row.server || ''));
+      if (!server || typeof row.username !== 'string' || typeof row.password !== 'string' || !row.username || !row.password) {
+        warnings.push(`Satır ${index + 1}: hesap/sunucu bilgisi eksik veya farklı hesap türü.`); continue;
+      }
+      records.push({ server, username: row.username, password: row.password, name: row.name || row.panelName,
+        panelName: row.panelName, serverCode: row.code, login: row.login, validatedHosts: [server],
+        endpoints: Array.isArray(row.endpoints) ? row.endpoints.filter((e: any) => e?.kind === 'xtream' && canonicalEndpointUrl(e.url) === server) : [] });
+    } catch { warnings.push(`Satır ${index + 1}: bozuk veya yarım JSON kaydı.`); }
+  }
+  const parsed = parseKizilkanAccountArchive(buildKizilkanAccountArchive(records));
+  return { ...parsed, declaredCount, warnings: [...warnings, ...parsed.warnings] };
 }

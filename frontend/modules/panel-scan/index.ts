@@ -1,4 +1,5 @@
 import { requireNativeModule } from "expo-modules-core";
+import { storage } from "@/src/utils/storage";
 
 export type NativeScanStartResult = {
   accepted: boolean;
@@ -8,7 +9,7 @@ export type NativeScanStartResult = {
 };
 
 type NativeSnapshot = {
-  runId?: string; state?: "STARTING" | "RUNNING" | "PAUSED" | "CANCELLING" | "COMPLETED" | "FAILED" | "CANCELLED"; createdAt?: number; updatedAt?: number;
+  profileId?: string; runId?: string; state?: "STARTING" | "RUNNING" | "PAUSED" | "CANCELLING" | "COMPLETED" | "FAILED" | "CANCELLED"; createdAt?: number; updatedAt?: number;
   mode?: "single" | "bulk" | "unified" | "streaming-file-v172"; running?: boolean; cancelled?: boolean; paused?: boolean;
   tested?: number; total?: number; accountTested?: number; accountTotal?: number; accountIndex?: number;
   panelTested?: number; panelTotal?: number; found?: number; recoverable?: boolean; recovered?: boolean; panelName?: string; currentServer?: string; error?: string; terminalReason?: string; pauseReason?: string; matches?: any[];
@@ -48,8 +49,17 @@ function normalizeStartResult(value: any): NativeScanStartResult | null {
   };
 }
 
+async function ownedScan(start: () => Promise<any>): Promise<NativeScanStartResult | null> {
+  const profileId = await storage.getItem<string>('kizilkan.activeProfileId', 'default') || 'default';
+  const result = normalizeStartResult(await start());
+  if (result?.accepted && result.runId && native?.bindResultArchiveOwner) await native.bindResultArchiveOwner(result.runId, profileId);
+  return result;
+}
+
 export const PanelScan = {
   available: !!native,
+  getLatestAccountArchive: async (profileId: string): Promise<string> => native?.getLatestAccountArchive ? await native.getLatestAccountArchive(profileId) : "",
+  updateResultEvidence: async (runId: string, identity: Record<string, string>, evidence: unknown): Promise<boolean> => native?.updateResultEvidence ? !!(await native.updateResultEvidence(runId, JSON.stringify(identity), JSON.stringify(evidence))) : false,
   createResultArchive: async (runId: string, profileId: string) => native ? await native.createResultArchive(runId, profileId) : runId,
   appendResultArchive: async (runId: string, key: string, payload: any): Promise<{ok?:boolean;error?:string;path?:string}> => native ? JSON.parse(await native.appendResultArchive(runId, key, JSON.stringify(payload))) : { ok: false, error: 'Otomatik kalıcı tarama yedeği Android Native gerektirir; bu sonuçları TXT ile kaydedin.' },
   flushResultArchive: async (runId: string): Promise<{ok?:boolean;error?:string;path?:string;count?:number}> => native ? JSON.parse(await native.flushResultArchive(runId)) : { ok: false, error: 'Bu platformda otomatik native yedek yok; TXT kaydı kullanın.' },
@@ -64,7 +74,7 @@ export const PanelScan = {
   parseBulkAccountsFile: async (uri: string): Promise<any> => native ? await native.parseBulkAccountsFile(uri) : { supported: false, reason: "native-unavailable" },
   inspectBulkAccountsFile: async (uri: string, sampleLimit = 12): Promise<any> => native ? await native.inspectBulkAccountsFile(uri, sampleLimit) : { supported: false, reason: "native-unavailable" },
   startStreamingFileScanV172: async (uri: string, directory: any[], requestedConcurrency: number, timeoutMs: number, batchSize: number, sourceFingerprint: string): Promise<NativeScanStartResult | null> =>
-    native ? normalizeStartResult(await native.startStreamingFileScanV172(uri, JSON.stringify(directory || []), requestedConcurrency, timeoutMs, batchSize, sourceFingerprint)) : null,
+    native ? ownedScan(() => native.startStreamingFileScanV172(uri, JSON.stringify(directory || []), requestedConcurrency, timeoutMs, batchSize, sourceFingerprint)) : null,
   startScan: async (candidates: any[], username: string, password: string, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> => {
     if (!native) return null;
     /**
@@ -95,10 +105,10 @@ export const PanelScan = {
       err.candidateCount = candidates.length;
       throw err;
     }
-    return normalizeStartResult(await native.startScan(payload, username, password, concurrency, timeoutMs));
+    return ownedScan(() => native.startScan(payload, username, password, concurrency, timeoutMs));
   },
   startBulkScan: async (candidates: any[], accounts: Array<{ row?: number; name?: string; username: string; password: string }>, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> =>
-    native ? normalizeStartResult(await native.startBulkScan(JSON.stringify(candidates), JSON.stringify(accounts), concurrency, timeoutMs)) : null,
+    native ? ownedScan(() => native.startBulkScan(JSON.stringify(candidates), JSON.stringify(accounts), concurrency, timeoutMs)) : null,
   startUnifiedScan: async (jobs: Array<{ row?: number; name?: string; username: string; password: string; candidates: any[] }>, concurrency: number, timeoutMs: number): Promise<NativeScanStartResult | null> => {
     if (!native) return null;
     // v15.2.17: Aynı panel rehberi birden fazla hesapta kullanılıyorsa JSON içinde
@@ -117,12 +127,12 @@ export const PanelScan = {
     });
     const payload = { version: 2, candidateSets, jobs: compactJobs };
     const initialTotal = jobs.reduce((sum, job) => sum + (job.candidates?.length || 0), 0);
-    return normalizeStartResult(await native.startUnifiedScan(JSON.stringify(payload), jobs.length, initialTotal, concurrency, timeoutMs));
+    return ownedScan(() => native.startUnifiedScan(JSON.stringify(payload), jobs.length, initialTotal, concurrency, timeoutMs));
   },
   startUnifiedScanV171: async (payload: UnifiedScanCompactPayload, requestedConcurrency: number, timeoutMs: number, batchSize: number, sourceFingerprint: string): Promise<NativeScanStartResult | null> => {
     if (!native) return null;
     const initialTotal = payload.jobs.reduce((sum, job) => sum + (payload.candidateSets[job.candidateSet]?.length || 0), 0);
-    return normalizeStartResult(await native.startUnifiedScanV171(
+    return ownedScan(() => native.startUnifiedScanV171(
       JSON.stringify(payload),
       payload.jobs.length,
       initialTotal,

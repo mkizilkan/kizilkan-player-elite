@@ -327,23 +327,40 @@ class PanelScanModule : Module() {
     AsyncFunction("createResultArchive") { runId: String, profileId: String ->
       val context = appContext.reactContext ?: error("Android context yok")
       val journal = ScanJournalStore.get(context)
+      journal.bindOwner(runId, profileId)
       journal.createSession(runId, "MAG_RESULTS", org.json.JSONObject().put("profileId", profileId).toString(), 1, 0, 0)
       journal.finish(runId, "ARCHIVED")
+      true
+    }
+    AsyncFunction("bindResultArchiveOwner") { runId: String, profileId: String ->
+      val context = appContext.reactContext ?: error("Android context yok")
+      ScanJournalStore.get(context).bindOwner(runId, profileId)
       true
     }
     AsyncFunction("appendResultArchive") { runId: String, key: String, payload: String ->
       val context = appContext.reactContext ?: error("Android context yok")
       val journal = ScanJournalStore.get(context)
       journal.addResult(runId, key, payload)
-      ScanSafetyBackup.flush(context, journal, runId, false).toString()
+      ScanSafetyBackup.request(context, journal, runId).toString()
     }
     AsyncFunction("flushResultArchive") { runId: String ->
       val context = appContext.reactContext ?: error("Android context yok")
       ScanSafetyBackup.flush(context, ScanJournalStore.get(context), runId).toString()
     }
+    AsyncFunction("updateResultEvidence") { runId: String, identity: String, evidence: String ->
+      val context = appContext.reactContext ?: error("Android context yok")
+      val journal = ScanJournalStore.get(context)
+      val changed = journal.updateEvidence(runId, org.json.JSONObject(identity), org.json.JSONObject(evidence))
+      if (changed) ScanSafetyBackup.request(context, journal, runId)
+      changed
+    }
     AsyncFunction("getLatestResultArchive") { profileId: String ->
       val context = appContext.reactContext ?: error("Android context yok")
       ScanJournalStore.get(context).latestResultArchive(profileId) ?: ""
+    }
+    AsyncFunction("getLatestAccountArchive") { profileId: String ->
+      val context = appContext.reactContext ?: error("Android context yok")
+      ScanJournalStore.get(context).latestResultArchive(profileId, false) ?: ""
     }
 
     Function("getRecoverableScan") {
@@ -409,6 +426,7 @@ class PanelScanModule : Module() {
       val raw = prefs.getString(PanelScanService.KEY_SNAPSHOT, "{}") ?: "{}"
       val obj = try { org.json.JSONObject(raw) } catch (_: Throwable) { org.json.JSONObject() }
       obj.put("safetyBackup", ScanSafetyBackup.status(context, obj.optString("runId")))
+      obj.put("profileId", ScanJournalStore.get(context).ownerOf(obj.optString("runId")) ?: "")
       val state = obj.optString("state", "")
       val transient = state in setOf("STARTING", "RUNNING", "PAUSED", "CANCELLING") || obj.optBoolean("running", false)
       if (transient && PanelScanService.activeRunId().isBlank()) {

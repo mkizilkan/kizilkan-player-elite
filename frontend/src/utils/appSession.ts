@@ -108,3 +108,12 @@ export async function getScanRecoveryIntent(): Promise<ScanRecoveryIntent | null
 export async function clearScanRecoveryIntent(): Promise<void> {
   await storage.removeItem(SCAN_RECOVERY_KEY);
 }
+
+const DEFERRED_SCAN_KEY = 'kizilkan.scanDeferred.v18.7.29';
+export async function deferScanRecovery(profileId: string, runId: string): Promise<void> {
+  if (profileId && runId) await storage.setItem(DEFERRED_SCAN_KEY, JSON.stringify({ profileId, runId }));
+}
+export async function scanRecoveryDeferred(profileId: string, runId: string): Promise<boolean> {
+  try { const value = JSON.parse(await storage.getItem<string>(DEFERRED_SCAN_KEY, '') || '{}'); return value.profileId === profileId && value.runId === runId; }
+  catch { return false; }
+}

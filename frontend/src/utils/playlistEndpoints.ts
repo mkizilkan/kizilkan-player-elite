@@ -24,11 +24,18 @@ export function playlistEndpoints(pl: Partial<Playlist>): PlaylistEndpoint[] {
 }
 
 export function endpointProofLabel(endpoint: PlaylistEndpoint): string {
-  if (endpoint.firstFrameAt) return `İlk kare görüldü · ${new Date(endpoint.firstFrameAt).toLocaleString('tr-TR')}`;
+  if (endpoint.firstFrameAt) return `İlk kare görüldü${Number.isFinite(endpoint.firstFrameElapsedMs) ? ` · ${(endpoint.firstFrameElapsedMs! / 1000).toFixed(1)} sn` : ''} · ${new Date(endpoint.firstFrameAt).toLocaleString('tr-TR')}`;
   if (endpoint.playbackObservedAt) return `Video ve ilerleyen oynatma gözlendi · ${new Date(endpoint.playbackObservedAt).toLocaleString('tr-TR')}`;
   if (endpoint.catalogVerifiedAt) return 'Katalog alındı · ilk kare sınanmadı';
   if (endpoint.accountVerifiedAt) return 'Hesap doğrulandı · ilk kare sınanmadı';
   return endpoint.lastError ? 'Son test tamamlanamadı · yeniden test edilebilir' : 'Henüz doğrulanmadı';
+}
+
+export function mergeEndpointEvidence(existing: PlaylistEndpoint[], evidence: PlaylistEndpoint): PlaylistEndpoint[] {
+  const url = canonicalEndpointUrl(evidence.url);
+  if (!url) return existing;
+  const previous = existing.find(e => e.kind === evidence.kind && canonicalEndpointUrl(e.url) === url);
+  return [...existing.filter(e => e.kind !== evidence.kind || canonicalEndpointUrl(e.url) !== url), { ...previous, ...evidence, url }];
 }
 
 export function endpointProjection(profileId: string, playlists: Partial<Playlist>[]) {

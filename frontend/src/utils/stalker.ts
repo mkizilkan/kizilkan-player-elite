@@ -2612,7 +2612,7 @@ async function stalkerOrderedList(
       data = await req(
         buildUrl(ses.endpoint, { type, action: "get_ordered_list", p: String(p), ...extra }),
         headersFor(cred, ses.token, ses.endpoint, ses.compatProfile),
-        { timeoutMs: 60000, signal },
+        { timeoutMs: Math.max(1, Math.min(60000, PAGE_BUDGET_MS - (Date.now() - budgetStartedAt))), signal },
       );
     } catch (e: any) {
       if (e?.kind === "CANCELLED") throw e;
@@ -2723,6 +2723,12 @@ async function stalkerOrderedList(
   void recordDiagnostic("mag","STALKER_PAGINATION_STOP",{type,stopReason,page,loaded:loadedCount,total:Number.isFinite(total)?total:undefined,maxPages,effectivePageBase,streamMapped:!!onUniqueRow,parallel:true,
     // v18.7.16 (D): toplam süre + sayfa sayısı + sayfa başına ortalama ms (hız analizi; iyileştirme bu ölçümden sonra).
     elapsedMs:Date.now()-paginationStartMs,pagesFetched,concurrency:PAGE_CONCURRENCY,avgPageMs:pagesFetched?Math.round((Date.now()-paginationStartMs)/pagesFetched):0});
+  if (stopReason === 'CANCELLED' || signal?.aborted) throw scopeCancelledError();
+  if (['TIME_BUDGET', 'PAGE_GOVERNOR', 'PAGE_ERROR', 'RATE_LIMIT', 'NO_NEW_IDS'].includes(stopReason)
+      || (Number.isFinite(total) && loadedCount < total)) {
+    throw Object.assign(new Error(`${type}: katalog kısmi (${loadedCount}/${Number.isFinite(total) ? total : '?'}), neden: ${stopReason}. Eski tam katalog korunuyor.`),
+      { kind: 'CATALOG_INCOMPLETE', loaded: loadedCount, total: Number.isFinite(total) ? total : undefined, stopReason });
+  }
   return out;
 }
 
@@ -2972,6 +2978,15 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
     return result;
   }
 
+  const fast = wanted.has('vod') || wanted.has('series') ? await verifiedXtreamEnrichment(cred, opts) : null;
+  if (fast) {
+    const counts = { vod: fast.vod.length, series: fast.series.length };
+    for (const kind of ['vod', 'series'] as const) if (wanted.has(kind) && opts.onKindReady) {
+      await opts.onKindReady(kind, fast[kind], { elapsedMs: Date.now() - catalogStarted, rawCount: counts[kind] });
+      if (opts.releaseDeliveredKinds) fast[kind] = [];
+    }
+    return { channels, vod: fast.vod, series: fast.series, diagnostics: { ...fast.diagnostics, live: liveError ? 'ERROR' : liveCount ? 'OK' : 'EMPTY' } };
+  }
   emitCatalogProgress(opts,{stage:"vod",message:"Film kataloğu yükleniyor..."});
   const vodStageStarted=Date.now();
   let vodPart:VodPartition={vod:[],fallbackSeries:[],supported:true,rawCount:0,seriesFlagged:0};
@@ -3039,6 +3054,36 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
 
 export type StalkerEnrichmentResult = { vod:VodItem[]; series:SeriesItem[]; diagnostics:StalkerCatalogDiagnostics };
 
+async function verifiedXtreamEnrichment(cred: StalkerCreds, opts: StalkerCatalogOptions): Promise<StalkerEnrichmentResult | null> {
+  const started = Date.now();
+    // A stream-shaped URL alone is not API proof. Authenticate and validate a real live response.
+    const bridge = getStreamDerivedCredentials(cred.mac, cred.portal, cred.profileId || (await storage.getItem<string>('kizilkan.activeProfileId', 'default') || 'default'));
+    if (bridge?.server && bridge.username && bridge.password) {
+      const api = await import('@/src/utils/iptv');
+      const controller = new AbortController();
+      const abort = () => controller.abort(); opts.signal?.addEventListener('abort', abort, { once: true });
+      const timer = setTimeout(abort, 20000);
+      try {
+        if (opts.signal?.aborted) throw scopeCancelledError();
+        const credentials = { server: bridge.server, username: bridge.username, password: bridge.password };
+        await api.xtreamLiveSample(credentials, controller.signal);
+        clearTimeout(timer);
+        const wanted = new Set(opts.kinds || ["vod", "series"]);
+        const [movies, shows] = await Promise.all([wanted.has("vod") ? api.xtreamVod(credentials, opts.signal) : [], wanted.has("series") ? api.xtreamSeries(credentials, opts.signal) : []]);
+        const vod = movies.map(v => ({ ...v, url: `xtream-verified:${v.url}`, catalogBackend: 'xtream-verified', catalogApiServer: bridge.server }));
+        const series = shows.map(s => ({ ...s, catalogBackend: 'xtream-verified', catalogApiServer: bridge.server }));
+        const diagnostics: StalkerCatalogDiagnostics = { live: 'EMPTY', vod: vod.length ? 'OK' : 'EMPTY', seriesNative: series.length ? 'OK' : 'EMPTY', seriesFromVod: 0, warnings: [] };
+        void recordDiagnostic('catalog', 'STALKER_XTREAM_API_VERIFIED', { elapsedMs: Date.now() - started, vod: vod.length, series: series.length, accountAuthenticated: true });
+        emitCatalogProgress(opts, { stage: 'final', message: `Doğrulanmış Xtream API · ${vod.length} film · ${series.length} dizi` });
+        return { vod, series, diagnostics };
+      } catch (e) {
+        if (opts.signal?.aborted) throw scopeCancelledError();
+        void recordDiagnostic('catalog', 'STALKER_XTREAM_API_FALLBACK', { apiVerified: false });
+      } finally { clearTimeout(timer); opts.signal?.removeEventListener('abort', abort); }
+    }
+  return null;
+}
+
 export async function stalkerEnrichment(cred:StalkerCreds, ses:StalkerSession, opts:StalkerCatalogOptions = {}):Promise<StalkerEnrichmentResult> {
   const finish=startDiagnosticTask("mag:enrichment",{endpoint:ses.endpoint});
   const started=Date.now();
@@ -3057,30 +3102,8 @@ export async function stalkerEnrichment(cred:StalkerCreds, ses:StalkerSession, o
     }
   };
   try {
-    // A stream-shaped URL alone is not API proof. Authenticate and validate a real live response.
-    const bridge = getStreamDerivedCredentials(cred.mac, cred.portal, cred.profileId || (await storage.getItem<string>('kizilkan.activeProfileId', 'default') || 'default'));
-    if (bridge?.server && bridge.username && bridge.password) {
-      const api = await import('@/src/utils/iptv');
-      const controller = new AbortController();
-      const abort = () => controller.abort(); opts.signal?.addEventListener('abort', abort, { once: true });
-      const timer = setTimeout(abort, 20000);
-      try {
-        if (opts.signal?.aborted) throw scopeCancelledError();
-        const credentials = { server: bridge.server, username: bridge.username, password: bridge.password };
-        await api.xtreamLiveSample(credentials, controller.signal);
-        clearTimeout(timer);
-        const [movies, shows] = await Promise.all([api.xtreamVod(credentials, opts.signal), api.xtreamSeries(credentials, opts.signal)]);
-        const vod = movies.map(v => ({ ...v, url: `xtream-verified:${v.url}`, catalogBackend: 'xtream-verified', catalogApiServer: bridge.server }));
-        const series = shows.map(s => ({ ...s, catalogBackend: 'xtream-verified', catalogApiServer: bridge.server }));
-        const diagnostics: StalkerCatalogDiagnostics = { live: 'EMPTY', vod: vod.length ? 'OK' : 'EMPTY', seriesNative: series.length ? 'OK' : 'EMPTY', seriesFromVod: 0, warnings: [] };
-        void recordDiagnostic('catalog', 'STALKER_XTREAM_API_VERIFIED', { elapsedMs: Date.now() - started, vod: vod.length, series: series.length, accountAuthenticated: true });
-        emitCatalogProgress(opts, { stage: 'final', message: `Doğrulanmış Xtream API · ${vod.length} film · ${series.length} dizi` });
-        return { vod, series, diagnostics };
-      } catch (e) {
-        if (opts.signal?.aborted) throw scopeCancelledError();
-        void recordDiagnostic('catalog', 'STALKER_XTREAM_API_FALLBACK', { apiVerified: false });
-      } finally { clearTimeout(timer); opts.signal?.removeEventListener('abort', abort); }
-    }
+    const fast = await verifiedXtreamEnrichment(cred, opts);
+    if (fast) return fast;
     emitCatalogProgress(opts,{stage:"vod",message:"Film kataloğu arka planda tamamlanıyor..."});
     let vodPart:VodPartition, vodError="";
     try { vodPart=await retryCatalogPart("MAG VOD",()=>stalkerVodPartition(cred,ses,opts),refreshSession); }

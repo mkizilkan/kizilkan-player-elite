@@ -172,6 +172,7 @@ export default function ScanProxyScreen() {
                         <Text style={{ color: colors.brandPrimary, fontSize: FONT.size.xs }}>{sel.length === avail.length ? "Temizle" : "Tümü"}</Text>
                       </TouchableOpacity>
                     </View>
+                    {!src.fresh && <Text style={[muted, { marginTop: SPACING.xs }]}>Eski liste · indirdikten sonra canlılık testi uygulayın.</Text>}
                     <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.xs }}>
                       {avail.map(proto => {
                         const on = sel.includes(proto);

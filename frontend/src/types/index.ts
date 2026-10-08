@@ -173,6 +173,7 @@ export interface PlaylistEndpoint {
   accountVerifiedAt?: string;
   catalogVerifiedAt?: string;
   firstFrameAt?: string;
+  firstFrameElapsedMs?: number;
   playbackObservedAt?: string;
   lastTestAt?: string;
   lastError?: string;

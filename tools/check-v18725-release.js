@@ -24,7 +24,7 @@ need(JSON.parse(rd('frontend/package.json')).version === ver, 'package.json sür
 
 // B — görüntü testi hızı
 need(/const CONC = 20/.test(addPl), 'B: içerik testi paralelliği 20 değil');
-need(/per\.abort\(\), 10000\)/.test(addPl), 'B: içerik testi timeout 10 sn değil');
+need(/per\.abort\(\), 30000\)/.test(addPl), 'B: içerik testi timeout 30 sn (hafif katalog probe dış bütçesi) değil');
 need(/startForegroundKeepAlive\("Katalog testi"/.test(addPl) && /stopForegroundKeepAlive\(keepAliveOwner\); \} catch \{\}\s*\n\s*void recordDiagnostic\("scan", "BULK_CONTENT_TEST_DONE"/.test(addPl), 'B: içerik testi sahipli keep-alive sargısı yok');
 
 // C — paralellik birleştirme

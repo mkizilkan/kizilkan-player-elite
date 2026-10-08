@@ -15,9 +15,10 @@ type Props = {
   startedAt: number; lastProgressAt?: number; pausedAt?: number | null; pausedTotalMs?: number;
   paused?: boolean; onCancel?: () => void; presentation?: 'overlay' | 'modal' | 'inline';
   interactive?: boolean; testID?: string;
+  onExit?: () => void;
 };
 /** Üç giriş noktası aynı sunumu kullanır; iş/iptal sahipliği çağıranda kalır. */
-export function CatalogPreparationModal({ visible, title, message, progress, startedAt, lastProgressAt, pausedAt, pausedTotalMs = 0, paused, onCancel, presentation = 'overlay', interactive = true, testID }: Props) {
+export function CatalogPreparationModal({ visible, title, message, progress, startedAt, lastProgressAt, pausedAt, pausedTotalMs = 0, paused, onCancel, onExit, presentation = 'overlay', interactive = true, testID }: Props) {
   const { colors } = useTheme();
   const [now, setNow] = useState(Date.now());
   useEffect(() => { if (!visible) return; setNow(Date.now()); const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [visible, startedAt]);
@@ -37,11 +38,12 @@ export function CatalogPreparationModal({ visible, title, message, progress, sta
     <Text style={{ color: colors.onSurfaceTertiary, textAlign: 'center', marginTop: SPACING.md }}>Geçen süre: {formatCatalogElapsed(elapsed)} · {isPaused ? 'Bekletiliyor' : 'Aktif işlem'}{pausedTotalMs + currentPaused > 0 ? ` · Arka plan: ${formatCatalogElapsed(pausedTotalMs + currentPaused)}` : ''}</Text>
     {!!waitMessage && <Text style={{ color: colors.brandPrimary, textAlign: 'center', marginTop: SPACING.sm }}>{waitMessage}</Text>}
     <Text style={{ color: colors.onSurfaceSecondary, textAlign: 'center', marginTop: SPACING.md, lineHeight: 20 }}>{isPaused ? 'Uygulamaya dönünce tamamlanan kataloglar korunur; yarım kalan aşamadan devam edilir.' : 'Canlı, Film ve Dizi aşamaları tamamlandıkça burada güncellenir.'}</Text>
-    {onCancel && <FocusButton testID="catalog-preparation-cancel" onPress={onCancel} style={{ marginTop: SPACING.lg, padding: SPACING.md, borderWidth: 1, borderColor: colors.border, borderRadius: RADIUS.md }}><Text style={{ color: colors.onSurface, textAlign: 'center', fontWeight: '700' }}>İptal</Text></FocusButton>}
+    {onExit && <FocusButton testID="catalog-preparation-force-exit" onPress={onExit} style={{ padding: SPACING.md }}><Text style={{ color: colors.brandPrimary, textAlign: 'center' }}>Zorla çık · kayıtları koru</Text></FocusButton>}
+    {onCancel && <FocusButton testID="catalog-preparation-cancel" onPress={onCancel} style={{ marginTop: SPACING.lg, padding: SPACING.md, borderWidth: 1, borderColor: colors.border, borderRadius: RADIUS.md }}><Text style={{ color: colors.onSurface, textAlign: 'center', fontWeight: '700' }}>İptal / kapat</Text></FocusButton>}
   </View>;
   if (presentation === 'inline') return card;
   const overlay = <View pointerEvents={interactive ? 'auto' : 'none'} style={{ position: presentation === 'modal' ? 'relative' : 'absolute', flex: 1, top: 0, left: 0, right: 0, bottom: 0, zIndex: 10000, backgroundColor: interactive ? 'rgba(0,0,0,0.92)' : 'rgba(0,0,0,0.55)' }}>
     <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', alignItems: 'center', padding: SPACING.lg }}>{card}</ScrollView>
   </View>;
-  return presentation === 'modal' ? <Modal transparent visible onRequestClose={onCancel}>{overlay}</Modal> : overlay;
+  return presentation === 'modal' ? <Modal transparent visible onRequestClose={onExit || onCancel}>{overlay}</Modal> : overlay;
 }

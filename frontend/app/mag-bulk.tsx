@@ -12,7 +12,12 @@
  * ===========================================================================
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, FlatList, StyleSheet, Switch, Text, TextInput, View, ScrollView } from "react-native";
+import { ActivityIndicator, Alert, BackHandler, FlatList, StyleSheet, Switch, Text, TextInput, View, ScrollView } from "react-native";
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import { AccountPlaybackTestQueue, type PlaybackTestAccount } from '@/src/components/AccountPlaybackTestQueue';
+import { parseMagArchive } from '@/src/utils/magArchive';
+import { canonicalEndpointUrl, mergeEndpointEvidence, playlistEndpoints, endpointProofLabel } from '@/src/utils/playlistEndpoints';
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -119,6 +124,9 @@ export default function MagBulkScreen() {
   const [progress, setProgress] = useState({ done: 0, total: 0, current: "" });
   const [stageMsg, setStageMsg] = useState("");
   const [results, setResults] = useState<MagScanResult[]>([]);
+  const [playbackTests, setPlaybackTests] = useState<PlaybackTestAccount[]>([]);
+  const [testScope, setTestScope] = useState<'selected' | 'all'>('selected');
+  const [safetyStatus, setSafetyStatus] = useState('');
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [actionProgress, setActionProgress] = useState("");
@@ -187,6 +195,7 @@ export default function MagBulkScreen() {
       try {
         const archiveId = await PanelScan.getLatestResultArchive(owner);
         if (!archiveId || !alive || busyRef.current) return;
+        backupNameRef.current = archiveId;
         const read = createScanResultReader(PanelScan.getResultsPage);
         await read(archiveId, true, rows => {
           if (alive && !busyRef.current) {
@@ -297,7 +306,7 @@ export default function MagBulkScreen() {
         onResult: async r => {
           const backup = await PanelScan.appendResultArchive(archiveId, magIdentity(r.portal, r.mac), r);
           if (!mountedRef.current || run !== runRef.current) return;
-          if (!backup.ok) setStageMsg(`Sonuç kalıcı kayıtta; emniyet TXT yazımı başarısız: ${backup.error}`);
+          setSafetyStatus(backup.ok === false ? `TXT hatası: ${backup.error}. Kalıcı sonuçlar korunuyor.` : backup.ok === true ? `TXT doğrulandı · ${backup.path || ''}` : 'Emniyet TXT hazırlanıyor; sonuçlar kalıcı kayıtta.');
           resultBufferRef.current.push(r);
           if (!flushTimerRef.current) flushTimerRef.current = setTimeout(flushResults, 150);
         },
@@ -409,6 +418,8 @@ export default function MagBulkScreen() {
         const shell: Playlist = {
           id, name: `MAG ${r.mac.slice(-8)}`, source: "stalker",
           stalkerPortal: session.endpoint, stalkerResolvedPortal: session.resolvedPortal || r.resolvedPortal, stalkerMac: r.mac.toUpperCase(),
+          endpoints: r.endpoints,
+          stalkerBackupPortals: (r.endpoints || []).filter(e => e.kind === 'stalker' && e.accountVerifiedAt && canonicalEndpointUrl(e.url) !== canonicalEndpointUrl(session.endpoint)).map(e => e.url),
           accountInfo: createdAccountInfo,
           channels: [], vod: [], series: [],
           catalogSync: { initialSyncState: "pending", roomVerified: true, updatedAt: new Date().toISOString() },
@@ -499,7 +510,7 @@ export default function MagBulkScreen() {
           protection: r.protection, liveCategories: [], vodCategories: [], seriesCategories: [], warnings: [] };
         const { playlistEndpoints, canonicalEndpointUrl } = await import('@/src/utils/playlistEndpoints');
         const stored = playlists.find(p => p.source === 'stalker' && p.stalkerMac?.toUpperCase() === r.mac.toUpperCase() && playlistEndpoints(p).some(e => canonicalEndpointUrl(e.url) === canonicalEndpointUrl(r.portal)));
-        entry.endpoints = stored ? playlistEndpoints(stored) : [{ url: r.portal, kind: 'stalker', primary: true, source: 'scan', ...(r.category === 'valid' ? { accountVerifiedAt: new Date().toISOString() } : {}) }];
+        entry.endpoints = stored ? playlistEndpoints(stored) : r.endpoints?.length ? r.endpoints : [{ url: r.portal, kind: 'stalker', primary: true, source: 'scan', ...(r.category === 'valid' ? { accountVerifiedAt: new Date().toISOString() } : {}) }];
         const derived = getStreamDerivedCredentials(r.mac, r.portal, owner);
         if (derived) { entry.username = derived.username; entry.password = derived.password; }
         try {
@@ -536,6 +547,30 @@ export default function MagBulkScreen() {
     }
   }, [selectedResults, useProxy, profileEpoch, playlists]);
 
+  const forceExit = useCallback(() => {
+    cancelRef.current = true; pauseRef.current = false; mountedRef.current = false;
+    runRef.current++; actionRunRef.current++;
+    scanAbortRef.current?.abort(); actionAbortRef.current?.abort(); portalPickerRef.current?.cancel();
+    setPlaybackTests([]);
+    if (backupNameRef.current) void PanelScan.flushResultArchive(backupNameRef.current).catch(() => {});
+    router.replace('/(tabs)');
+  }, [router]);
+  useEffect(() => { const listener = BackHandler.addEventListener('hardwareBackPress', () => { forceExit(); return true; }); return () => listener.remove(); }, [forceExit]);
+  const importArchive = async () => {
+    if (busyRef.current) return;
+    const picked = await DocumentPicker.getDocumentAsync({ type: ['text/plain', 'application/json', '*/*'], copyToCacheDirectory: true });
+    if (picked.canceled || !picked.assets?.[0] || !mountedRef.current) return;
+    const parsedArchive = parseMagArchive(await FileSystem.readAsStringAsync(picked.assets[0].uri));
+    if (!mountedRef.current) return;
+    if (!parsedArchive.results.length) { Alert.alert('MAG arşivi', 'Geçerli portal/MAC kaydı bulunamadı.'); return; }
+    const archiveId = `mac-restore-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    await PanelScan.createResultArchive(archiveId, profileRef.current);
+    for (const r of parsedArchive.results) await PanelScan.appendResultArchive(archiveId, magIdentity(r.portal, r.mac), r);
+    if (!mountedRef.current) return;
+    backupNameRef.current = archiveId; setResults(parsedArchive.results); setSelected(new Set());
+    setStageMsg(`${parsedArchive.results.length} kayıt okundu. Eklemek istediklerinizi seçin; ekleme sırasında yeniden doğrulanır.${parsedArchive.warnings.length ? ` ${parsedArchive.warnings.length} uyarı.` : ''}`);
+  };
+
   const S = makeStyles(colors);
   const catCounts = useMemo(() => {
     const m: Record<string, number> = {};
@@ -545,11 +580,20 @@ export default function MagBulkScreen() {
 
   return (
     <SafeAreaView style={S.root} edges={["top", "bottom"]}>
+      {!!playbackTests.length && <AccountPlaybackTestQueue accounts={playbackTests} onClose={() => setPlaybackTests([])} onEvidence={(key, evidence) => {
+        const target = results.find(r => magIdentity(r.portal, r.mac) === key); if (!target || !mountedRef.current) return;
+        const endpoints = mergeEndpointEvidence(target.endpoints || [], evidence);
+        setResults(prev => prev.map(r => magIdentity(r.portal, r.mac) === key ? { ...r, endpoints } : r));
+        if (backupNameRef.current) void PanelScan.updateResultEvidence(backupNameRef.current, { portal: target.portal, mac: target.mac }, { endpoints }).catch(() => setSafetyStatus('İlk kare kanıtı arşive yazılamadı; yeniden kaydedin.'));
+        const stored = playlists.find(p => p.source === 'stalker' && p.stalkerMac?.toUpperCase() === target.mac && playlistEndpoints(p).some(e => e.url === canonicalEndpointUrl(target.portal)));
+        if (stored) void updatePlaylist(stored.id, { endpoints: mergeEndpointEvidence(playlistEndpoints(stored), evidence) });
+      }} />}
       <View style={S.header}>
-        <FocusButton testID="mag-bulk-back" onPress={() => router.back()} style={S.iconBtn}>
+        <FocusButton testID="mag-bulk-back" onPress={forceExit} style={S.iconBtn}>
           <Ionicons name="arrow-back" size={22} color={colors.onSurface} />
         </FocusButton>
         <Text style={S.title}>Çoklu MAC Ekle</Text>
+        <FocusButton testID="mag-force-exit" onPress={forceExit}><Text style={S.chipText}>Zorla çık</Text></FocusButton>
       </View>
 
       <FlatList data={visibleResults}
@@ -557,6 +601,8 @@ export default function MagBulkScreen() {
         keyboardShouldPersistTaps="handled" initialNumToRender={12} maxToRenderPerBatch={12} windowSize={7}
         contentContainerStyle={{ padding: SPACING.lg, gap: SPACING.md, paddingBottom: SPACING.xxl }}
         ListHeaderComponent={<View style={{ gap: SPACING.md }}>
+        {!!safetyStatus && <Text selectable style={S.hint}>{safetyStatus}</Text>}
+        <FocusButton disabled={scanning || adding || saving} onPress={() => void importArchive().catch(e => Alert.alert('Arşiv okunamadı', String(e?.message || e)))} style={S.secondaryBtn}><Text style={S.secondaryBtnText}>MAG / emniyet TXT arşivini aç</Text></FocusButton>
         <View style={[S.banner]}>
           <Ionicons name="shield-checkmark" size={18} color={colors.brandPrimary} />
           <Text style={S.bannerText}>Yalnız SİZE AİT MAG cihazlarının MAC adreslerini tarayın. Başkasının MAC'ini kullanmak yasadışıdır.</Text>
@@ -754,6 +800,14 @@ export default function MagBulkScreen() {
               <FocusButton testID="mag-clear-selection" disabled={scanning || adding || saving} onPress={() => setSelected(new Set())} style={S.chip}><Text style={S.chipText}>Seçimi kaldır</Text></FocusButton>
             </View>
             <Text style={S.hint}>“Koruma görülmedi” yalnız analiz anındaki endpoint ve bağlantı gözlemidir. Bilinmeyen durum korumasız sayılmaz.</Text>
+            <View style={S.chipRow}>
+              <FocusButton disabled={scanning || adding || saving} onPress={() => setTestScope(v => v === 'selected' ? 'all' : 'selected')} style={S.chip}><Text style={S.chipText}>Test: {testScope === 'selected' ? 'Seçililer' : 'Tümü'}</Text></FocusButton>
+              <FocusButton disabled={scanning || adding || saving} onPress={() => {
+                const list = (testScope === 'all' ? results : selectedResults).filter(r => r.category === 'valid' || r.category === 'probable');
+                if (!list.length) { Alert.alert('Görüntü testi', 'Test için geçerli/muhtemel hesap seçin.'); return; }
+                setPlaybackTests(list.map(r => ({ key: magIdentity(r.portal, r.mac), endpoint: r.portal, kind: 'stalker', mac: r.mac, profileId: activeProfile.id })));
+              }} style={S.chip}><Text style={S.chipText}>Gerçek ilk kareyi test et</Text></FocusButton>
+            </View>
             {!scanning && (
               <>
                 <FocusButton testID="mag-add-valid-btn" onPress={addValid} disabled={adding || saving || !selectedAddable.length} style={[S.primaryBtn, { backgroundColor: colors.success || "#2ecc71" }]}>
@@ -792,6 +846,7 @@ export default function MagBulkScreen() {
                   return <Text style={[S.resultSub, { color: info.c, fontWeight: FONT.weight.semibold }]}>{info.t}</Text>;
                 })()}
                 {r.message ? <Text style={S.resultSub} numberOfLines={3}>{r.message}</Text> : null}
+                {(r.endpoints || []).map(e => <Text key={e.url} style={S.resultSub}>{endpointProofLabel(e)}{e.lastError ? ` · ${e.lastError}` : ''}</Text>)}
               </View>
               <Text style={[S.resultCat, { color: meta.color(colors) }]}>{meta.label}</Text>
             </FocusButton>
@@ -801,6 +856,7 @@ export default function MagBulkScreen() {
       />
       {/* v18.7.16 (B): toplu ekleme ilerlemesi büyük görsel modal (Canlı/Film/Dizi kartları + süre + iptal). */}
       <CatalogPreparationModal visible={adding} presentation="overlay" title={addTitle ? `${addTitle} hazırlanıyor` : "Hesaplar ekleniyor"}
+        onExit={forceExit}
         message={actionProgress || "Hesap doğrulanıyor…"} progress={addProgress} startedAt={addStartedAt || Date.now()} lastProgressAt={addProgressAt}
         onCancel={() => actionAbortRef.current?.abort()} />
     </SafeAreaView>

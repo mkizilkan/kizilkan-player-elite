@@ -218,7 +218,7 @@ class PanelScanService : Service() {
     val added = ScanJournalStore.get(applicationContext).addResult(currentRunId, key, durable.toString())
     if (added) {
       persistentFound.incrementAndGet()
-      ScanSafetyBackup.flush(applicationContext, ScanJournalStore.get(applicationContext), currentRunId, false)
+      ScanSafetyBackup.request(applicationContext, ScanJournalStore.get(applicationContext), currentRunId)
     }
     return added
   }
@@ -290,10 +290,26 @@ class PanelScanService : Service() {
         }
       }
       ACTION_RECOVER -> {
-        val rec = ScanJournalStore.get(applicationContext).recoverable() ?: return START_NOT_STICKY
+        if (running) return START_NOT_STICKY
+        // Android's foreground deadline includes Keystore/SQLite work: promote before reading.
+        startForeground(NOTIF_ID, notification("Tarama kayıtları hazırlanıyor…",0,0))
+        currentRunId = intent.getStringExtra("runId") ?: ""
+        running = true
+        cancelled.set(false); paused.set(false)
+        Thread {
+        try {
+        val rec = ScanJournalStore.get(applicationContext).recoverable() ?: run {
+          running = false; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); return@Thread
+        }
         val requestedRunId = rec.optString("runId")
-        if (requestedRunId.isBlank() || requestedRunId != activeRunId() || running) return START_NOT_STICKY
-        currentRunId=requestedRunId; running=true; cancelled.set(false); paused.set(false)
+        if (requestedRunId.isBlank() || requestedRunId != currentRunId || requestedRunId != activeRunId()) {
+          running = false; releaseRun(currentRunId); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); return@Thread
+        }
+        if (cancelled.get()) {
+          ScanJournalStore.get(applicationContext).finish(requestedRunId, "CANCELLED")
+          writeSnapshot(JSONObject().put("runId",requestedRunId).put("running",false).put("state","CANCELLED").put("cancelled",true))
+          running = false; releaseRun(requestedRunId); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); return@Thread
+        }
         val mode=rec.optString("mode"); val originalPayload=rec.optString("payload"); val concurrency=rec.optInt("concurrency",8); val timeoutMs=rec.optInt("timeoutMs",8000); val start=rec.optLong("cursor",0L)
         val payloadObject = runCatching { JSONObject(originalPayload) }.getOrNull()
           ?: if (mode == "unified") runCatching { JSONObject().put("jobs", JSONArray(originalPayload)) }.getOrNull() else null
@@ -309,7 +325,7 @@ class PanelScanService : Service() {
         initializeResultCount()
         val oldResults=ScanJournalStore.get(applicationContext).results(requestedRunId, 200)
         val resumeTested = if (mode == "streaming-file-v172" || mode == "unified" && rec.optInt("batchSize", 0) > 0) resumeAccount.second else resumeCursor
-        writeSnapshot(JSONObject().put("mode",mode).put("runId",requestedRunId).put("state","RUNNING").put("running",true).put("tested",resumeTested).put("total",rec.optLong("total",0L)).put("found",oldResults.length()).put("matches",oldResults).put("recovered",true))
+        writeSnapshot(JSONObject().put("mode",mode).put("runId",requestedRunId).put("state",if(paused.get()) "PAUSED" else "RUNNING").put("paused",paused.get()).put("running",true).put("tested",resumeTested).put("total",rec.optLong("total",0L)).put("found",persistentFound.get()).put("matches",oldResults).put("recovered",true))
         startForeground(NOTIF_ID, notification("Yarım kalan tarama devam ediyor…",0,0))
         Thread { try { when(mode){
           "single" -> { val o=JSONObject(payload); runScan(o.optString("candidates","[]"),o.optString("username"),o.optString("password"),concurrency,timeoutMs,resumeCursor.toInt()) }
@@ -352,6 +368,13 @@ class PanelScanService : Service() {
           running = false; releaseRun(requestedRunId)
           stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
         } }.start()
+        } catch (e: Throwable) {
+          writeSnapshot(JSONObject().put("runId", currentRunId).put("running", false).put("state", "FAILED")
+            .put("error", "Kurtarma hazırlığı başarısız: ${e.javaClass.simpleName}"))
+          running = false; releaseRun(currentRunId)
+          stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
+        }
+        }.start()
       }
       ACTION_STREAM_FILE_V172 -> {
         val requestedRunId = intent.getStringExtra("runId") ?: ""

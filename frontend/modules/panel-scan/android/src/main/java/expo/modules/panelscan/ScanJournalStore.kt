@@ -25,16 +25,19 @@ import javax.crypto.spec.GCMParameterSpec
  * - requested/effective concurrency ve source fingerprint journal'a yazılır;
  * - eski v1 DB şeması migration ile korunur.
  */
-class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(context.applicationContext, "kizilkan-panel-scan-journal.db", null, 3) {
+class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(context.applicationContext, "kizilkan-panel-scan-journal.db", null, 4) {
   private val applicationContext = context.applicationContext
+  @Volatile private var cachedKey: SecretKey? = null
   override fun onCreate(db: SQLiteDatabase) {
     db.execSQL("CREATE TABLE scan_session(run_id TEXT PRIMARY KEY, mode TEXT NOT NULL, payload_enc TEXT NOT NULL, concurrency INTEGER NOT NULL, timeout_ms INTEGER NOT NULL, committed_cursor INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, committed_account INTEGER NOT NULL DEFAULT 0, committed_tested INTEGER NOT NULL DEFAULT 0, batch_size INTEGER NOT NULL DEFAULT 0, requested_concurrency INTEGER NOT NULL DEFAULT 0, effective_concurrency INTEGER NOT NULL DEFAULT 0, source_fingerprint TEXT NOT NULL DEFAULT '')")
     db.execSQL("CREATE TABLE scan_result(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, result_key TEXT NOT NULL, payload_enc TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(run_id,result_key) ON CONFLICT IGNORE)")
     db.execSQL("CREATE INDEX idx_scan_result_run ON scan_result(run_id,id)")
     createProbeCache(db)
+    createOwnerTable(db)
   }
 
   override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+    if (oldVersion < 4) createOwnerTable(db)
     if(oldVersion<3)createProbeCache(db)
     if (oldVersion < 2) {
       db.execSQL("ALTER TABLE scan_session ADD COLUMN committed_account INTEGER NOT NULL DEFAULT 0")
@@ -49,6 +52,17 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
   private fun createProbeCache(db:SQLiteDatabase){
     db.execSQL("CREATE TABLE IF NOT EXISTS scan_probe_cache(run_id TEXT NOT NULL, probe_key TEXT NOT NULL, payload_enc TEXT NOT NULL, PRIMARY KEY(run_id,probe_key))")
   }
+  private fun createOwnerTable(db: SQLiteDatabase) {
+    db.execSQL("CREATE TABLE IF NOT EXISTS scan_session_owner(run_id TEXT PRIMARY KEY,profile_id TEXT NOT NULL)")
+  }
+  @Synchronized fun ownerOf(runId: String): String? = readableDatabase.rawQuery("SELECT profile_id FROM scan_session_owner WHERE run_id=?", arrayOf(runId)).use { c -> if(c.moveToFirst()) c.getString(0) else null }
+  @Synchronized fun bindOwner(runId: String, profileId: String) {
+    check(runId.isNotBlank() && profileId.isNotBlank()) { "Tarama sahibi eksik" }
+    val existing = ownerOf(runId)
+    check(existing == null || existing == profileId) { "Tarama başka profile ait" }
+    val values = ContentValues().apply { put("run_id", runId); put("profile_id", profileId) }
+    check(writableDatabase.insertWithOnConflict("scan_session_owner", null, values, SQLiteDatabase.CONFLICT_REPLACE) != -1L)
+  }
   @Synchronized fun readProbe(runId:String,probeKey:String):String? =
     readableDatabase.rawQuery("SELECT payload_enc FROM scan_probe_cache WHERE run_id=? AND probe_key=?",arrayOf(runId,probeKey)).use{c->if(c.moveToFirst())dec(c.getString(0))else null}
   @Synchronized fun writeProbe(runId:String,probeKey:String,payload:String){
@@ -57,14 +71,15 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
   }
 
   private fun key(): SecretKey {
+    cachedKey?.let { return it }
     val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-    (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+    (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { cachedKey = it; return it }
     val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
     kg.init(KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
       .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
       .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
       .build())
-    return kg.generateKey()
+    return kg.generateKey().also { cachedKey = it }
   }
 
   private fun enc(raw: String): String {
@@ -169,6 +184,26 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
     }
   }
 
+  /** Evidence augments an existing credential row; it never creates a new account. */
+  @Synchronized fun updateEvidence(runId: String, identity: JSONObject, evidence: JSONObject): Boolean {
+    val isMag = identity.has("mac")
+    val endpoint = identity.optString(if (isMag) "portal" else "server").trimEnd('/')
+    require(endpoint.isNotBlank()) { "Kanıt endpoint'i eksik" }
+    readableDatabase.rawQuery("SELECT id,payload_enc FROM scan_result WHERE run_id=?", arrayOf(runId)).use { rows ->
+      while (rows.moveToNext()) {
+        val payload = JSONObject(dec(rows.getString(1)))
+        val same = payload.optString(if (isMag) "portal" else "server").trimEnd('/') == endpoint &&
+          if (isMag) payload.optString("mac").equals(identity.optString("mac"), ignoreCase = true)
+          else payload.optString("username") == identity.optString("username") && payload.optString("password") == identity.optString("password")
+        if (!same) continue
+        for (field in arrayOf("endpoints", "categories")) if (evidence.has(field)) payload.put(field, evidence.get(field))
+        val values = ContentValues().apply { put("payload_enc", enc(payload.toString())) }
+        return writableDatabase.update("scan_result", values, "run_id=? AND id=?", arrayOf(runId, rows.getLong(0).toString())) == 1
+      }
+    }
+    return false
+  }
+
   /** Cursor pagination is independent of the rolling notification/snapshot window. */
   @Synchronized fun resultsPage(runId: String, afterId: Long, requestedLimit: Int): JSONObject {
     require(runId.isNotBlank() && afterId >= 0) { "Geçersiz tarama/cursor" }
@@ -242,7 +277,10 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
     }
   }
 
-  @Synchronized fun latestResultArchive(profileId: String): String? {
+  @Synchronized fun latestResultArchive(profileId: String, mag: Boolean = true): String? {
+    val modeClause = if (mag) "s.mode='MAG_RESULTS'" else "s.mode<>'MAG_RESULTS'"
+    readableDatabase.rawQuery("SELECT s.run_id FROM scan_session s JOIN scan_session_owner o ON o.run_id=s.run_id WHERE o.profile_id=? AND $modeClause AND EXISTS (SELECT 1 FROM scan_result r WHERE r.run_id=s.run_id) ORDER BY s.created_at DESC LIMIT 1", arrayOf(profileId)).use { c -> if(c.moveToFirst()) return c.getString(0) }
+    if (!mag) return null // Old unowned credentials require explicit user file selection.
     readableDatabase.rawQuery("SELECT run_id,payload_enc FROM scan_session WHERE mode='MAG_RESULTS' AND EXISTS (SELECT 1 FROM scan_result WHERE scan_result.run_id=scan_session.run_id) ORDER BY created_at DESC", null).use { rows ->
       while (rows.moveToNext()) if (JSONObject(dec(rows.getString(1))).optString("profileId") == profileId) return rows.getString(0)
     }
@@ -270,6 +308,7 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
       writableDatabase.delete("scan_probe_cache","run_id=?",arrayOf(runId))
       writableDatabase.delete("scan_result","run_id=?",arrayOf(runId))
       writableDatabase.delete("scan_session","run_id=?",arrayOf(runId))
+      writableDatabase.delete("scan_session_owner","run_id=?",arrayOf(runId))
       writableDatabase.setTransactionSuccessful()
     } finally {
       writableDatabase.endTransaction()

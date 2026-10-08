@@ -6,8 +6,10 @@
  * testi + rotasyon native tarafta (ScanProxyPool). Proxy adres/şifresi native'de
  * cihazda ŞİFRELİ saklanır (Keystore AES-GCM); burada yalnız tercih tutulur.
  *
- * Kaynak kataloğu 27.09.2026'da CANLI doğrulandı; ölü/eski (jetkai, ShiftyTR 2023)
- * ve HTML dönen uçlar (TheSpeedX http) katalogdan ÇIKARILDI.
+ * Kaynak kataloğu 08.10.2026'da ALPHA kaynaklarıyla karşılaştırıldı. Erişilebilir
+ * eski listeler fresh:false ile işaretli; indirilen adaylar için native canlılık
+ * testi ayrı adımdır. Kaynağın açılması proxy'nin çalıştığı anlamına gelmez.
+ * 404/502 dönen uçlar eklenmedi. TheSpeedX HTTP yeniden metin olarak doğrulandı.
  */
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { PanelScan, type NativeScanProxyEntry, type NativeScanProxyStatus, type ScanProxyTestConfig } from "../../modules/panel-scan";
@@ -54,6 +56,7 @@ export const PROXY_SOURCE_CATALOG: ProxySourceDef[] = [
     socks4: "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4",
     socks5: "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5" } },
   { id: "thespeedx", label: "TheSpeedX", provider: "TheSpeedX/PROXY-List", fresh: true, urls: {
+    http: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
     socks4: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
     socks5: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt" } },
   { id: "mmpx12", label: "mmpx12", provider: "mmpx12/proxy-list", fresh: true, urls: {
@@ -70,6 +73,30 @@ export const PROXY_SOURCE_CATALOG: ProxySourceDef[] = [
     socks5: "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt" } },
   { id: "hookzof", label: "Hookzof (SOCKS5)", provider: "hookzof/socks5_list", fresh: true, urls: {
     socks5: "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt" } },
+  { id: "aliilapro", label: "ALIILAPRO", provider: "ALIILAPRO/Proxy", fresh: true, urls: {
+    http: "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/http.txt",
+    socks4: "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks4.txt",
+    socks5: "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks5.txt" } },
+  { id: "openproxylist", label: "OpenProxyList API", provider: "api.openproxylist.xyz", fresh: true, urls: {
+    http: "https://api.openproxylist.xyz/http.txt",
+    socks4: "https://api.openproxylist.xyz/socks4.txt",
+    socks5: "https://api.openproxylist.xyz/socks5.txt" } },
+  { id: "sunny9577", label: "Sunny9577", provider: "sunny9577/proxy-scraper", fresh: true, urls: {
+    http: "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/proxies.txt" } },
+  { id: "jetkai", label: "Jetkai", provider: "jetkai/proxy-list", fresh: false, urls: {
+    http: "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
+    socks4: "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt",
+    socks5: "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt" } },
+  { id: "clarketm", label: "Clarketm", provider: "clarketm/proxy-list", fresh: false, urls: {
+    http: "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt" } },
+  { id: "shiftytr", label: "ShiftyTR", provider: "ShiftyTR/Proxy-List", fresh: false, urls: {
+    http: "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+    socks4: "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks4.txt",
+    socks5: "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt" } },
+  { id: "opsxcq", label: "Opsxcq", provider: "opsxcq/proxy-list", fresh: false, urls: {
+    http: "https://raw.githubusercontent.com/opsxcq/proxy-list/master/list.txt" } },
+  { id: "proxy4parsing", label: "Proxy4parsing", provider: "proxy4parsing/proxy-list", fresh: false, urls: {
+    http: "https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt" } },
 ];
 
 export type CustomSource = { url: string; scheme: ProxyProtocol | "auto" };

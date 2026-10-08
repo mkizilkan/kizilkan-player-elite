@@ -1,5 +1,5 @@
 /** Çoklu MAG analizi: kullanıcı kapsamı, işlem sahipliği, ortak host temposu ve kanıtlı sonuçlar. */
-import type { AccountInfo } from "@/src/types";
+import type { AccountInfo, PlaylistEndpoint } from "@/src/types";
 import type { StalkerCreds, StalkerRequestScope, MagProtectionObservation } from "@/src/utils/stalker";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
 import { discoverMagHosts, type MagPortalDiscovery } from "@/src/utils/magPortalDiscovery";
@@ -17,6 +17,8 @@ export type MagScanResult = {
   protection?: MagProtectionObservation;
   verificationEvidence?: string[];
   resolvedPortal?: ResolvedMagPortal;
+  endpoints?: PlaylistEndpoint[];
+  categories?: { live?: string[]; vod?: string[]; series?: string[]; warnings?: string[] };
 };
 export type MagScanControl = { isCancelled?: () => boolean; waitIfPaused?: () => Promise<void>; signal?: AbortSignal };
 export type MagScanOptions = {

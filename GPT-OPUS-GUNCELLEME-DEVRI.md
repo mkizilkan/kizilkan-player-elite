@@ -1,11 +1,33 @@
 # GPT DEVİR — KIZILKAN PLAYER ELITE (güncel durum ve talimatlar)
 
-**Son güncelleme:** 2026-10-07, Claude (Opus) oturumu — v18.7.24'e kadar güncel + **v18.7.25 KATALOG HIZ PLANI** (aşağıda, onay bekliyor). Bu dosya, token/bağlam azaldığında
+**Son güncelleme:** 2026-10-08, GPT oturumu — v18.7.28 RC1 proxy kaynakları güncellemesi. Önceki sürüm notları ve planlar tarihî kayıt olarak aşağıda korunmuştur. Bu dosya, token/bağlam azaldığında
 başka bir yapay zekânın (GPT) işi kaldığı yerden sürdürmesi için yazıldı. Önce `CLAUDE.md`'yi (özellikle §2 çalışma
 sözleşmesi, §3 doğrulama, §4 sürüm/dal, §5 mimari, §7 tuzaklar, §8 log analizi) oku; aşağıdakiler ona EKtir.
-**EN GÜNCEL DURUM aşağıda "## 0. GÜNCEL (v18.7.16–v18.7.23)" bölümünde.**
+**En güncel durum aşağıdaki “0. GÜNCEL EK — 08.10.2026 / v18.7.28 RC1 / proxy kaynakları” bölümündedir.**
 
-## 0. GÜNCEL DURUM (v18.7.16 → v18.7.23) — EN ÖNEMLİ BÖLÜM
+## 0. GÜNCEL EK — 08.10.2026 / v18.7.28 RC1 / proxy kaynakları
+
+**Kullanıcı isteği:** İki ALPHA dosyasını ve masaüstündeki `KIZILKAN_ALPHA_TEAM_WOLFS_ANALIZ_VE_EKLENECEK_OZELLIKLER.md` belgesini incele; programlardaki proxy kaynaklarını ekle. Diğer öneriler bu turda kodlanmadı.
+
+**Taban:** v18.7.27, `43cc02c6c38b3e3e3b151eddc73994e4ef3e1cef`. **Dal:** `codex/v18.7.28-rc1-proxy-sources`. Kaynak çalışma ağacında; henüz yeni commit/push/Actions/APK yok.
+
+**Yapılanlar ve yerleri:**
+
+- `frontend/src/utils/scanProxy.ts`, `PROXY_SOURCE_CATALOG`: ALIILAPRO, OpenProxyList API, Sunny9577, Jetkai, Clarketm, ShiftyTR, Opsxcq, Proxy4parsing eklendi. Mevcut TheSpeedX'e HTTP adresi eklendi. Toplam 19 kaynak/47 URL, artış 8 kaynak/17 URL. Eski 11 kaynağın URL'leri korundu. Beş eski sağlayıcı `fresh:false`; listeleri kullanıcı isterse seçebilir. Seçimler varsayılan olarak kendiliğinden açılmıyor. Python'un sabit proxy adresleri taşınmadı.
+- `frontend/app/scan-proxy.tsx`, kaynak satırı: `fresh:false` için “Eski liste · indirdikten sonra canlılık testi uygulayın.” gösteriliyor. İndirilmiş adres canlı proxy sayılmıyor; mevcut native testi gerekiyor.
+- `frontend/app.json`/`frontend/package.json`: beş alan `18.7.28`/`180728`/`GPT ELITE v18.7.28 RC1` oldu. Paket eklenmedi, Kotlin değiştirilmedi.
+- `GPT-PYTHON-KAYNAKLARI-EKLENEBILECEKLER-2026-10-08.md`, PY10/K14: giriş temizleme değerlendirmesi düzeltildi. Üst UI'da tekrar ayıklama zaten var; asıl hata kullanıcı adı+şifre+konum anahtarını küçük harfe çevirmek.
+- `GPT-ALPHA-TEAM-WOLFS-EK-INCELEME-2026-10-08.md`: gönderilen MD'nin iddiaları, 12 ek kaynak hatası, kaynak erişim/güncellik tablosu ve sonraki işler yazıldı. `AI-DEVIR-v18.7.28.md` ve `CLAUDE.md` güncellendi.
+
+**Gerçek doğrulamalar:** 39 benzersiz feed URL'i HTTPS ile kontrol edildi. Eklenen 17 URL gerçek `scanProxyParse.ts` ile indirildi: hepsi doğru HTTP/SOCKS türünde en az bir aday verdi. Mevcut 11 kaynağın URL koruması, URL tekilliği, varsayılan seçimlerin değişmemesi doğrulandı. Dört kaynak gerçek `downloadProxySources` yoluyla birleştirildi: 4.240 benzersiz aday, hata yok. Bu adayların portal hesabıyla veya proxy canlılığıyla doğrulandığı iddia edilmiyor. `yarn tsc --noEmit` PASS (37,50 sn); tam `node tools/denetle.js` PASS/exit 0; `git diff --check` PASS. Yerel inceleme metadata'sı `.codex-device-backups/2026-10-08-proxy-source-review/` içinde ve git dışı; ham proxy/hesap gövdeleri kaydedilmedi.
+
+**Eklenmeyenler:** UserR3X iki URL ve Monosans anonymous üç URL HTTP 404; proxy-list.download üç URL bu kontrolde HTTP 502. ProxyScrape sorgu varyantları ve TheSpeedX eski repo adı ayrı tekrar sağlayıcı olarak eklenmedi.
+
+**Opus için kritik ayrımlar:** WOLFS satır 1520+ sınırlı logger/yama kodu ana GUI'nin aktif kodu değil, `TERMUX_TEMPLATE` string'i içindedir. Ana logger 2622+ sınırsız kuyruğa yazar. Native TCP socket testi proxy için mevcut, normal MAG port sınıflaması HTTP yanıtını kullanır. MD'deki yeni TCP-MAG veya worker azaltımı tasarımı otomatik uygulanmadı. Bizde trace, aşamalı doğrulama, proxy testi, buffer/HW ayarı ve ilk kare motor recovery zaten vardır.
+
+**Kalan cihaz senaryoları:** Yeni APK'da kaynak/tür seçimi, eski kaynak etiketi, indirme ve native canlılık testi; mevcut seçimlerin korunması. APK üretilmedi/kurulmadı. Önceki `GPT-v18.7.27-CIHAZ-KURTARMA-KATALOG-MIMARI-2026-10-08.md` servis/kurtarma/navigation sorunları; normal MAG yenilemesinin hızlı köprüye bağlanması; katalog testinde hata sebebi ve gerçek ilk kare; PY10 harf duyarlı kimlik düzeltmesi açık. Proxy ekleme bu hataları çözmüş kabul edilmemeli.
+
+## 0-eski. GÜNCEL DURUM (v18.7.16 → v18.7.23) — tarihî kayıt
 
 **Dal zinciri (her biri bir öncekinin dalından):** v18.7.15 → v18.7.16 → v18.7.17 → v18.7.18 → v18.7.19 `v18.7.19-rc1-stream-creds-persist` → v18.7.20 `v18.7.20-rc1-catalog-speed-vod-class` → v18.7.21 `v18.7.21-rc1-addtime-user-xtparallel-m3u` → v18.7.22 `v18.7.22-rc1-vod-series-classification` → **v18.7.23 (AKTİF) `v18.7.23-rc1-card-autoprime-autotest`**.
 

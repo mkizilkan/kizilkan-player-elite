@@ -151,6 +151,7 @@ export function formatMagArchiveTxt(entries: MagArchiveEntry[], stamp: string): 
       `SIFRE=${clean(entry.password) || 'Bildirilmedi'}`,
       ...(entry.endpoints || []).map(e => `ADRES=${clean(e.url)} · ${endpointProofLabel(e)}`),
       `ADRES_KANITLARI_JSON=${JSON.stringify(entry.endpoints || [])}`,
+      `HESAP_JSON=${JSON.stringify(entry)}`,
       `KORUMA=${protection}${p ? ` · ${clean(p.kind)} · ${clean(p.observedAt)} · ${clean(p.transport)}` : ""}`,
       p?.evidence.length ? `KORUMA_KANITI=${p.evidence.map(clean).join(" | ")}` : "",
       cats("CANLI", entry.liveCategories, "Canlı"), cats("FILM", entry.vodCategories, "VOD"), cats("DIZI", entry.seriesCategories, "Series"),

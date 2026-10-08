@@ -180,7 +180,13 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.25 RC1 — dal `v18.7.25-rc1-contenttest-parallel-ui-macsafety`)
+## 9. Mevcut durum (v18.7.28 RC1 — dal `codex/v18.7.28-rc1-proxy-sources`)
+
+**v18.7.28 (08.10.2026 — kullanıcı onayıyla proxy kaynakları):** ALPHA TEAM/WOLFS kaynakları canlı HTTPS ve gerçek uygulama parser'ıyla kontrol edildi. Katalog 11→19 kaynak, 30→47 URL; 8 yeni kaynak ve TheSpeedX HTTP eklendi. 5 eski kaynak `fresh:false` ve görünür “Eski liste” etiketiyle seçilebilir. 404/502 dönen URL'ler eklenmedi; mevcut URL'ler ve kullanıcı seçimleri korundu. Beş sürüm alanı birlikte güncellendi, bağımlılık/native değişikliği yok. `yarn tsc --noEmit`, tam `node tools/denetle.js`, 17 URL'nin gerçek parser kontrolü ve `git diff --check` PASS. **APK/cihaz doğrulaması ve commit/push henüz yapılmadı.** Ayrıntı `AI-DEVIR-v18.7.28.md`, `GPT-ALPHA-TEAM-WOLFS-EK-INCELEME-2026-10-08.md`.
+
+**Açık bulgu:** `add-playlist.tsx:452` giriş tekrar anahtarında kullanıcı adı+şifre dahil `toLocaleLowerCase("tr")` yapıyor; harf duyarlı hesaplar birleşebilir. Bu turda yalnız proxy kaynakları kodlandı, bu hata raporlandı. Kaynak MD'nin bounded log iddiası da düzeltildi: WOLFS satır 1520+ kodu çalışan ana App değil, `TERMUX_TEMPLATE` metnidir. Proxy TCP kontrolü ile MAG'ın HTTP port sınıflaması ayrı tutulmalı. Önceki cihaz kurtarma/servis ve normal MAG katalog hızı sorunları halen açık; proxy güncellemesi bunları çözmüş sayılmaz.
+
+## 9-eski-18725. v18.7.25 RC1 (dal `v18.7.25-rc1-contenttest-parallel-ui-macsafety`)
 
 **v18.7.25 (bu sürüm — combo tarama TS düzeltmeleri B+C+A+E-MAG; PC doğrulandı, CİHAZ BEKLİYOR):**
 Kaynak: galaplaytv combo log (2026-10-07). **Yalnız TS, native YOK.** Ayrıntı `AI-DEVIR-v18.7.25.md`.

@@ -18,6 +18,7 @@ export function EndpointPlaybackTest(props: Props) {
   const callbacks = useRef(props); callbacks.current = props;
   useEffect(() => {
     const ctrl = new AbortController(); let alive = true; let done = false; let released = false;
+    const startedAt = Date.now();
     let releaseLease: (() => void) | undefined; let catalogAt: string | undefined;
     const stop = () => { if (!released) { released = true; try { player.pause(); } catch {} try { player.release(); } catch {} } releaseLease?.(); releaseLease = undefined; };
     const timer = setTimeout(() => finishRef.current('45 saniyede ilk kare alınamadı; bu sonuç kesin görüntü yok anlamına gelmez.'), 45000);
@@ -27,7 +28,7 @@ export function EndpointPlaybackTest(props: Props) {
       const now = new Date().toISOString();
       callbacks.current.onEvidence({ url: canonicalEndpointUrl(props.endpoint), kind: props.kind, source: 'playback', lastTestAt: now,
         ...(catalogAt ? { accountVerifiedAt: catalogAt, catalogVerifiedAt: catalogAt } : {}),
-        ...(error ? { lastError: error } : { firstFrameAt: now, lastError: '' }) });
+        ...(error ? { lastError: error } : { firstFrameAt: now, firstFrameElapsedMs: Date.now() - startedAt, lastError: '' }) });
       setMessage(error || 'İlk kare gerçekten görüldü. Test bağlantısı kapatıldı. Kaydet ile adres kanıtını saklayabilirsiniz.');
     };
     finishRef.current = finish;
