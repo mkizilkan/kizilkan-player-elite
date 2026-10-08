@@ -32,7 +32,7 @@ concurrency:
 jobs:
   build:
     name: Android APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     defaults:
       run:
@@ -40,6 +40,7 @@ jobs:
     env:
       NEW_ARCH: ${{ github.event.inputs.new_architecture || 'true' }}
       BUILD_TYPE: ${{ github.event.inputs.build_type || 'release' }}
+      KIZILKAN_MIN_FREE_GIB: "24"
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -48,6 +49,9 @@ jobs:
     steps:
       - name: Depoyu indir
         uses: actions/checkout@v4
+      - name: Android icin runner diskini hazirla
+        working-directory: .
+        run: bash tools/ci-android-disk.sh prepare
       - name: JDK 17 kur
         uses: actions/setup-java@v5
         with:
@@ -100,8 +104,8 @@ jobs:
           PROPS=android/gradle.properties
           [ -n "$(tail -c1 "$PROPS")" ] && echo "" >> "$PROPS" || true
           if grep -q '^newArchEnabled=' "$PROPS"; then sed -i "s/^newArchEnabled=.*/newArchEnabled=${NEW_ARCH}/" "$PROPS"; else printf '\nnewArchEnabled=%s\n' "$NEW_ARCH" >> "$PROPS"; fi
-          sed -i '/^org\.gradle\.jvmargs=/d;/^org\.gradle\.daemon=/d;/^org\.gradle\.parallel=/d' "$PROPS"
-          printf 'org.gradle.jvmargs=-Xmx5120m -XX:MaxMetaspaceSize=1024m\norg.gradle.daemon=false\norg.gradle.parallel=true\n' >> "$PROPS"
+          sed -i '/^org\.gradle\.jvmargs=/d;/^org\.gradle\.daemon=/d;/^org\.gradle\.parallel=/d;/^org\.gradle\.workers\.max=/d' "$PROPS"
+          printf 'org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=768m\norg.gradle.daemon=false\norg.gradle.parallel=false\norg.gradle.workers.max=2\n' >> "$PROPS"
       - name: Manifest dogrula (http + TV)
         run: |
           set -euo pipefail
@@ -117,10 +121,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.gradle/caches
+            ~/.gradle/caches/modules-2
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('frontend/yarn.lock') }}-${{ env.NEW_ARCH }}
-          restore-keys: gradle-${{ runner.os }}-
+          key: android-deps-v2-${{ runner.os }}-${{ hashFiles('frontend/yarn.lock', 'frontend/modules/**/build.gradle') }}
+          restore-keys: android-deps-v2-${{ runner.os }}-
+      - name: Gradle oncesi disk butcesini dogrula
+        working-directory: .
+        run: bash tools/ci-android-disk.sh check
       - name: APK derle
         run: |
           cd android
@@ -197,3 +204,7 @@ jobs:
         run: |
           echo '## Build failure diagnostics' >> "$GITHUB_STEP_SUMMARY"
           find android -maxdepth 5 -type f \( -name '*.log' -o -name '*.txt' \) -print 2>/dev/null | head -n 50 >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Son disk kullanim raporu
+        if: always()
+        working-directory: .
+        run: bash tools/ci-android-disk.sh report
