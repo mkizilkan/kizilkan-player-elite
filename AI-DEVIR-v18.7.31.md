@@ -115,3 +115,35 @@ DEV ayrı paket `com.gpt.kizilkan.player.dev`; normal uygulamanın üstüne kuru
 - Son Metro sourcemap içinde bu commit'te değişen **14 çalıştırılabilir TS/TSX kaynak** mevcut proje dosyalarıyla birebir eşleşti. Type alanları tsc ile doğrulandı. APK'daki `assets/index.android.bundle` hash'i son Gradle bundle çıktısıyla aynı.
 - İlk bağlantı kontrolünde telefon yoktu; derleme biterken telefon yetkili olarak bağlandı. Betik `adb install -r -g` ile **Success** döndürdü. Telefon dumpsys: 180731 / 18.7.31-dev, lastUpdateTime=11.10.2026 16:07:55. Telefondaki kurulu base.apk SHA-256 PC dosyasıyla birebir aynı. Normal paket/verileri kaldırılmadı. Kullanıcıya kurulumun tamamlandığı ve telefonu çıkarabileceği bildirildi.
 - Kurulum ve dosya bütünlüğü doğrulandı; gerçek IPTV DNS/görüntü, film/dizi ve performans kabul senaryoları henüz yapılmış sayılmaz.
+
+### Normal (release) APK telefon teslimi — Opus, 11.10.2026
+
+- Manuel koşu [38141649385](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/38141649385) **tamamlandı: success, 47 dk 56 sn** (yukarıdaki "henüz tamamlanmadı" satırının gerçek sonucu).
+- Release **build-154** assets: `KIZILKAN-PLAYER-ELITE-v18.7.31-build154.apk` (**385.415.447 bayt**) + `APK-BOYUT-RAPORU-v18.7.31.txt`. Actions artifacts yine BOŞ — release-first kota düzeltmesi beklendiği gibi çalışıyor; APK yalnız Releases altında.
+- Telefon OnePlus 7 Pro (`c3a4097e`). Kurulum öncesi: normal paket **18.7.29**, DEV 18.7.31-dev.
+- `adb install -r -d` → **Success**. Kurulum sonrası `com.gpt.kizilkan.player` **18.7.31**. Paket kaldırılmadı, liste/Room verisi korundu. DEV paketi dokunulmadı.
+- Bütünlük: PC APK ile telefondaki `base.apk` SHA-256 **birebir aynı** —
+  `724fc060803f51fc1dfaa79916438eeb90d55e1798077c29e47823b3a7a10e50`.
+- Açılış kontrolü (CLAUDE.md §7 "derleme geçti ≠ çalışıyor"): uygulama LAUNCHER ile açıldı,
+  `mResumedActivity = com.gpt.kizilkan.player/.MainActivity`, süreç pid 3039 ayakta,
+  12 saniyelik logcat penceresinde **FATAL EXCEPTION / crash / ANR YOK**. Uygulama force-stop edilmedi.
+- **Yapılmamış sayılan:** §6'daki 8 cihaz kabul senaryosunun hiçbiri. Açılış ≠ kabul; gerçek IPTV
+  DNS/görüntü testi, film/dizi kataloğu ve performans ölçümleri kullanıcı tarafından yapılacak.
+
+### Depo görünürlüğü / kimlik temizliği — Opus, 11.10.2026
+
+- Depo public'e çevrilmek istendi. Tarama: keystore/`.env`/token geçmişte HİÇ commit edilmemiş;
+  ama dokümanlarda + kod yorumlarında + test fixture'larında GERÇEK abonelik verisi vardı.
+- Commit `d02cc131` (bu dalda, push edildi): 49 dosya / 222 değişim — kullanıcı adı, iki şifre,
+  MAG MAC (+base64 yeniden hesaplandı) ve 5 panel alan adı yer tutucuya çevrildi
+  (`panel-a.example`…`panel-e.example`). Gerçek→yer tutucu tablosu yalnız yerel, gitignore'lu
+  `KIZILKAN-HESAP-ARSIVI-panel-eslesme.txt` dosyasında.
+- Davranış değişikliği yok: tek işlevsel fark tanı etiketi `HKPREMIUM_PCAP_HANDSHAKE` →
+  `PANEL_A_PCAP_HANDSHAKE`; bu değeri okuyan başka kod yok. Doğrulama: tsc temiz,
+  `denetle.js` TÜM TEMİZ, MAG testleri + v18711/18713/18722 kapıları PASS.
+- **Depo hâlâ PRIVATE.** Görünürlük değişikliği izin sınıflandırıcısı tarafından engellendi;
+  kullanıcı kendi çalıştıracak: `gh repo edit mkizilkan/kizilkan-player-elite --visibility public
+  --accept-visibility-change-consequences`.
+- **Kullanıcının bilerek kabul ettiği kalan risk:** aynı değerler git geçmişinde, 22 uzak dalda ve
+  17 etikette (`build-128`…`build-153`) okunabilir durumda. Yalnız tip temizlendi. Kalıcı çözüm ya
+  geçmiş yeniden yazımı ya da sağlayıcıdan panel-a şifresinin sıfırlanmasıdır.
