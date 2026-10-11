@@ -3,8 +3,8 @@
 **Taban:** `v18.7.9-rc1-twophase-discovery` (fc5a51d1 / 70f7933f). **Dal:** `v18.7.10-rc1-bulk-handshake-fallback`.
 **Native/Kotlin değişikliği YOK (tümü TS + test + gate + doküman).**
 
-## Kök neden kanıtı (cihaz DEV, weko-azure.xyz)
-- **Çoklu MAC başarısız, tekli ekleme başarılı:** port+yol+MAC girilse bile çoklu aramada portal bulunamıyordu; aynı host tekli eklemede 16:06:11 `STALKER_PORTAL_DISCOVERY_START` → **21266 kanal, AKTİF**. Fark: tekli ekleme **gerçek handshake keşfi** (`discoverMagPortal`) ile yedekleniyordu; çoklu akış yalnız **pasif keşfe** (`discoverMagHosts`, MAC'siz) dayanıyordu ve weko gibi "izsiz" portalleri pasif tanımıyordu.
+## Kök neden kanıtı (cihaz DEV, panel-c.example)
+- **Çoklu MAC başarısız, tekli ekleme başarılı:** port+yol+MAC girilse bile çoklu aramada portal bulunamıyordu; aynı host tekli eklemede 16:06:11 `STALKER_PORTAL_DISCOVERY_START` → **21266 kanal, AKTİF**. Fark: tekli ekleme **gerçek handshake keşfi** (`discoverMagPortal`) ile yedekleniyordu; çoklu akış yalnız **pasif keşfe** (`discoverMagHosts`, MAC'siz) dayanıyordu ve panel-c gibi "izsiz" portalleri pasif tanımıyordu.
 - Açık `/c/` girişinde çoklu tarama `FOREIGN_REDIRECT` ile host'u komple "error" yapıp handshake'i hiç denemiyordu.
 
 ## Yapılan — ana 7 madde (#1–#7)
@@ -13,7 +13,7 @@
 - **#3 version.js tanıma (`magPortalDiscovery.ts`):** dizin-benzeri yolda 2xx alınınca `<base>/version.js` denenir; JS gövdesi gelirse portal KESİNLEŞİR (`MAG_DISCOVERY_VERSION_JS`). **(M05 ile düzeltildi, aşağıya bakın.)**
 - **#4 Alternatif scheme (GPT'nin "TLS/TLS" noktası):** `classifyPorts` birincil scheme yanıt vermezse ALTERNATİF scheme'i (http↔https) BİR KEZ dener; çalışan scheme port başına öğrenilir (`portSchemes`) ve aday üretimine (`portalDiscoveryCandidates({schemes})`) geçer. **TLS doğrulaması KAPATILMAZ** (yalnız http/https şema seçimi; sertifika doğrulaması aynen açık).
 - **#5 Sınırlı bilinmeyen-port fallback:** Aşama 2b yalnız ilk ~96 aday (yol-öncelikli); "bulunamadı" senaryosu 714 deneme/8,5 dk yerine kısa sürer.
-- **#6 Kullanıcı adı name/fname (`stalker.ts`):** `loginCandidate` (boş/jenerik/MAC-eşiti değer eler) ile `login/username/user_name/user/account/subscriber/fname/name` sırası denenir. HKPREMIUM get_main_info'da ad yok (mac/phone); get_profile'da olabilir.
+- **#6 Kullanıcı adı name/fname (`stalker.ts`):** `loginCandidate` (boş/jenerik/MAC-eşiti değer eler) ile `login/username/user_name/user/account/subscriber/fname/name` sırası denenir. PANEL_A get_main_info'da ad yok (mac/phone); get_profile'da olabilir.
 - **#7 Handshake-adayı seçilebilir:** #1'de enjekte edilen aday `selectable:true, confidence:"api"`.
 - **UX:** tekli eklemede handshake ilerleme metni (`handshake i/t`). Çoklu MAC manuel portal seçici + "Seçili N geçerli hesabı playliste ekle" (Xtream gibi hepsini/istediğini seç) ZATEN VARDI (`mag-bulk.tsx` satır 232, 664); #1 sayesinde handshake-bulunan endpoint artık manuel seçicide de listelenir.
 
@@ -34,10 +34,10 @@ Bu inceleme aynı dal üzerinde yapıldı; yukarıdaki #1–#7 kodumu da eleşti
 - Native değişiklik YOK → Kotlin derlemesi gerekmiyor.
 
 ## Cihazda doğrulanacak (DEV APK)
-1. **weko çoklu MAC:** pasif boş → `MAG_BULK_HANDSHAKE_FALLBACK_START/OK`; bulunan endpoint manuel seçicide görünüyor mu; hesaplar (bitiş/MAC/AKTİF) doğru mu.
+1. **panel-c çoklu MAC:** pasif boş → `MAG_BULK_HANDSHAKE_FALLBACK_START/OK`; bulunan endpoint manuel seçicide görünüyor mu; hesaplar (bitiş/MAC/AKTİF) doğru mu.
 2. **version.js:** portal gerçekten varsa `MAG_DISCOVERY_VERSION_JS` + ardından probe ile API adayı seçilebilir oluyor mu (kör 200 yok).
 3. **Koruma:** 429/WAF olan bir host'ta `..._SKIP`/`..._PROTECTED` çalışıyor mu (yedek korumayı delmiyor).
-4. **Kullanıcı adı:** HKPREMIUM `profileFields` → hangi alanda ad var, #6 yakalıyor mu.
+4. **Kullanıcı adı:** PANEL_A `profileFields` → hangi alanda ad var, #6 yakalıyor mu.
 
 ## Sonraki (GPT backlog — v18.7.11+, onaysız kodlanmaz)
 A01–A08 (hesap alanı/MAC/tarih/status), C01–C04 (katalog kısmi/iptal), D01 (profil sahipliği), P01–P05 (motor/token/ilk-kare ÖLÇÜMÜ), N01–N03 (native gzip/body/telemetri), T02 (redacted). Her biri kanıt+plan+onayla ayrı sürümde. Canlı-kanıtlanmamış: M07/M08 (profil uyumluluğu), P01 (104 sn kuyruk), HTTP 444 kökü.

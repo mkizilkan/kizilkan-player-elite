@@ -8,7 +8,7 @@
 
 ## 0. NEDEN (kanıtlı kök neden — log `kizilkan-diagnostics-2026-10-07`)
 
-Kullanıcı galaplaytv.shop Xtream combo taraması yaptı: **26.176 adres denendi, 7.340 bulundu, ama listede yalnız 582 çıktı.** ~6.758 bulunan hesap seçim listesine HİÇ gelmedi.
+Kullanıcı panel-d.example Xtream combo taraması yaptı: **26.176 adres denendi, 7.340 bulundu, ama listede yalnız 582 çıktı.** ~6.758 bulunan hesap seçim listesine HİÇ gelmedi.
 
 **Kanıt (koddan):**
 - Native `persistentFound` (snapshot'ta `found`) = journal'daki benzersiz (hesap\|panel\|kod\|host) TOPLAM = 7.340. `PanelScanService.kt:216-217` (`if(added) persistentFound.incrementAndGet()`), `:490` (`obj.put("found", persistentFound.get())`).

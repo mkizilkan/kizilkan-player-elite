@@ -3,7 +3,7 @@
  * v18.7.13 — (1) manuel portal seçiminde "portal izi" de seçilebilir + seçim fazı her zaman açılır;
  * (2) kullanıcı adı zenginleştirme (login boşsa dolu-parametre get_profile ile gerçek login);
  * (3) A01: accountMatchesMac base64 MAC çözer; (4) "Yalnız girilen" (exact) KATİ kapsam.
- * Cihaz kanıtı: goldensm32 "ben seçeyim"de seçilemiyordu; hkpremium login=1787 (gerçek ud3B3yRH); base64 mac-mismatch.
+ * Cihaz kanıtı: panel-b "ben seçeyim"de seçilemiyordu; panel-a login=1787 (gerçek ab3C4dEf); base64 mac-mismatch.
  */
 const fs = require('fs'), path = require('path');
 const root = path.resolve(__dirname, '..');

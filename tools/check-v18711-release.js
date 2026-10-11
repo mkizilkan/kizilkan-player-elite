@@ -2,10 +2,10 @@
 /**
  * v18.7.11 — MAG profil-uyumluluk çekirdeği (cihaz 18.7.10 logu + protokol araştırması):
  *  A/M07+M08: MAG320 get_profile minimal BOŞ dönerse DOLU-parametreli (sn/stb_type/image_version/ver)
- *             MAG254/MAG250 varyantlarına + türetilmiş kimliğe düşer (weko gibi portaller böyle açılır).
+ *             MAG254/MAG250 varyantlarına + türetilmiş kimliğe düşer (panel-c gibi portaller böyle açılır).
  *  B/M08:     stalkerVerifyAccount kimlik yoksa HEMEN unverified demez; canlı/VOD/dizi erişimi varsa verified.
  *  C/T02:     snapshot telemetrisi `usernamePresent/passwordPresent/usernameFieldKind` (redaksiyona takılmaz)
- *             + aday alan varlıkları → hkpremium kullanıcı adının hangi alanda olduğu değer açılmadan görünür.
+ *             + aday alan varlıkları → panel-a kullanıcı adının hangi alanda olduğu değer açılmadan görünür.
  *  M09:       discoverMagPortal DUVAR-SAATİ bütçesi (cihaz: keşif ~19 dk) → BUDGET_STOP (tamamlanamadı).
  */
 const fs = require('fs'), path = require('path');

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * v18.7.12 — MAG çoklu-IP DNS failover (cihaz kanıtı: goldensm32.xyz 5 A kaydı, 4'ü ÖLÜ; sistem DNS
+ * v18.7.12 — MAG çoklu-IP DNS failover (cihaz kanıtı: panel-b.example 5 A kaydı, 4'ü ÖLÜ; sistem DNS
  * ölü IP veriyor → istek 6 sn timeout, diğer IP'ler denenmiyor). Oynatıcıda host failover vardı, MAG
  * ekleme/tarama yolunda YOKTU. Çözüm: DoH ile tüm A kayıtları, canlı IP sabitlenir, bağlantı o IP'ye
  * (Host hostname), finalUrl mantıksal hostname'e çevrilir (origin kontrolleri bozulmaz). Yalnız HTTP.

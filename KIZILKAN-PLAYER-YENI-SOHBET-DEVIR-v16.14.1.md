@@ -63,7 +63,7 @@ Aşağıdaki maddeler önceki konuşmada uygulanmış olduğu raporlandı fakat 
 8. Startup/ANR: legacy JS hydrate azaltma; Room canonical activation; deferred controlled repair; main-thread stall telemetry.
 9. MAG Exact Wire V2: PCAP ile Native OkHttp karşılaştırması; HTTP/1.1, header shape/order sinyali, cookie trailing semicolon, Connection Keep-Alive, Accept application/json, gzip, DNS/IP-family, connection reuse/session binding. Raw wire byte order olduğu iddia edilmeyecek.
 
-## 7. HKPREMIUM PCAP GERÇEĞİ
+## 7. PANEL_A PCAP GERÇEĞİ
 Çalışan handshake:
 GET /portal.php?action=handshake&type=stb
 UA: MAG320 stbapp ver:2 rev:250
@@ -76,7 +76,7 @@ Accept-Encoding: gzip
 Handshake'te token/prehash/JsHttpRequest yok.
 Profile/account Bearer token kullanıyor.
 Create-link sonucu medya URL'sine portal auth/cookie sızdırılmamalı.
-HKPREMIUM daha önce 200 + 21 byte "Authorization failed." döndürüyordu; portal erişilebilir, auth kabul etmiyor. Cihaz testi olmadan fixed denmeyecek.
+PANEL_A daha önce 200 + 21 byte "Authorization failed." döndürüyordu; portal erişilebilir, auth kabul etmiyor. Cihaz testi olmadan fixed denmeyecek.
 
 ## 8. SON CİHAZ BULGULARI
 v16.13.10 sonrası:
@@ -89,12 +89,12 @@ v16.13.10 sonrası:
 - Flight Recorder örneklerinde PLAYLIST_SWITCH_VERIFY_FAILED / warmPlaylist Room index + legacy yok
 - Media3 HTTP 444 ve fallback
 - eski logda malformed "ffmpeg http://..." player'a sızmış
-- Native MAG wire diğer portallarda çalışıyor; HKPREMIUM portal-specific/session/wire sorunu
+- Native MAG wire diğer portallarda çalışıyor; PANEL_A portal-specific/session/wire sorunu
 
 ## 9. DOĞRULAMA SINIRLARI
 Bu recovery checkpoint için Android release APK build YAPILMADI.
 Dependency-resolved full TypeScript build YAPILMADI.
-Gerçek cihaz HKPREMIUM/MPV testi YAPILMADI.
+Gerçek cihaz PANEL_A/MPV testi YAPILMADI.
 Eski v16.13.10 gate, literal 16.13.10 metadata kontrol ettiği için 16.14.1'de FAIL verdi; özellik regresyonu diye yorumlanmamalı fakat gate de bu recovery paketinde gevşetilmedi.
 
 ## 10. YENİ SOHBETTE İLK İŞ

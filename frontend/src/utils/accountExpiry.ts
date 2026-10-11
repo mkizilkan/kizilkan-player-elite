@@ -31,7 +31,7 @@ export function parseAccountExpiryMs(value: unknown): number | null {
     // v18.7.7 (P1): İngilizce "Month D, YYYY [h:mm am/pm]" (ör. "January 8, 2027, 3:45 pm")
     // VE "D Month YYYY [HH:MM[:SS]]" (ör. "11 May 2027 18:18:00") biçimleri. Ay adı İngilizce
     // ya da Türkçe (tam/3-harf) olabilir. Kaynak: MAG portalları bitişi bu insan-okur biçimde
-    // ve bazen `phone` alanında gönderiyor (cihaz kanıtı: vip.rxs1 "January 8, 2027").
+    // ve bazen `phone` alanında gönderiyor (cihaz kanıtı: panel-e.example "January 8, 2027").
     const monthIndex = (raw: string): number => {
       const n = raw.trim().toLowerCase().replace(/\.$/, '');
       const en = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];

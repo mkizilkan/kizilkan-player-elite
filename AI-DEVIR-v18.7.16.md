@@ -1,7 +1,7 @@
 # AI DEVİR — v18.7.16 RC1 (dal `v18.7.16-rc1-bulk-ux-portal-discovery`)
 
 **Tarih:** 2026-10-06 · **Taban:** v18.7.15 `f2b0cc31` · **Yazan:** Claude Opus
-**Kaynak:** Kullanıcı cihaz testi (v18.7.15-dev) + DEV tanı logu (goldensm32 çoklu MAC) + MAG Converter aracı incelemesi.
+**Kaynak:** Kullanıcı cihaz testi (v18.7.15-dev) + DEV tanı logu (panel-b çoklu MAC) + MAG Converter aracı incelemesi.
 
 ## Kanıtla teşhis (log + kod)
 | Bulgu | Kanıt |
@@ -11,7 +11,7 @@
 | Portal "all"+turbo bulamıyor | `MAG_DISCOVERY_VERSION_JS enqueued:6` ama `MAG_DISCOVERY_BUDGET_RESULT exhausted:true reason:deadline (6618ms)` → version.js API yolları `queue.push` ile SONA ekleniyor, egzotik portlar bütçeyi tüketiyor, o yollara sıra gelmiyor (valid:0). "fallback" aile-önce olduğu için buluyordu. |
 | Ekleme ilerlemesi gözden uzak/yavaş | katalog 151–161 sn (series 16.072); ilerleme küçük metin. |
 | Otomatik yenileme kapanmıyor | liste-başı anahtar vardı ama küresel ana anahtar yoktu; yeni hesaplar varsayılan AÇIK. |
-| hkpremium kullanıcı adı | MAG `get_profile.login` boş. MAG Converter (readme): Portal+MAC → kullanıcı adı/şifre. Mekanizma: create_link yayın URL'i Xtream `.../kullanıcı/şifre/id.ext` biçiminde. Uygulama URL yapısını kaydetmiyordu. |
+| panel-a kullanıcı adı | MAG `get_profile.login` boş. MAG Converter (readme): Portal+MAC → kullanıcı adı/şifre. Mekanizma: create_link yayın URL'i Xtream `.../kullanıcı/şifre/id.ext` biçiminde. Uygulama URL yapısını kaydetmiyordu. |
 
 ## Yapılanlar (A–E + U1–U4)
 | Kod | Değişiklik | Dosya |
@@ -41,11 +41,11 @@
 - **Native/Kotlin değişikliği YOK (tümü TS).**
 
 ## Cihazda test edilecekler
-1. **Portal keşfi:** goldensm32'yi **"Tüm adaylarda keşif" + otomatik** ile dene → portal bulunmalı (E2a/E2b). Bulunamazsa log'da `MAG_DISCOVERY_RESULT` artık açık portları/adayları/bütçeyi gösterir (E1).
+1. **Portal keşfi:** panel-b'yi **"Tüm adaylarda keşif" + otomatik** ile dene → portal bulunmalı (E2a/E2b). Bulunamazsa log'da `MAG_DISCOVERY_RESULT` artık açık portları/adayları/bütçeyi gösterir (E1).
 2. **Muhtemel geçerli:** doğrulanamayan ama bitişi olan hesapları seç → "Geçerli + muhtemelleri seç" → eklenebilmeli.
 3. **Görsel ekleme:** ekleme sırasında büyük modal (Canlı/Film/Dizi + süre + iptal).
 4. **Otomatik yenileme:** Ayarlar → "Otomatik Yenileme (Tümü)" KAPALI → listeye girince güncelleme OLMAMALI (log: `FRESHNESS_SKIP_GLOBAL_OFF`).
-5. **Kullanıcı adı:** hkpremium'da bir kanal aç → Ayarlar → hesap kartı: Kullanıcı Adı/Şifre yayın adresinden dolmalı mı? Dolmazsa log'da `STALKER_RESOLVE_DONE.streamShape` + `streamCredsFound` yapıyı gösterir (U3) → sonraki adım.
+5. **Kullanıcı adı:** panel-a'da bir kanal aç → Ayarlar → hesap kartı: Kullanıcı Adı/Şifre yayın adresinden dolmalı mı? Dolmazsa log'da `STALKER_RESOLVE_DONE.streamShape` + `streamCredsFound` yapıyı gösterir (U3) → sonraki adım.
 6. **Katalog hızı:** log'da `STALKER_PAGINATION_STOP.avgPageMs` ile darboğaz görülür (D).
 
 ## Bekleyen

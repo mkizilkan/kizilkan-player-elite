@@ -8,11 +8,11 @@ mevcut 18.7.6 DEV ile test ederken kodlandı).
 
 | Bulgu | Kanıt |
 |---|---|
-| Bitiş `phone`'da geliyor | vip.rxs1 kayıtlı accountInfo: `phone:"January 8, 2027, 3:45 pm"`, `tariff_expired_date:null`. IPTV Extreme aynı değeri "Bitiş" gösteriyor |
-| `get_main_info` gzip | HKPREMIUM: `STALKER_HTTP_PARSE_ERROR NON_JSON bytes:90` gövde `\x1f\x8b` (gzip). `get_profile` native yoldan sorunsuz |
-| status 0 "SÜRESİ DOLDU" | HKPREMIUM kayıtlı `status:"blocked"` ama katalog çalışıyor (2790 canlı). accountDenial `/^(?:0|false)$/` → 0'ı bloklu sayıyordu |
-| base64 MAC | kayıtlı `mac:"MDA6MUE6Nzk6MzA6M0E6QTc="` = `00:1A:79:30:3A:A7` |
-| Kullanıcı adı/şifre | IPTV Extreme HKPREMIUM için kullanıcı adı+şifre gösteriyor (portal get_main_info döndürüyor; gzip açılınca gelecek) |
+| Bitiş `phone`'da geliyor | panel-e.example kayıtlı accountInfo: `phone:"January 8, 2027, 3:45 pm"`, `tariff_expired_date:null`. IPTV Extreme aynı değeri "Bitiş" gösteriyor |
+| `get_main_info` gzip | PANEL_A: `STALKER_HTTP_PARSE_ERROR NON_JSON bytes:90` gövde `\x1f\x8b` (gzip). `get_profile` native yoldan sorunsuz |
+| status 0 "SÜRESİ DOLDU" | PANEL_A kayıtlı `status:"blocked"` ama katalog çalışıyor (2790 canlı). accountDenial `/^(?:0|false)$/` → 0'ı bloklu sayıyordu |
+| base64 MAC | kayıtlı `mac:"MDA6MUE6Nzk6MDA6MDA6MDc="` = `00:1A:79:00:00:07` |
+| Kullanıcı adı/şifre | IPTV Extreme PANEL_A için kullanıcı adı+şifre gösteriyor (portal get_main_info döndürüyor; gzip açılınca gelecek) |
 | Motor geçişinde bayat token | kanal 163662: Media3→MPV geçişinde yeni create_link alınmadı → `MPV ... Failed to open ...play_token`; `ENGINE_ERROR` |
 | Ekleme yavaş | vip ekleme sırasında aynı portal için 2 katalog işi; canlı 13. sn hazır ama listeye ~2 dk sonra (katalog kilidi) |
 
@@ -46,8 +46,8 @@ mevcut 18.7.6 DEV ile test ederken kodlandı).
 - **Push/derleme BEKLİYOR** (kullanıcı onayıyla yapılacak). Native/Kotlin değişikliği YOK (tümü TS) → açılış çökme riski düşük.
 
 ## Cihazda doğrulanacak
-1. **P1/P2/P4:** HKPREMIUM + vip.rxs1 → bitiş tarihi geliyor mu; kullanıcı adı/şifre görünüyor mu; MAC düzgün mü.
-2. **P3:** HKPREMIUM "AKTİF" mi (artık "SÜRESİ DOLDU" olmamalı).
+1. **P1/P2/P4:** PANEL_A + panel-e.example → bitiş tarihi geliyor mu; kullanıcı adı/şifre görünüyor mu; MAC düzgün mü.
+2. **P3:** PANEL_A "AKTİF" mi (artık "SÜRESİ DOLDU" olmamalı).
 3. **P5:** Media3→MPV'ye düşen kanal artık açılıyor mu (`STALKER_ENGINE_SWITCH_REFRESH` + sonra başarı).
 4. **P6:** Yeni MAG eklerken canlı ~13. sn listede; çift katalog işi yok (`FRESHNESS_SKIP_INITIAL_SYNC`).
 5. **P7:** `FIRST_FRAME.sinceSourceSetMs` ile Media3 12 sn gecikmenin nerede olduğu okunur.

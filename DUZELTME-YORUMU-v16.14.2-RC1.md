@@ -62,11 +62,11 @@ v16.14.1 devir sözleşmesinde fiziksel recovery kaynak ağacında eksik olduğu
 9. MAG Exact Wire V2
 - Shared OkHttp client ile connection-pool reuse korunuyor.
 - EventListener üzerinden bağlantı reuse ve yalnız IPv4/IPv6 aile bilgisi izleniyor; plaintext IP yok.
-- Native request metadata, çalışan HKPREMIUM PCAP handshake şekliyle header/protocol/cookie/auth parity açısından karşılaştırılıyor.
+- Native request metadata, çalışan PANEL_A PCAP handshake şekliyle header/protocol/cookie/auth parity açısından karşılaştırılıyor.
 - Bu kontrol raw TCP byte-order iddiası değildir.
 
 ## Regresyon koruması
 v16.13.10 kaynak ZIP'i SHA-256 ile doğrulandı. v16.14.1 recovery'de v16.13.10'dan hiçbir dosyanın kaybolmadığı daha önce byte-diff ile doğrulandı. v16.14.2'de ayrıca `tools/check-v16142-regression-contract.js` ile v16.13.10 kritik fonksiyon sözleşmeleri yeniden doğrulanıyor.
 
 ## Doğrulama sınırı
-Bu kaynak arşivinde `frontend/node_modules` ve generated `frontend/android` bulunmadığından dependency-resolved TypeScript build ve Android release/mergeReleaseNativeLibs bu ortamda tamamlanamadı. Bu nedenle cihaz HKPREMIUM/MPV sonucu veya APK runtime sonucu için "fixed" iddiası yapılmıyor. Kaynak hard-gate/statik denetimler temizdir; final build/device gate ayrıca çalıştırılmalıdır.
+Bu kaynak arşivinde `frontend/node_modules` ve generated `frontend/android` bulunmadığından dependency-resolved TypeScript build ve Android release/mergeReleaseNativeLibs bu ortamda tamamlanamadı. Bu nedenle cihaz PANEL_A/MPV sonucu veya APK runtime sonucu için "fixed" iddiası yapılmıyor. Kaynak hard-gate/statik denetimler temizdir; final build/device gate ayrıca çalıştırılmalıdır.

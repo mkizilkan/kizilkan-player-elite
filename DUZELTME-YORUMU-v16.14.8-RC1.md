@@ -1,6 +1,6 @@
 # KIZILKAN PLAYER ELITE v16.14.8 RC1 — Düzeltme Yorumu
 
-Bu sürüm v16.14.7 üzerine eklenmiştir; çalışan MAG/HKPREMIUM verified-persist, async catalog, gzip, Room incremental sync, source recovery, stale-frame ownership, backup ve playlist yönetim davranışları kaldırılmamıştır.
+Bu sürüm v16.14.7 üzerine eklenmiştir; çalışan MAG/PANEL_A verified-persist, async catalog, gzip, Room incremental sync, source recovery, stale-frame ownership, backup ve playlist yönetim davranışları kaldırılmamıştır.
 
 ## Cihaz kanıtından doğrudan düzeltilenler
 

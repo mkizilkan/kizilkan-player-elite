@@ -4,18 +4,18 @@
 **Native/Kotlin değişikliği YOK (tümü TS + test + gate + doküman).**
 
 ## Kök neden kanıtı (cihaz DEV 18.7.10 tanı dosyası, 2026-10-04)
-- İki portal: **hkpremium** `:2095/portal.php` → handshake OK, profil OK, katalog/oynatma ÇALIŞIYOR. **weko** `:80/portal.php` → handshake OK (token) ama `STALKER_PROFILE_VARIANT_EMPTY (MAG320-pcap-minimal)` → profil BOŞ; yine de `get_all_channels` **21266 kanal** döndürüyor.
+- İki portal: **panel-a** `:2095/portal.php` → handshake OK, profil OK, katalog/oynatma ÇALIŞIYOR. **panel-c** `:80/portal.php` → handshake OK (token) ama `STALKER_PROFILE_VARIANT_EMPTY (MAG320-pcap-minimal)` → profil BOŞ; yine de `get_all_channels` **21266 kanal** döndürüyor.
 - `STALKER_COMPAT_ATTEMPT` = 11× yalnız `pcap320-minimal` → tek profil varyantı; boş dönünce başkasına geçmiyordu.
 - Çoklu MAC `MAG_BULK_SCAN_DONE valid=0` → profil boş olunca hesap "geçersiz" sayılıp eklenmiyordu.
 - Keşif `STALKER_PORTAL_DISCOVERY_START 16:06:56 → NONE 16:25:36` = **~19 dakika**.
-- Kullanıcı adı: `STALKER_ACCOUNT_SNAPSHOT.hasUsername` logda **[REDACTED]** (anahtar "username" içerip SAFE sonek taşımıyor) → kodun bulup bulmadığı görünmüyordu. hkpremium `get_profile` alanları: `id,name,sname,pass,...,phone,fname,login,password,...` → **`login` ALANI VAR**.
+- Kullanıcı adı: `STALKER_ACCOUNT_SNAPSHOT.hasUsername` logda **[REDACTED]** (anahtar "username" içerip SAFE sonek taşımıyor) → kodun bulup bulmadığı görünmüyordu. panel-a `get_profile` alanları: `id,name,sname,pass,...,phone,fname,login,password,...` → **`login` ALANI VAR**.
 
 ## İnternet araştırması (standart Stalker/Ministra istemci protokolü)
-handshake → token → `get_profile` → `get_main_info`. StalkerTalker/Kodi pvr.stalker `get_profile`'ı **DOLU parametreyle** gönderir: `sn, stb_type(MAG250/254), image_version, ver, hw_version, num_banks, device_id, signature`. Bazı portaller (weko) **parametresiz** get_profile'a BOŞ `js` döndürür; profili ancak dolu parametreyle verir. Kullanıcı adı = `get_profile`'daki **`login`** alanı (Infomir yönetim paneli: "Login is a unique user login field"). Kaynaklar devir sonunda.
+handshake → token → `get_profile` → `get_main_info`. StalkerTalker/Kodi pvr.stalker `get_profile`'ı **DOLU parametreyle** gönderir: `sn, stb_type(MAG250/254), image_version, ver, hw_version, num_banks, device_id, signature`. Bazı portaller (panel-c) **parametresiz** get_profile'a BOŞ `js` döndürür; profili ancak dolu parametreyle verir. Kullanıcı adı = `get_profile`'daki **`login`** alanı (Infomir yönetim paneli: "Login is a unique user login field"). Kaynaklar devir sonunda.
 
 ## Yapılan (hepsi `frontend/src/utils/stalker.ts`)
-- **A / M07+M08 — MAG320 dolu-parametre profil varyantları:** `initialProfileVariants(MAG320)` artık `[MAG320-pcap-minimal, MAG254-explicit, MAG254-legacy, MAG250-explicit, MAG250-legacy]`; `derivedProfileVariants(MAG320)` artık MAG254+MAG250 türetilmiş kimlikli varyantları üretir (eskiden `[]`). Minimal İLK denenir (hkpremium gibi uyumlu portaller etkilenmez); **boş dönünce** dolu-parametreli varyantlara düşer → weko profili dolar.
-- **B / M08 — boş profil + canlı erişim = geçerli:** `stalkerVerifyAccount` artık profil/main_info kimliği yoksa HEMEN `unverified` DEMİYOR; canlı/VOD/dizi probe'una devam eder. Gerçek örnek (positive id + name + kullanılabilir cmd) erişilebilirse `verified`. `accountMatchesMac` yanlış-MAC'i, `classify` bloklu/süresi-dolmuşu hâlâ eliyor → boş/yetkisiz hesap eklenmez. Böylece weko (21266 canlı) çoklu MAC'te de eklenir.
+- **A / M07+M08 — MAG320 dolu-parametre profil varyantları:** `initialProfileVariants(MAG320)` artık `[MAG320-pcap-minimal, MAG254-explicit, MAG254-legacy, MAG250-explicit, MAG250-legacy]`; `derivedProfileVariants(MAG320)` artık MAG254+MAG250 türetilmiş kimlikli varyantları üretir (eskiden `[]`). Minimal İLK denenir (panel-a gibi uyumlu portaller etkilenmez); **boş dönünce** dolu-parametreli varyantlara düşer → panel-c profili dolar.
+- **B / M08 — boş profil + canlı erişim = geçerli:** `stalkerVerifyAccount` artık profil/main_info kimliği yoksa HEMEN `unverified` DEMİYOR; canlı/VOD/dizi probe'una devam eder. Gerçek örnek (positive id + name + kullanılabilir cmd) erişilebilirse `verified`. `accountMatchesMac` yanlış-MAC'i, `classify` bloklu/süresi-dolmuşu hâlâ eliyor → boş/yetkisiz hesap eklenmez. Böylece panel-c (21266 canlı) çoklu MAC'te de eklenir.
 - **C / T02 + A03/A04 — güvenli kullanıcı adı telemetrisi:** ortak `pickUsernameField` (login→…→fname→name→sname; MAC/jenerik elenir) + snapshot telemetrisi `usernamePresent/passwordPresent/usernameFieldKind/usernameSourceKind` + aday varlık (`loginValuePresent/fnameValuePresent/nameValuePresent`). `*Present/*Kind` sonekleri redaksiyona takılmaz → değer açılmadan hangi alanda kullanıcı adı olduğu görünür.
 - **M09 — keşif duvar-saati bütçesi:** `discoverMagPortal` artık `wallBudgetMs` (varsayılan `min(aday×(timeout+1.5sn), 240sn)`); aşılırsa `STALKER_PORTAL_DISCOVERY_BUDGET_STOP` (tamamlanamadı; "portal yok" DEĞİL). 19 dk → ≤4 dk.
 
@@ -27,9 +27,9 @@ handshake → token → `get_profile` → `get_main_info`. StalkerTalker/Kodi pv
 - **Native değişiklik YOK.**
 
 ## Cihazda doğrulanacak (DEV APK)
-1. **weko tekli ekleme:** `STALKER_PROFILE_VARIANT_OK` (MAG254/MAG250 varyantıyla) → profil dolu mu (kullanıcı adı/bitiş); yoksa bile hesap EKLENİYOR mu (canlı 21266).
-2. **weko çoklu MAC:** `valid` ≥1 mi (boş profil + canlı erişimle verified).
-3. **hkpremium kullanıcı adı:** `usernameFieldKind`/`usernameSourceKind` → hangi alandan (login mı name mi), `usernamePresent=true` mu. Kartta görünüyor mu (gerekirse yenile — eski kayıt yeni normalizer'la refresh'te güncellenir).
+1. **panel-c tekli ekleme:** `STALKER_PROFILE_VARIANT_OK` (MAG254/MAG250 varyantıyla) → profil dolu mu (kullanıcı adı/bitiş); yoksa bile hesap EKLENİYOR mu (canlı 21266).
+2. **panel-c çoklu MAC:** `valid` ≥1 mi (boş profil + canlı erişimle verified).
+3. **panel-a kullanıcı adı:** `usernameFieldKind`/`usernameSourceKind` → hangi alandan (login mı name mi), `usernamePresent=true` mu. Kartta görünüyor mu (gerekirse yenile — eski kayıt yeni normalizer'la refresh'te güncellenir).
 4. **Keşif:** 19 dk yerine bütçeyle kısa + `BUDGET_STOP`.
 
 ## Player (görüntü hızlanması) — ayrı iş, kanıt notu

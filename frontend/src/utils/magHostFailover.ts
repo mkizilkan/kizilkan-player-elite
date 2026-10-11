@@ -1,7 +1,7 @@
 /**
  * KIZILKAN PLAYER — MAG ÇOKLU-IP DNS FAILOVER (v18.7.12)
  * ===========================================================================
- * SORUN (cihaz kanıtı 04.10.2026): `goldensm32.xyz` 5 A kaydı döndürüyor ama
+ * SORUN (cihaz kanıtı 04.10.2026): `panel-b.example` 5 A kaydı döndürüyor ama
  * yalnız 1'i (172.110.220.225) CANLI; diğer 4'ü (.69/.249/.250/.251) ÖLÜ. Telefonun
  * sistem DNS'i ölü IP'yi döndürünce istek 6 sn timeout oluyor ve OkHttp/expo-fetch
  * diğer IP'leri TEK istek bütçesi içinde deneyemeden vazgeçiyor → canlı IP'ye hiç

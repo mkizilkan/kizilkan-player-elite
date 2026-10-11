@@ -74,7 +74,7 @@ Kullanıcının 08.10.2026 ek bildirimi: “Tarama esnasındaki emniyet sibobu o
 | Boş liste seçimi/onarımı | [PlaylistContext.tsx:1445](C:/Projeler/kizilkan-player-elite/frontend/src/store/PlaylistContext.tsx:1445): recovery barrier ve doğrulanmış sıfır sayımı mevcut. |
 | Ortak Xtream tekrar politikası | [iptv.ts:352](C:/Projeler/kizilkan-player-elite/frontend/src/utils/iptv.ts:352), `370`. |
 
-678/239, servis çökmesi, HKpremium süreleri, API uyumu ve katalog kimliği riskinin ayrıntıları [önceki cihaz raporunda](C:/Projeler/kizilkan-player-elite/GPT-v18.7.27-CIHAZ-KURTARMA-KATALOG-MIMARI-2026-10-08.md) bulunuyor. Bu plan hazırlanırken yeni cihaz/API ölçümü yapılmadı. Player yavaşlığının ve 239'da kalan UI aktarımının kesin olay zinciri hedefli ölçüm gerektiriyor.
+678/239, servis çökmesi, panel-a süreleri, API uyumu ve katalog kimliği riskinin ayrıntıları [önceki cihaz raporunda](C:/Projeler/kizilkan-player-elite/GPT-v18.7.27-CIHAZ-KURTARMA-KATALOG-MIMARI-2026-10-08.md) bulunuyor. Bu plan hazırlanırken yeni cihaz/API ölçümü yapılmadı. Player yavaşlığının ve 239'da kalan UI aktarımının kesin olay zinciri hedefli ölçüm gerektiriyor.
 
 ## 4. Hazır proxy güncellemesi ve isteğe bağlı ekler
 

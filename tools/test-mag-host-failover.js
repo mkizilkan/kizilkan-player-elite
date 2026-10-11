@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * v18.7.12 — MAG çoklu-IP DNS failover davranış testi (gerçek modül, izole fixture'lar).
- * Cihaz kanıtı: goldensm32.xyz 5 A kaydı, yalnız 1'i canlı; sistem DNS ölü IP veriyor → timeout.
+ * Cihaz kanıtı: panel-b.example 5 A kaydı, yalnız 1'i canlı; sistem DNS ölü IP veriyor → timeout.
  * Test: DoH tüm A kayıtlarını verir; yalnız canlı IP yanıt verir; modül canlı IP'yi sabitler;
  * connectInfo bağlantıyı canlı IP'ye çevirir (Host hostname kalır); logicalUrl geri çevirir.
  */

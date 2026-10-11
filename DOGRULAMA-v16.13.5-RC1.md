@@ -10,5 +10,5 @@
 
 ## Doğrulanmayanlar
 - Android release Gradle/assembleRelease bu ortamda node_modules/Android tam build zinciri olmadığı için çalıştırılmadı.
-- HKPREMIUM gerçek portal kabulü cihaz testi yapılmadan PASS sayılmaz.
+- PANEL_A gerçek portal kabulü cihaz testi yapılmadan PASS sayılmaz.
 - KIZILKAN gerçek wire paketinin referans PCAP ile byte-for-byte eşitliği kanıtlanmadı.

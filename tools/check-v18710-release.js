@@ -2,7 +2,7 @@
 /**
  * v18.7.10 — Çoklu MAC handshake yedeği + redirect-no-kill + version.js tanıma + alternatif scheme +
  * sınırlı unknown fallback + kullanıcı adı name/fname + handshake-adayının seçilebilir olması.
- * Cihaz kanıtı: weko çoklu MAC'te bulunamıyordu (pasif keşif tanımıyor, handshake yedeği yok);
+ * Cihaz kanıtı: panel-c çoklu MAC'te bulunamıyordu (pasif keşif tanımıyor, handshake yedeği yok);
  * tekli ekleme handshake yedeğiyle 21266 kanal buldu.
  */
 const fs = require('fs'), path = require('path');

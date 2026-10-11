@@ -4,7 +4,7 @@
 **Konu:** Combo tarama TS düzeltmeleri — B (görüntü testi hızı) + C (paralellik UI birleştirme) + A (TXT UX) + E-MAG (MAC emniyet sibobu). **Yalnız TS, native YOK.**
 **Not:** D + E-Xtream (native) GPT-5.1'e verildi (`GPT-DEVIR-v18.7.26-NATIVE.md`). Bu sürüm Opus'un TS yarısı.
 
-## Kaynak / kanıt (log `kizilkan-diagnostics-2026-10-07`, galaplaytv combo)
+## Kaynak / kanıt (log `kizilkan-diagnostics-2026-10-07`, panel-d combo)
 - Görüntü testi 582 hesap = **86,5 dk** (`BULK_CONTENT_TEST_START→DONE`). Kök: her hesaba tam `get_live_streams`, 6 paralel, 15 sn + arka plan throttle.
 - Üç örtüşen paralellik alanı (kullanıcı "fark ne?").
 - "5-6 kaydetti" yanılgısı (aslında 579 yazıldı; eski dosyaya bakılmış).

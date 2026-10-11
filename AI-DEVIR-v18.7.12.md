@@ -4,9 +4,9 @@
 **Native/Kotlin değişikliği YOK (TS + test + gate + doküman).**
 
 ## Kök neden kanıtı (cihaz 04.10.2026, adb + PC karşılaştırması)
-- weko-azure.xyz ve goldensm32.xyz **ayakta**: PC'den TCP :80 bağlantısı başarılı (weko `/c/` HTTP 200).
+- panel-c.example ve panel-b.example **ayakta**: PC'den TCP :80 bağlantısı başarılı (panel-c `/c/` HTTP 200).
 - Telefondan hostname ile: `nc` timeout, `ping` %100 kayıp; uygulama logu: tüm handshake'ler `STALKER_HTTP_TRANSPORT_ERROR TIMEOUT 6000ms`.
-- goldensm32.xyz'in **5 A kaydı**; telefondan her biri tek tek test edildi: **yalnız 172.110.220.225 CANLI**, `.69/.249/.250/.251` ÖLÜ.
+- panel-b.example'in **5 A kaydı**; telefondan her biri tek tek test edildi: **yalnız 172.110.220.225 CANLI**, `.69/.249/.250/.251` ÖLÜ.
   Telefonun DNS'i (önce .251, DNS.google ile .249) **ölü IP** döndürüyor → istek 6 sn timeout, OkHttp diğer IP'leri aynı istek
   bütçesi içinde denemiyor → canlı IP'ye hiç ulaşılmıyor. DNS değiştirmek tek başına yetmedi (yetkili DNS ölü IP'leri döndürüyor).
 - `hostFailover` (Yedek DNS) **oynatıcı/iptv/refresh'te vardı, MAG ekleme/tarama yolunda (stalker.ts, magPortalDiscovery, magBulkScan) YOKTU.**
@@ -34,9 +34,9 @@
   (çoklu IP→canlı pin, tek IP, https, canlı yok, IP girişi, DoH hatası, RN-dışı kapalı/sıfır istek).
 
 ## Cihazda doğrulanacak
-1. goldensm32 çoklu/tekli: `MAG_HOST_IP_FAILOVER` (aRecords:5) → ardından `STALKER_HANDSHAKE_OK` / `MAG_BULK_HANDSHAKE_FALLBACK_OK`, `valid` ≥ 1.
-2. weko aynı şekilde. 3. hkpremium (tek IP / :2095) davranışı değişmemeli.
+1. panel-b çoklu/tekli: `MAG_HOST_IP_FAILOVER` (aRecords:5) → ardından `STALKER_HANDSHAKE_OK` / `MAG_BULK_HANDSHAKE_FALLBACK_OK`, `valid` ≥ 1.
+2. panel-c aynı şekilde. 3. panel-a (tek IP / :2095) davranışı değişmemeli.
 4. Risk: RN `fetch` `Host` başlığını göndermezse sunucu IP ile karşılanır (tek-kiracılı IPTV sunucularında sorun beklenmez); cihazda gözlenecek.
 
 ## Sonraki
-Kullanıcı adı zenginleştirme (hkpremium minimal profilde `login` boş → dolu-parametre `get_profile`), player açılış ölçümü, GPT backlog.
+Kullanıcı adı zenginleştirme (panel-a minimal profilde `login` boş → dolu-parametre `get_profile`), player açılış ölçümü, GPT backlog.

@@ -41,9 +41,9 @@ dedi. Opus iki kapıyı kök nedenle düzeltti, yeni modülleri inceledi, statik
 - Yeni modüllerde `eval`/`new Function` YOK; kimlik bilgisi telemetriye yazılmıyor; TLS doğrulaması kapatılmıyor.
 - `stalker.ts`'e eklenen üst düzey importlar (`magEndpointRegistry`, `magDiscoveryBudget`, `magResponseFingerprint`) platform
   bağımsız saf modüllerdir; eski VM kapıları bunları `tools/_mag_pure.js` ile gerçek kaynaktan yükler (§7 tuzağı değil).
-- **Davranış değişikliği (bilerek):** hkpremium kartında "Kullanıcı Adı" artık `1787` değil **"Belirlenemedi"**; `1787` ayrı
+- **Davranış değişikliği (bilerek):** panel-a kartında "Kullanıcı Adı" artık `1787` değil **"Belirlenemedi"**; `1787` ayrı
   **"Görünen Ad"** satırında. Sebep: MAG `get_profile.login` bu portalda boş (v18.7.13 telemetrisi `realLogin=false`×3);
-  `1787` portalın `name` alanı, giriş kimliği değil. `ud3B3yRH` Xtream kimliğidir, MAG protokolü vermez.
+  `1787` portalın `name` alanı, giriş kimliği değil. `ab3C4dEf` Xtream kimliğidir, MAG protokolü vermez.
 
 ## Doğrulama (PC)
 - `yarn tsc --noEmit` → çıktı yok (exit 0)

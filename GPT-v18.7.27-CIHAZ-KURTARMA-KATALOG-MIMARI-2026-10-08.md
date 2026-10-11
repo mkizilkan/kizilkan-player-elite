@@ -6,9 +6,9 @@ Bu belge **inceleme, ölçüm ve uygulanacak düzeltme planıdır**. Aşağıdak
 
 ## 1. İncelemenin sonucu
 
-- HKpremium için Claude'un önerdiği MAG → doğrulanmış Xtream katalog yolu **bu hesapta uygulanabilir**: cihazın aynı profil/MAC/portal için sakladığı bağlantı bilgileriyle gerçek API testi başarılı oldu. Ancak telefon hızının bilgisayar testiyle aynı olacağı henüz ölçülmedi.
+- panel-a için Claude'un önerdiği MAG → doğrulanmış Xtream katalog yolu **bu hesapta uygulanabilir**: cihazın aynı profil/MAC/portal için sakladığı bağlantı bilgileriyle gerçek API testi başarılı oldu. Ancak telefon hızının bilgisayar testiyle aynı olacağı henüz ölçülmedi.
 - Hızlı yol kaynakta **zaten kısmen var**, fakat normal güncelleme bunu kullanmıyor. Yalnız eklemeden sonraki `stalkerEnrichment` çağrısında kullanılıyor.
-- Son HKpremium güncellemesi **1.186.447 ms, yaklaşık 19 dakika 47 saniye** sürdü. Canlı katalog yalnız **2.848 ms** sürdü. Film/dizi sayfalama eksik bitti. Eski dolu Room katalogları korundu.
+- Son panel-a güncellemesi **1.186.447 ms, yaklaşık 19 dakika 47 saniye** sürdü. Canlı katalog yalnız **2.848 ms** sürdü. Film/dizi sayfalama eksik bitti. Eski dolu Room katalogları korundu.
 - Uzun sürenin tamamı sunucunun yanıt süresi değil: iki uzun sayfa ilerleme boşluğu, uygulamanın arka plana alınması ve yeniden öne getirilmesiyle örtüşüyor. Bu nedenle API seçimi ve işlemin JS ekran yaşamından bağımsız yürütülmesi birlikte ele alınmalı.
 - 678 bulunan hesabın tamamı hem yerel tarama veritabanında hem emniyet TXT'sinde var. Ekrandaki 239, bütün kayıtların geri yüklendiğini göstermiyor. **439 hesabın diskten kaybolduğu kanıtlanmadı.**
 - Kurtarma servisindeki gerçek çökme ve geri dönüş yolundaki eksiklik kod/log ile doğrulandı. Katalog testi başarısızlığının hesap başına kesin HTTP/hata nedeni mevcut logda yok; onu tahmin ederek düzeltmek doğru olmaz.
@@ -43,15 +43,15 @@ Bu 678 kayıt ayrıca uygulamanın mevcut insan tarafından okunabilir hesap ar�
 | P1 | `ScanSafetyBackup.flush` yaklaşık her 3 saniyede bütün büyüyen journal'ı tekrar çözüp TXT'yi baştan yazıyor ve geri okuyor | Sonuç ekleme yolunda artan tam arşiv maliyeti; her satır için tekrar Keystore anahtar erişimi | Journal'a anlık kalıcı ekleme korunmalı; TXT izdüşümü ayrı çalışan, tek aktif yazıcı ve biriken değişiklikleri birleştiren kuyrukla hazırlanmalı. SecretKey erişimi süreç içinde güvenli önbelleğe alınabilir; Cipher paylaşılmamalı | Tarama, bütün dosyayı tekrar yazmayı beklemez. Zaman kazancı ölçülmeli; kalıcılık DB'ye dayanmaya devam eder |
 | P1 | TXT mevcut URI'ye `wt` ile yeniden yazılıyor; sonrasında hash kontrolü var | Normal tamamlanma doğrulanıyor fakat güç kesintisi mevcut dosyanın üstüne yazılırken önceki iyi TXT'yi de yarım bırakabilir | Yeni nesli ayrı geçici/pending hedefe yaz, geri okuyup doğrula, sonra en son başarılı referansı değiştir; eski başarılı nesli doğrulamadan bırakma | Güç kesilmesinde önceki sağlam TXT kullanılabilir. Tek bir yarım dosya yüzünden disk yedeği görünmez olmaz |
 | P1 | “Canlı Katalog Test Et” 20 paralel hesap, 10 saniye dış bütçe; iç API de 10 saniye; tüm `catch` sonuçları yalnız `err` | Aynı sunucuya eşzamanlı yük, büyük JSON işleme ve kısa bütçe olası etkenler; hesap başına hata atılıyor | Host başına kontrollü iş kuyruğu; HTTP/timeout/JSON/iptal/boş katalog ayrımı; güvenli süre/boyut telemetrisi; seçili hesap kapsamı ve tekrar deneme. Büyük yanıtı native tarafta doğrulayıp küçük özet döndürmek | Kullanıcı “neden başarısız”ı görür. Ağ/site arızası “hesap geçersiz” diye etiketlenmez. Mevcut olayın kesin hata sınıfı yeni ölçümle belirlenir |
-| P1 | HKpremium normal yenileme Stalker sayfalaması; Xtream hızlı yol yalnız `stalkerEnrichment` içinde | İki farklı kod yolu aynı katalog edinme kararını paylaşmıyor | Normal refresh, ilk ekleme ve arka plan tamamlama aynı doğrulanmış katalog sağlayıcısı seçim mantığını kullanmalı | API uyumlu MAG hesapları film/diziyi toplu alır; saf Stalker hesaplarında sayfalama korunur |
-| P1 | HKpremium'da 100 saniye bütçeli sayfalama 533/650 saniyede duruyor; arka plan boşlukları var | Bütçe `Promise.all` batch'inden önce/sonra kontrol ediliyor; işin ilerlemesi JS yaşamına bağlı; devam eden batch kesin deadline ile bitirilmiyor | Native iş sahipliği, monoton süre, ağ çağrısını/kuyruğu kesen deadline, kalıcı checkpoint; UI yalnız gözlemci | Ekran kapanması/başka uygulamaya geçiş iş ilerlemesini durdurmaz; süre sınırı kullanıcıya doğru bildirilir |
+| P1 | panel-a normal yenileme Stalker sayfalaması; Xtream hızlı yol yalnız `stalkerEnrichment` içinde | İki farklı kod yolu aynı katalog edinme kararını paylaşmıyor | Normal refresh, ilk ekleme ve arka plan tamamlama aynı doğrulanmış katalog sağlayıcısı seçim mantığını kullanmalı | API uyumlu MAG hesapları film/diziyi toplu alır; saf Stalker hesaplarında sayfalama korunur |
+| P1 | panel-a'da 100 saniye bütçeli sayfalama 533/650 saniyede duruyor; arka plan boşlukları var | Bütçe `Promise.all` batch'inden önce/sonra kontrol ediliyor; işin ilerlemesi JS yaşamına bağlı; devam eden batch kesin deadline ile bitirilmiyor | Native iş sahipliği, monoton süre, ağ çağrısını/kuyruğu kesen deadline, kalıcı checkpoint; UI yalnız gözlemci | Ekran kapanması/başka uygulamaya geçiş iş ilerlemesini durdurmaz; süre sınırı kullanıcıya doğru bildirilir |
 | P1 | Son film/dizi sayfalaması `TIME_BUDGET`, ama üst sonuç “OK” olabiliyor; eski katalog korunsa da `lastRefreshOk=true` yazılabiliyor | Tamlık bilgisi `stalkerOrderedList` dönüşünden üst sonuca taşınmıyor; “array var” tam katalog gibi kabul ediliyor | Tür başına `complete/partial/failed`, alınan/bildirilen toplam ve durma nedeni; eksik tür için son tam yenileme zamanını ilerletmemek | Eksik yenileme “tam güncellendi” olmaz; eski içerikler ve doğru durum bilgisi korunur |
 | P1 | Xtream testinde 10.350 dizi satırı, **9.504 benzersiz `series_id`**, 846 tekrarlanan kimlik | Raw satır sayısı benzersiz içerik sayısı değil; mevcut `xtreamSeries` her satırı modele çeviriyor | Tekrarlanan kimlikleri kategori/metadata farklılıklarını ölçerek işle; ham sayı/benzersiz sayı/kaydedilen sayı ayrı; kategori üyeliklerini kaybetme | Aynı dizi tekrarlanmaz, kartlar doğru sayı gösterir; kategori varyantları kör biçimde silinmez |
 | P1 | MAG film kimlikleri `st-vod-*`, diziler `st-series-*`; Xtream üreticileri `xt-vod-*`, `xt-series-*`; kütüphane ID'ye bağlı | Hızlı yola yalnız mevcut enrichment kodunu kopyalamak, izleme/favori anahtarlarını değiştirebilir | İçerik kimliği eşleşmesini örneklerle doğrula; aynı içerikte eski kanonik kimliği koru veya atomik alias/migration uygula; sağlayıcı değişikliğini genel sil-ekle sayma | Favori/izlendi/devam et/dizi son bölüm bilgileri hızlandırma yüzünden kaybolmaz |
-| P2 | Room toplam dosyası yaklaşık 945 MB; HKpremium olayının son commit'i 2.819 ms | Büyük toplam DB tek başına bu 19 dakikalık olayın sebebi değil | Fetch/parse/normalize/Room commit/UI publish ayrı ölçülmeli; gerçek ihtiyaç varsa indeks/yazım/batch iyileştirilmeli | Ağ ve arka plan durması çözülecekken yanlışlıkla Room'u sıfırlayan bir müdahale yapılmaz |
+| P2 | Room toplam dosyası yaklaşık 945 MB; panel-a olayının son commit'i 2.819 ms | Büyük toplam DB tek başına bu 19 dakikalık olayın sebebi değil | Fetch/parse/normalize/Room commit/UI publish ayrı ölçülmeli; gerçek ihtiyaç varsa indeks/yazım/batch iyileştirilmeli | Ağ ve arka plan durması çözülecekken yanlışlıkla Room'u sıfırlayan bir müdahale yapılmaz |
 | P1 | DEV ve normal ayrı paket/veri alanı; normal kurulu sürüm 18.7.24 | Normal APK DEV journal'ı ve DEV Keystore anahtarlarını kendiliğinden okuyamaz | DEV kaldırılmadan taşınabilir arşivle açık geri yükleme; normal pakete aynı release imzasıyla güncelleme | Normal sürüme geçişte eski normal playlistler korunur; DEV sonuçları bilinçli biçimde aktarılabilir |
 
-## 4. HKpremium ölçümü: gerçek olay ve Claude önerisi
+## 4. panel-a ölçümü: gerçek olay ve Claude önerisi
 
 ### 4.1 Telefonda gerçekleşen normal yenileme
 
@@ -69,7 +69,7 @@ Film aşamasında 242, dizi aşamasında 202 işlenmiş sayfa: **444 sayfa**. Ay
 
 İlk arka plan dönemi, katalog başlangıcından yaklaşık 83,8 saniye sonra başlayıp 534,7 saniyede öne dönüşle bitiyor. İkincisi 608,5–1.185,1 saniye. Yaklaşık **1.027,5 saniye** arka plan aralığı var. Sayfa ilerlemesindeki en büyük boşluklar **442.669 ms** ve **597.425 ms**; öne dönüş zamanlarıyla örtüşüyor. Bu **güçlü bir yaşam döngüsü/arka plan ilerleme bulgusudur**; OS'nin belirli bir tek mekanizması kanıtlanmış diye adlandırılmamalı.
 
-Eski HKpremium Room katalogları:
+Eski panel-a Room katalogları:
 
 - Canlı: **2.795**.
 - Film: **10.643**.
@@ -79,7 +79,7 @@ Güncellemede `MAG_REFRESH_SHRINK_GUARD` yeni 3.378 filmi ve 2.838 diziyi eski s
 
 ### 4.2 Gerçek Xtream API doğrulaması
 
-Bu test **bilgisayardan** yapıldı. Telefondaki kayıtlı tek HKpremium profil/MAC/portal kapsamına ait stream-derived kimlik kullanıldı. Başka hesap/host taraması, MAC üretimi veya yayın bağlantısı açılması yapılmadı. İstekler sırayla; farklı origin'e yönlendirme reddedildi. Ham yanıtlar rapora/loga veya GitHub'a yazılmadı.
+Bu test **bilgisayardan** yapıldı. Telefondaki kayıtlı tek panel-a profil/MAC/portal kapsamına ait stream-derived kimlik kullanıldı. Başka hesap/host taraması, MAC üretimi veya yayın bağlantısı açılması yapılmadı. İstekler sırayla; farklı origin'e yönlendirme reddedildi. Ham yanıtlar rapora/loga veya GitHub'a yazılmadı.
 
 | API işlemi | HTTP | Boyut | Süre | Sonuç |
 |---|---:|---:|---:|---|
@@ -202,10 +202,10 @@ Bir sonraki kaynak sürümü, mevcut kurala uygun olarak **18.7.28 / 180728 / RC
 | 2 | Arşivin tamamını sayfa sayfa gösterme + yedek tri-state + native TXT okuyucu | UI'da 678 gerçek seçilebilir kayıt; hepsi/istenilenler geri yükleme; başlangıçta sahte depolama uyarısı yok |
 | 3 | Tarama TXT izdüşümünü tarama kritik yolundan ayırma | Güç kesintisi testinde journal sağlam; son başarılı TXT nesli okunabilir; hata gerçek ve görünür |
 | 4 | Katalog testi hata nedenleri ve host kuyruğu | Tek hesap ve aynı hostta çoklu test gerçek sonuç verir; timeout/429/JSON ayrı; iptal çalışanları durdurur |
-| 5 | Ortak doğrulanmış MAG/Xtream film/dizi sağlayıcısı | Normal refresh + ilk ekleme + recovery aynı kararı kullanır; HKpremium film/kategori/dizi örnekleri çalışır; saf Stalker fallback korunur |
+| 5 | Ortak doğrulanmış MAG/Xtream film/dizi sağlayıcısı | Normal refresh + ilk ekleme + recovery aynı kararı kullanır; panel-a film/kategori/dizi örnekleri çalışır; saf Stalker fallback korunur |
 | 6 | Native arka plan refresh/checkpoint ve tamlık | Ekran açık/kapalı/başka uygulamadayken ilerleme; süreç sonlanınca güvenli devam; yarım katalog eski dolu veriyi silmez |
 | 7 | ID/kategori/kütüphane uyumu | Önceden favoriye/izlendiye alınan film-dizi, devam et ve son bölüm bilgileri korunur; tekrarların kategori üyeliği kaybolmaz |
-| 8 | Normal sürüm performans ve doğruluk testi | Aynı HKpremium hesabında fetch/Room toplam süreleri ve sayıları ölçülür; canlı ilk kare ayrı ölçülür; bütün 678 hesap için zorunlu toplu yayın açılmaz |
+| 8 | Normal sürüm performans ve doğruluk testi | Aynı panel-a hesabında fetch/Room toplam süreleri ve sayıları ölçülür; canlı ilk kare ayrı ölçülür; bütün 678 hesap için zorunlu toplu yayın açılmaz |
 | 9 | Doğrulama ve yayın | `yarn tsc --noEmit`, tam `node tools/denetle.js`; Kotlin değişirse clean prebuild + assembleDebug derleme kontrolü; normal release aynı imza, dört ABI/motor kontrolleri; commit/push ardından **manuel release** tetikleme |
 
 Yeni kaynak değişikliği/test/yayın sonucu olduğunda Opus devir kaydına **dosya, işlev, önceki davranış, yeni davranış, gerçek test ve açık kalan sınırlama** eklenmeli. Başarısız test veya henüz ölçülmemiş telefon süresi “çözüldü” diye yazılmamalı.
@@ -240,11 +240,11 @@ Foreground servis kullanıcıya görünür arka plan işinin Android yaşam dön
 
 React Native'de API işlerini/UI güncellemelerini etkileyen JS iş parçacığına ağır iş yüklemek tepki süresini bozabilir. Resmî rehber performansı release koşullarında ölçmeyi önerir. Ancak bu olayın tüm nedenini “DEV yavaşlığı” diye açıklamak için veri yok; arka plan olayları ve native kurtarma stack'i ayrıca kanıttır. [React Native performans rehberi](https://reactnative.dev/docs/performance).
 
-Xtream/Ministra uyumluluğu bütün paneller için bir varsayım olarak kullanılmadı: HKpremium için gerçek API yanıtı ve mevcut hesap kapsamı doğrulandı. “Her MAG hesabı otomatik olarak Xtream olur”, “200 = görüntü var” veya “telefon mutlaka 8 saniyede günceller” sonucuna varılmadı.
+Xtream/Ministra uyumluluğu bütün paneller için bir varsayım olarak kullanılmadı: panel-a için gerçek API yanıtı ve mevcut hesap kapsamı doğrulandı. “Her MAG hesabı otomatik olarak Xtream olur”, “200 = görüntü var” veya “telefon mutlaka 8 saniyede günceller” sonucuna varılmadı.
 
 ## 10. Bu incelemede yapılanlar / açık kalanlar
 
-**Yapılan:** cihaz logu ve veri kopyası; 678 sonuç/TXT bütünlük ve kimlik sayımı; kurtarma çökmesi/geri tuşu kod-log eşleştirmesi; HKpremium aşama ve arka plan zaman analizi; mevcut hızlı yolun çağrı zinciri; aynı HKpremium hesabıyla altı gerçek ve sırayla API testi; 678 kayıt için mevcut uygulama parser'ıyla taşınabilir arşiv doğrulaması; bu rapor.
+**Yapılan:** cihaz logu ve veri kopyası; 678 sonuç/TXT bütünlük ve kimlik sayımı; kurtarma çökmesi/geri tuşu kod-log eşleştirmesi; panel-a aşama ve arka plan zaman analizi; mevcut hızlı yolun çağrı zinciri; aynı panel-a hesabıyla altı gerçek ve sırayla API testi; 678 kayıt için mevcut uygulama parser'ıyla taşınabilir arşiv doğrulaması; bu rapor.
 
 **Açık:** kaynak düzeltmeleri, telefon üzerinde yeni normal sürüm ölçümü, 239 sonuçta kalmanın kesin UI olay zinciri, başarısız toplu katalog testinin hesap başına hata nedeni, MAG↔Xtream ID/kategori eşleşme testi, gerçek ilk kare/motor testleri, yeni APK/commit/push/release yayını. Telefonun İndirilenler klasörüne yeni açık metin TXT kopyası için kullanıcı onayı bekleniyor.
 

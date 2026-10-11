@@ -6,7 +6,7 @@ Kullanıcı onayı: "A, B, C + MAC portal/port/path/portal testi + tekli/çoklu 
 ## Kanıt (tanı 18.7.7 `d6f010b8`, 3 dk)
 - **B:** VOD `total 22901`, **14 satır/sayfa**, **sıralı**, ~540 ms/sayfa → 45 sn'de yalnız 1176/22901 (%5). ANR yok (saf ağ gecikmesi). Mutlak sınır da 120 sayfaydı (≈1680 öğe tavanı).
 - **C:** İlk-kare bu oturumda **665–1143 ms (hızlı)** — zap hızlı. Yavaş "ilk açılış" muhtemelen katalog yükü çekişmesi. Kör düzeltme yok; P7 ölçümü kalır.
-- **A:** main-info çalıştı (Active, bitiş, şifre `fcTwy5ykkP`) ama kullanıcı adı MAC görünüyor; portal gerçek login'i farklı alanda döndürüyor (şifre Xtream `ud3B3yRH` hesabıyla aynı). Alan adını bilmek için telemetri eklendi.
+- **A:** main-info çalıştı (Active, bitiş, şifre `pw1SAMPLE2`) ama kullanıcı adı MAC görünüyor; portal gerçek login'i farklı alanda döndürüyor (şifre Xtream `ab3C4dEf` hesabıyla aynı). Alan adını bilmek için telemetri eklendi.
 
 ## Yapılan
 - **B — paralel sayfalama (`stalker.ts` `stalkerOrderedList`):** bootstrap (p0/p1 ile base 0/1 + total) sıralı; ilk gerçek sayfa (p=2) tek (duplicate/empty governor ≤3 sayfa hızlı durur); sonrası **parti ${6} PARALEL** çekilir, **sırayla işlenir** (dedup + onUniqueRow sırası korunur). `seenFp` sayfa-alias, `seen` satır dedup. 429/koruma/unsupported/cancel korunur. Mutlak sayfa sınırı 120→**600**. Bütçe 45→**75 sn**. → ~7× daha çok içerik, kat kat hızlı.

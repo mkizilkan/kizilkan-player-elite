@@ -68,7 +68,7 @@ P1 ve P2'nin `check_mac`, `_mac_auto_portal_scan`, `convert_mac_to_m3u`, `test_i
 
 ### PY01 — MAG yenileme hızının artırılması
 
-Kaynak programların katkısı, yayın adresinden gerçek Xtream kimliği çıkarıp API ile sınama fikridir. Normal yenileme mimarisi bizim kodda ayrıca düzenlenmelidir. P1'in `convert_mac_to_m3u` işlevi hızlı Xtream katalog yenilemesi değildir; kanal listesi alıp tahmini `play/live.php` adresleri yazar. Bu işlevi doğrudan geçirmek hkpremium sorununu çözmez.
+Kaynak programların katkısı, yayın adresinden gerçek Xtream kimliği çıkarıp API ile sınama fikridir. Normal yenileme mimarisi bizim kodda ayrıca düzenlenmelidir. P1'in `convert_mac_to_m3u` işlevi hızlı Xtream katalog yenilemesi değildir; kanal listesi alıp tahmini `play/live.php` adresleri yazar. Bu işlevi doğrudan geçirmek panel-a sorununu çözmez.
 
 Bizdeki doğru başlangıç noktası `stalkerEnrichment` içindeki mevcut doğrulanmış köprüdür. Normal yenilemeye taşınırken:
 

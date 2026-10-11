@@ -12,6 +12,6 @@ Gerçek çalıştırılan kontroller:
 Çalıştırılamayanlar:
 - dependency-resolved TypeScript full build: frontend node_modules yok; proje yarn.lock kullanıyor ve ortam registry erişimi başarısız oldu.
 - Android Gradle assembleRelease: kaynak paketinde generated frontend/android Gradle uygulama ağacı yok.
-- gerçek HKPREMIUM cihaz testi: bu ortamda portal credential/device testi yapılmadı.
+- gerçek PANEL_A cihaz testi: bu ortamda portal credential/device testi yapılmadı.
 
-Bu nedenle APK build veya HKPREMIUM bağlantısı için PASS iddiası yoktur; GitHub Actions ve cihaz diagnostikleri nihai kanıttır.
+Bu nedenle APK build veya PANEL_A bağlantısı için PASS iddiası yoktur; GitHub Actions ve cihaz diagnostikleri nihai kanıttır.

@@ -105,7 +105,7 @@ function flagsAndExpiry() {
   assert.equal(stalker.normalizeStalkerAccountInfo({ expire_billing_date: '0002-01-01', end_date: '2030-01-01' }).tariff_expired_date, '2030-01-01');
   // v18.7.7 (P1): açık bitiş yoksa phone tarihi bitiş sayılır; phone alanı olarak GÖSTERİLMEZ.
   {
-    const a = stalker.normalizeStalkerAccountInfo({ mac: '00:1A:79:30:3A:A7', phone: 'January 8, 2027, 3:45 pm' });
+    const a = stalker.normalizeStalkerAccountInfo({ mac: '00:1A:79:00:00:07', phone: 'January 8, 2027, 3:45 pm' });
     assert.ok(a.tariff_expired_date && dates.parseAccountExpiryMs(a.tariff_expired_date) !== null, 'phone→bitiş olmalı');
     assert.equal(a.phone, undefined, 'bitiş olarak kullanılan phone gösterilmemeli');
     // Gerçek telefon (tarih değil) phone alanında kalır.
@@ -116,9 +116,9 @@ function flagsAndExpiry() {
   assert.equal(stalker.normalizeStalkerAccountInfo({ status: '0', id: 7 }).status, 'Active');
   assert.equal(stalker.normalizeStalkerAccountInfo({ status: 0, id: 7 }).status !== 'blocked', true);
   // v18.7.7 (P4): base64 MAC/login çözülür; password okunur.
-  assert.equal(stalker.normalizeStalkerAccountInfo({ mac: 'MDA6MUE6Nzk6MzA6M0E6QTc=' }).mac, '00:1A:79:30:3A:A7');
+  assert.equal(stalker.normalizeStalkerAccountInfo({ mac: 'MDA6MUE6Nzk6MDA6MDA6MDc=' }).mac, '00:1A:79:00:00:07');
   assert.equal(stalker.normalizeStalkerAccountInfo({ login: 'realuser', password: 's3cret' }).password, 's3cret');
-  assert.equal(stalker.normalizeStalkerAccountInfo({ mac: '00:1A:79:30:3A:A7' }).mac, '00:1A:79:30:3A:A7');
+  assert.equal(stalker.normalizeStalkerAccountInfo({ mac: '00:1A:79:00:00:07' }).mac, '00:1A:79:00:00:07');
   groups++;
 }
 async function invalidTokensAndProfileFallback() {
@@ -282,7 +282,7 @@ async function nativeProxyAndInputSafety() {
   groups++;
 }
 async function mag320FullParamProfileFallback() {
-  // v18.7.11 (M07/M08) — cihaz: weko MAG320 handshake OK + minimal get_profile BOŞ. Minimal (stb_type
+  // v18.7.11 (M07/M08) — cihaz: panel-c MAG320 handshake OK + minimal get_profile BOŞ. Minimal (stb_type
   // YOK) boş dönünce DOLU-parametreli (stb_type olan) get_profile varyantı hesabı döndürür → profil alınır.
   const populated = { id: 42, login: 'realuser', mac, tariff_expired_date: '2031-05-01' };
   const e = environment(c => {
@@ -296,7 +296,7 @@ async function mag320FullParamProfileFallback() {
   const profileCalls = e.calls.filter(c => c.action === 'get_profile');
   assert.ok(profileCalls.some(c => !new URL(c.url).searchParams.get('stb_type')), 'minimal varyant ÖNCE denenmeli (geriye uyum)');
   assert.ok(profileCalls.some(c => new URL(c.url).searchParams.get('stb_type')), 'dolu-parametre varyantı denenmeli');
-  // Geriye uyum: minimal HER get_profile için doluyorsa (hkpremium) dolu varyant HİÇ denenmez.
+  // Geriye uyum: minimal HER get_profile için doluyorsa (panel-a) dolu varyant HİÇ denenmez.
   const tolerant = environment(c => response(c.action === 'handshake' ? { js: { token: 'isolated-token' } } : c.action === 'get_profile' ? { js: { id: 7, login: 'hk', mac } } : { js: [] }));
   const hk = await tolerant.load('src/utils/stalker.ts').stalkerLogin({ portal: endpoint, mac, deviceModel: 'MAG320', endpointPolicy: 'exact' });
   assert.equal(hk.profile.login, 'hk');
@@ -304,7 +304,7 @@ async function mag320FullParamProfileFallback() {
   groups++;
 }
 async function emptyProfileButLiveAccessible() {
-  // v18.7.11 (M08) — cihaz: weko profil/main_info kimliği BOŞ ama get_all_channels 21266 kanal.
+  // v18.7.11 (M08) — cihaz: panel-c profil/main_info kimliği BOŞ ama get_all_channels 21266 kanal.
   // Kimlik yoksa HEMEN unverified DEME: canlı erişimi GERÇEK örnek verirse verified.
   const e = environment(c => {
     if (c.action === 'get_main_info') return response({ js: {} });
@@ -327,12 +327,12 @@ function usernameFieldSelection() {
   assert.equal(s.normalizeStalkerAccountInfo({ login: 'acc123', mac, name: 'Cihaz' }).username, 'acc123');
   assert.equal(s.normalizeStalkerAccountInfo({ login: '', name: 'Fixture Display', mac }).username, undefined);
   assert.equal(s.normalizeStalkerAccountInfo({ fname: 'Fixture Display', mac }).display_name, 'Fixture Display');
-  assert.equal(s.normalizeStalkerAccountInfo({ login: '001A79303AA7', mac: '00:1A:79:30:3A:A7' }).username, undefined);
+  assert.equal(s.normalizeStalkerAccountInfo({ login: '001A79000007', mac: '00:1A:79:00:00:07' }).username, undefined);
   assert.equal(s.normalizeStalkerAccountInfo({ login: 'anonymous', mac }).username, undefined);
   groups++;
 }
 async function base64MacMatches() {
-  // v18.7.13 (A01) — cihaz: goldensm32 tüm MAC'ler "profile-mac-mismatch". Portal MAC'i base64 kodlu
+  // v18.7.13 (A01) — cihaz: panel-b tüm MAC'ler "profile-mac-mismatch". Portal MAC'i base64 kodlu
   // döndürürse eşleştirici ÇÖZMELİ; aksi hâlde geçerli hesap yanlışlıkla reddediliyordu.
   const b64 = Buffer.from(mac).toString('base64'); // "00:1A:79:00:00:01" -> base64
   const e = environment(c => response(c.action === 'get_main_info' ? { js: { login: 'fixture-account', mac: b64, end_date: '2030-01-01' } } : { js: { data: [item()], total_items: 50 } }));
@@ -347,19 +347,19 @@ async function base64MacMatches() {
   console.log('PASS: base64-encoded MAC decoded and matched; genuinely different MAC still rejected'); groups++;
 }
 async function usernameEnrichmentFullParam() {
-  // v18.7.13 — cihaz: hkpremium minimal get_profile'da login BOŞ (yalnız name=1787); gerçek login
-  // (ud3B3yRH) dolu-parametreli (stb_type olan) yanıtta geliyor. stalkerProfile login'li profili tercih etmeli.
+  // v18.7.13 — cihaz: panel-a minimal get_profile'da login BOŞ (yalnız name=1787); gerçek login
+  // (ab3C4dEf) dolu-parametreli (stb_type olan) yanıtta geliyor. stalkerProfile login'li profili tercih etmeli.
   const e = environment(c => {
     if (c.action === 'handshake') return response({ js: { token: 'isolated-token' } });
     if (c.action === 'get_profile') {
       const hasStbType = !!new URL(c.url).searchParams.get('stb_type');
-      return response({ js: hasStbType ? { id: 5, login: 'ud3B3yRH', mac } : { id: 5, name: '1787', login: '', mac } });
+      return response({ js: hasStbType ? { id: 5, login: 'ab3C4dEf', mac } : { id: 5, name: '1787', login: '', mac } });
     }
     return response({ js: [] });
   });
   const login = await e.load('src/utils/stalker.ts').stalkerLogin({ portal: endpoint, mac, deviceModel: 'MAG320', endpointPolicy: 'exact' });
   assert.ok(login.profile, 'profil alınmalı');
-  assert.equal(e.load('src/utils/stalker.ts').normalizeStalkerAccountInfo(login.profile).username, 'ud3B3yRH', 'minimal login boşsa dolu-parametre varyantındaki gerçek login kullanılmalı (1787 değil)');
+  assert.equal(e.load('src/utils/stalker.ts').normalizeStalkerAccountInfo(login.profile).username, 'ab3C4dEf', 'minimal login boşsa dolu-parametre varyantındaki gerçek login kullanılmalı (1787 değil)');
   console.log('PASS: username enrichment — real login from full-param get_profile preferred over name'); groups++;
 }
 async function g01AllChannelsFallback() {
@@ -383,10 +383,10 @@ async function g02PreserveRealLogin() {
 function g03Base64LoginNotUsername() {
   // v18.7.14 (G03/K03): login alanı base64-MAC → kullanıcı adı DEĞİL; sonraki gerçek alan (name) seçilir.
   const s = env.load('src/utils/stalker.ts');
-  const b64mac = Buffer.from('00:1A:79:30:3A:A7').toString('base64');
-  assert.equal(s.normalizeStalkerAccountInfo({ login: b64mac, username: 'Gercek', name: 'Gorunen', mac: '00:1A:79:30:3A:A7' }).username, 'Gercek');
-  assert.equal(s.normalizeStalkerAccountInfo({ login: b64mac, name: 'Gorunen', mac: '00:1A:79:30:3A:A7' }).username, undefined);
-  assert.equal(s.normalizeStalkerAccountInfo({ login: b64mac, mac: '00:1A:79:30:3A:A7' }).username, undefined, 'base64-MAC tek başına kullanıcı adı olmaz');
+  const b64mac = Buffer.from('00:1A:79:00:00:07').toString('base64');
+  assert.equal(s.normalizeStalkerAccountInfo({ login: b64mac, username: 'Gercek', name: 'Gorunen', mac: '00:1A:79:00:00:07' }).username, 'Gercek');
+  assert.equal(s.normalizeStalkerAccountInfo({ login: b64mac, name: 'Gorunen', mac: '00:1A:79:00:00:07' }).username, undefined);
+  assert.equal(s.normalizeStalkerAccountInfo({ login: b64mac, mac: '00:1A:79:00:00:07' }).username, undefined, 'base64-MAC tek başına kullanıcı adı olmaz');
   groups++;
 }
 async function g06SnapshotMacGuard() {

@@ -206,7 +206,7 @@ GPT (token bitene kadar) 14 maddelik recovery/katalog/player işini yaptı (v18.
 ## 9-eski-18725. v18.7.25 RC1 (dal `v18.7.25-rc1-contenttest-parallel-ui-macsafety`)
 
 **v18.7.25 (bu sürüm — combo tarama TS düzeltmeleri B+C+A+E-MAG; PC doğrulandı, CİHAZ BEKLİYOR):**
-Kaynak: galaplaytv combo log (2026-10-07). **Yalnız TS, native YOK.** Ayrıntı `AI-DEVIR-v18.7.25.md`.
+Kaynak: panel-d combo log (2026-10-07). **Yalnız TS, native YOK.** Ayrıntı `AI-DEVIR-v18.7.25.md`.
 - **B (görüntü testi hızı):** `testBulkContent` paralellik **6→20**, timeout 15→10 sn, `startForegroundKeepAlive` sargısı (86,5 dk'nın çoğu arka plan throttle'ıydı) → dakikalara iner.
 - **C (paralellik UI):** "Paralel analiz sayısı" + "İstenen paralellik" TEK değer (`comboParallelText`); `bulkRequestedConcurrency` kaldırıldı; "Parti boyutu" ayrı.
 - **A (TXT UX):** kayıttan sonra "✓ Son kaydedilen: `<ad>` · N kayıt" net gösterilir (eski dosyayla karışmasın).
@@ -223,12 +223,12 @@ Kullanıcı isteği: Xtream+MAC çoklu eklemede bulunan hesapları listeye almad
 - Doğrulama: tsc temiz · denetle TEMİZ · `check-v18724` PASS. **Yalnız TS, native YOK.** Ayrıntı `AI-DEVIR-v18.7.24.md`.
 - **Bekleyen:** GPT G07-G10; v18.7.23+v18.7.24 cihaz doğrulaması.
 
-**⚠️ SIRADAKİ BÜYÜK İŞ — v18.7.25 KATALOG HIZI (ONAY BEKLİYOR, KODLANMADI):** Kullanıcı kanıtı (2026-10-07): hkpremium ekleme **17:35** sürüyor (Film %78'de bütçeye takıldı), IPTV Extreme Pro aynı hesabı **5-10 sn**. **Kanıtlı kök neden:** Canlı hızlı (`get_all_channels` tek istek), ama Film/Dizi `stalkerEnrichment`→`stalkerOrderedList` ile **sayfa başı 14 öğe** → bu hesapta **~1.840 istek**. IPTV Extreme panelin **Xtream API**'sini kullanıyor: `get_vod_streams`+`get_series` = **2 tek-çağrı** (U4 kanıtı: paneller Xtream-tabanlı). **Çözüm:** MAG Film/Dizi'yi Xtream tek-çağrı ile çek (altyapı hazır: creds `kizilkan.streamCreds`, `xtreamVod`/`xtreamSeries` import'lu), Stalker yedek. **Asıl iş:** oynatma Xtream-ID→Xtream-URL eşlemesi (§5 dikkat). Tam plan `GPT-OPUS-GUNCELLEME-DEVRI.md` §0.1.
+**⚠️ SIRADAKİ BÜYÜK İŞ — v18.7.25 KATALOG HIZI (ONAY BEKLİYOR, KODLANMADI):** Kullanıcı kanıtı (2026-10-07): panel-a ekleme **17:35** sürüyor (Film %78'de bütçeye takıldı), IPTV Extreme Pro aynı hesabı **5-10 sn**. **Kanıtlı kök neden:** Canlı hızlı (`get_all_channels` tek istek), ama Film/Dizi `stalkerEnrichment`→`stalkerOrderedList` ile **sayfa başı 14 öğe** → bu hesapta **~1.840 istek**. IPTV Extreme panelin **Xtream API**'sini kullanıyor: `get_vod_streams`+`get_series` = **2 tek-çağrı** (U4 kanıtı: paneller Xtream-tabanlı). **Çözüm:** MAG Film/Dizi'yi Xtream tek-çağrı ile çek (altyapı hazır: creds `kizilkan.streamCreds`, `xtreamVod`/`xtreamSeries` import'lu), Stalker yedek. **Asıl iş:** oynatma Xtream-ID→Xtream-URL eşlemesi (§5 dikkat). Tam plan `GPT-OPUS-GUNCELLEME-DEVRI.md` §0.1.
 
 ## 9-eski-18723. v18.7.23 RC1 (dal `v18.7.23-rc1-card-autoprime-autotest`)
 
 **v18.7.23 (hesap kartı oto-prime + görüntü oto-testi; PC doğrulandı, CİHAZ BEKLİYOR):**
-Cihaz kanıtı (OnePlus 7 Pro, v18.7.22-dev): hkpremium **manuel güncellendi** ama kullanıcı adı yine "Belirlenemedi" — v18.7.21 **A** yalnız yeni eklemede çalışıyordu, mevcut hesapta kart açılınca türetme tetiklenmiyordu. Görüntü var/yok ise butona basınca geliyordu.
+Cihaz kanıtı (OnePlus 7 Pro, v18.7.22-dev): panel-a **manuel güncellendi** ama kullanıcı adı yine "Belirlenemedi" — v18.7.21 **A** yalnız yeni eklemede çalışıyordu, mevcut hesapta kart açılınca türetme tetiklenmiyordu. Görüntü var/yok ise butona basınca geliyordu.
 - **Oto-prime:** `AccountInfoCard` `useFocusEffect` — MAG hesabında kullanıcı adı yoksa + hesap başına bir kez (`primeTriedRef`), Room'dan BİR canlı kanal (`queryItems(id,"live",{limit:1})`) alınıp `stalkerResolveStream(..., ch.url)` ile create_link çözülür → kullanıcı adı/şifre OYNATMASIZ türetilip kalıcılaştırılır (v18.7.19 altyapısı), kart yenilenir. En-iyi-çaba, değer loglanmaz.
 - **Oto-test:** `m3uLink` hazır olunca `autoTestedRef` ile `testM3u()` otomatik çalışır → "✓ Görüntü var · N kanal" / "✗ Görüntü yok" kendiliğinden görünür.
 - Doğrulama: tsc temiz · denetle TEMİZ · `check-v18723` PASS. **Yalnız TS (`settings.tsx`), native YOK.** Ayrıntı `AI-DEVIR-v18.7.23.md`.
@@ -237,7 +237,7 @@ Cihaz kanıtı (OnePlus 7 Pro, v18.7.22-dev): hkpremium **manuel güncellendi** 
 ## 9-eski-18722. v18.7.22 RC1 (dal `v18.7.22-rc1-vod-series-classification`)
 
 **v18.7.22 (bu sürüm — "Filmler kayboldu" düzeltmesi; PC doğrulandı, CİHAZ BEKLİYOR):**
-Cihaz telemetrisi (`STALKER_VOD_PARTITION`): hkpremium'da TÜM filmler diziye gidiyordu — portal filmlere de BOŞ `series: []` koyuyor, `rowLooksSeries` `Array.isArray(v.series)`'i koşulsuz dizi sayıyordu. **Düzeltme:** `v.series.length > 0`. Boş → FİLM; dolu season/"Dizi" kategorisi/is_series → DİZİ. tsc temiz · denetle TEMİZ · `check-v18722` PASS. Native YOK. Ayrıntı `AI-DEVIR-v18.7.22.md`.
+Cihaz telemetrisi (`STALKER_VOD_PARTITION`): panel-a'da TÜM filmler diziye gidiyordu — portal filmlere de BOŞ `series: []` koyuyor, `rowLooksSeries` `Array.isArray(v.series)`'i koşulsuz dizi sayıyordu. **Düzeltme:** `v.series.length > 0`. Boş → FİLM; dolu season/"Dizi" kategorisi/is_series → DİZİ. tsc temiz · denetle TEMİZ · `check-v18722` PASS. Native YOK. Ayrıntı `AI-DEVIR-v18.7.22.md`.
 - **Bekleyen:** ekleme-anında kullanıcı adı "eklenmiyor" (v18.7.21 A — ekran görüntüsü bekleniyor).
 
 ## 9-eski-18721. v18.7.21 RC1 (dal `v18.7.21-rc1-addtime-user-xtparallel-m3u`)
@@ -253,7 +253,7 @@ Cihaz telemetrisi (`STALKER_VOD_PARTITION`): hkpremium'da TÜM filmler diziye gi
 ## 9-eski-18720. v18.7.20 RC1 (dal `v18.7.20-rc1-catalog-speed-vod-class`)
 
 **v18.7.20 (bu sürüm — katalog hızı + filmler teşhisi; PC doğrulandı, CİHAZ BEKLİYOR):**
-Cihaz logu (hkpremium): VOD 22905 öğenin yüklenen 6244'ü HEPSİ diziye sınıflandı (Filmler boş); her tür 75 sn bütçeye takılıp %27 yükledi.
+Cihaz logu (panel-a): VOD 22905 öğenin yüklenen 6244'ü HEPSİ diziye sınıflandı (Filmler boş); her tür 75 sn bütçeye takılıp %27 yükledi.
 - **S (hız):** MAG katalog `PAGE_CONCURRENCY` 6→**20** (kullanıcı isteği), `PAGE_BUDGET_MS` 75→100 sn, sayfa sınırı 600→2000. `get_ordered_list` salt-okunur liste (oynatma/create_link değil) → "tek upstream" bozulmaz, ban-makul. (Xtream katalog sayfasız — tür başına tek istek, zaten paralel; sayfalama paralelliği yalnız MAG'de.)
 - **V (kanıt-önce):** `STALKER_VOD_PARTITION` telemetrisi — hangi ölçüt (is_series/seriesArray/kategori adı/tip) kaç öğeyi diziye attı + örnek kategori adları (değer yok). Filmler sınıflama düzeltmesi bu kanıttan SONRA (kör düzeltme yok).
 - Doğrulama: tsc temiz · denetle TEMİZ · `check-v18720` PASS. `check-v18708` ileri-uyumlu (sabit conc/sayfa yerine >=). Native değişiklik YOK. Ayrıntı `AI-DEVIR-v18.7.20.md`.
@@ -261,8 +261,8 @@ Cihaz logu (hkpremium): VOD 22905 öğenin yüklenen 6244'ü HEPSİ diziye sın�
 
 ## 9-eski-18719. v18.7.19 RC1 (dal `v18.7.19-rc1-stream-creds-persist`)
 
-**v18.7.19 (U4 kullanıcı adı kalıcılaştırma; CİHAZDA DOĞRULANDI ✓ — `ud3B3yRH` göründü):**
-Cihaz kanıtı (18.7.18-dev kart): Şifre `vtRSvSDdnl` görünüyor (get_profile.password, kayıtlı) ama Kullanıcı Adı "Belirlenemedi". Kök neden: portal `login` boş → kullanıcı adı yalnız oynatma URL'inden (U4) gelir; eski U4 haritası BELLEK-İÇİ idi → yeniden açılışta kayboluyordu.
+**v18.7.19 (U4 kullanıcı adı kalıcılaştırma; CİHAZDA DOĞRULANDI ✓ — `ab3C4dEf` göründü):**
+Cihaz kanıtı (18.7.18-dev kart): Şifre `pw0SAMPLE1` görünüyor (get_profile.password, kayıtlı) ama Kullanıcı Adı "Belirlenemedi". Kök neden: portal `login` boş → kullanıcı adı yalnız oynatma URL'inden (U4) gelir; eski U4 haritası BELLEK-İÇİ idi → yeniden açılışta kayboluyordu.
 - **Düzeltme:** türetilen kimlik storage'da (`kizilkan.streamCreds`) saklanır + açılışta `hydrateStreamDerivedCredentials` yüklenir → bir kez kanal açınca KALICI görünür. Değerler loglanmaz. `stalker.ts`, `_layout.tsx`.
 - Doğrulama: tsc temiz · denetle TEMİZ · `check-v18719` PASS. Native değişiklik YOK. Ayrıntı `AI-DEVIR-v18.7.19.md`.
 - **Kök neden (log kanıtı):** çıkarma çalışıyordu (credsFound=true) ama kart (Ayarlar sekmesi mount) oynatmadan sonra yeniden OKUMUYORDU → `useFocusEffect` ile yeniden oku + kalıcılaştırma + MAC-only yedek key. İlk görüntü için bir kez kanal aç.
@@ -280,7 +280,7 @@ Kaynak: cihaz (18.7.13) tam yedekleme hatası + Google Drive isteği. Ayrıntı 
 ## 9-eski00000. v18.7.17 RC1 (dal `v18.7.17-rc1-discovery-copy-update`)
 
 **v18.7.17 (bu sürüm — portal keşfi + kopyala + güncelleme; PC doğrulandı, CİHAZ BEKLİYOR):**
-Kaynak: v18.7.16-dev cihaz logu (U4 ÇALIŞTI — hkpremium kullanıcı adı `ud3B3yRH` yayın adresinde kanıtlandı; portal keşfi 4 test; güncelleme 16800→6776 silme) + kullanıcı istekleri. Ayrıntı `AI-DEVIR-v18.7.17.md`.
+Kaynak: v18.7.16-dev cihaz logu (U4 ÇALIŞTI — panel-a kullanıcı adı `ab3C4dEf` yayın adresinde kanıtlandı; portal keşfi 4 test; güncelleme 16800→6776 silme) + kullanıcı istekleri. Ayrıntı `AI-DEVIR-v18.7.17.md`.
 - **P1:** portal version.js/xpcom doğrulanınca `MagDiscoveryBudget.grant(6000)` → API yolları deadline'dan önce denenir (çoklu+DNS "bulamadı" düzelir).
 - **P2:** "Yalnız girilen" (exact) + arayüz yolu `/c` → aynı kurulumda API çözülür (literal .php hâlâ kati). **P3:** paralellik 1–100, girilen=çalışan (`MAG_MAX_PARALLEL` 16→100; turbo 12 kırpması kalktı).
 - **K1:** MAG kartı kullanıcı adı ÖNCE U4 stream değeri (bayat name=1787 gösterilmez). **K2:** kart + düzenleme ekranı kopyala butonları (expo-clipboard kurulu).
@@ -292,7 +292,7 @@ Kaynak: v18.7.16-dev cihaz logu (U4 ÇALIŞTI — hkpremium kullanıcı adı `ud
 ## 9-eski0000. v18.7.16 RC1 (dal `v18.7.16-rc1-bulk-ux-portal-discovery`)
 
 **v18.7.16 (bu sürüm — toplu UX + portal keşfi + kullanıcı adı; PC doğrulandı, CİHAZ BEKLİYOR):**
-Kaynak: cihaz DEV logu (goldensm32 çoklu MAC) + MAG Converter aracı. Kanıtla teşhis, hepsi `AI-DEVIR-v18.7.16.md`.
+Kaynak: cihaz DEV logu (panel-b çoklu MAC) + MAG Converter aracı. Kanıtla teşhis, hepsi `AI-DEVIR-v18.7.16.md`.
 - **A:** yeni **"probable"** (muhtemel geçerli) kategorisi — doğrulama "unverified" ama kimlik+gelecek bitiş varsa eklenebilir (içerik örneği çökük host/süre bütçesinden alınamadı; blocked/expired ayrı). `stalkerVerifyAccount`→`accountIdentity/expiryValid`.
 - **B:** toplu ekleme görsel `CatalogPreparationModal`. **C:** küresel otomatik yenileme ana anahtarı (`FRESHNESS_SKIP_GLOBAL_OFF`; kapalıyken hiçbir liste güncellenmez).
 - **D:** katalog sayfalama hız ölçümü (`STALKER_PAGINATION_STOP.avgPageMs/elapsedMs`). **E2a:** version.js API yolları öne (`unshift`); **E2b:** "all" aile-önce; **E1:** keşif telemetrisi deadline'da da yazılır.
@@ -304,7 +304,7 @@ Kaynak: cihaz DEV logu (goldensm32 çoklu MAC) + MAG Converter aracı. Kanıtla 
 
 **v18.7.15 (bu sürüm — GPT Build 1 D01-D15 + Opus tamamlama; PC doğrulandı, CİHAZ BEKLİYOR):**
 GPT `v18.7.15-dev1`'de kodladı, token bitti (47 dosya, 2 kırık kapı); kullanıcı onayıyla Opus devraldı, dalı §4 adına çevirdi.
-- **D01/D02:** kullanıcı adı yalnız gerçek login alanlarından; MAC'e düşmez ("Belirlenemedi"); `name/fname` → ayrı **"Görünen Ad"** (hkpremium: Kullanıcı Adı Belirlenemedi, Görünen Ad 1787 — bilerek).
+- **D01/D02:** kullanıcı adı yalnız gerçek login alanlarından; MAC'e düşmez ("Belirlenemedi"); `name/fname` → ayrı **"Görünen Ad"** (panel-a: Kullanıcı Adı Belirlenemedi, Görünen Ad 1787 — bilerek).
 - **D03/D04:** toplu `mergeInfo` ortak birleştirici; MAG `active_cons/max_connections/allowed_output_formats`. **D05/D06:** durum bilinmeyen/engelli ayrımı, 0 bağlantı korunur.
 - **D07:** ortak `CatalogPreparationModal` (ana ekran/onarım/düzenleme; düzenleme İptal+geri tuşu). **D08:** tekli ekleme `resolveMagInput` → endpoint exact kilit.
 - **D13:** `MagDiscoveryBudget` ortak host bütçesi. **D14/D15:** joker yanıtlayıcı parmak izi, CF edge≠challenge. İstemci JS (xpcom) yalnız METİN olarak çözülür.
@@ -326,7 +326,7 @@ Kaynak: GPT v18.7.13 incelemesi (`GPT-PYTHON-REFERANSLARI-VE-MAC-INCELEME-2026-1
 ## 9-eski0. v18.7.13 RC1 (dal `v18.7.13-rc1-exact-scope-username-mac`)
 
 **v18.7.13 (bu sürüm — manuel portal seçimi + kullanıcı adı + A01 base64 MAC + "Yalnız girilen" kati kapsam; PC doğrulandı, CİHAZ BEKLİYOR):**
-Cihaz kanıtı: "ben seçeyim"de bulunan izler tıklanamıyordu; hkpremium kullanıcı adı `ud3B3yRH` yerine `1787` (name); goldensm32 base64 MAC `profile-mac-mismatch`.
+Cihaz kanıtı: "ben seçeyim"de bulunan izler tıklanamıyordu; panel-a kullanıcı adı `ab3C4dEf` yerine `1787` (name); panel-b base64 MAC `profile-mac-mismatch`.
 - **#1** Manuel modda "portal izi" adaylar da seçilebilir; seçim fazı iz içeren terminal-olmayan raporda açılır (terminal/koruma hariç); seçim handshake ile doğrulanır. (`mag-bulk.tsx`, `magBulkScan.ts`)
 - **#2** Kullanıcı adı zenginleştirme: gerçek login yoksa dolu-parametre `get_profile` denenir (bütçe 2), login getiren tercih edilir; yoksa eski davranış. (`stalkerProfile`)
 - **#3 A01** `accountMatchesMac` base64 MAC'i `decodeMacIfBase64` ile çözer (kullanıcının defalarca istediği; artık yapıldı).
@@ -336,7 +336,7 @@ Cihaz kanıtı: "ben seçeyim"de bulunan izler tıklanamıyordu; hkpremium kulla
 ## 9-eski1. v18.7.12 RC1 (dal `v18.7.12-rc1-mag-ip-failover`)
 
 **v18.7.12 (bu sürüm — MAG çoklu-IP DNS failover; PC doğrulandı, CİHAZ BEKLİYOR):**
-Kök neden (adb + PC kanıtı): goldensm32.xyz 5 A kaydı, **yalnız .225 canlı**; telefonun DNS'i ölü IP veriyor → 6 sn timeout,
+Kök neden (adb + PC kanıtı): panel-b.example 5 A kaydı, **yalnız .225 canlı**; telefonun DNS'i ölü IP veriyor → 6 sn timeout,
 diğer IP'ler denenmiyordu. Host failover oynatıcıda vardı, MAG ekleme/taramada yoktu. Yeni `magHostFailover.ts`: DoH ile tüm A kayıtları
 → canlı IP yoklanıp sabitlenir → bağlantı IP'ye (Host=hostname), yanıt URL'i hostname'e çevrilir (güvenlik kontrolleri bozulmaz). Yalnız HTTP,
 yalnız RN ortamında aktif. **Tuzak tekrarlandı:** stalker.ts/magPortalDiscovery.ts'e üst düzey import 10 kapıyı kırdı → tembel `loadHostFailover()`.
@@ -344,10 +344,10 @@ Doğrulama: tsc temiz · denetle TEMİZ · `check-v18712` PASS · failover testi
 
 ## 9-önceki. v18.7.11 RC1 (dal `v18.7.11-rc1-mag-profile-variants`)
 
-**v18.7.11 (MAG profil-uyumluluk çekirdeği; cihazda hkpremium kullanıcı adı 1787 görüldü — `name` alanından):**
-Kök neden (cihaz 18.7.10 tanı + protokol araştırması): weko `:80/portal.php` handshake OK (token) ama `get_profile` **MAG320-pcap-minimal** ile BOŞ → profil boş; yine de `get_all_channels` **21266 kanal** açıyor. Kod yalnız minimal profili deniyordu (`STALKER_COMPAT_ATTEMPT` 11× pcap320-minimal), boş profili "geçersiz" sayıp çoklu MAC'te `valid=0` yapıyordu. Standart istemci (StalkerTalker/Kodi) get_profile'ı **sn/stb_type/image_version/ver** ile gönderir; weko profili ancak öyle verir. Kullanıcı adı = `get_profile`'daki **`login`** alanı.
+**v18.7.11 (MAG profil-uyumluluk çekirdeği; cihazda panel-a kullanıcı adı 1787 görüldü — `name` alanından):**
+Kök neden (cihaz 18.7.10 tanı + protokol araştırması): panel-c `:80/portal.php` handshake OK (token) ama `get_profile` **MAG320-pcap-minimal** ile BOŞ → profil boş; yine de `get_all_channels` **21266 kanal** açıyor. Kod yalnız minimal profili deniyordu (`STALKER_COMPAT_ATTEMPT` 11× pcap320-minimal), boş profili "geçersiz" sayıp çoklu MAC'te `valid=0` yapıyordu. Standart istemci (StalkerTalker/Kodi) get_profile'ı **sn/stb_type/image_version/ver** ile gönderir; panel-c profili ancak öyle verir. Kullanıcı adı = `get_profile`'daki **`login`** alanı.
 - **A / M07+M08:** `initialProfileVariants(MAG320)` artık minimal + **dolu-parametreli MAG254/MAG250** varyantları; `derivedProfileVariants(MAG320)` türetilmiş kimlik üretir (eskiden boş). Minimal ÖNCE (uyumlu portaller etkilenmez), boşsa dolu varyantlara düşer.
-- **B / M08:** `stalkerVerifyAccount` kimlik (profil/main_info) yoksa HEMEN `unverified` DEMEZ; canlı/VOD/dizi erişiminde gerçek örnek varsa `verified` (weko 21266 çoklu MAC'te eklenir). yanlış-MAC/denial hâlâ elenir.
+- **B / M08:** `stalkerVerifyAccount` kimlik (profil/main_info) yoksa HEMEN `unverified` DEMEZ; canlı/VOD/dizi erişiminde gerçek örnek varsa `verified` (panel-c 21266 çoklu MAC'te eklenir). yanlış-MAC/denial hâlâ elenir.
 - **C / T02+A03/A04:** ortak `pickUsernameField` (login→…→name→sname) + snapshot telemetrisi `usernamePresent/usernameFieldKind/usernameSourceKind/loginValuePresent…` (redaksiyona takılmayan SAFE sonekler) → kullanıcı adının hangi alanda olduğu değer açılmadan görünür.
 - **M09:** `discoverMagPortal` duvar-saati bütçesi (cihaz: keşif ~19 dk) → `DISCOVERY_BUDGET_STOP` (tamamlanamadı; "portal yok" değil).
 - Doğrulama: tsc temiz · **denetle TEMİZ (exit 0)** · `check-v18711-release.js` PASS · hesap testi **12 grup** (yeni: dolu-parametre varyant, boş-profil+canlı=verified, kullanıcı adı alanı). **Native değişiklik YOK.** Ayrıntı `AI-DEVIR-v18.7.11.md`.
@@ -360,7 +360,7 @@ Kök neden (cihaz 18.7.10 tanı + protokol araştırması): weko `:80/portal.php
 ## 9b. Önceki durum (v18.7.9 RC1 — dal `v18.7.9-rc1-twophase-discovery`)
 
 **v18.7.9 (iki aşamalı portal keşfi + telemetri, kanıtlı):**
-Cihaz kanıtı: `weko-azure.xyz` çoklu-MAC "all" taraması 54 portun hepsinde yol denedi (~757, 8,8 dk, valid:0, görünürlük yok).
+Cihaz kanıtı: `panel-c.example` çoklu-MAC "all" taraması 54 portun hepsinde yol denedi (~757, 8,8 dk, valid:0, görünürlük yok).
 - **İki aşamalı keşif:** önce açık portlar (paralel), sonra yollar **yalnız açık portlarda** (bulununca dur); bulunamazsa
   bilinmeyen portlar fallback. ~757 yerine ~(açıkPort×14); yanlış-negatif korunur. (`magPortalDiscovery.ts`)
 - **Keşif telemetrisi `MAG_DISCOVERY_RESULT`:** açık portlar + bulunan aday endpoint'ler (confidence/HTTP/kanıt) + state/probes.
@@ -389,12 +389,12 @@ v18.7.7 cihaz testi (bitiş/şifre/MAC/AKTİF ÇALIŞTI) sonrası kalan sorunlar
 
 **v18.7.7 (bu sürüm — MAG hesap kartı doğruluğu + oynatma/senkron, kanıtlı; PUSH/DERLEME BEKLİYOR):**
 v18.7.6 cihaz testi sonrası 8 düzeltme (P1–P8). Kök neden kanıtları: tanı `...05-13`, cihaz AsyncStorage, IPTV Extreme görüntüleri.
-- **P1 — bitiş `phone`'da geliyor:** vip.rxs1 bitişi `phone:"January 8, 2027..."` alanında; biz telefon sanıyorduk. Artık açık bitiş
+- **P1 — bitiş `phone`'da geliyor:** panel-e.example bitişi `phone:"January 8, 2027..."` alanında; biz telefon sanıyorduk. Artık açık bitiş
   yoksa phone tarih olarak bitiş sayılır (telefon gösterilmez). `accountExpiry` "D Month YYYY [HH:MM:SS]" + Türkçe ay tanır.
 - **P2 — gzip (önceki oturum + korundu):** `get_main_info` gzip gelip "JSON değil" sayılıyordu. exactEndpoint expo/fetch yolunda
   elle `Accept-Encoding` kaldırıldı (OkHttp şeffaf açar); snapshot artık exactEndpoint zorlamaz. `GZIP_UNDECODED` telemetrisi.
 - **P3 — status 0 = AKTİF:** Stalker'da sayısal 0 aktiftir (launcher_profile.php). accountDenial'ın 0'ı "bloklu" sayması kaldırıldı
-  → HKPREMIUM artık "SÜRESİ DOLDU" değil "AKTİF". Bare kayıt (ör. {blocked:0}) status'u undefined kalır.
+  → PANEL_A artık "SÜRESİ DOLDU" değil "AKTİF". Bare kayıt (ör. {blocked:0}) status'u undefined kalır.
 - **P4 — base64 MAC/login + password:** `MDA6...`=`00:1A:79:...` çözülür; `AccountInfo.password` eklendi, kartta "Şifre".
 - **P5 — motor geçişinde taze create_link:** `switchProfile`'da Stalker için tek-kullanımlık play_token yeni motora taşınmaz
   (`STALKER_ENGINE_SWITCH_REFRESH`). Media3→MPV'de "Failed to open ...play_token" düzelir.

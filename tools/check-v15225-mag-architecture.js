@@ -90,7 +90,7 @@ async function fixtureHandshakeMag254(){
   // "Authorization failed." aldı; sorun EKSİK alan değil, aksine şişirilmiş
   // çerez olabilir. Sade profiller öne alındı, tam cihaz profilleri yedek.
   // v16.12.1: 30.08.2026 PCAPdroid kaydı daha yeni ve doğrudan çalışan
-  // HKPREMIUM istemcisini gösterdi: MAG320 + Ethernet + encoded MAC +
+  // PANEL_A istemcisini gösterdi: MAG320 + Ethernet + encoded MAC +
   // Europe/Paris + handshake query'sinde JsHttpRequest YOK. Bu nedenle genel
   // pcap320-minimal profil ilk güvenli denemedir; wire250 ve tüm eski profiller
   // fallback olarak korunur.

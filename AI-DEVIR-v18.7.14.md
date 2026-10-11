@@ -19,7 +19,7 @@
 
 ## Cihazda doğrulanacak (DEV 18.7.14)
 1. **Back-trap:** MAG ekleme uzarsa "İptal et ve geri dön" ile çıkılabiliyor mu.
-2. **hkpremium:** yenile → kart `ud3B3yRH` (G02/G03/G04 + v18.7.13 enrichment). Log: `usernameFieldKind=login`.
+2. **panel-a:** yenile → kart `ab3C4dEf` (G02/G03/G04 + v18.7.13 enrichment). Log: `usernameFieldKind=login`.
 3. **G01:** ordered-list desteklemeyen bir portal hesabı artık çoklu doğrulamada verified oluyor mu.
 4. **G05:** portsuz + "Yalnız girilen" yalnız varsayılan portu deniyor mu.
 

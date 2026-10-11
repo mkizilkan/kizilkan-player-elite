@@ -1,10 +1,10 @@
 # AI DEVİR — v18.7.20 RC1 (dal `v18.7.20-rc1-catalog-speed-vod-class`)
 
 **Tarih:** 2026-10-06 · **Taban:** v18.7.19 · **Yazan:** Claude Opus
-**Kaynak:** Cihaz logu `kizilkan-diagnostics-2026-10-06T16-45-26` (hkpremium).
+**Kaynak:** Cihaz logu `kizilkan-diagnostics-2026-10-06T16-45-26` (panel-a).
 
 ## Kanıt (log)
-- **Filmler kayboldu:** `STALKER_CATALOG_DONE vod=0, series=12740, seriesFromVod:6244`. `STALKER_PAGINATION_STOP type=vod loaded=6244/22905`. Yani hkpremium'un 22905 "film"inin yüklenen 6244'ünün HEPSİ diziye sınıflandı → Filmler bölümü boş.
+- **Filmler kayboldu:** `STALKER_CATALOG_DONE vod=0, series=12740, seriesFromVod:6244`. `STALKER_PAGINATION_STOP type=vod loaded=6244/22905`. Yani panel-a'un 22905 "film"inin yüklenen 6244'ünün HEPSİ diziye sınıflandı → Filmler bölümü boş.
 - **Yavaş/yarım:** VOD %27 (6244/22905), dizi 6496/9501 — her tür 75 sn TIME_BUDGET'e takılıp kesiliyor. avgPage ~165ms, conc=6, sunucu ~1 sn/sayfa. Üst sayfa sınırı 600 (≈8400 öğe) da büyük katalogları kesiyordu.
 
 ## Yapılan
@@ -17,7 +17,7 @@
 - tsc temiz · denetle TEMİZ · `check-v18720` PASS. `check-v18708` ileri-uyumlu yapıldı (conc/sayfa sabit yerine >=). Native değişiklik YOK.
 
 ## Cihazda test
-hkpremium'u yenile → (a) içerik daha hızlı/çok yüklenmeli (conc 20); (b) log'da `STALKER_VOD_PARTITION` → `byIsSeriesFlag/byCategoryTitle/...` ve `sampleCategories` ile filmlerin neden diziye gittiği görünecek → bir sonraki sürümde sınıflama düzeltilecek.
+panel-a'u yenile → (a) içerik daha hızlı/çok yüklenmeli (conc 20); (b) log'da `STALKER_VOD_PARTITION` → `byIsSeriesFlag/byCategoryTitle/...` ve `sampleCategories` ile filmlerin neden diziye gittiği görünecek → bir sonraki sürümde sınıflama düzeltilecek.
 
 ## Bekleyen (onay/sıra)
 A (ekleme-anında kullanıcı adı), B (Xtream combo özel paralellik), C (M3U linki üret+kopyala+görüntü testi), D (arka plan servisi), filmler sınıflama DÜZELTMESİ (V telemetrisinden sonra), release imza, GPT G07-G10.

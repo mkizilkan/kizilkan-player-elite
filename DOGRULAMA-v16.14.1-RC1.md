@@ -25,4 +25,4 @@ Ek denemede eski `check-v161310-catalog-mag-playlist-management.js` gate'i yaln�
 
 Android release build: YAPILMADI.
 Dependency-resolved full TypeScript build: YAPILMADI.
-Gerçek cihaz HKPREMIUM / MPV testi: YAPILMADI.
+Gerçek cihaz PANEL_A / MPV testi: YAPILMADI.

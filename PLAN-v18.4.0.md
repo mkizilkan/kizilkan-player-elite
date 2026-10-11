@@ -4,7 +4,7 @@ Taban: `v18.3.0-rc1-scan-proxy` (b3bb771c). Dal: `v18.4.0-rc1-media-proxy-fix`.
 Kullanıcı kararı (27.09.2026): tüm maddeler bu turda, sürüm bölünmeyecek. Kanıt: `kizilkan-diagnostics-2026-09-27T17-26-23-204Z.json` (v18.3.0).
 
 ## 1. KRİTİK HATA — Yerel medya MAG listesi aktifken 404 (KANITLI)
-**Log:** `LOCAL_MEDIA_OPEN` → `CHANNEL_SELECTED {channelId: local-…, source: stalker}` → `create_link` (hkpremiumtv.xyz) →
+**Log:** `LOCAL_MEDIA_OPEN` → `CHANNEL_SELECTED {channelId: local-…, source: stalker}` → `create_link` (panel-a.example) →
 `MEDIA3_ERROR 404` → VLC → mpv hepsi başarısız. `channelGroup: Yerel Müzik`, `playlistId: pl-mag-…`. Xtream aktifken sorun yok.
 **Kod:** `PlayerHost.tsx` Stalker çözümüne yalnız `activePlaylist?.source === "stalker"` ile karar veriyor (satır 846–866, 1197);
 öğenin yerel olup olmadığına bakmıyor. Yerel `content://` adresi `create_link`'e gidiyor.

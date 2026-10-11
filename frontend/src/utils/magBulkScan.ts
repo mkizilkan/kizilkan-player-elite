@@ -222,7 +222,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
     throw error;
   }
   const reportByHost = new Map(reports.map(report => [report.host.host, report]));
-  // v18.7.10 — HANDSHAKE YEDEĞİ. Pasif keşif bir host'ta seçilebilir aday bulamazsa (weko gibi
+  // v18.7.10 — HANDSHAKE YEDEĞİ. Pasif keşif bir host'ta seçilebilir aday bulamazsa (panel-c gibi
   // "izsiz" portaller ya da /c/ redirect'i), TEKLİ eklemedeki gibi bir MAC ile GERÇEK handshake
   // keşfi (discoverMagPortal) yapılır. Bulunan endpoint, seçilebilir aday olarak rapora eklenir →
   // hem otomatik/manuel seçimde görünür hem de sonraki hesap doğrulaması bu endpoint'te çalışır.

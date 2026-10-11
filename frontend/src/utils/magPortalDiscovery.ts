@@ -440,7 +440,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
       const extra: string[] = [];
       for (const target of plan) { if (stop || seen.size >= maxCandidates) break; budget.check(); try { await probe(target, extra); } catch (error: any) { if (error?.kind === "MAG_PROTECTION" || isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; lastError = String(error?.message || error).slice(0, 180);
         // v18.7.10: FOREIGN_REDIRECT tüm host'u ÖLDÜRMESİN. Portal /c/'den başka yola/origin'e
-        // yönlenebilir (cihaz: weko /c/ → redirect → 11 denemede "error" + handshake hiç denenmedi).
+        // yönlenebilir (cihaz: panel-c /c/ → redirect → 11 denemede "error" + handshake hiç denenmedi).
         // Yalnız o aday atlanır; diğer yollar/portlar ve handshake yedeği denenmeye devam eder.
         if (error?.kind === "FOREIGN_REDIRECT") { void recordDiagnostic("scan", "MAG_DISCOVERY_FOREIGN_REDIRECT", { target }); continue; }
         if (error?.kind === "PROXY") { report.state = "error"; stop = true; } } }

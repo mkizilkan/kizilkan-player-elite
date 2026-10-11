@@ -36,4 +36,4 @@ Kullanıcı: "xtream ve mac çoklu eklemede, bulunan hesapları listeye eklemede
 
 ## Bekleyen
 - GPT G07-G10.
-- v18.7.23 cihaz doğrulaması (hkpremium kartı oto-prime kullanıcı adı + görüntü oto-testi).
+- v18.7.23 cihaz doğrulaması (panel-a kartı oto-prime kullanıcı adı + görüntü oto-testi).

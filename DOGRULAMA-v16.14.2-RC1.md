@@ -47,7 +47,7 @@ Recovery ZIP generated `frontend/android` projesini içermiyor. Bu nedenle bu or
 Gerçek final kontrolü uygun Android SDK/JDK ortamında Expo prebuild sonrasında yapılmalıdır.
 
 ## Device doğrulama — YAPILMADI
-- HKPREMIUM gerçek cihaz handshake/playback
+- PANEL_A gerçek cihaz handshake/playback
 - MPV gerçek cihaz playback
 - Media3 444/456/520 renewal
 - stale-frame panel/channel senaryosu

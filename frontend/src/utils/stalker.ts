@@ -58,7 +58,7 @@ const MAG250_UA =
   "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3";
 const MAG254_UA =
   "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG254 stbapp ver: 4 rev: 2721 Safari/533.3";
-/** v16.12.0 — 30.08.2026 PCAPdroid kaydında HKPREMIUM tarafından kabul edilen gerçek istemci kimliği. */
+/** v16.12.0 — 30.08.2026 PCAPdroid kaydında PANEL_A tarafından kabul edilen gerçek istemci kimliği. */
 const MAG320_UA =
   "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG320 stbapp ver: 2 rev: 250 Safari/533.3";
 
@@ -342,7 +342,7 @@ function portalCandidates(portal: string, policy: "exact" | "auto" = "auto"): st
     } else if (/\/c$/i.test(path)) {
       /**
        * v16.8.0 — /c/ PORTALLARINDA ADAY LİSTESİ GENİŞLETİLDİ.
-       * Cihaz kaydı (29.08): hkpremiumtv.xyz:2095/c/ için yalnız 3 yol
+       * Cihaz kaydı (29.08): panel-a.example:2095/c/ için yalnız 3 yol
        * denenmiş; /portal.php "Authorization failed." vermiş, diğer ikisi 404.
        * /server/load.php ve /c/portal.php HİÇ DENENMEMİŞTİ — oysa daha önceki
        * kayıtlarda /server/load.php yanıt veriyordu. Ministra kurulumlarında
@@ -423,7 +423,7 @@ function preferredCompatProfiles(cred: StalkerCreds, learned?: LearnedMagCompat 
   // Eski wire/header profilleri korunur; bilinen çalışan profil seçime dahil edilir.
   /**
    * v16.12.0 — PCAP-KANITLI ÖNCELİK.
-   * 30.08.2026 HKPREMIUM kaydında çalışan istemci MAG320 + Ethernet +
+   * 30.08.2026 PANEL_A kaydında çalışan istemci MAG320 + Ethernet +
    * encoded MAC + Europe/Paris + no-JsHttp handshake kullandı. Bu profil
    * sağlayıcı adına bağlı değildir; genel, minimal MAG320 uyumluluk yoludur.
    * Learned profil varsa yine en öne alınır.
@@ -755,7 +755,7 @@ function isTrustedPlaybackTarget(endpoint: string, playbackUrl: string): boolean
     const target = new URL(playbackUrl);
     if (portal.protocol !== target.protocol) return false;
     // v16.12.0 PCAP SECURITY/FIX: aynı hostname üzerindeki farklı port ayrı origin'dir.
-    // HKPREMIUM kaydında portal :2095 iken medya :8080'e geçiyor ve Loader
+    // PANEL_A kaydında portal :2095 iken medya :8080'e geçiyor ve Loader
     // Bearer/MAC cookie taşımıyor. Hassas portal kimliği ancak aynı portta kalabilir.
     if (normalizedOriginPort(portal) !== normalizedOriginPort(target)) return false;
     const p = normalizePlaybackHost(portal.hostname);
@@ -875,7 +875,7 @@ function magPcapShapeParity(nr:any, requestMeta:{action:string;type:string}) {
     handshakeNoAuthorization: !isHandshake || !nr.authorizationPresent,
   };
   const failed = Object.entries(checks).filter(([,ok])=>!ok).map(([name])=>name);
-  return { checks, failed, parity: failed.length === 0, profile: isHandshake ? 'HKPREMIUM_PCAP_HANDSHAKE' : 'MAG320_PCAP_SHAPE' };
+  return { checks, failed, parity: failed.length === 0, profile: isHandshake ? 'PANEL_A_PCAP_HANDSHAKE' : 'MAG320_PCAP_SHAPE' };
 }
 
 async function req(url: string, headers: Record<string, string>, options: number | ReqOptions = 20000): Promise<any> {
@@ -957,7 +957,7 @@ async function reqTransport(url: string, headers: Record<string, string>, option
       let target = url, method = "GET", body = "";
       const hdrs = { ...headers };
       // v18.7.7 (P2): OkHttp (expo/fetch altında) Accept-Encoding elle verildiğinde gzip'i
-      // ŞEFFAF AÇMAZ → ham gzip baytları "JSON değil" sayılıyordu (log: HKPREMIUM get_main_info
+      // ŞEFFAF AÇMAZ → ham gzip baytları "JSON değil" sayılıyordu (log: PANEL_A get_main_info
       // \x1f\x8b). Başlık kaldırılınca OkHttp gzip'i kendisi ister ve kendisi açar.
       if (exactFetch) for (const key of Object.keys(hdrs)) if (key.toLowerCase() === "accept-encoding") delete hdrs[key];
       if (opts.postForm) {
@@ -1733,11 +1733,11 @@ function initialProfileVariants(cred:StalkerCreds, preferredModel:MagDeviceModel
   }];
   if (preferredModel === "MAG320") {
     // v18.7.11 (M07/M08 — cihaz kanıtı + protokol araştırması): PCAP minimal get_profile İLK denenir
-    // (uyumlu portaller — ör. hkpremium — profili bununla DOLU döndürüyor). AMA bazı portaller
-    // (cihaz: weko → `MAG320-pcap-minimal: profil boş`) parametresiz get_profile'a BOŞ `js` döndürüyor;
+    // (uyumlu portaller — ör. panel-a — profili bununla DOLU döndürüyor). AMA bazı portaller
+    // (cihaz: panel-c → `MAG320-pcap-minimal: profil boş`) parametresiz get_profile'a BOŞ `js` döndürüyor;
     // standart istemci (StalkerTalker/Kodi pvr.stalker) get_profile'ı sn/stb_type/image_version/ver/
     // hw_version ile gönderir ve profili ancak öyle alır. Minimal BOŞ dönerse bu DOLU-parametreli
-    // MAG254/MAG250 varyantlarına düşülür. Eskiden MAG320 yalnız minimal'i deniyordu → weko hiç kurtulamıyordu.
+    // MAG254/MAG250 varyantlarına düşülür. Eskiden MAG320 yalnız minimal'i deniyordu → panel-c hiç kurtulamıyordu.
     return [{label:"MAG320-pcap-minimal",params:{type:"stb",action:"get_profile"},noJs:true}, ...mag254Variants, ...mag250Variants];
   }
   return preferredModel==="MAG250" ? [...mag250Variants,...mag254Variants] : [...mag254Variants,...mag250Variants];
@@ -1788,8 +1788,8 @@ function profilePayload(data:any): any {
  */
 export async function stalkerProfile(cred: StalkerCreds, ses: StalkerSession, signal?: AbortSignal): Promise<any> {
   const errors:string[]=[];
-  // v18.7.13 (A03/A04 — cihaz kanıtı: hkpremium minimal get_profile'da `login` BOŞ, yalnız name=1787;
-  // gerçek login `ud3B3yRH` yalnız dolu-parametreli yanıtta geliyor). GERÇEK login taşıyan (login/
+  // v18.7.13 (A03/A04 — cihaz kanıtı: panel-a minimal get_profile'da `login` BOŞ, yalnız name=1787;
+  // gerçek login `ab3C4dEf` yalnız dolu-parametreli yanıtta geliyor). GERÇEK login taşıyan (login/
   // username/user_name/user/account/subscriber) profili tercih et; yoksa ilk dolu profili (eski davranış)
   // koru. `name/fname/sname` gerçek login sayılmaz. Böylece login eksikse dolu-parametre varyantları da denenir.
   const macNorm = normalizeMac(cred.mac).replace(/[:-]/g, "").toLowerCase();
@@ -2028,7 +2028,7 @@ function accountDenial(value: unknown): "blocked" | "expired" | null {
   const error = [p.error, p.message].filter(text => typeof text === "string").join(" ").toLowerCase();
   // v18.7.7 (P3): Stalker'da SAYISAL status 0 = AKTİF, 1 = kapalı (kaynak: stalker_portal
   // launcher_profile.php `status == 1` => off). v18.7.4'teki `/^(?:0|false)$/` kuralı 0'ı
-  // "bloklu" sayıyordu → çalışan hesap "SÜRESİ DOLDU" görünüyordu (cihaz: HKPREMIUM status 0,
+  // "bloklu" sayıyordu → çalışan hesap "SÜRESİ DOLDU" görünüyordu (cihaz: PANEL_A status 0,
   // katalog çalışıyordu). Sayısal status artık ret sinyali DEĞİL; ret yalnız açık bayraklardan
   // (blocked/active:false) ve metinsel durumdan gelir.
   if ([p.blocked, p.banned, p.disabled].some(flag => portalFlag(flag) === true)
@@ -2040,8 +2040,8 @@ function accountDenial(value: unknown): "blocked" | "expired" | null {
 }
 
 /**
- * v18.7.7 (P4): Bazı portallar MAC/login'i base64 kodlu gönderir (cihaz: HKPREMIUM
- * "MDA6MUE6Nzk6MzA6M0E6QTc=" = "00:1A:79:30:3A:A7"). Değer base64 ise ve çözülünce
+ * v18.7.7 (P4): Bazı portallar MAC/login'i base64 kodlu gönderir (cihaz: PANEL_A
+ * "MDA6MUE6Nzk6MDA6MDA6MDc=" = "00:1A:79:00:00:07"). Değer base64 ise ve çözülünce
  * geçerli bir MAC çıkıyorsa normalize edilmiş MAC'i, aksi halde null döndürür.
  */
 function base64DecodeAscii(input: string): string | null {
@@ -2066,7 +2066,7 @@ function decodeMacIfBase64(raw: string | undefined): string | undefined {
 }
 /**
  * v18.7.16 (U1): kullanıcı adı alanı DOLGULU base64 ise (ör. "dXNlcjEyMw==") çöz. Dolgu ('=') kuvvetli
- * base64 sinyalidir; normal kullanıcı adları '=' içermez → padding'siz değerler (ör. "ud3B3yRH") ham
+ * base64 sinyalidir; normal kullanıcı adları '=' içermez → padding'siz değerler (ör. "ab3C4dEf") ham
  * KULLANILIR, yanlışlıkla çözülmez. Çözülen değer boşluksuz basılabilir ASCII (3–64 karakter) ve MAC
  * değilse döndürülür; aksi halde undefined (ham değer kullanılır). Ham base64 ASLA kullanıcıya gösterilmez.
  */
@@ -2132,7 +2132,7 @@ export function normalizeStalkerAccountInfo(profile: any): AccountInfo {
   const denied = accountDenial(p);
   const inactive = [p.active, p.enabled].some(value => portalFlag(value) === false);
   // v18.7.7 (P1): açık bitiş alanı yoksa SON ÇARE olarak `phone` tarih olarak denenir
-  // (cihaz: vip.rxs1 bitişi `phone`'da "January 8, 2027" gönderiyordu). Telefon böyle
+  // (cihaz: panel-e.example bitişi `phone`'da "January 8, 2027" gönderiyordu). Telefon böyle
   // kullanıldıysa aşağıda Telefon alanı olarak GÖSTERİLMEZ.
   const expiryFields = [p.tariff_expired_date, p.expire_billing_date, p.exp_billing_date, p.expiration_date, p.exp_date, p.end_date]
     .map(primitiveString).find(value => value !== undefined && parseAccountExpiryMs(value) !== null);
@@ -2143,8 +2143,8 @@ export function normalizeStalkerAccountInfo(profile: any): AccountInfo {
   // ham base64 gösterme; gerçek login ayrı alandaysa onu kullan.
   const mac = decodeMacIfBase64(primitiveString(p.mac));
   // v18.7.8 (A): kullanıcı adı aday alanları genişletildi. Bazı portallar login'i farklı anahtarda
-  // döndürüyor (cihaz: HKPREMIUM'da `login` boştu ama hesabın gerçek kullanıcı adı var).
-  // v18.7.10: login boşsa name/fname'e düş (cihaz: HKPREMIUM/weko'da login boş, kullanıcı adı
+  // döndürüyor (cihaz: PANEL_A'da `login` boştu ama hesabın gerçek kullanıcı adı var).
+  // v18.7.10: login boşsa name/fname'e düş (cihaz: PANEL_A/panel-c'da login boş, kullanıcı adı
   // name/fname'de geliyor — IPTV Extreme "bilgi"de bunu gösteriyor). MAC'e eşit değeri kullanma.
   const macNorm = mac ? mac.replace(/[:-]/g, "").toLowerCase() : "";
   const { username } = pickUsernameField(p, macNorm);
@@ -2308,7 +2308,7 @@ function accountMatchesMac(value: unknown, mac: string): boolean {
     if (typeof p[field] !== "string") return false;
     // v18.7.13 (A01): portal MAC'i base64 kodlu döndürebilir (örn. "MDA6MUE6Nzk6..."). Normalizer bunu
     // zaten çözüyordu (decodeMacIfBase64) ama eşleştirici HAM değeri karşılaştırıp geçerli hesabı
-    // "mac-mismatch" sayıp reddediyordu (cihaz: goldensm32 tüm MAC'ler unverified). Artık burada da çöz.
+    // "mac-mismatch" sayıp reddediyordu (cihaz: panel-b tüm MAC'ler unverified). Artık burada da çöz.
     const decoded = String(decodeMacIfBase64(p[field].trim()) || "");
     if (!/^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$|^[0-9a-f]{12}$/i.test(decoded) || normalizeMac(decoded) !== mac) return false;
   }
@@ -2425,12 +2425,12 @@ export async function stalkerVerifyAccount(
     } catch (error) { const stop = nonterminal(error, "main-info"); if (stop) return stop; }
     const p = accountRecord(profile);
     if (hasAccountIdentity(p)) evidence.push("profile-account-identity");
-    // v18.7.11 (M08 — cihaz kanıtı: weko handshake OK + profil/main_info kimliği BOŞ ama aynı oturumda
+    // v18.7.11 (M08 — cihaz kanıtı: panel-c handshake OK + profil/main_info kimliği BOŞ ama aynı oturumda
     // get_all_channels 21266 kanal açıyor): kimlik yoksa HEMEN "unverified" DEME. accountMatchesMac
     // yanlış-MAC'i hâlâ eliyor (yukarıda), classify bloklu/süresi dolmuşu yakalıyor; aşağıdaki canlı/
     // VOD/dizi probe'u GERÇEK örnek (positive id + name + kullanılabilir cmd) gerektiriyor. Erişilebilir
     // içerik varsa "verified"; hiçbir tür erişilemezse "no-accessible-catalogue-sample" ile unverified döner.
-    // Böylece profil sunmayan ama hesabı geçerli olan klonlar (weko) eklenebilir; boş/yetkisiz hesap eklenmez.
+    // Böylece profil sunmayan ama hesabı geçerli olan klonlar (panel-c) eklenebilir; boş/yetkisiz hesap eklenmez.
     if (!hasAccountIdentity(p) && !hasAccountIdentity(main)) evidence.push("missing-account-identity-proceed-to-access");
     // Keep useful profile fields when this optional endpoint omits them. The
     // account proof still requires a positive identity and actual list access.
@@ -2609,7 +2609,7 @@ async function stalkerOrderedList(
    * ve total öğrenilir; kalan sayfalar parti parti PARALEL çekilir ama SIRAYLA işlenir
    * (dedup + onUniqueRow sırası korunur). 429/koruma görülünce genişleme durur.
    */
-  // v18.7.20 (hız): cihaz kanıtı (hkpremium) — VOD 22905 öğe, 75 sn/conc6 ile yalnız %27 (6244) yüklendi,
+  // v18.7.20 (hız): cihaz kanıtı (panel-a) — VOD 22905 öğe, 75 sn/conc6 ile yalnız %27 (6244) yüklendi,
   // kalanı kayıp. get_ordered_list SALT-OKUNUR liste API'sidir (oynatma/create_link değil) → "tek upstream"
   // oynatma kuralını bozmaz; liste eşzamanlılığını 6→10 ve bütçeyi 75→100 sn yaparak aynı/az fazla sürede
   // KAT KAT fazla içerik yüklenir. Üst sayfa sınırı (600) büyük katalogları kesiyordu → 2000 (tam yüklenebilsin).
@@ -2755,7 +2755,7 @@ function truthyPortalFlag(v:any): boolean {
 }
 function rowLooksSeries(v:any, group:string): boolean {
   // v18.7.22 (filmler kayboldu — KANIT: STALKER_VOD_PARTITION `bySeriesArray` TÜM filmleri diziye atıyordu):
-  // bazı portaller (hkpremium) HER VOD öğesine, FİLMLER dahil, BOŞ `series: []` koyuyor. Boş dizi "dizi"
+  // bazı portaller (panel-a) HER VOD öğesine, FİLMLER dahil, BOŞ `series: []` koyuyor. Boş dizi "dizi"
   // DEĞİLDİR → yalnız DOLU `series` dizisi (gerçek sezon/bölüm verisi) dizi işareti sayılır. Gerçek diziler
   // ayrıca is_series bayrağı ve kategori adı ("Dizi"/"Series"/"Sezon") ile zaten yakalanır.
   return truthyPortalFlag(v?.is_series) || (Array.isArray(v?.series) && v.series.length > 0) || isSeriesCategoryTitle(group) || /\b(series|serial|dizi)\b/i.test(String(v?.type || v?.stream_type || ""));
@@ -2782,7 +2782,7 @@ async function stalkerVodPartition(cred:StalkerCreds, ses:StalkerSession, opts?:
   const vod:VodItem[]=[]; const fallbackSeries:SeriesItem[]=[];
   let rawCount=0;
   // v18.7.20 (filmler kayboldu teşhisi): VOD öğelerinin hangi ölçütle diziye sınıflandığını say (DEĞER YOK,
-  // yalnız sayı). Cihaz kanıtı (hkpremium): 6244 VOD öğesinin HEPSİ dizi oldu, Filmler bölümü boş kaldı.
+  // yalnız sayı). Cihaz kanıtı (panel-a): 6244 VOD öğesinin HEPSİ dizi oldu, Filmler bölümü boş kaldı.
   // sampleCategories: ilk birkaç kategori ADI (kategori adı hassas değil) → hangi ölçüt yanlış tetikliyor görünür.
   const cls={isSeries:0,seriesArray:0,catTitle:0,typeWord:0,asVod:0};
   const sampleCategories=new Set<string>();

@@ -6,7 +6,7 @@
 ## KÖK NEDEN (log'dan KANITLANDI)
 Kullanıcı: "kanal açtım, yine kullanıcı adı gözükmüyor." Log:
 - `STALKER_RESOLVE_DONE.data.streamCredsFound = **true**`, `streamShape = {segCount:3, tail:[8/alnum, 10/alnum, 4/num], xtreamShape:true}` → **U4 çıkarma ÇALIŞIYOR** (kullanıcı adı 8 karakter, şifre 10).
-- `STALKER_PLAYBACK_CONTEXT`: targetHost `hkpremiumtv.xyz:8080` (yayın), portalHost `hkpremiumtv.xyz:2095` (portal) — hostname aynı (`hkpremiumtv.xyz`), key eşleşiyor.
+- `STALKER_PLAYBACK_CONTEXT`: targetHost `panel-a.example:8080` (yayın), portalHost `panel-a.example:2095` (portal) — hostname aynı (`panel-a.example`), key eşleşiyor.
 - Yani çıkarma başarılı, harita doluyor; AMA **kart oynatmadan sonra yeniden okumuyordu**: `magDerived` bir `useMemo`'ydu, Ayarlar sekmesi mount kaldığından (deps değişmediği için) boş haritayla hesaplanan `null` değerinde KALIYORDU. Kullanıcı akışı: önce Ayarlar (boş) → kanal aç (harita doldu) → Ayarlar'a dön (useMemo yeniden hesaplamadı) → "Belirlenemedi".
 
 ## Yapılan (3 düzeltme)
@@ -22,7 +22,7 @@ Değerler LOGLANMAZ (yalnız `streamCredsFound`+uzunluk). Kullanıcının kendi 
 - `yarn tsc --noEmit` → exit 0 · `node tools/denetle.js` → ✅ TÜM DENETİMLER TEMİZ · `check-v18719` PASS. Native değişiklik YOK.
 
 ## Cihazda test
-hkpremium'da bir kanal aç → Ayarlar'a dön → Kullanıcı Adı `ud3B3yRH` görünmeli. Uygulamayı kapat/aç → yine görünmeli (kalıcı).
+panel-a'da bir kanal aç → Ayarlar'a dön → Kullanıcı Adı `ab3C4dEf` görünmeli. Uygulamayı kapat/aç → yine görünmeli (kalıcı).
 
 ## Bekleyen
 Arka planda çalışma (plan onayı bekliyor); APK imza/anahtar (release güncelleme); katalog/açılış hız.

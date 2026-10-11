@@ -5,7 +5,7 @@
 
 ## Kaynak / kanıt
 Cihaz (OnePlus 7 Pro, v18.7.22-dev):
-- **hkpremium** hesabını **manuel güncelledim** → kullanıcı adı yine "Belirlenemedi". Kök neden: v18.7.21 **A** (`stalkerPrimeStreamCredentials`) yalnız **yeni ekleme** akışında çağrılıyordu; mevcut veya manuel güncellenen hesapta kart açıldığında türetme hiç tetiklenmiyordu. Kullanıcı adı yalnızca bir kanal elle oynatılınca geliyordu.
+- **panel-a** hesabını **manuel güncelledim** → kullanıcı adı yine "Belirlenemedi". Kök neden: v18.7.21 **A** (`stalkerPrimeStreamCredentials`) yalnız **yeni ekleme** akışında çağrılıyordu; mevcut veya manuel güncellenen hesapta kart açıldığında türetme hiç tetiklenmiyordu. Kullanıcı adı yalnızca bir kanal elle oynatılınca geliyordu.
 - Görüntü var/yok (M3U testi) **butona basınca** geliyordu, otomatik değildi.
 
 ## Değişiklikler (yalnız `frontend/app/(tabs)/settings.tsx` — TS, native YOK)
@@ -29,7 +29,7 @@ Cihaz (OnePlus 7 Pro, v18.7.22-dev):
 - Native değişiklik YOK → assembleDebug zorunlu değil (yine DEV APK üretilecek).
 
 ## Cihazda doğrulanacak
-- hkpremium kartı açılınca kullanıcı adının **oynatmadan** gelmesi (`ud3B3yRH`).
+- panel-a kartı açılınca kullanıcı adının **oynatmadan** gelmesi (`ab3C4dEf`).
 - Görüntü testinin otomatik "✓ Görüntü var · N kanal" göstermesi.
 
 ## Bekleyen (sıradaki)

@@ -53,6 +53,7 @@ v18.7.30 normal APK gerçekten yayımlandı: [build 153 APK](https://github.com/
 - Görüntü testleri bir DNS/renderer upstream'ini sırayla kullanır. Üç kanal bütün DNS'lerde aynı kanal kimliklerine denk gelmeyebilir; ölçüm o anki gerçek örnekler içindir. Auth-only testi yayın akışı açmaz.
 - MAG hızlı yol her panelde çalışmaz: create_link kendi hesap kimliğini vermeli, gerçek API auth ve katalog örneği doğrulanmalı. Sadece URL'nin Xtream biçimine benzemesi yeterli değildir. Saf Stalker'da native pagination kalır. Olumsuz native-only köprü sonucu 1 saat / en fazla 512 kapsamlık bellekte tutulur; geçici hatalar bu başarı temelli olumsuz kayda yazılmaz.
 - Film ve dizi katalogları birer toplu çağrıdır; toplam ağ isteği kesinlikle “yalnız 2” diye sunulmaz. Kimlik, örnek kanal ve kategoriler ayrıca gerekebilir. Gerçek süre panel/ağ/katalog büyüklüğüne bağlı; 17 dakikanın belirli saniyeye ineceği henüz cihazda ölçülmedi.
+- Xtream'da toplu katalog yolu zaten vardı: `BulkPlaylistImportService.kt` canlı/film/dizi için `get_live_streams`, `get_vod_streams`, `get_series` çağrılarını ayrı future'larla alıyor; JS refresh de aynı bulk API işlevlerini kullanıyor. Var olan bu yol yeniden yazılmadı/“yeni eklendi” sayılmadı. Bu sürümdeki yeni hız düzeltmesi MAG'ın soğuk kimlik önbelleği yüzünden o yolu kaçırmasını giderir. Ekleme, liste düzenleme, ayarlar ve toplu refresh'in mevcut ortak Stalker katalog/enrichment girişleri korunur.
 - `xtream-verified:` marker, backend türü ve dizi API sunucusu korunur. Önceki Stalker-ID → Xtream-ID geçişinde favori/progress devamlılığı ayrı bilinen risktir; bu tur sahte ID eşleştirmesi eklemez. Gerçek cihaz film/dizi/bölüm kabul testi zorunludur.
 - Periyot mevcut uygulama açık/focus tazelik mekanizmasına uygulanır; Android kapalı uygulamayı her gün uyandıran yeni alarm/WorkManager servisi eklenmedi.
 - Cloudflare/CAPTCHA/401/403/429 sinyalinde aynı işi DNS/proxy gezdirerek engel aşma yok; koruma ve bekleme kullanıcıya görünür. Ban bağışıklığı iddiası yok.
@@ -100,3 +101,17 @@ DEV ayrı paket `com.gpt.kizilkan.player.dev`; normal uygulamanın üstüne kuru
 - TypeScript son kontrol: **PASS**, `.codex-v18731-tsc-final.log`.
 - Tam denetim: **142 kontrol temiz**, `.codex-v18731-denetle-authorized.log`, exit 0. İlk sandbox koşusunda yalnız offline Git Bash yayınlama testi Windows nesne erişiminden çalıştırılamadı; izinli koşuda bu test ve bütün kapılar geçti. Kapı atlanmadı/gevşetilmedi. Son DNS seçim/player follow-up davranış testleri ayrıca PASS.
 - DEV APK hash/kurulum, commit/push, manuel normal release ve indirme bağlantısı: yürütüm tamamlandığında aşağıya eklenir.
+
+### Kaynak commit / manuel koşu
+
+- Uygulama ve test/devir commit'i: `8b7f42f4ac70225a938740813d4df55c193b649e`, origin'de ayrı `codex/v18.7.31-dns-tests-fast-catalog` dalına push edildi. Ana dal değiştirilmedi.
+- Manuel normal build: [38141649385 / build 154](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/38141649385). `headSha` commit ile doğrulandı; workflow_dispatch, release / make_release=true / new_architecture=true. Sonuç henüz bu satır yazılırken tamamlanmadı.
+- Son küçük DNS/player takip değişikliklerinden sonra `test-v18731-dns-catalog.js`, 15 grupluk profil/katalog yarış testleri, 6 grupluk v18.7.30 sağlamlık testleri ve son TypeScript kontrolü ayrıca geçti. `git diff --check` temiz. Paket sürümü beş alanda yükseltildi; prebuild package.json betiklerini değiştirmedi.
+
+### Yerel DEV / telefon teslimi
+
+- `tools/build-dev.ps1 -SkipChecks -Install`, zorunlu kontroller ayrıca tamamlandıktan sonra yürütüldü. **BUILD SUCCESSFUL, 5 dakika 5 saniye**, 475 görev; `.codex-v18731-dev-build.log`.
+- APK: `artifacts/KIZILKAN-18.7.31-RC1-DEV.apk`. SHA-256 **`d6f9e24ff544d8b473422d07f1b71029cb3230544b7e51e1085edd94b71ac9b9`**. AAPT: paket `com.gpt.kizilkan.player.dev`, versionCode=180731, versionName=18.7.31-dev, etiket KIZILKAN DEV.
+- Son Metro sourcemap içinde bu commit'te değişen **14 çalıştırılabilir TS/TSX kaynak** mevcut proje dosyalarıyla birebir eşleşti. Type alanları tsc ile doğrulandı. APK'daki `assets/index.android.bundle` hash'i son Gradle bundle çıktısıyla aynı.
+- İlk bağlantı kontrolünde telefon yoktu; derleme biterken telefon yetkili olarak bağlandı. Betik `adb install -r -g` ile **Success** döndürdü. Telefon dumpsys: 180731 / 18.7.31-dev, lastUpdateTime=11.10.2026 16:07:55. Telefondaki kurulu base.apk SHA-256 PC dosyasıyla birebir aynı. Normal paket/verileri kaldırılmadı. Kullanıcıya kurulumun tamamlandığı ve telefonu çıkarabileceği bildirildi.
+- Kurulum ve dosya bütünlüğü doğrulandı; gerçek IPTV DNS/görüntü, film/dizi ve performans kabul senaryoları henüz yapılmış sayılmaz.

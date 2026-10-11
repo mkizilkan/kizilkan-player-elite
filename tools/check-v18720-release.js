@@ -2,7 +2,7 @@
 /**
  * v18.7.20 — katalog hızı + VOD sınıflama teşhisi:
  * S) katalog sayfalama hızlandırıldı: PAGE_CONCURRENCY 6→20, PAGE_BUDGET 75→100 sn, sayfa üst sınırı 600→2000
- *    (salt-okunur get_ordered_list; oynatma/create_link değil). Cihaz: hkpremium VOD 22905, 75sn/conc6 ile %27.
+ *    (salt-okunur get_ordered_list; oynatma/create_link değil). Cihaz: panel-a VOD 22905, 75sn/conc6 ile %27.
  * V) "Filmler kayboldu" teşhisi: STALKER_VOD_PARTITION telemetrisi — hangi ölçütle (is_series/seriesArray/
  *    kategori adı/tip) kaç öğenin diziye sınıflandığı + örnek kategori adları (DEĞER YOK). Kanıt sonrası düzeltme.
  */

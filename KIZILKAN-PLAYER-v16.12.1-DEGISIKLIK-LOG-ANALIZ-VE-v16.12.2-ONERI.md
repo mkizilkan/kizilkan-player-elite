@@ -770,7 +770,7 @@ Bu, storage tabanlı guard state'in gerçekten korunduğunu göstermektedir.
 
 ## P0 — Handshake sırası
 
-HKPREMIUM/PCAP ile eşleşen portal için ilk deneme:
+PANEL_A/PCAP ile eşleşen portal için ilk deneme:
 
 ```text
 MAG320

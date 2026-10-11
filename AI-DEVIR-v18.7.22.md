@@ -4,9 +4,9 @@
 **Kaynak:** Cihaz logu (18.7.21-dev) `STALKER_VOD_PARTITION` telemetrisi (v18.7.20'de eklenmişti).
 
 ## KÖK NEDEN (kanıtlandı)
-hkpremium'da tüm filmler kayboluyordu (`vod=0`, hepsi diziye). `STALKER_VOD_PARTITION`:
+panel-a'da tüm filmler kayboluyordu (`vod=0`, hepsi diziye). `STALKER_VOD_PARTITION`:
 `bySeriesArray=2814/2814` ve `868/868` — yani `rowLooksSeries`'teki `Array.isArray(v.series)` TÜM
-VOD öğesinde tetikleniyordu. Portal (hkpremium) FİLMLERE de BOŞ `series: []` koyuyor. Örnek kategoriler
+VOD öğesinde tetikleniyordu. Portal (panel-a) FİLMLERE de BOŞ `series: []` koyuyor. Örnek kategoriler
 filmleri kanıtlıyor: "VOD | EN - LATEST MOVIES", "COMEDY", "SCIENCE FICTION", "TR ✦ SİNEVİZYON", "NETFLIX".
 
 ## Düzeltme (tek satır, kanıta dayalı)
@@ -18,7 +18,7 @@ veya is_series bayrağı olanlar DİZİ. `stalker.ts`.
 - tsc temiz · denetle TEMİZ · `check-v18722` PASS. Eski `check-v15214` (seriesFromVod fixture) bozulmadı. Native değişiklik YOK.
 
 ## Cihazda test
-hkpremium'u yenile → Filmler bölümü dolmalı (`STALKER_VOD_PARTITION` artık `asVod>0`, `bySeriesArray` yalnız dolu dizilerde).
+panel-a'u yenile → Filmler bölümü dolmalı (`STALKER_VOD_PARTITION` artık `asVod>0`, `bySeriesArray` yalnız dolu dizilerde).
 
 ## Bekleyen
 Ekleme-anında kullanıcı adı "eklenmiyor" (kullanıcı ekran görüntüsü gönderecek — v18.7.21 A); release imza; GPT G07-G10.

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * v18.7.22 — "Filmler kayboldu" düzeltmesi (kanıta dayalı):
- * Cihaz telemetrisi STALKER_VOD_PARTITION: hkpremium'da TÜM film öğeleri `bySeriesArray` ile diziye
+ * Cihaz telemetrisi STALKER_VOD_PARTITION: panel-a'da TÜM film öğeleri `bySeriesArray` ile diziye
  * sınıflanıyordu çünkü portal filmlere de BOŞ `series: []` koyuyor. Boş dizi "dizi" değildir →
  * rowLooksSeries artık yalnız DOLU series dizisini (v.series.length > 0) dizi işareti sayar.
  */

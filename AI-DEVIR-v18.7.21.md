@@ -15,7 +15,7 @@
 - tsc temiz · denetle TEMİZ · `check-v18721` PASS. **NATIVE DEĞİŞİKLİK VAR** → `expo prebuild` + `assembleDebug` ZORUNLU (bu devirde sonuç yazılacak).
 
 ## Cihazda test
-- A: hkpremium EKLE → oynatmadan kart Kullanıcı Adı dolmalı.
+- A: panel-a EKLE → oynatmadan kart Kullanıcı Adı dolmalı.
 - B: Xtream combo → paralel sayısı gir → log `requestedConcurrency` girilen değer olmalı.
 - C: kart → M3U linki görünmeli, kopyala + "Görüntü testi" → "Görüntü var · N kanal".
 - D: MAG çoklu tarama/güncelleme başlat → uygulamayı ARKAYA al → bildirim görünmeli, iş sürmeli; bitince bildirim kaybolmalı.
