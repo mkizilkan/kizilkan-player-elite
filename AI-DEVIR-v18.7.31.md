@@ -116,6 +116,14 @@ DEV ayrı paket `com.gpt.kizilkan.player.dev`; normal uygulamanın üstüne kuru
 - İlk bağlantı kontrolünde telefon yoktu; derleme biterken telefon yetkili olarak bağlandı. Betik `adb install -r -g` ile **Success** döndürdü. Telefon dumpsys: 180731 / 18.7.31-dev, lastUpdateTime=11.10.2026 16:07:55. Telefondaki kurulu base.apk SHA-256 PC dosyasıyla birebir aynı. Normal paket/verileri kaldırılmadı. Kullanıcıya kurulumun tamamlandığı ve telefonu çıkarabileceği bildirildi.
 - Kurulum ve dosya bütünlüğü doğrulandı; gerçek IPTV DNS/görüntü, film/dizi ve performans kabul senaryoları henüz yapılmış sayılmaz.
 
+### Normal GitHub APK — başarılı son teslim
+
+- [38141649385 / build 154](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/38141649385): **completed / success**. Derlenen commit `8b7f42f4ac70225a938740813d4df55c193b649e` ile Release targetCommitish birebir aynı.
+- Zorunlu denetim/tsc, APK derlemesi, MPV final native paketleme, paket/sürüm/imza doğrulaması ve Release yayını başarılı. Actions artifact adımı Release başarılı olduğu için bilinçli skipped; APK eksik değildir. Takip bağlantısında bir geçici TCP reset olmuştu; build durmadı veya ikinci kez tetiklenmedi, aynı koşu yeniden izlendi.
+- [Normal v18.7.31 APK indir](https://github.com/mkizilkan/kizilkan-player-elite/releases/download/build-154/KIZILKAN-PLAYER-ELITE-v18.7.31-build154.apk): **385415447 byte**, GitHub asset SHA-256 **`724fc060803f51fc1dfaa79916438eeb90d55e1798077c29e47823b3a7a10e50`**.
+- [ABI / boyut raporu](https://github.com/mkizilkan/kizilkan-player-elite/releases/download/build-154/APK-BOYUT-RAPORU-v18.7.31.txt): 1409 byte; SHA-256 `9a23b346d14ec670538c8c480e9023a3f2e986656d96b81695d7b186ddf79afe`. İki asset'in adı, boyutu, digest'i ve Release commit hedefi GitHub CLI/API metadata ile doğrulandı.
+- Repo private; indirmek için GitHub erişimi/oturumu gerekli. Eski 579 credential arşivi yüzünden public değişikliği otomatik onay denetimince reddedilmişti; görünürlük değiştirilmedi.
+
 ### Normal (release) APK telefon teslimi — Opus, 11.10.2026
 
 - Manuel koşu [38141649385](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/38141649385) **tamamlandı: success, 47 dk 56 sn** (yukarıdaki "henüz tamamlanmadı" satırının gerçek sonucu).
