@@ -19,6 +19,7 @@ type NativeSnapshot = {
   requestedConcurrency?: number; effectiveConcurrency?: number; sourceFingerprint?: string;
   streamingFile?: boolean; producerDone?: boolean; queueDepth?: number; queueCapacity?: number; producerBackpressure?: boolean; skippedNoCandidate?: number; directoryPanels?: number;
   safetyBackup?: { ok?: boolean; path?: string; error?: string; count?: number };
+  phase?: string; retryPending?: number; retryUnresolved?: number;
 };
 
 
@@ -59,6 +60,11 @@ async function ownedScan(start: () => Promise<any>): Promise<NativeScanStartResu
 }
 
 export const PanelScan = {
+  writeArchiveRetry: async (runId:string,profileId:string,key:string,payload:any,state:string,attempts:number):Promise<void> => {
+    if(!native?.writeArchiveRetry)throw new Error('Kalıcı yeniden deneme için güncel uygulama gerekli.');
+    await native.writeArchiveRetry(runId,profileId,key,JSON.stringify(payload),state,attempts);
+  },
+  getArchiveRetries: async (runId:string,profileId:string,afterKey=''):Promise<{jobs:any[];nextKey:string}> => native?.getArchiveRetries ? JSON.parse(await native.getArchiveRetries(runId,profileId,afterKey)) : {jobs:[],nextKey:''},
   available: !!native,
   getLatestAccountArchive: async (profileId: string): Promise<string> => native?.getLatestAccountArchive ? await native.getLatestAccountArchive(profileId) : "",
   updateResultEvidence: async (runId: string, identity: Record<string, string>, evidence: unknown): Promise<boolean> => native?.updateResultEvidence ? !!(await native.updateResultEvidence(runId, JSON.stringify(identity), JSON.stringify(evidence))) : false,
@@ -206,7 +212,7 @@ export const PanelScan = {
     try { return JSON.parse(native.getScanProxyStatus()); } catch { return emptyProxyStatus(""); }
   },
   /** JS keşfini proxy'ye yönlendir (serverCode.ts). */
-  proxiedProbe: async (url: string, timeoutMs: number): Promise<{ ok: boolean; status: number; body: string; error?: string }> => {
+  proxiedProbe: async (url: string, timeoutMs: number): Promise<{ ok: boolean; status: number; body: string; headers?:Record<string,string>; error?: string }> => {
     if (!native?.proxiedProbe) return { ok: false, status: 0, body: "", error: "native-unavailable" };
     try { return JSON.parse(await native.proxiedProbe(url, timeoutMs)); }
     catch (e: any) { return { ok: false, status: 0, body: "", error: String(e?.message || e) }; }

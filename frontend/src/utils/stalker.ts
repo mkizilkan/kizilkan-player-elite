@@ -802,7 +802,7 @@ function playbackHeadersFor(cred: StalkerCreds, ses: StalkerSession, playbackUrl
   return out;
 }
 
-type ReqOptions = { timeoutMs?: number; timeoutCapMs?: number; maxResponseBytes?: number; exactEndpoint?: boolean; signal?: AbortSignal; allowNon2xxParsed?: (parsed:any, status:number)=>boolean; postForm?: boolean };
+type ReqOptions = { timeoutMs?: number; timeoutCapMs?: number; maxResponseBytes?: number; sampleArray?:boolean; exactEndpoint?: boolean; signal?: AbortSignal; allowNon2xxParsed?: (parsed:any, status:number)=>boolean; postForm?: boolean };
 
 /**
  * v18.7.0 — ÇOKLU MAC TARAMASINDA PROXY YÖNLENDİRME (host kapsamlı).
@@ -1125,7 +1125,8 @@ async function reqTransport(url: string, headers: Record<string, string>, option
     const rawFinalUrl=String((res as any).url||url);
     const finalUrl=hostFailover ? hostFailover.logicalUrl(rawFinalUrl) : rawFinalUrl;
     const redirected=!!(res as any).redirected;
-    const text=await res.text();
+    const {boundedPortalText}=await import('@/src/utils/boundedPortalSample');
+    const text=await boundedPortalText(res,opts.maxResponseBytes,opts.sampleArray);
     if (opts.maxResponseBytes && exceedsUtf8Limit(text, opts.maxResponseBytes)) {
       const error: any = new Error("Hesap doğrulama yanıtı güvenli örnek sınırını aştı.");
       error.kind = "RESPONSE_TOO_LARGE"; throw error;
@@ -2392,7 +2393,7 @@ export async function stalkerVerifyAccount(
     if (remaining <= 0) { budgetExpired = true; controller.abort(); throw scopeCancelledError(); }
     requests++;
     const pending = req(buildUrl(ses.endpoint, params), headersFor(cred, ses.token, ses.endpoint, ses.compatProfile), {
-      timeoutMs: 6000, timeoutCapMs: Math.min(6000, remaining), maxResponseBytes: 1_048_576, exactEndpoint: true, signal: controller.signal,
+      timeoutMs: 6000, timeoutCapMs: Math.min(6000, remaining), maxResponseBytes: 1_048_576, sampleArray:params.action==='get_all_channels', exactEndpoint: true, signal: controller.signal,
     });
     let cancel: () => void = () => {};
     const cancelled = new Promise<never>((_resolve, reject) => {
@@ -2406,7 +2407,7 @@ export async function stalkerVerifyAccount(
   const nonterminal = (error: any, stage: string): StalkerAccountVerification | null => {
     if (signals.some(signal => signal.aborted) || (!budgetExpired && terminalMagError(error))) throw error;
     if (budgetExpired) return finish("unverified", "verification-time-budget");
-    if (error?.kind === "RESPONSE_TOO_LARGE") return finish("unverified", "response-size-limit");
+    if (error?.kind === "RESPONSE_TOO_LARGE") { evidence.push('response-size-limit',`${stage}-response-size-limit`);return null; }
     if (/authorization failed|not authorized|unauthori[sz]ed|invalid (?:mac|token)|access denied/i.test(String(error?.snippet || ""))) return finish("blocked", `${stage}-explicit-auth-denial`);
     evidence.push(`${stage}-unavailable`);
     return null;
@@ -2434,7 +2435,23 @@ export async function stalkerVerifyAccount(
     // Keep useful profile fields when this optional endpoint omits them. The
     // account proof still requires a positive identity and actual list access.
     mergeInfo(main);
-    for (const [type, kind] of [["itv", "live"], ["vod", "vod"], ["series", "series"]] as const) {
+    const methods = await import('@/src/utils/magCatalogMethod');
+    const preferred = await methods.preferredMagCatalogMethod(ses.endpoint).catch(()=>undefined);
+    const allChannelsSample=async()=>{
+      try {
+        const data=await probe({type:'itv',action:'get_all_channels'});
+        const denied=classify(accountRecord(data?.js));if(denied)return finish(denied,`live-all-channels-${denied}`);
+        if(isExplicitListShape(data)){
+          const count=rowsFromListShape(data).slice(0,128).filter(row=>validAccountSample(row,'live')).length;
+          if(count>0){void methods.rememberMagCatalogMethod(ses.endpoint,'all').catch(()=>{});return finish('verified','live-all-channels-sample',{accessKind:'live',sampledItems:count,liveCount:count});}
+        }
+        evidence.push('all-channels-no-valid-sample');return null;
+      } catch(error){return nonterminal(error,'live-all-channels');}
+    };
+    if(preferred==='all'){const stop=await allChannelsSample();if(stop)return stop;}
+    const verificationMethods: Array<readonly ['itv'|'vod'|'series','live'|'vod'|'series']> = [["itv", "live"], ["vod", "vod"], ["series", "series"]];
+    verificationMethods.sort((a,b)=>Number(b[0]===preferred)-Number(a[0]===preferred));
+    for (const [type, kind] of verificationMethods) {
       for (const page of [0, 1]) {
         try {
           const data = await probe({ type, action: "get_ordered_list", p: String(page), ...(type === "itv" ? { genre: "*" } : { category: "*" }) });
@@ -2443,7 +2460,7 @@ export async function stalkerVerifyAccount(
           if (!isExplicitListShape(data)) { evidence.push(`${kind}-unusable-page`); continue; }
           const rows = rowsFromListShape(data).slice(0, 128);
           const count = rows.filter(row => validAccountSample(row, kind)).length;
-          if (count > 0) return finish("verified", `${kind}-accessible-sample`, { accessKind: kind, sampledItems: count, liveCount: kind === "live" ? count : 0 });
+          if (count > 0) { void methods.rememberMagCatalogMethod(ses.endpoint,type).catch(()=>{});return finish("verified", `${kind}-accessible-sample`, { accessKind: kind, sampledItems: count, liveCount: kind === "live" ? count : 0 }); }
           evidence.push(`${kind}-no-valid-sample`);
         } catch (error) { const stop = nonterminal(error, kind); if (stop) return stop; }
       }
@@ -2452,17 +2469,7 @@ export async function stalkerVerifyAccount(
     // DESTEKLEMEZ ama get_all_channels ile kanal verir (tekli oynatma zaten get_all_channels kullanıyor).
     // Ordered-list hiçbir türde örnek vermediyse canlı için SINIRLI get_all_channels dene (aynı 20 sn +
     // yanıt boyutu bütçesi; tam katalog indirmez, ilk 128 örnek). Desteklenmeyen ≠ yetkisiz.
-    try {
-      const data = await probe({ type: "itv", action: "get_all_channels" });
-      const denied = classify(accountRecord(data?.js));
-      if (denied) return finish(denied, `live-all-channels-${denied}`);
-      if (isExplicitListShape(data)) {
-        const rows = rowsFromListShape(data).slice(0, 128);
-        const count = rows.filter(row => validAccountSample(row, "live")).length;
-        if (count > 0) return finish("verified", "live-all-channels-sample", { accessKind: "live", sampledItems: count, liveCount: count });
-      }
-      evidence.push("all-channels-no-valid-sample");
-    } catch (error) { const stop = nonterminal(error, "live-all-channels"); if (stop) return stop; }
+    if(preferred!=='all'){const stop=await allChannelsSample();if(stop)return stop;}
     return finish("unverified", "no-accessible-catalogue-sample");
   } finally {
     clearTimeout(timer);
@@ -2495,13 +2502,18 @@ function isExplicitListShape(data:any): boolean {
   return Array.isArray(js) || (!!js && typeof js === "object" && (Array.isArray(js.data) || js.total_items !== undefined || js.max_page_items !== undefined));
 }
 /** Bounded catalog sample; no category download or full-page iteration for a renderer test. */
-export async function stalkerLiveSample(cred: StalkerCreds, signal?: AbortSignal): Promise<StalkerPlaybackContext> {
+export async function stalkerLiveSample(cred: StalkerCreds, signal?: AbortSignal, sampleIndex = 0): Promise<StalkerPlaybackContext> {
   const scoped = { ...cred, endpointPolicy: 'exact' as const, requestScope: { ...cred.requestScope, transport: cred.requestScope?.transport || 'direct' as const, signal } };
   const { session } = await stalkerLogin(scoped, { signal });
-  const data = await req(buildUrl(session.endpoint, { type: 'itv', action: 'get_ordered_list', p: '0' }), headersFor(scoped, session.token, session.endpoint, session.compatProfile), {
-    timeoutMs: 10000, maxResponseBytes: 1_048_576, signal, exactEndpoint: true,
-  });
-  const sample = rowsFromListShape(data).find(r => r && typeof r.cmd === 'string' && r.cmd.trim());
+  const methods=await import('@/src/utils/magCatalogMethod');
+  const preferred=await methods.preferredMagCatalogMethod(session.endpoint).catch(()=>undefined);
+  const actions=preferred==='all'?['get_all_channels','get_ordered_list']:['get_ordered_list','get_all_channels'];
+  let sample:any;
+  for(const action of actions){try{
+    const data=await req(buildUrl(session.endpoint,{type:'itv',action,p:'0',genre:'*'}),headersFor(scoped,session.token,session.endpoint,session.compatProfile),{timeoutMs:10000,maxResponseBytes:1_048_576,sampleArray:action==='get_all_channels',signal,exactEndpoint:true});
+    sample=rowsFromListShape(data).filter(r=>validAccountSample(r,'live'))[sampleIndex];
+    if(sample){void methods.rememberMagCatalogMethod(session.endpoint,action==='get_all_channels'?'all':'itv').catch(()=>{});break;}
+  }catch(error){if(terminalMagError(error)||signal?.aborted)throw error;}}
   if (!sample) throw new Error('Sınırlı katalog örneğinde yayın komutu bulunamadı; görüntü sonucu belirlenemedi.');
   return stalkerResolveStream(scoped, session, sample.cmd);
 }
@@ -2727,8 +2739,8 @@ async function stalkerOrderedList(
   // v18.7.29 düzeltmesi (Opus): YALNIZ gerçek kaynak-kesintisi "eksik katalog" sayılır → eski tam katalog korunur.
   // DUPLICATE_PAGE / EMPTY_PAGE / NO_NEW_IDS / TOTAL_OR_END doğal bitiştir (tüm benzersiz içerik alındı); portal'ın
   // `total` değeri çoğu zaman şişirilmiş olduğundan `loadedCount < total` güvenilir "eksik" sinyali DEĞİL
-  // (aksi hâlde DUPLICATE_PAGE'de VOD sıfırlanıp filmler kaybolurdu — regresyon). PAGE_ERROR tolere edilir (satır ~2699).
-  if (['TIME_BUDGET', 'PAGE_GOVERNOR', 'RATE_LIMIT'].includes(stopReason)) {
+  // (aksi hâlde DUPLICATE_PAGE'de VOD sıfırlanıp filmler kaybolurdu — regresyon). PAGE_ERROR gerçek başarısız sayfadır; kısmi yanıt tam katalog olarak yazılmaz.
+  if (['TIME_BUDGET', 'PAGE_GOVERNOR', 'RATE_LIMIT', 'PAGE_ERROR'].includes(stopReason)) {
     throw Object.assign(new Error(`${type}: katalog kısmi (${loadedCount}/${Number.isFinite(total) ? total : '?'}), neden: ${stopReason}. Eski tam katalog korunuyor.`),
       { kind: 'CATALOG_INCOMPLETE', loaded: loadedCount, total: Number.isFinite(total) ? total : undefined, stopReason });
   }

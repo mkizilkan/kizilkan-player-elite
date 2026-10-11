@@ -42,7 +42,7 @@ need(/const writeMagSafetyBackup = useCallback/.test(magBulk), 'E-MAG: writeMagS
 need(/allFoundRef/.test(magBulk) && /backupNameRef/.test(magBulk), 'E-MAG: yedek birikim ref\'leri yok');
 const nativeBackup = rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/ScanSafetyBackup.kt');
 need(/flushResultArchive/.test(magBulk) && /Canlı Tarama Yedeği/.test(nativeBackup) && /uri:\$runId/.test(nativeBackup) && /contentEquals/.test(nativeBackup), 'E-MAG: tek native dosya / geri okuma doğrulaması yok');
-need(/allFoundRef\.current\.push\(\.\.\.batch\)/.test(magBulk), 'E-MAG: bulunanlar biriktirilmiyor');
+  need(/allFoundRef\.current\s*=\s*mergeResults\(allFoundRef\.current\)/.test(magBulk) || /allFoundRef\.current\.push\(\.\.\.batch\)/.test(magBulk), 'E-MAG: bulunanlar biriktirilmiyor');
 need(/await writeMagSafetyBackup\(archiveId\)/.test(magBulk), 'E-MAG: tarama bitişinde son yedek beklenmiyor');
 
 if (fail.length) { console.log(fail.map(f => '✗ ' + f).join('\n')); console.log('BAŞARISIZ'); process.exit(1); }

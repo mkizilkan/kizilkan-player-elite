@@ -23,6 +23,8 @@ export { canonicalPanelHost, filterDirectory, panelNameKey, validPanelHosts } fr
 export type { DirectoryScope, PanelTarget } from "./panelDirectoryModel";
 import { storage } from "@/src/utils/storage";
 import { PanelScan } from "../../modules/panel-scan";
+import { explicitScanAuth, scanResponseFailure, type ScanOutcome } from './scanOutcome';
+import { acquireHostRequest, deferHost, retryAfterMilliseconds, abortableDelay } from './hostRequestPolicy';
 
 /** Uygulama sahibinin verdiği VARSAYILAN kaynak. Ayarlardan değiştirilebilir.
  *  Storage'da değer yoksa bu kullanılır. */
@@ -115,14 +117,16 @@ export async function resolveHosts(baseUrl: string, panelName: string, signal?: 
 export async function pickWorkingHost(
   hosts: string[],
   username: string,
-  password: string
+  password: string,
+  signal?: AbortSignal,
 ): Promise<{ server: string; login: { user_info: any; server_info: any } }> {
   let lastErr: Error | null = null;
   for (const server of validPanelHosts(hosts)) {
     try {
-      const login = await xtreamLogin({ server, username, password });
+      const login = await xtreamLogin({ server, username, password }, signal);
       return { server, login };
     } catch (e: any) {
+      if(signal?.aborted || ['CANCELLED','BACKGROUND_PAUSE','PROTECTION','RATE_LIMIT','ACCOUNT_REJECTED'].includes(String(e?.kind||'')) || [401,403,429].includes(Number(e?.status)))throw e;
       lastErr = e instanceof Error ? e : new Error(String(e));
     }
   }
@@ -277,9 +281,29 @@ async function probeXtreamHost(
   password: string,
   timeoutMs = 12000,
   externalSignal?: AbortSignal,
+  onProtection?:()=>void,
 ): Promise<{ user_info: any; server_info: any } | null> {
+  let result = await probeXtreamHostOutcome(server, username, password, timeoutMs, externalSignal);
+  if (result.state === 'temporary' && !externalSignal?.aborted) {
+    try { await abortableDelay(result.retryAfterMs || 1000, externalSignal); result = await probeXtreamHostOutcome(server, username, password, timeoutMs, externalSignal); }
+    catch { return null; }
+  }
+  if(result.state==='protected')onProtection?.();
+  return result.state === 'valid' ? result.value : null;
+}
+
+export async function probeXtreamHostOutcome(server: string, username: string, password: string, timeoutMs = 12000,
+  externalSignal?: AbortSignal): Promise<ScanOutcome<{ user_info: any; server_info: any }>> {
   const base = canonicalPanelHost(server);
-  if (!base) return null;
+  const started = Date.now();
+  const failure = (state: 'rejected' | 'temporary' | 'protected' | 'cancelled', reason: string, retryAfterMs?: number): ScanOutcome<{user_info:any;server_info:any}> =>
+    ({state, reason, elapsedMs: Date.now() - started, ...(retryAfterMs ? {retryAfterMs} : {})});
+  if (!base) return failure('temporary', 'invalid-endpoint');
+  if (externalSignal?.aborted) return failure('cancelled', 'cancelled');
+  const host = new URL(base).hostname.toLowerCase();
+  let release: (() => void) | undefined;
+  try { release = await acquireHostRequest(host, externalSignal, 2); }
+  catch { return failure('cancelled', 'cancelled'); }
   const { signal, cancel } = makeTimeoutSignal(timeoutMs, externalSignal);
   const url = `${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
   // v18.5.0: proxy açık ama çalışan proxy yok → sessiz "bulunamadı" yerine açık hata
@@ -287,6 +311,7 @@ async function probeXtreamHost(
   const proxyState = PanelScan.getScanProxyStatus();
   if (proxyState.enabled && (proxyState.alive || 0) === 0) {
     cancel();
+    release();
     throw new Error("Taramada proxy açık ama çalışan proxy yok. Proxy merkezinden test edin veya proxy'li taramayı kapatın.");
   }
   try {
@@ -294,22 +319,35 @@ async function probeXtreamHost(
     // proxy tanımaz → native köprü). Kapalıysa doğrudan fetch (davranış değişmez).
     let data: any = null;
     if (PanelScan.getScanProxyStatus().enabled) {
-      const r = await PanelScan.proxiedProbe(url, timeoutMs);
-      if (!r.ok) return null;
+      const r = await PanelScan.proxiedRequest(url,'GET',{Accept:'application/json'},'',timeoutMs,externalSignal,1_048_576);
+      if(externalSignal?.aborted)return failure('cancelled','cancelled');
+      const reason=scanResponseFailure(r.status||0,r.headers||{},r.body||'');
+      if(reason){const retryHeader=Object.entries(r.headers||{}).find(([key])=>key.toLowerCase()==='retry-after')?.[1]||null;const wait=(r.status===429||r.status===503)?retryAfterMilliseconds(retryHeader):undefined;if(wait)deferHost(host,wait);return failure(reason,`HTTP${r.status}`,wait);}
+      if (!r.ok) return failure('temporary', 'proxy-transport');
       data = JSON.parse(r.body || "null");
     } else {
-      const res = await fetch(url, { signal });
-      if (!res.ok) return null;
-      data = await res.json().catch(() => null);
+      const res = await fetch(url, { signal,redirect:'manual' });
+      const headerFailure=scanResponseFailure(res.status,{'cf-mitigated':res.headers.get('cf-mitigated')||''},'');
+      if(headerFailure){try{await res.body?.cancel();}catch{}const wait=(res.status===429||res.status===503)?retryAfterMilliseconds(res.headers.get('Retry-After')):undefined;if(wait)deferHost(host,wait);return failure(headerFailure,`HTTP${res.status}`,wait);}
+      const {boundedPortalText}=await import('./boundedPortalSample');
+      const body = await boundedPortalText(res,1_048_576);
+      const reason = scanResponseFailure(res.status, { 'cf-mitigated': res.headers.get('cf-mitigated') || '' }, body);
+      if (reason) {
+        const delay = (res.status === 429 || res.status === 503) ? retryAfterMilliseconds(res.headers.get('Retry-After')) : undefined;
+        if (delay) deferHost(host, delay);
+        return failure(reason, `HTTP${res.status}`, delay);
+      }
+      data = JSON.parse(body);
     }
     const ui = data?.user_info;
-    if (!ui) return null;
-    if (ui.auth === 0 || ui.auth === "0") return null;
-    return { user_info: ui, server_info: data?.server_info || {} };
+    if (!ui || explicitScanAuth(ui.auth) === null) return failure('temporary', 'missing-auth-proof');
+    if (explicitScanAuth(ui.auth) === false) return failure('rejected', 'explicit-auth-rejection');
+    return {state:'valid', value:{ user_info: ui, server_info: data?.server_info || {} }, elapsedMs:Date.now()-started};
   } catch {
-    return null;
+    return failure(externalSignal?.aborted ? 'cancelled' : 'temporary', signal.aborted ? 'timeout' : 'invalid-response-or-network');
   } finally {
     cancel();
+    release?.();
   }
 }
 
@@ -364,26 +402,29 @@ export async function discoverServerCodeHosts(
   let cursor = 0;
   let tested = 0;
   const matches: PanelCredentialMatch[] = [];
+  let protectionSeen=false;
   const workers = Math.max(1, Math.min(Number(concurrency) || 1, 20, hosts.length));
   const runWorker = async () => {
     while (true) {
-      if (control?.isCancelled?.()) return;
+      if (protectionSeen || control?.signal?.aborted || control?.isCancelled?.()) return;
       if (control?.waitIfPaused) await control.waitIfPaused();
-      if (control?.isCancelled?.()) return;
+      if (protectionSeen || control?.signal?.aborted || control?.isCancelled?.()) return;
       const i = cursor++;
       if (i >= hosts.length) return;
       const server = hosts[i];
       onProgress?.({ tested, total: hosts.length, found: matches.length, server });
       const key=JSON.stringify([server,user,pass]);
       let pending=control?.probeCache?.get(key);
-      if(!pending){pending=probeXtreamHost(server,user,pass,timeoutMs,control?.signal);control?.probeCache?.set(key,pending);}
+      if(!pending){pending=probeXtreamHost(server,user,pass,timeoutMs,control?.signal,()=>{protectionSeen=true;});control?.probeCache?.set(key,pending);}
       const login=await pending;
+      if(!login)control?.probeCache?.delete(key);
       tested += 1;
       if (login) matches.push({panelName,code:String(code).trim(),server,login,sources:directoryOverride?.sources});
       onProgress?.({ tested, total: hosts.length, found: matches.length, server });
     }
   };
   await Promise.all(Array.from({ length: workers }, () => runWorker()));
+  if(!matches.length && protectionSeen)throw Object.assign(new Error('Panel koruma/doğrulama istiyor; diğer DNS denemeleri durduruldu.'),{kind:'PROTECTION'});
   if (!matches.length && !control?.isCancelled?.()) throw new Error("Bu panelin DNS adreslerinde kullanıcı adı/şifre doğrulanamadı.");
   matches.sort((a,b) => a.server.localeCompare(b.server));
   return matches;
@@ -438,6 +479,7 @@ export async function discoverPanelsByCredentials(
   let tested = 0;
   const matches: PanelCredentialMatch[] = [];
   const matchSeen = new Set<string>();
+  const protectedPanels=new Set<string>(),protectedServers=new Set<string>();
   const probes=control?.probeCache||new Map<string,Promise<{user_info:any;server_info:any}|null>>();
   const panelTotal = new Set(candidates.map(c => `${c.code}\u0000${c.panelName}`)).size;
   const remainingByPanel = new Map<string, number>();
@@ -456,12 +498,15 @@ export async function discoverPanelsByCredentials(
       const i = cursor++;
       if (i >= candidates.length) return;
       const c = candidates[i];
+      if(control?.signal?.aborted)return;
+      if(protectedPanels.has(c.panelName)||protectedServers.has(c.server))continue;
 
       onProgress?.({ tested, total: candidates.length, panelTested, panelTotal, found: matches.length, panelName: c.panelName });
       const probeKey=JSON.stringify([c.server,user,pass]);
       let shared=probes.get(probeKey);
-      if(!shared){shared=probeXtreamHost(c.server,user,pass,timeoutMs,control?.signal);probes.set(probeKey,shared);}
+      if(!shared){shared=probeXtreamHost(c.server,user,pass,timeoutMs,control?.signal,()=>{protectedPanels.add(c.panelName);protectedServers.add(c.server);});probes.set(probeKey,shared);}
       const login=await shared;
+      if(!login)probes.delete(probeKey);
       tested += 1;
       const panelKey = `${c.code}\u0000${c.panelName}`;
       const left = Math.max(0, (remainingByPanel.get(panelKey) || 1) - 1);
@@ -483,6 +528,7 @@ export async function discoverPanelsByCredentials(
   await Promise.all(Array.from({ length: workers }, () => runWorker()));
 
   if (matches.length === 0 && !control?.isCancelled?.()) {
+    if(protectedPanels.size)throw Object.assign(new Error('Panel koruma/doğrulama istiyor; ilgili panelin diğer DNS denemeleri durduruldu.'),{kind:'PROTECTION'});
     throw new Error("Bu kullanıcı adı ve şifre panel rehberindeki sunucularda bulunamadı.");
   }
 
@@ -539,7 +585,7 @@ export type BoundPanelResolution = {
  */
 export async function resolveBoundPanel(
   baseUrl: string,
-  binding: { sources?:import("./panelDirectoryModel").PanelOrigin[]; code:string; panelName: string; preferredServer?: string; validatedHosts?: string[] },
+  binding: { sources?:import("./panelDirectoryModel").PanelOrigin[]; code:string; panelName: string; preferredServer?: string; validatedHosts?: string[]; selectedHosts?: string[]; allowDirectoryAlternatives?: boolean; signal?:AbortSignal },
   username: string,
   password: string,
 ): Promise<BoundPanelResolution> {
@@ -550,21 +596,22 @@ export async function resolveBoundPanel(
   let hosts: string[] = [];
   try {
     const origins=binding.sources?.length?binding.sources:[{baseUrl,panelName:expectedPanel}];
-    const results=await Promise.allSettled(origins.map(o=>resolveHosts(o.baseUrl,o.panelName)));
+    const results=await Promise.allSettled(origins.map(o=>resolveHosts(o.baseUrl,o.panelName,binding.signal)));
     hosts=validPanelHosts(results.flatMap(r=>r.status==='fulfilled'?r.value:[]));
     if(!hosts.length)throw new Error('Bağlı panel kaynaklarına erişilemedi.');
   } catch (directErr) {
+    if(binding.signal?.aborted)throw Object.assign(new Error('İşlem iptal edildi.'),{kind:'CANCELLED'});
     // Panel adı kaydı taşınmış/yenilenmiş olabilir. Kodu kontrol et ama
     // güvenlik nedeniyle farklı bir panel adına otomatik bağlanma.
     if(!code)throw directErr;
-    const currentName = await resolvePanelName(baseUrl, code);
+    const currentName = await resolvePanelName(baseUrl, code, binding.signal);
     const normalize = (x: string) => x.trim().toLocaleLowerCase("tr");
     if (normalize(currentName) !== normalize(expectedPanel)) {
       throw new Error(
         `Sunucu kodu artık farklı bir panele ait görünüyor (${currentName}). Güvenlik için otomatik geçiş yapılmadı.`
       );
     }
-    hosts = await resolveHosts(baseUrl, currentName);
+    hosts = await resolveHosts(baseUrl, currentName, binding.signal);
   }
 
   const preferred = trimBase(binding.preferredServer || "");
@@ -586,9 +633,11 @@ export async function resolveBoundPanel(
   const legacyFallbacks = [preferred, ...validated].filter(
     h => h && !currentSet.has(h.toLowerCase())
   );
-  const ordered = Array.from(new Set([...currentOrdered, ...legacyFallbacks].filter(Boolean)));
-  const { server, login } = await pickWorkingHost(ordered, username, password);
-  return { panelName: expectedPanel, code, server, login, hosts: ordered };
+  const allowed = binding.allowDirectoryAlternatives === false && binding.selectedHosts ? new Set(binding.selectedHosts.map(trimBase)) : null;
+  const ordered = Array.from(new Set([preferred, ...currentOrdered, ...legacyFallbacks].filter(h=>h && (!allowed || allowed.has(h)))));
+  const { server, login } = await pickWorkingHost(ordered, username, password, binding.signal);
+  // Only the selected successful probe is new authentication evidence. The rest remain candidates.
+  return { panelName: expectedPanel, code, server, login, hosts: Array.from(new Set([server,...validated])) };
 }
 
 /**
@@ -604,5 +653,5 @@ export async function resolveServerCode(
   const panelName = await resolvePanelName(baseUrl, code);
   const hosts = await resolveHosts(baseUrl, panelName);
   const { server, login } = await pickWorkingHost(hosts, username, password);
-  return { panelName, server, login, hosts };
+  return { panelName, server, login, hosts: [server] };
 }

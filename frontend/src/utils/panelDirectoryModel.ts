@@ -3,7 +3,7 @@ export type DirectorySource = 'splayer' | 'masteriptv';
 export type DirectoryScope = 'all' | DirectorySource;
 export type PanelOrigin = { source:DirectorySource; baseUrl:string; panelName:string; realCode:string|null; hosts:string[]; rawHosts?:string[] };
 export type DirectoryPanel = { code:string; panelName:string; hosts:string[]; realCode?:string|null; codes?:string[]; directoryKey?:string; sources?:PanelOrigin[]; invalidHosts?:Array<{raw:string;reason:string}> };
-export type PanelTarget = { codes?:string[]; names?:string[]; keys?:string[]; hosts?:string[] };
+export type PanelTarget = { codes?:string[]; names?:string[]; keys?:string[]; hosts?:string[]; dnsSelections?:Record<string,string[]> };
 export const panelNameKey=(v:string)=>v.trim().normalize('NFC').toLocaleLowerCase('tr');
 export function canonicalPanelHost(raw:unknown):string|null {
   if(typeof raw!=='string')return null;
@@ -38,5 +38,7 @@ export function filterDirectory(items:DirectoryPanel[],scope:DirectoryScope='all
     const sources=item.sources.filter(s=>s.source===scope),realCodes=Array.from(new Set(sources.map(s=>s.realCode).filter((c):c is string=>!!c)));
     return {...item,sources,codes:realCodes,code:realCodes[0]||'',realCode:realCodes[0]||null,hosts:validPanelHosts(sources.flatMap(s=>s.hosts))};
   }).filter(item=>item.hosts.length>0&&(!hasTarget||keys.includes(item.directoryKey||panelNameKey(item.panelName))||names.includes(panelNameKey(item.panelName))||(item.codes||[item.code]).some(c=>!!c&&codes.includes(panelNameKey(c)))));
-  return directHosts.length ? [...selected,{code:'',panelName:'Doğrudan DNS',hosts:directHosts,directoryKey:'direct:hosts'}] : selected;
+  const scoped = selected.map(p=>{ const chosen=target.dnsSelections?.[p.directoryKey||panelNameKey(p.panelName)];
+    return chosen === undefined ? p : {...p,hosts:chosen.filter(h=>p.hosts.includes(h))}; }).filter(p=>p.hosts.length>0);
+  return directHosts.length ? [...scoped,{code:'',panelName:'Doğrudan DNS',hosts:directHosts,directoryKey:'direct:hosts'}] : scoped;
 }

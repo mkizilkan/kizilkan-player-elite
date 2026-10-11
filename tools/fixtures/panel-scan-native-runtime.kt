@@ -34,6 +34,11 @@ class ScanJournalStore {
   val checkpoints = ConcurrentHashMap<String, Long>()
   val committedTests = ConcurrentHashMap<String, Long>()
   val states = ConcurrentHashMap<String, String>()
+  private val retries = ConcurrentHashMap<String, JSONObject>()
+  fun enqueueRetry(run:String,key:String,payload:JSONObject,due:Long){retries.putIfAbsent("$run|$key",JSONObject(payload.toString()).put("jobKey",key).put("dueAt",due).put("attempts",0).put("state","pending"))}
+  fun retryCount(run:String,state:String="pending")=retries.entries.count{it.key.startsWith("$run|")&&it.value.optString("state")==state}
+  fun nextRetry(run:String):JSONObject?=retries.entries.filter{it.key.startsWith("$run|")&&it.value.optString("state")=="pending"}.minByOrNull{it.value.optLong("dueAt")}?.value
+  fun updateRetry(run:String,key:String,attempts:Int,state:String,due:Long,payload:JSONObject){retries["$run|$key"]=JSONObject(payload.toString()).put("attempts",attempts).put("state",state).put("dueAt",due).put("jobKey",key)}
   fun readProbe(run: String, key: String) = probes["$run|$key"]
   fun writeProbe(run: String, key: String, payload: String) { probes["$run|$key"] = payload }
   fun addResult(run: String, key: String, payload: String) = resultPayloads.putIfAbsent("$run|$key", payload) == null
@@ -69,6 +74,7 @@ object ScanProxyPool {
   fun reportResult(context: Any, key: String, fault: Fault) {}
   fun classify(error: Throwable) = Fault.TARGET
 }
+object ScanSafetyBackup {fun request(context:Any,journal:ScanJournalStore,run:String){} }
 
 class NativeWorkerHarness(val currentRunId: String, private val behavior: String) {
   private val applicationContext = Any()
@@ -108,7 +114,7 @@ class NativeWorkerHarness(val currentRunId: String, private val behavior: String
     activeFileStream?.close()
     activeConnections.forEach { it.disconnect() }
   }
-  private fun probe(server: String, username: String, password: String, timeout: Int): JSONObject? {
+  private fun probe(server: String, username: String, password: String, timeout: Int, context:JSONObject=JSONObject()): JSONObject? {
     when (behavior) {
       "failure" -> throw IllegalStateException("injected worker failure")
       "cancel" -> { cancelled.set(true); return null }
@@ -116,6 +122,13 @@ class NativeWorkerHarness(val currentRunId: String, private val behavior: String
     return JSONObject().put("user_info", JSONObject().put("auth", 1))
   }
   // INSERT_RESULTS
+  // INSERT_PROBE_KEYS
+  private val hostBackoffUntil=ConcurrentHashMap<String,Long>()
+  private var finalizingRetries=false
+  private val protectedScanHosts=ConcurrentHashMap.newKeySet<String>()
+  private val protectedScanGroups=ConcurrentHashMap.newKeySet<String>()
+  private val hostPermits=ConcurrentHashMap<String,AdaptiveScanHostGate>()
+  private fun probePhysical(server:String,username:String,password:String,timeout:Int,panel:String)=ScanProbeOutcome(probe(server,username,password,timeout),cacheable=true)
   // INSERT_SNAPSHOT_STORAGE
   // INSERT_FINALIZE
   // INSERT_BULK
@@ -146,7 +159,9 @@ object NativeProbeHarness {
   private val cancelled = AtomicBoolean(false)
   private val paused = AtomicBoolean(false)
   private val probeStripes = Array(128) { Any() }
-  private val hostPermits = ConcurrentHashMap<String, Semaphore>()
+  private val hostPermits = ConcurrentHashMap<String, AdaptiveScanHostGate>()
+  private val protectedScanHosts=ConcurrentHashMap.newKeySet<String>()
+  private val protectedScanGroups=ConcurrentHashMap.newKeySet<String>()
   private val hostBackoffUntil = ConcurrentHashMap<String, Long>()
   private val activeConnections = ConcurrentHashMap.newKeySet<HttpURLConnection>()
   private fun ensureScanProxyReady() {}
@@ -154,6 +169,7 @@ object NativeProbeHarness {
   private fun recordExternalDiagnostic(context: Any, event: JSONObject) {}
   private fun pauseForProxy(reason: String, host: String) {}
   // INSERT_PROBE
+  // INSERT_PROBE_KEYS
   // INSERT_PHYSICAL
   // INSERT_SANITIZER
 
@@ -266,6 +282,9 @@ object PanelScanServiceRuntimeFixture {
       check(NativeProbeHarness.query(base, "legacy") != null && requests["legacy"]?.get() == 1)
       NativeProbeHarness.seedLegacyUnverified(base, "legacy-unverified")
       check(NativeProbeHarness.query(base, "legacy-unverified") != null && requests["legacy-unverified"]?.get() == 1)
+      // Previous 429/503 intentionally reduced capacity to one. Recover after
+      // stable auth responses before exercising two simultaneous responses.
+      repeat(8){check(NativeProbeHarness.query(base,"stable-$it")!=null)}
       val slowFailure = AtomicReference<Throwable?>(null)
       val slowSuccess = Thread {
         try { check(NativeProbeHarness.query(base, "slow-success") != null) } catch (error: Throwable) { slowFailure.set(error) }

@@ -13,6 +13,9 @@ frontend/ios/
 
 # Log / geçici
 *.log
+.jdk-sockets/
+artifacts/
+*.apk
 .DS_Store
 
 # Kullanıcı adı/şifre içeren kişisel hesap arşivleri

@@ -20,9 +20,11 @@ import type { Playlist } from "@/src/types";
 import { resolveBoundPanel } from "@/src/utils/serverCode";
 import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
 import { normalizeHost } from "@/src/player/hostFailover";
+import { boundPanelDnsCandidates, magDnsCandidate, canTryDnsAlternative } from './panelDnsFailover';
 import { applyContentSelection } from "@/src/utils/contentSelection";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { applyCatalogProgress } from '@/src/utils/catalogProgress';
+import { mergeEndpointEvidence, playlistEndpoints } from './playlistEndpoints';
 
 export type CatalogKind="live"|"vod"|"series";
 export type CatalogProgressState="waiting"|"saving"|"done"|"error"|"skipped";
@@ -100,6 +102,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       }
       let resolvedServer = pl.xtreamServer;
       let bindingPatch = pl.serverCodeBinding;
+      let resolvedLogin:Awaited<ReturnType<typeof xtreamLogin>>|undefined;
       onProgress?.({ phase: "dns", message: "DNS kontrol ediliyor..." });
 
       /**
@@ -119,11 +122,15 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
               panelName: pl.serverCodeBinding.panelName,
               preferredServer: pl.serverCodeBinding.preferredServer || pl.xtreamServer,
               validatedHosts: pl.serverCodeBinding.validatedHosts,
+              selectedHosts: pl.serverCodeBinding.selectedHosts,
+              allowDirectoryAlternatives: pl.serverCodeBinding.allowDirectoryAlternatives,
+              signal: options?.signal,
             },
             pl.xtreamUsername,
             pl.xtreamPassword,
           );
           resolvedServer = bound.server;
+          resolvedLogin=bound.login;
           bindingPatch = {
             ...pl.serverCodeBinding,
             preferredServer: bound.server,
@@ -131,7 +138,8 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
             lastResolvedServer: bound.server,
             lastResolvedAt: new Date().toISOString(),
           };
-        } catch {
+        } catch (error) {
+          if(options?.signal?.aborted || !canTryDnsAlternative(error))throw error;
           // Rehber geçici erişilemezse mevcut çalışan DNS ile devam et.
         }
       }
@@ -145,11 +153,12 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
        */
       let login: Awaited<ReturnType<typeof xtreamLogin>>;
       try {
-        login = await xtreamLogin(cred, options?.signal);
+        login = resolvedLogin || await xtreamLogin(cred, options?.signal);
       } catch (primaryError) {
+        if(options?.signal?.aborted || !canTryDnsAlternative(primaryError)) throw primaryError;
         const primaryNorm = normalizeHost(resolvedServer);
         const backups = Array.from(new Set([...(pl.backupHosts || []), ...(bindingPatch?.validatedHosts || [])].map(normalizeHost)))
-          .filter(h => !!h && h !== primaryNorm);
+          .filter(h => !!h && h !== primaryNorm && (pl.serverCodeBinding?.allowDirectoryAlternatives !== false || (pl.serverCodeBinding.selectedHosts || pl.serverCodeBinding.validatedHosts || []).map(normalizeHost).includes(h)));
         let recovered: typeof login | null = null;
         for (const host of backups) {
           if (options?.signal?.aborted) break;
@@ -160,7 +169,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
             cred.server = host;
             void recordDiagnostic("network", "REFRESH_BACKUP_DNS_OK", { playlistId: pl.id, tried: backups.indexOf(host) + 1, total: backups.length }, { stage: "refresh", outcome: "recovered" });
             break;
-          } catch { /* sıradaki yedek */ }
+          } catch (error) { if(options?.signal?.aborted || !canTryDnsAlternative(error))throw error; }
         }
         if (!recovered) {
           if (backups.length) void recordDiagnostic("network", "REFRESH_BACKUP_DNS_FAILED", { playlistId: pl.id, total: backups.length }, { stage: "refresh", outcome: "failed" });
@@ -176,10 +185,12 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
         updatedAt:new Date().toISOString(),
       });
       const metadataPatch=()=>({
+        endpoints:mergeEndpointEvidence(playlistEndpoints(pl),{url:resolvedServer,kind:'xtream',source:'scan',accountVerifiedAt:new Date().toISOString(),primary:true}),
+        backupHosts:Array.from(new Set([...(pl.backupHosts||[]),pl.xtreamServer])).filter((h):h is string=>!!h && h!==resolvedServer),
         accountInfo: login.user_info as any,
         serverInfo: (login.server_info || null) as any,
         ...(resolvedServer !== pl.xtreamServer ? { xtreamServer: resolvedServer } : {}),
-        ...(bindingPatch ? { serverCodeBinding: bindingPatch } : {}),
+        ...(bindingPatch ? { serverCodeBinding: {...bindingPatch,preferredServer:resolvedServer,lastResolvedServer:resolvedServer,lastResolvedAt:new Date().toISOString(),validatedHosts:Array.from(new Set([resolvedServer,...(bindingPatch.validatedHosts||[])]))} } : {}),
       });
 
       /**
@@ -361,7 +372,30 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       const cred = stalkerCredsFromPlaylist(pl);
       onProgress?.({ phase: "login", message: "Portal doğrulanıyor..." });
       if(options?.signal?.aborted){const e:any=new Error('İşlem uygulama arka plana geçtiği için bekletildi.');e.kind='BACKGROUND_PAUSE';throw e;}
-      const { session, profile: stProfile } = await stalkerLogin(cred, { signal: options?.signal });
+      let magLogin: Awaited<ReturnType<typeof stalkerLogin>>;
+      try { magLogin = await stalkerLogin(cred, {signal:options?.signal}); }
+      catch(error) {
+        if(options?.signal?.aborted || terminalMagError(error) || !canTryDnsAlternative(error))throw error;
+        const fresh = pl.serverCodeBinding ? await boundPanelDnsCandidates(pl.serverCodeBinding,options?.signal) : [];
+        const allowed=pl.serverCodeBinding?.allowDirectoryAlternatives===false ? (pl.serverCodeBinding.selectedHosts||pl.serverCodeBinding.validatedHosts||[]).map(h=>magDnsCandidate(h,pl.stalkerPortal!)) : undefined;
+        const alternatives=Array.from(new Set([...(pl.stalkerBackupPortals||[]),...fresh.map(h=>magDnsCandidate(h,pl.stalkerPortal!))])).filter(h=>h!==pl.stalkerPortal && (!allowed || allowed.includes(h)));
+        let recovered: typeof magLogin | undefined;
+        for(const portal of alternatives) {
+          if(options?.signal?.aborted)throw error;
+          try {
+            const candidateCred={...cred,portal,endpointPolicy:'exact' as const,resolvedPortal:undefined};
+            const next=await stalkerLogin(candidateCred,{signal:options?.signal});
+            const {stalkerVerifyAccount}=await import('./stalker');
+            const proof=await stalkerVerifyAccount(candidateCred,next.session,next.profile,{signal:options?.signal});
+            if(proof.state!=='verified')continue;
+            Object.assign(cred,candidateCred);recovered=next;
+            void recordDiagnostic('network','DNS_CANDIDATE_VERIFIED',{playlistId:pl.id,kind:'stalker',reason:'verified-backup'});
+            break;
+          } catch(nextError){if(terminalMagError(nextError)||!canTryDnsAlternative(nextError))throw nextError;}
+        }
+        if(!recovered)throw error;magLogin=recovered;
+      }
+      const { session, profile: stProfile } = magLogin;
       // v18.7.6: yenilemede de hesap durumu/bitişi API ile tazelenir (account_info&get_main_info).
       // Boş sonuç eldeki iyi bitişi EZMEZ; yeni dolu alanlar öncelikli, boşlar korunur.
       onProgress?.({ phase: "login", message: "Hesap bilgileri doğrulanıyor..." });
@@ -445,6 +479,9 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       const endpointShape = (() => { try { return new URL(session.endpoint).pathname || '/'; } catch { return ''; } })();
       const capabilityPatch: Partial<Playlist> = {
         stalkerPortal: session.endpoint,
+        stalkerBackupPortals:Array.from(new Set([...(pl.stalkerBackupPortals||[]),pl.stalkerPortal])).filter((h):h is string=>!!h && h!==session.endpoint),
+        endpoints:mergeEndpointEvidence(playlistEndpoints(pl),{url:session.endpoint,kind:'stalker',source:'scan',...(Object.values(deliveredCounts).some(n=>(n||0)>0)||catalog.channels?.length||catalog.vod?.length||catalog.series?.length?{accountVerifiedAt:new Date().toISOString(),catalogVerifiedAt:new Date().toISOString()}:{}),primary:true}),
+        ...(pl.serverCodeBinding ? {serverCodeBinding:{...pl.serverCodeBinding,preferredServer:session.endpoint,validatedHosts:Array.from(new Set([session.endpoint,...(pl.serverCodeBinding.validatedHosts||[])])),lastResolvedServer:session.endpoint,lastResolvedAt:new Date().toISOString()}} : {}),
         stalkerResolvedPortal: session.resolvedPortal,
         ...(refreshedAccountInfo ? { accountInfo: refreshedAccountInfo } : {}),
         ...(session.portalTimezone ? { stalkerPortalTimezone: session.portalTimezone } : {}),

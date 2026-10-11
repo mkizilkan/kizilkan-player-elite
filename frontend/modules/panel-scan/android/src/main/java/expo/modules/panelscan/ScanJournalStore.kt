@@ -25,7 +25,7 @@ import javax.crypto.spec.GCMParameterSpec
  * - requested/effective concurrency ve source fingerprint journal'a yazılır;
  * - eski v1 DB şeması migration ile korunur.
  */
-class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(context.applicationContext, "kizilkan-panel-scan-journal.db", null, 4) {
+class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(context.applicationContext, "kizilkan-panel-scan-journal.db", null, 5) {
   private val applicationContext = context.applicationContext
   @Volatile private var cachedKey: SecretKey? = null
   override fun onCreate(db: SQLiteDatabase) {
@@ -34,9 +34,11 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
     db.execSQL("CREATE INDEX idx_scan_result_run ON scan_result(run_id,id)")
     createProbeCache(db)
     createOwnerTable(db)
+    createRetryTable(db)
   }
 
   override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+    if (oldVersion < 5) createRetryTable(db)
     if (oldVersion < 4) createOwnerTable(db)
     if(oldVersion<3)createProbeCache(db)
     if (oldVersion < 2) {
@@ -54,6 +56,34 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
   }
   private fun createOwnerTable(db: SQLiteDatabase) {
     db.execSQL("CREATE TABLE IF NOT EXISTS scan_session_owner(run_id TEXT PRIMARY KEY,profile_id TEXT NOT NULL)")
+  }
+  private fun createRetryTable(db: SQLiteDatabase) {
+    db.execSQL("CREATE TABLE IF NOT EXISTS scan_retry(run_id TEXT NOT NULL,job_key TEXT NOT NULL,payload_enc TEXT NOT NULL,due_at INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',PRIMARY KEY(run_id,job_key))")
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_scan_retry_pending ON scan_retry(run_id,state,due_at)")
+  }
+  @Synchronized fun enqueueRetry(runId: String, key: String, payload: JSONObject, dueAt: Long) {
+    val v = ContentValues().apply { put("run_id",runId);put("job_key",key);put("payload_enc",enc(payload.toString()));put("due_at",dueAt);put("attempts",0);put("state","pending") }
+    check(writableDatabase.insertWithOnConflict("scan_retry",null,v,SQLiteDatabase.CONFLICT_IGNORE) != -1L || retryState(runId,key) != null)
+  }
+  @Synchronized private fun retryState(runId: String, key: String): String? = readableDatabase.rawQuery("SELECT state FROM scan_retry WHERE run_id=? AND job_key=?",arrayOf(runId,key)).use { if(it.moveToFirst())it.getString(0) else null }
+  @Synchronized fun retryCount(runId: String, state: String = "pending"): Int = readableDatabase.rawQuery("SELECT COUNT(*) FROM scan_retry WHERE run_id=? AND state=?",arrayOf(runId,state)).use { if(it.moveToFirst())it.getInt(0) else 0 }
+  @Synchronized fun nextRetry(runId: String): JSONObject? = readableDatabase.rawQuery("SELECT job_key,payload_enc,due_at,attempts FROM scan_retry WHERE run_id=? AND state='pending' ORDER BY due_at LIMIT 1",arrayOf(runId)).use { c ->
+    if(!c.moveToFirst())null else JSONObject(dec(c.getString(1))).put("jobKey",c.getString(0)).put("dueAt",c.getLong(2)).put("attempts",c.getInt(3))
+  }
+  @Synchronized fun updateRetry(runId: String, key: String, attempts: Int, state: String, dueAt: Long, payload: JSONObject) {
+    val v = ContentValues().apply {put("attempts",attempts);put("state",state);put("due_at",dueAt);put("payload_enc",enc(payload.toString()))}
+    check(writableDatabase.update("scan_retry",v,"run_id=? AND job_key=?",arrayOf(runId,key)) == 1)
+  }
+  @Synchronized fun archiveRetries(runId: String, afterKey: String): JSONObject {
+    val rows=JSONArray();var last=afterKey;var bytes=0
+    readableDatabase.rawQuery("SELECT job_key,payload_enc FROM scan_retry WHERE run_id=? AND state IN ('pending','unresolved') AND job_key>? ORDER BY job_key LIMIT 100",arrayOf(runId,afterKey)).use { c ->
+      while(c.moveToNext()){val body=dec(c.getString(1));val size=body.toByteArray(Charsets.UTF_8).size;check(size<=250000){"Yeniden deneme kaydı sayfa sınırını aşıyor"};if(bytes+size>250000)break;rows.put(JSONObject(body).put("jobKey",c.getString(0)));last=c.getString(0);bytes+=size}
+    }
+    return JSONObject().put("jobs",rows).put("nextKey",if(rows.length()>0)last else "")
+  }
+  @Synchronized fun replaceArchiveResult(runId: String, key: String, payload: String) {
+    val v=ContentValues().apply{put("payload_enc",enc(payload))}
+    writableDatabase.update("scan_result",v,"run_id=? AND result_key=?",arrayOf(runId,key))
   }
   @Synchronized fun ownerOf(runId: String): String? = readableDatabase.rawQuery("SELECT profile_id FROM scan_session_owner WHERE run_id=?", arrayOf(runId)).use { c -> if(c.moveToFirst()) c.getString(0) else null }
   @Synchronized fun bindOwner(runId: String, profileId: String) {
@@ -279,7 +309,7 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
 
   @Synchronized fun latestResultArchive(profileId: String, mag: Boolean = true): String? {
     val modeClause = if (mag) "s.mode='MAG_RESULTS'" else "s.mode<>'MAG_RESULTS'"
-    readableDatabase.rawQuery("SELECT s.run_id FROM scan_session s JOIN scan_session_owner o ON o.run_id=s.run_id WHERE o.profile_id=? AND $modeClause AND EXISTS (SELECT 1 FROM scan_result r WHERE r.run_id=s.run_id) ORDER BY s.created_at DESC LIMIT 1", arrayOf(profileId)).use { c -> if(c.moveToFirst()) return c.getString(0) }
+    readableDatabase.rawQuery("SELECT s.run_id FROM scan_session s JOIN scan_session_owner o ON o.run_id=s.run_id WHERE o.profile_id=? AND $modeClause AND (EXISTS (SELECT 1 FROM scan_result r WHERE r.run_id=s.run_id) OR EXISTS (SELECT 1 FROM scan_retry q WHERE q.run_id=s.run_id AND q.state IN ('pending','unresolved'))) ORDER BY s.created_at DESC LIMIT 1", arrayOf(profileId)).use { c -> if(c.moveToFirst()) return c.getString(0) }
     if (!mag) return null // Old unowned credentials require explicit user file selection.
     readableDatabase.rawQuery("SELECT run_id,payload_enc FROM scan_session WHERE mode='MAG_RESULTS' AND EXISTS (SELECT 1 FROM scan_result WHERE scan_result.run_id=scan_session.run_id) ORDER BY created_at DESC", null).use { rows ->
       while (rows.moveToNext()) if (JSONObject(dec(rows.getString(1))).optString("profileId") == profileId) return rows.getString(0)
@@ -305,6 +335,7 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
   @Synchronized fun delete(runId:String) {
     writableDatabase.beginTransaction()
     try {
+      writableDatabase.delete("scan_retry","run_id=?",arrayOf(runId))
       writableDatabase.delete("scan_probe_cache","run_id=?",arrayOf(runId))
       writableDatabase.delete("scan_result","run_id=?",arrayOf(runId))
       writableDatabase.delete("scan_session","run_id=?",arrayOf(runId))

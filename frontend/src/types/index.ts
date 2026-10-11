@@ -150,6 +150,10 @@ export interface ServerCodeBinding {
   preferredServer?: string;
   /** Bu hesapla doğrulanmış panel DNS adresleri. */
   validatedHosts?: string[];
+  /** User selection is not authentication proof. Undefined retains legacy all-host behaviour. */
+  selectedHosts?: string[];
+  directoryHosts?: string[];
+  allowDirectoryAlternatives?: boolean;
 }
 
 export interface PlaylistContentSelection {

@@ -1,3 +1,4 @@
+import { explicitScanAuth, scanResponseFailure } from './scanOutcome';
 /**
  * Client-side M3U parser & Xtream Codes API.
  * Runs entirely on-device — no backend proxy required.
@@ -351,7 +352,7 @@ function normalizeServer(server: string): string {
 
 async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSignal): Promise<T> {
   const { acquireHostRequest, deferHost, retryAfterMilliseconds, abortableDelay } = await import('./hostRequestPolicy');
-  const host = new URL(url).origin;
+  const host = new URL(url).hostname.toLowerCase();
   let last: any = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     throwIfExternallyAborted(externalSignal);
@@ -363,17 +364,19 @@ async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSi
         headers: { 'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16', 'Accept': 'application/json,*/*' },
       });
       throwIfExternallyAborted(externalSignal);
+        if(res.headers?.get?.('cf-mitigated')?.toLowerCase()==='challenge')throw Object.assign(new Error('Sunucu doğrulama/koruma istiyor.'),{kind:'PROTECTION',status:res.status});
       if (!res.ok) {
         if (res.status === 429 || res.status === 503) deferHost(host, retryAfterMilliseconds(res.headers.get('Retry-After')));
-        throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status, kind: res.status === 429 ? 'RATE_LIMIT' : res.status === 401 || res.status === 403 ? 'ACCOUNT_REJECTED' : 'HTTP' });
+        throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status, kind: res.status === 429 ? 'RATE_LIMIT' : res.status === 401 || res.status === 403 ? 'PROTECTION' : 'HTTP' });
       }
       const text = await res.text();
       throwIfExternallyAborted(externalSignal);
+      if(scanResponseFailure(res.status,{'cf-mitigated':res.headers.get('cf-mitigated')||''},text)==='protected')throw Object.assign(new Error('Sunucu doğrulama/koruma istiyor.'),{kind:'PROTECTION'});
       try { return JSON.parse(text) as T; } catch { throw Object.assign(new Error(/^\s*</.test(text) ? 'API yerine HTML / doğrulama sayfası döndü.' : 'Geçersiz JSON'), { kind: /^\s*</.test(text) ? 'HTML_RESPONSE' : 'INVALID_JSON' }); }
     } catch (e:any) {
       if (externalSignal?.aborted) throwIfExternallyAborted(externalSignal);
       last = e;
-      if (e?.kind === 'ACCOUNT_REJECTED' || e?.kind === 'HTML_RESPONSE' || e?.kind === 'INVALID_JSON' || (e?.status && ![429, 500, 502, 503, 504].includes(e.status))) throw e;
+      if (e?.kind === 'PROTECTION' || e?.kind === 'ACCOUNT_REJECTED' || e?.kind === 'HTML_RESPONSE' || e?.kind === 'INVALID_JSON' || (e?.status && ![429, 500, 502, 503, 504].includes(e.status))) throw e;
       if (controller.signal.aborted) last = Object.assign(new Error('API yanıtı zaman aşımına uğradı.'), { kind: 'TIMEOUT' });
     } finally { cleanup(); release(); }
     if (attempt === 0) await abortableDelay(500, externalSignal);
@@ -385,8 +388,8 @@ export async function xtreamLogin(cred: XtreamCredentials, signal?: AbortSignal)
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}`;
   const data = await xtGet<any>(url, 30000, signal);
-  if (!data?.user_info) throw new Error('Geçersiz kimlik bilgileri');
-  if (data.user_info.auth === 0 || data.user_info.auth === '0') throw new Error('Kullanıcı adı veya şifre hatalı');
+  if (!data?.user_info || explicitScanAuth(data.user_info.auth) === null) throw Object.assign(new Error('Hesap doğrulama kanıtı eksik; yeniden denenebilir.'),{kind:'INVALID_JSON'});
+  if (explicitScanAuth(data.user_info.auth) === false) throw Object.assign(new Error('Kullanıcı adı veya şifre hatalı'),{kind:'ACCOUNT_REJECTED'});
   // v5.6.0: Panelin gönderdiği TÜM ek alanları koru.
   // Xtream standardında allowed_output_formats ve message vardır; bazı paneller
   // APK linki, destek bağlantısı gibi ÖZEL alanlar da gönderir. Bunları atmak
@@ -449,16 +452,17 @@ export async function xtreamLiveStreams(cred: XtreamCredentials, signal?: AbortS
 }
 
 /** Catalogue presence only; avoids category lookup and playback claims. */
-export async function xtreamLiveSample(cred: XtreamCredentials, signal?: AbortSignal): Promise<{ url: string; count: number }> {
+export async function xtreamLiveSample(cred: XtreamCredentials, signal?: AbortSignal, sampleIndex = 0): Promise<{ url: string; count: number; alternatives: string[] }> {
   const base = cred.server.replace(/\/+$/, '');
   const login = await xtreamLogin(cred, signal);
   if (![1, '1', true, 'true'].includes((login?.user_info as any)?.auth)) throw new Error('Xtream hesabı doğrulanamadı.');
   const rows = await xtGet<unknown>(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_streams`, 10000, signal);
   if (!Array.isArray(rows)) throw new Error('Canlı katalog yanıtı geçersiz.');
-  const valid = rows.filter(r => r && /^\d+$/.test(String(r.stream_id)));
+  const valid = rows.filter(r => r && /^\d+$/.test(String(r.stream_id)) && Number(r.stream_id)>0);
   if (!valid.length) throw new Error('Test edilecek canlı kanal bulunamadı.');
-  const row = valid[0]; const ext = /^(ts|m3u8|mp4)$/i.test(String(row.container_extension)) ? row.container_extension : 'ts';
-  return { url: `${base}/live/${encodeURIComponent(cred.username)}/${encodeURIComponent(cred.password)}/${row.stream_id}.${ext}`, count: valid.length };
+  const row = valid[sampleIndex]; if(!row)throw new Error("Başka test kanalı yok; görüntü belirlenemedi."); const ext = /^(ts|m3u8|mp4)$/i.test(String(row.container_extension)) ? row.container_extension : 'ts';
+  const urlFor=(item:any)=>`${base}/live/${encodeURIComponent(cred.username)}/${encodeURIComponent(cred.password)}/${item.stream_id}.${/^(ts|m3u8|mp4)$/i.test(String(item.container_extension))?item.container_extension:'ts'}`;
+  return { url: `${base}/live/${encodeURIComponent(cred.username)}/${encodeURIComponent(cred.password)}/${row.stream_id}.${ext}`, count: valid.length, alternatives:Array.from(new Set(valid.slice(0,16).map(urlFor))).slice(0,3) };
 }
 
 export async function xtreamLiveCatalogProbe(cred: XtreamCredentials, signal?: AbortSignal): Promise<number> {
@@ -482,7 +486,8 @@ export async function xtreamVod(cred: XtreamCredentials, signal?: AbortSignal): 
   ]);
   const catMap = new Map<string, string>(cats.map(c => [String(c.category_id), c.category_name]));
   const out: VodItem[] = [];
-  const rows = items || [];
+  if(!Array.isArray(items))throw Object.assign(new Error('Katalog API yanıtı dizi değil; mevcut katalog korunuyor.'),{kind:'INVALID_JSON'});
+  const rows = items;
   for (let i = 0; i < rows.length; i++) {
     const v: any = rows[i];
     out.push({
@@ -527,7 +532,8 @@ export async function xtreamSeries(cred: XtreamCredentials, signal?: AbortSignal
   ]);
   const catMap = new Map<string, string>(cats.map(c => [String(c.category_id), c.category_name]));
   const out: SeriesItem[] = [];
-  const rows = items || [];
+  if(!Array.isArray(items))throw Object.assign(new Error('Katalog API yanıtı dizi değil; mevcut katalog korunuyor.'),{kind:'INVALID_JSON'});
+  const rows = items;
   for (let i = 0; i < rows.length; i++) {
     const s: any = rows[i];
     out.push({

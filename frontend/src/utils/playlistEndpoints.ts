@@ -35,7 +35,7 @@ export function mergeEndpointEvidence(existing: PlaylistEndpoint[], evidence: Pl
   const url = canonicalEndpointUrl(evidence.url);
   if (!url) return existing;
   const previous = existing.find(e => e.kind === evidence.kind && canonicalEndpointUrl(e.url) === url);
-  return [...existing.filter(e => e.kind !== evidence.kind || canonicalEndpointUrl(e.url) !== url), { ...previous, ...evidence, url }];
+  return [...existing.filter(e => e.kind !== evidence.kind || canonicalEndpointUrl(e.url) !== url).map(e=>evidence.primary && e.kind===evidence.kind?{...e,primary:false}:e), { ...previous, ...evidence, url }];
 }
 
 export function endpointProjection(profileId: string, playlists: Partial<Playlist>[]) {

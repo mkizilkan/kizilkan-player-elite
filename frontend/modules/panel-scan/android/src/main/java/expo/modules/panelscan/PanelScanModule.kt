@@ -341,7 +341,22 @@ class PanelScanModule : Module() {
       val context = appContext.reactContext ?: error("Android context yok")
       val journal = ScanJournalStore.get(context)
       journal.addResult(runId, key, payload)
+      // MAG first-pass uncertainty may become valid in the second pass; preserve the row identity.
+      if(org.json.JSONObject(payload).has("mac"))journal.replaceArchiveResult(runId,key,payload)
       ScanSafetyBackup.request(context, journal, runId).toString()
+    }
+    AsyncFunction("writeArchiveRetry") { runId: String, profileId: String, key: String, payload: String, state: String, attempts: Int ->
+      val context=appContext.reactContext ?: error("Android context yok")
+      val journal=ScanJournalStore.get(context)
+      check(journal.ownerOf(runId)==profileId){"Yeniden deneme başka profile ait"}
+      check(state in setOf("pending","resolved","unresolved") && attempts in 0..2 && key.length<=4096 && payload.toByteArray(Charsets.UTF_8).size<=250000){"Yeniden deneme kaydı geçersiz"}
+      val job=org.json.JSONObject(payload);journal.enqueueRetry(runId,key,job,System.currentTimeMillis())
+      journal.updateRetry(runId,key,attempts,state,System.currentTimeMillis(),job);true
+    }
+    AsyncFunction("getArchiveRetries") { runId: String, profileId: String, afterKey: String ->
+      val context=appContext.reactContext ?: error("Android context yok");val journal=ScanJournalStore.get(context)
+      check(journal.ownerOf(runId)==profileId){"Yeniden deneme başka profile ait"}
+      journal.archiveRetries(runId,afterKey).toString()
     }
     AsyncFunction("flushResultArchive") { runId: String ->
       val context = appContext.reactContext ?: error("Android context yok")

@@ -32,6 +32,12 @@ export type MagScanOptions = {
   onStage?: (msg: string) => void;
   control?: MagScanControl;
   discoverySpeed?: MagDiscoverySpeed;
+  retryPass?: boolean;
+  /** Retry an already selected endpoint without opening another discovery/selection phase. */
+  lockedEndpoints?: boolean;
+  hostGroups?: Record<string,string>;
+  requestGate?: Pick<StalkerRequestScope,'beforeRequest'|'onRateLimit'|'onObservation'>;
+  onRetry?: (job:MagBulkJob,state:'pending'|'resolved'|'unresolved',attempt:number) => Promise<void>;
 };
 
 function cancelled(control?: MagScanControl): boolean { return !!control?.signal?.aborted || !!control?.isCancelled?.(); }
@@ -63,16 +69,22 @@ async function waitControlled<T>(work: Promise<T>, control?: MagScanControl): Pr
 }
 
 /** Bir çalışmadaki bütün MAC'ler/portlar aynı host sınırını paylaşır; oynatmaya etki etmez. */
-export function createMagRequestGate(control?: MagScanControl, onStage?: (message: string) => void): Pick<StalkerRequestScope, "beforeRequest" | "onRateLimit"> {
-  const hostState = new Map<string, { tail: Promise<void>; lastAt: number; holdUntil: number; announced: number }>();
+export function createMagRequestGate(control?: MagScanControl, onStage?: (message: string) => void, groups?:Record<string,string>): Pick<StalkerRequestScope, "beforeRequest" | "onRateLimit" | "onObservation"> {
+  const hostState = new Map<string, { tail: Promise<void>; lastAt: number; holdUntil: number; announced: number; interval: number; successes: number; protection?:MagProtectionObservation }>();
   const stateFor = (url: string) => {
-    const key = hostname(url); let state = hostState.get(key);
-    if (!state) { state = { tail: Promise.resolve(), lastAt: 0, holdUntil: 0, announced: 0 }; hostState.set(key, state); }
+    const key = groups?.[hostname(url)] || hostname(url); let state = hostState.get(key);
+    if (!state) { state = { tail: Promise.resolve(), lastAt: 0, holdUntil: 0, announced: 0, interval:650, successes:0 }; hostState.set(key, state); }
     return state;
   };
   return {
+    onObservation(observation) {
+      const state=stateFor(observation.endpoint);
+      if(observation.state==='present' && observation.kind!=='rate_limit')state.protection=observation;
+      if(observation.state==='not_observed' && observation.httpStatus===200){if(++state.successes>=8){state.interval=Math.max(650,Math.floor(state.interval*.9));state.successes=0;}}
+    },
     onRateLimit(url, retryAfterMs) {
       const state = stateFor(url);
+      state.interval=Math.min(5000,state.interval*2);state.successes=0;
       state.holdUntil = Math.max(state.holdUntil, Date.now() + Math.max(1000, retryAfterMs));
       state.announced = 0;
       onStage?.(`Portal istek sınırı · ${hostname(url)} · aynı hosttaki analizler bekletiliyor`);
@@ -91,8 +103,9 @@ export function createMagRequestGate(control?: MagScanControl, onStage?: (messag
         if (control?.waitIfPaused) await waitControlled(control.waitIfPaused(), requestControl);
         checkCancelled(requestControl);
         while (true) {
+          if(state.protection)throw Object.assign(new Error('Bu çalışmada host koruması görüldü; yeni istekler durduruldu.'),{kind:'MAG_PROTECTION',observation:state.protection});
           const now = Date.now();
-          const remaining = Math.max(state.holdUntil - now, 650 - (now - state.lastAt));
+          const remaining = Math.max(state.holdUntil - now, state.interval - (now - state.lastAt));
           if (remaining <= 0) break;
           if (state.holdUntil > now && now - state.announced >= 1000) {
             state.announced = now;
@@ -138,6 +151,20 @@ function unknownObservation(portal: string, proxy: boolean): MagProtectionObserv
 
 /** Complete MAC-free discovery once per entered host before any supplied MAC is transmitted. */
 export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = {}): Promise<MagScanResult[]> {
+  // Restored work keeps its original scope; a selected API never reopens discovery.
+  if(jobs.some(j=>j.retryScope!==undefined || j.selectedEndpoint!==undefined)) {
+    const gate=opts.requestGate||createMagRequestGate(opts.control,opts.onStage,opts.hostGroups);
+    const groups=new Map<string,MagBulkJob[]>();
+    for(const job of jobs){const key=JSON.stringify([job.retryScope||opts.scope||'exact',!!job.selectedEndpoint]);const group=groups.get(key)||[];group.push(job);groups.set(key,group);}
+    const restored:MagScanResult[]=[];let completed=0;
+    for(const [key,group]of groups){checkCancelled(opts.control);const [scope,locked]=JSON.parse(key);
+      for(const job of group)await opts.onRetry?.(job,'pending',0);
+      const plain=group.map(({retryScope,selectedEndpoint,...job})=>job);
+      const next=await runMagBulkScan(plain,{...opts,scope,requestGate:gate,retryPass:true,lockedEndpoints:locked,selectPortals:locked?undefined:opts.selectPortals,onProgress:(done,_total,current)=>opts.onProgress?.(completed+done,jobs.length,current)});
+      restored.push(...next);completed+=group.length;
+    }
+    return restored;
+  }
   const concurrency = Math.max(1, Math.min(MAG_MAX_PARALLEL, Math.floor(Number(opts.concurrency) || 3)));
   const scope = opts.scope;
   const budgets = new Map<string, MagDiscoveryBudget>();
@@ -149,7 +176,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
   };
   try {
   const results: MagScanResult[] = [];
-  const gate = createMagRequestGate(opts.control, opts.onStage);
+  const gate = opts.requestGate || createMagRequestGate(opts.control, opts.onStage,opts.hostGroups);
   const { stalkerLogin, stalkerVerifyAccount, discoverMagPortal } = await import("@/src/utils/stalker");
   const { portalDiscoveryCandidates } = await import("@/src/utils/magBulk");
   const uniqueHosts = new Map<string, MagHostEntry>();
@@ -161,7 +188,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
   let reports: MagPortalDiscovery[];
   const completedReports: MagPortalDiscovery[] = [];
   try {
-    reports = await discoverMagHosts(Array.from(uniqueHosts.values()), {
+    reports = opts.lockedEndpoints ? Array.from(uniqueHosts.values()).map(host=>({host,state:'ready' as const,probes:0,candidates:[{endpoint:host.host,confidence:'fingerprint' as const,httpStatus:0,elapsedMs:0,selectable:true,evidence:['previously-selected-endpoint']}]})) : await discoverMagHosts(Array.from(uniqueHosts.values()), {
       scope, concurrency, timeoutMs: opts.timeoutMs, useProxy: opts.useProxy, control: opts.control, gate,
       budgetForHost: host => {
         const key = hostname(host.host); let passive = passiveBudgets.get(key);
@@ -178,7 +205,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
       onStage: opts.onStage, onProgress: (done, total, current) => opts.onProgress?.(done, total, current),
     });
     checkCancelled(opts.control);
-    opts.onPortalDiscovery?.(reports);
+    if(!opts.lockedEndpoints)opts.onPortalDiscovery?.(reports);
   } catch (error: any) {
     if (aborted(error) || cancelled(opts.control)) return results;
     throw error;
@@ -222,7 +249,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
       const requestScope: StalkerRequestScope = {
         ...gate, transport: opts.useProxy ? "proxy" : "direct", signal: opts.control?.signal, timeoutMs: opts.timeoutMs,
         discoveryBudget: budget,
-        onObservation(next) { if (observation.state !== "present" || next.state === "present") observation = next; },
+        onObservation(next) { gate.onObservation?.(next);if (observation.state !== "present" || next.state === "present") observation = next; },
       };
       const probeCred: StalkerCreds = { portal: hostKey, mac, requestScope };
       try {
@@ -301,7 +328,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
     let observation = unknownObservation(portal, !!opts.useProxy);
     const requestScope: StalkerRequestScope = {
       ...gate, transport: opts.useProxy ? "proxy" : "direct", signal: opts.control?.signal, timeoutMs: opts.timeoutMs,
-      onObservation(next) { if (observation.state !== "present" || next.state === "present") observation = next; },
+      onObservation(next) { gate.onObservation?.(next);if (observation.state !== "present" || next.state === "present") observation = next; },
     };
     const candidate = report?.candidates.find(value => value.endpoint === portal);
     const resolvedPortal = candidate?.resolvedPortal || resolveMagPortal(job.portal, portal, candidate?.evidence || [], 'input');
@@ -345,12 +372,31 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
       try {
         const result = await scanOne(job);
         if (cancelled(opts.control)) return;
+        if(!opts.retryPass && ['error','unverified','probable','no-portal'].includes(result.category))await opts.onRetry?.({...job,portal:choices[job.portal]||job.portal,retryScope:opts.scope||(/\.php$/i.test(new URL(job.portal).pathname)?'exact':'fallback'),selectedEndpoint:!!choices[job.portal]},'pending',0);
         results.push(result); done++;
         await opts.onResult?.(result); opts.onProgress?.(done, accountJobs.length, job.hostRaw + " · " + job.mac);
       } catch (error: any) { if (aborted(error) || cancelled(opts.control)) return; throw error; }
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, accountJobs.length) }, () => worker()));
+  // A fresh, bounded discovery budget is used only for uncertain jobs, never for explicit rejection/protection.
+  if(!opts.retryPass && !cancelled(opts.control)) {
+    const uncertain=results.filter(r=>['error','unverified','probable','no-portal'].includes(r.category));
+    const uncertainKeys=new Set(uncertain.map(r=>JSON.stringify([r.hostRaw,r.mac])));
+    const retryJobs=accountJobs.filter(j=>uncertainKeys.has(JSON.stringify([j.hostRaw,j.mac])));
+    if(retryJobs.length){
+      opts.onStage?.(`İkinci tur · ${retryJobs.length} belirsiz hesap`);
+      await delay(1000,opts.control);
+      const locked=retryJobs.filter(j=>!!choices[j.portal]).map(j=>({...j,portal:choices[j.portal]}));
+      const undiscovered=retryJobs.filter(j=>!choices[j.portal]);
+      for(const group of [locked,undiscovered]){
+        if(!group.length || cancelled(opts.control))continue;
+        const second=await runMagBulkScan(group,{...opts,requestGate:gate,retryPass:true,lockedEndpoints:group===locked,scope:group===locked?'exact':opts.scope,selectPortals:group===locked?undefined:opts.selectPortals,discoverySpeed:'slow',timeoutMs:Math.max(opts.timeoutMs||6000,10000)});
+        for(const result of second){const index=results.findIndex(r=>r.mac===result.mac&&r.hostRaw===result.hostRaw);if(index>=0)results[index]=result;}
+      }
+    }
+  }
+  if(opts.retryPass)for(const result of results){const job=accountJobs.find(j=>j.mac===result.mac&&j.hostRaw===result.hostRaw);if(job)await opts.onRetry?.({...job,portal:choices[job.portal]||job.portal,retryScope:opts.scope||(/\.php$/i.test(new URL(job.portal).pathname)?'exact':'fallback'),selectedEndpoint:!!choices[job.portal]},['error','unverified','probable','no-portal'].includes(result.category)?'unresolved':'resolved',1);}
   void recordDiagnostic("scan", "MAG_BULK_SCAN_DONE", { jobs: accountJobs.length, hosts: reports.length, scanned: done,
     valid: results.filter(r => r.category === "valid").length, cancelled: cancelled(opts.control) });
   return results;

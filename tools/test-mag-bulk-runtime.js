@@ -84,14 +84,14 @@ async function negativeAndSingleFlight() {
     discoverMagHosts: async hosts => { discoveries++; return hosts.map(host => report(host, null)); },
   } }).load('src/utils/magBulkScan.ts');
   const noPortal = await failed.runMagBulkScan([job(1), job(2), job(3)], { scope: 'all', concurrency: 3 });
-  assert.ok(noPortal.every(r => r.category === 'no-portal')); assert.equal(discoveries, 1); assert.equal(logins, 0);
+  assert.ok(noPortal.every(r => r.category === 'no-portal')); assert.equal(discoveries, 2, 'only uncertain jobs get a bounded second discovery pass'); assert.equal(logins, 0);
   const selectedEndpoint = 'http://portal.example.com:8080/portal.php';
   const successful = environment({ '@/src/utils/stalker': fake, '@/src/utils/magPortalDiscovery': {
     discoverMagHosts: async hosts => { discoveries++; return hosts.map(host => report(host, selectedEndpoint)); },
   } }).load('src/utils/magBulkScan.ts');
   const results = await successful.runMagBulkScan([job(1), job(2), job(3)], { scope: 'all', concurrency: 3 });
   assert.equal(results.find(r => r.mac === mac(1)).category, 'blocked'); assert.equal(results.filter(r => r.category === 'valid').length, 2);
-  assert.equal(discoveries, 2); assert.ok(results.every(r => r.portal === selectedEndpoint));
+  assert.equal(discoveries, 3); assert.ok(results.every(r => r.portal === selectedEndpoint));
   groups++;
 }
 async function cancellationAndParallel() {
@@ -215,6 +215,7 @@ async function selectedActionsAndArchive() {
     setAddStartedAt() {}, setAddProgressAt() {}, setAddProgress() {}, setAddTitle() {}, applyCatalogProgress: (_p, n) => n,
     createMagRequestGate: () => ({}), formatAccountExpiry: expiry.formatAccountExpiry, formatMagArchiveTxt: model.formatMagArchiveTxt,
     magIdentity: model.magAccountIdentity, stableId: (_prefix, identity) => identity,
+    parsePortalHosts:model.parsePortalHosts,panelByHostRef:{current:new Map()},directorySourceRef:{current:'https://fixture.invalid'},
     addPlaylist: async item => added.push(item), updatePlaylist: async () => {}, enrichPlaylistMedia: async () => {},
     recordDiagnostic: async () => {}, router: { replace() {} }, Alert: { alert: (...args) => alerts.push(args) },
   };
@@ -243,7 +244,7 @@ async function portalChoiceAndUnverified() {
   } });
   const runner = env.load('src/utils/magBulkScan.ts');
   const results = await runner.runMagBulkScan([job(1), job(2)], { selectPortals: async reports => { assert.equal(logins.length, 0); selected = true; return { [reports[0].host.host]: second }; } });
-  assert.deepEqual(logins, [second, second]); assert.ok(results.every(r => r.category === 'unverified'));
+  assert.deepEqual(logins, [second, second, second, second], 'second pass remains on the user-selected endpoint'); assert.ok(results.every(r => r.category === 'unverified'));
   await assert.rejects(runner.runMagBulkScan([job(1)], { selectPortals: async () => ({ [portal]: 'http://foreign.example.com/portal.php' }) }), /Seçilen API/);
   const controller = new AbortController(); logins = [];
   const pending = runner.runMagBulkScan([job(1)], { control: { signal: controller.signal }, selectPortals: async () => { controller.abort(); return new Promise(() => {}); } });
@@ -309,7 +310,24 @@ async function nativeProxyCancel() {
   assert.equal(cancelledId, activeId); assert.equal(result.error, 'CANCELLED');
   groups++;
 }
+async function restoredScopeAndEndpoint() {
+  const unknownPortal='http://unknown.example.com';const discovered=[];const logins=[];const retries=[];
+  const runner=environment({'@/src/utils/stalker':{
+    stalkerLogin:async cred=>{logins.push(cred.portal);return account(cred.portal);},
+    normalizeStalkerAccountInfo:profile=>({status:profile.status}),
+  },'@/src/utils/magPortalDiscovery':{discoverMagHosts:async(hosts,opts)=>{discovered.push({scope:opts.scope,hosts:hosts.map(h=>h.host)});return hosts.map(h=>report(h,h.host+'/portal.php'));}}}).load('src/utils/magBulkScan.ts');
+  const result=await runner.runMagBulkScan([{...job(1),retryScope:'all',selectedEndpoint:true},{...job(2),hostRaw:unknownPortal,portal:unknownPortal,hasPort:false,hasPath:false,explicitPort:undefined,retryScope:'fallback',selectedEndpoint:false}],{
+    scope:'exact',selectPortals:async reports=>Object.fromEntries(reports.map(r=>[r.host.host,r.candidates[0].endpoint])),onRetry:async(j,state,attempt)=>retries.push({j,state,attempt}),
+  });
+  assert.equal(result.length,2);assert.ok(result.every(r=>r.category==='valid'));
+  assert.deepEqual(json(discovered),[{scope:'fallback',hosts:[unknownPortal]}],'selected endpoint is locked; unknown endpoint preserves original fallback scope');
+  assert.deepEqual(logins,[portal,unknownPortal+'/portal.php']);assert.equal(retries.filter(r=>r.state==='pending').length,2);assert.equal(retries.filter(r=>r.state==='resolved').length,2);
+  const gate=runner.createMagRequestGate(undefined,undefined,{'first.example.com':'same-panel','second.example.com':'same-panel'});
+  gate.onObservation({state:'present',kind:'captcha',endpoint:'http://first.example.com/portal.php',stage:'analysis',evidence:['fixture'],observedAt:new Date().toISOString(),transport:'direct'});
+  await assert.rejects(gate.beforeRequest('http://second.example.com/portal.php'),e=>e.kind==='MAG_PROTECTION');
+  groups++;
+}
 (async () => {
-  await scopeAndIdentity(); await negativeAndSingleFlight(); await cancellationAndParallel(); await protectionAndRates(); await realExactScopeAndExpiry(); await terminalCatalogProtectionAndQueuedArchive(); await selectedActionsAndArchive(); await portalChoiceAndUnverified(); await terminalDiscoveryStopsAccountStage(); await nativeProxyCancel();
+  await scopeAndIdentity(); await negativeAndSingleFlight(); await cancellationAndParallel(); await protectionAndRates(); await realExactScopeAndExpiry(); await terminalCatalogProtectionAndQueuedArchive(); await selectedActionsAndArchive(); await portalChoiceAndUnverified(); await terminalDiscoveryStopsAccountStage(); await nativeProxyCancel();await restoredScopeAndEndpoint();
   console.log(`PASS: MAG kapsam/yarış/iptal/koruma/seçim/TXT/proxy — ${groups} davranış grubu`);
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -13,6 +13,7 @@ const compile = code => ts.transpileModule(code, { compilerOptions: { module: ts
 function load(file, imports = {}) {
   const exports = {};
   vm.runInNewContext(compile(source(file)), { exports, require: name => {
+    const pure=require('./_mag_pure').load(name);if(pure)return pure;
     if (!(name in imports)) throw Error(`Unexpected import: ${name}`);
     return imports[name];
   }, console, URL, Buffer, TextDecoder, setTimeout, clearTimeout }, { filename: file });

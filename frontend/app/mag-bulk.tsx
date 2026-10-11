@@ -36,13 +36,18 @@ import { haptic } from "@/src/utils/haptic";
 import type { Playlist } from "@/src/types";
 import {
   parseMacList, expandMacRange, parsePortalHosts, buildMagBulkJobs, MAG_MAX_MACS, MAG_MAX_PARALLEL, magAccountIdentity, formatMagArchiveTxt,
-  type MagHostEntry, type MagDiscoveryScope, type MagArchiveEntry,
+  type MagHostEntry, type MagBulkJob, type MagDiscoveryScope, type MagArchiveEntry,
 } from "@/src/utils/magBulk";
 import { chooseMagPortals, createMagRequestGate, runMagBulkScan, type MagScanResult } from "@/src/utils/magBulkScan";
 import { PanelScan } from "@/modules/panel-scan";
 import { createScanResultReader } from "@/src/utils/scanResultReader";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import type { MagPortalDiscovery } from "@/src/utils/magPortalDiscovery";
+
+import { PanelScopePicker } from '@/src/components/PanelScopePicker';
+import type { DirectoryPanel, PanelTarget } from '@/src/utils/panelDirectoryModel';
+import { fetchPanelDirectory, filterDirectory, DEFAULT_CODE_SOURCE, CODE_SOURCE_KEY } from '@/src/utils/serverCode';
+import { storage } from '@/src/utils/storage';
 
 type HostMode = "manual" | "code" | "name" | "all";
 
@@ -100,6 +105,33 @@ export default function MagBulkScreen() {
   const [hostMode, setHostMode] = useState<HostMode>("manual");
   const [hostText, setHostText] = useState("");
   const [codeText, setCodeText] = useState("");
+  const [magDirectory, setMagDirectory] = useState<DirectoryPanel[]>([]);
+  const [magPanelTarget, setMagPanelTarget] = useState<PanelTarget>({});
+  const [magDirectoryBusy, setMagDirectoryBusy] = useState(false);
+  const directorySourceRef = useRef(DEFAULT_CODE_SOURCE);
+  const panelByHostRef = useRef(new Map<string, DirectoryPanel>());
+  const loadMagDirectory = async () => {
+    if(magDirectoryBusy)return;setMagDirectoryBusy(true);
+    try { const src=(await storage.getItem<string>(CODE_SOURCE_KEY,DEFAULT_CODE_SOURCE))||DEFAULT_CODE_SOURCE;directorySourceRef.current=src;setMagDirectory(await fetchPanelDirectory(src,{forceRefresh:true})); }
+    catch(e:any){Alert.alert('Rehber yüklenemedi',String(e?.message||e));}finally{setMagDirectoryBusy(false);}
+  };
+  const restoredRetryJobsRef=useRef<MagBulkJob[]|null>(null);
+  const restoredRetryPanelsRef=useRef(new Map<string,DirectoryPanel>());
+  const restorePendingMacJobs=async()=>{
+    if(busyRef.current)return;const owner=profileRef.current;const epoch=profileEpochRef.current;
+    try{
+      const archive=await PanelScan.getLatestResultArchive(owner);if(!archive)throw new Error('Kayıtlı MAC taraması yok.');
+      let cursor='',pending:any[]=[];
+      while(true){const page=await PanelScan.getArchiveRetries(archive,owner,cursor);pending.push(...page.jobs);if(!page.nextKey)break;if(page.nextKey===cursor)throw new Error('Kuyruk ilerlemiyor.');cursor=page.nextKey;}
+      if(owner!==profileRef.current||epoch!==profileEpochRef.current)return;
+      if(!pending.length)throw new Error('Bu taramada bekleyen belirsiz hesap yok.');
+      if(pending.length>8192)throw new Error('Kayıtlı kuyruk güvenli iş sınırını aşıyor.');
+      restoredRetryJobsRef.current=pending.map(row=>({...row.job,retryScope:row.job.retryScope||row.scope||'exact',selectedEndpoint:row.job.selectedEndpoint??false}));
+      restoredRetryPanelsRef.current=new Map(pending.filter(row=>row.panel).map(row=>[row.job.portal,row.panel]));
+      setUseRange(false);setHostMode('manual');setMacListText(Array.from(new Set(pending.map(row=>String(row.job.mac)))).join('\n'));setHostText(Array.from(new Set(pending.map(row=>String(row.job.portal)))).join('\n'));
+      setStageMsg(`${pending.length} kayıtlı deneme hazır; özgün kapsam ve seçilmiş portal yolları korunacak. Taramayı Başlat'a dokunun.`);
+    }catch(e:any){if(owner===profileRef.current)Alert.alert('Yeniden deneme',String(e?.message||e));}
+  };
   const [macListText, setMacListText] = useState("");
   const [rangeStart, setRangeStart] = useState("");
   const [rangeCount, setRangeCount] = useState("");
@@ -170,9 +202,10 @@ export default function MagBulkScreen() {
     flushTimerRef.current = null;
     const batch = resultBufferRef.current.splice(0);
     if (!batch.length) return;
-    allFoundRef.current.push(...batch);
+    const mergeResults=(previous:MagScanResult[])=>{const merged=new Map(previous.map(r=>[JSON.stringify([r.hostRaw,r.mac]),r]));for(const r of batch)merged.set(JSON.stringify([r.hostRaw,r.mac]),r);return [...merged.values()];};
+    allFoundRef.current=mergeResults(allFoundRef.current);
     if (!mountedRef.current) return;
-    setResults(prev => [...prev, ...batch]);
+    setResults(mergeResults);
     setSelected(prev => { const next = new Set(prev); for (const r of batch) if (r.category === "valid") next.add(magIdentity(r.portal, r.mac)); return next; });
     // v18.7.25 (E-MAG): biriktir + debounce'lu yedek yaz (her 3 sn'de bir, app ölse bile diskte taze kalsın).
     // Each result has already reached the encrypted journal before this UI batch.
@@ -216,7 +249,7 @@ export default function MagBulkScreen() {
     scanAbortRef.current?.abort(); actionAbortRef.current?.abort();
     scanAbortRef.current = null; actionAbortRef.current = null;
     cancelRef.current = true; runRef.current++; busyRef.current = false;
-    resultBufferRef.current = []; setResults([]); setSelected(new Set());
+    resultBufferRef.current = []; setResults([]); setSelected(new Set());setPlaybackTests([]);restoredRetryJobsRef.current=null;restoredRetryPanelsRef.current.clear();panelByHostRef.current.clear();
     setScanning(false); setAdding(false); setSaving(false); setPaused(false); setActionProgress("");
     setPortalReports([]); setPortalChoices({}); portalChoicesRef.current = {};
   }, [activeProfile.id, profileEpoch]);
@@ -233,7 +266,7 @@ export default function MagBulkScreen() {
   }, [macListText, useRange, rangeStart, rangeCount, hostText]);
 
   const resolveHosts = useCallback(async (): Promise<MagHostEntry[]> => {
-    if (hostMode === "manual") return parsed.hosts;
+    if (hostMode === "manual") {panelByHostRef.current.clear();return parsed.hosts;}
     // Rehberden host çöz (kod / panel adı / tümü). MAG portalları combo rehberindeki hostlardır.
     const { fetchPanelDirectory, filterDirectory, DEFAULT_CODE_SOURCE, CODE_SOURCE_KEY } = await import("@/src/utils/serverCode");
     const { storage } = await import("@/src/utils/storage");
@@ -242,15 +275,17 @@ export default function MagBulkScreen() {
     const target = hostMode === "code" ? { codes: codeText.split(/[\s,;]+/).filter(Boolean) }
       : hostMode === "name" ? { names: codeText.split(/[\s,;]+/).filter(Boolean) }
       : {};
-    const filtered = filterDirectory(dir, "all", target);
+    directorySourceRef.current=src;
+    const filtered = filterDirectory(dir, "all", {...target,...magPanelTarget});
+    panelByHostRef.current.clear();
     const seen = new Set<string>();
     const out: MagHostEntry[] = [];
     for (const panel of filtered) for (const h of panel.hosts) {
       const key = h.toLowerCase();
-      if (!seen.has(key)) { seen.add(key); out.push(...parsePortalHosts(h).hosts); }
+      if (!seen.has(key)) { seen.add(key); const entries=parsePortalHosts(h).hosts;for(const entry of entries)panelByHostRef.current.set(entry.host,panel);out.push(...entries); }
     }
     return out;
-  }, [hostMode, parsed.hosts, codeText]);
+  }, [hostMode, parsed.hosts, codeText, magPanelTarget]);
 
   const startScan = useCallback(async () => {
     if (busyRef.current) return;
@@ -266,6 +301,7 @@ export default function MagBulkScreen() {
     // v18.7.25 (E-MAG): yeni tarama için yedek birikimini ve dosya adını sıfırla.
     allFoundRef.current = []; lastBackupAtRef.current = 0;
     const archiveId = `mac-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const archiveOwner=profileRef.current;
     backupNameRef.current = archiveId;
     setPortalReports([]); setPortalChoices({}); portalChoicesRef.current = {}; setScanPhase("discovery");
     setPaused(false); setScanning(true); setResults([]); setStageMsg("Portal kaynağı hazırlanıyor…"); setProgress({ done: 0, total: 0, current: "" });
@@ -275,15 +311,19 @@ export default function MagBulkScreen() {
     // v18.7.21 (D): uygulama arka plana alınsa da tarama sürsün (foreground keep-alive servisi).
     try { KizilkanNativeCore.startForegroundKeepAlive("KIZILKAN · Çoklu MAC", "Portal taraması çalışıyor…", `mac-scan:${archiveId}`, () => { controller.abort(); if (mountedRef.current) setStageMsg('Android arka plan süre sınırı; bulunan kayıtlar korunuyor.'); }); } catch {}
     try {
-      await PanelScan.createResultArchive(archiveId, profileRef.current);
+      await PanelScan.createResultArchive(archiveId, archiveOwner);
       const hosts = await resolveHosts();
       if (controller.signal.aborted || run !== runRef.current) return;
       if (hosts.length === 0) { Alert.alert("Portal yok", hostMode === "manual" ? "En az bir portal adresi girin." : "Rehberde eşleşen host bulunamadı."); return; }
-      const { jobs, capped } = buildMagBulkJobs(hosts, parsed.macs);
+      const { jobs:builtJobs, capped } = buildMagBulkJobs(hosts, parsed.macs);
+      const jobs=restoredRetryJobsRef.current||builtJobs;restoredRetryJobsRef.current=null;
+      for(const [host,panel] of restoredRetryPanelsRef.current)panelByHostRef.current.set(host,panel);restoredRetryPanelsRef.current.clear();
+      const hostGroups:Record<string,string>={};for(const [host,panel]of panelByHostRef.current){try{hostGroups[new URL(host).hostname.toLowerCase()]=panel.directoryKey||panel.panelName;}catch{}}
       if (capped) Alert.alert("Uyarı", "Çok fazla kombinasyon; ilk 8192 iş taranacak.");
       haptic.medium(); setProgress({ done: 0, total: jobs.length, current: "" });
       void recordDiagnostic("scan", "MAG_BULK_UI_START", { jobs: jobs.length, hosts: hosts.length, macs: parsed.macs.length, proxy: useProxy, hostMode, mode: scanMode, scope: scopeChosen ? discoveryScope : 'auto', parallel });
       await runMagBulkScan(jobs, {
+        hostGroups,
         concurrency: parallel,
         timeoutMs: mode.timeoutMs,
         maxCandidatesPerHost: mode.maxCandidates,
@@ -303,8 +343,9 @@ export default function MagBulkScreen() {
           controller.signal.addEventListener("abort", stop, { once: true });
           if (controller.signal.aborted) stop();
         }) : undefined,
+        onRetry: async (job,state,attempt)=>{if(controller.signal.aborted || run!==runRef.current || archiveOwner!==profileRef.current)return;const panel=panelByHostRef.current.get(job.portal)||panelByHostRef.current.get(parsePortalHosts(job.hostRaw).hosts[0]?.host||'');const compactPanel=panel?{...panel,hosts:[job.portal],sources:panel.sources?.map(s=>({...s,hosts:[]}))}:undefined;await PanelScan.writeArchiveRetry(archiveId,archiveOwner,JSON.stringify([job.hostRaw,job.mac]),{job,scope:discoveryScope,panel:compactPanel},state,attempt);},
         onResult: async r => {
-          const backup = await PanelScan.appendResultArchive(archiveId, magIdentity(r.portal, r.mac), r);
+          const backup = await PanelScan.appendResultArchive(archiveId, JSON.stringify([r.hostRaw,r.mac]), r);
           if (!mountedRef.current || run !== runRef.current) return;
           setSafetyStatus(backup.ok === false ? `TXT hatası: ${backup.error}. Kalıcı sonuçlar korunuyor.` : backup.ok === true ? `TXT doğrulandı · ${backup.path || ''}` : 'Emniyet TXT hazırlanıyor; sonuçlar kalıcı kayıtta.');
           resultBufferRef.current.push(r);
@@ -401,7 +442,7 @@ export default function MagBulkScreen() {
         const cred = { portal: r.portal, mac: r.mac, deviceModel: "MAG320" as const, endpointPolicy: "exact" as const,
           resolvedPortal: r.resolvedPortal,
           requestScope: { ...gate, transport: useProxy ? "proxy" as const : "direct" as const, signal: controller.signal,
-            onObservation: (next: NonNullable<MagScanResult["protection"]>) => { if (latestProtection?.state !== "present" || next.state === "present") latestProtection = next; } } };
+            onObservation: (next: NonNullable<MagScanResult["protection"]>) => { gate.onObservation?.(next); if (latestProtection?.state !== "present" || next.state === "present") latestProtection = next; } } };
         const { session, profile } = await stalkerLogin(cred, { forceFresh: true, signal: controller.signal });
         if (!stillOwned()) break;
         const verification = await stalkerVerifyAccount(cred, session, profile, { signal: controller.signal });
@@ -417,6 +458,7 @@ export default function MagBulkScreen() {
           accountVerified, verificationState: accountVerified ? "verified" : "probable", verificationEvidence: verification.evidence.slice(0, 8) } };
         const shell: Playlist = {
           id, name: `MAG ${r.mac.slice(-8)}`, source: "stalker",
+          serverCodeBinding: (()=>{const original=parsePortalHosts(r.hostRaw).hosts[0]?.host;const panel=original?panelByHostRef.current.get(original):undefined;if(!panel)return undefined;return {code:panel.code,panelName:panel.panelName,directoryKey:panel.directoryKey,sources:panel.sources,codeSource:directorySourceRef.current,autoResolve:true,allowDirectoryAlternatives:true,selectedHosts:panel.hosts,directoryHosts:panel.sources?.flatMap(x=>x.hosts)||panel.hosts,validatedHosts:[session.endpoint],preferredServer:session.endpoint};})(),
           stalkerPortal: session.endpoint, stalkerResolvedPortal: session.resolvedPortal || r.resolvedPortal, stalkerMac: r.mac.toUpperCase(),
           endpoints: r.endpoints,
           stalkerBackupPortals: (r.endpoints || []).filter(e => e.kind === 'stalker' && e.accountVerifiedAt && canonicalEndpointUrl(e.url) !== canonicalEndpointUrl(session.endpoint)).map(e => e.url),
@@ -517,7 +559,7 @@ export default function MagBulkScreen() {
           if (r.category !== "valid") throw new Error("Analiz sonucu geçerli hesap değil; kategori sorgusu gönderilmedi.");
           const cred = { portal: r.portal, mac: r.mac, deviceModel: "MAG320" as const, endpointPolicy: "exact" as const,
             requestScope: { ...gate, transport: useProxy ? "proxy" as const : "direct" as const, signal: controller.signal,
-              onObservation: (next: NonNullable<MagScanResult["protection"]>) => { if (entry.protection?.state !== "present" || next.state === "present") entry.protection = next; } } };
+              onObservation: (next: NonNullable<MagScanResult["protection"]>) => { gate.onObservation?.(next); if (entry.protection?.state !== "present" || next.state === "present") entry.protection = next; } } };
           const { session } = await stalkerLogin(cred, { forceFresh: false });
           if (!stillOwned()) return;
           const prev = await stalkerCategoryPreview(cred, session);
@@ -584,7 +626,7 @@ export default function MagBulkScreen() {
         const target = results.find(r => magIdentity(r.portal, r.mac) === key); if (!target || !mountedRef.current) return;
         const endpoints = mergeEndpointEvidence(target.endpoints || [], evidence);
         setResults(prev => prev.map(r => magIdentity(r.portal, r.mac) === key ? { ...r, endpoints } : r));
-        if (backupNameRef.current) void PanelScan.updateResultEvidence(backupNameRef.current, { portal: target.portal, mac: target.mac }, { endpoints }).catch(() => setSafetyStatus('İlk kare kanıtı arşive yazılamadı; yeniden kaydedin.'));
+        if (backupNameRef.current) void PanelScan.updateResultEvidence(backupNameRef.current, { portal: target.portal, mac: target.mac }, { endpoints }).then(ok=>{if(!ok)throw new Error('Arşiv sonucu bulunamadı.');}).catch(() => setSafetyStatus('İlk kare kanıtı arşive yazılamadı; yeniden kaydedin.'));
         const stored = playlists.find(p => p.source === 'stalker' && p.stalkerMac?.toUpperCase() === target.mac && playlistEndpoints(p).some(e => e.url === canonicalEndpointUrl(target.portal)));
         if (stored) void updatePlaylist(stored.id, { endpoints: mergeEndpointEvidence(playlistEndpoints(stored), evidence) });
       }} />}
@@ -637,6 +679,8 @@ export default function MagBulkScreen() {
           </>
         )}
 
+        {hostMode !== 'manual' && <PanelScopePicker scope="all" target={magPanelTarget} directory={magDirectory} onScope={()=>{}} onTarget={setMagPanelTarget} onLoad={()=>void loadMagDirectory()} busy={scanning||adding||saving||magDirectoryBusy}/>}
+        <FocusButton disabled={scanning||adding||saving} onPress={()=>void restorePendingMacJobs()} style={S.chip}><Text style={S.chipText}>Kayıtlı belirsiz MAC denemelerini getir</Text></FocusButton>
         {/* MAC girişi */}
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: SPACING.md }}>
           <Text style={S.label}>MAC ADRESLERİ</Text>
@@ -840,7 +884,7 @@ export default function MagBulkScreen() {
                 {(() => {
                   // v18.7.24: görüntü var/yok — doğrulama anındaki gerçek canlı içerik örneğine (liveCount) göre.
                   const n = r.liveCount || 0;
-                  const info = n > 0 ? { t: `📺 Katalog: ${n} kanal · ilk kare sınanmadı`, c: colors.success || "#2ecc71" }
+                  const info = n > 0 ? { t: `📺 Katalog örneği: ${n} kanal · ilk kare sınanmadı`, c: colors.success || "#2ecc71" }
                     : r.category === "probable" ? { t: "📺 Katalog örneği alınamadı · yayın belirsiz", c: colors.onSurfaceTertiary }
                     : { t: "📺 Katalog boş / erişilemedi · yayın sınanmadı", c: colors.onSurfaceTertiary };
                   return <Text style={[S.resultSub, { color: info.c, fontWeight: FONT.weight.semibold }]}>{info.t}</Text>;

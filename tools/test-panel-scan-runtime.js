@@ -91,6 +91,17 @@ try {
   assert.equal(replay.committed_cursor, 0);
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM scan_result').get().count, 1, 'legacy checkpoint replay retains results');
   console.log('PASS: actual SQLite checkpoint SQL prevents delayed cursor/tested regressions');
+  const retrySchema=journalSource.slice(journalSource.indexOf('private fun createRetryTable'),journalSource.indexOf('@Synchronized fun enqueueRetry'));
+  for(const match of retrySchema.matchAll(/execSQL\("([^"]+)"\)/g))sqlite.exec(match[1]);
+  // Re-running the additive upgrade retains old results and pending work.
+  sqlite.prepare('INSERT INTO scan_retry(run_id,job_key,payload_enc,due_at) VALUES (?,?,?,?)').run('fixture','early','encrypted-placeholder',1);
+  sqlite.prepare('INSERT INTO scan_retry(run_id,job_key,payload_enc,due_at,state) VALUES (?,?,?,?,?)').run('fixture','done','encrypted-placeholder',0,'valid');
+  for(const match of retrySchema.matchAll(/execSQL\("([^"]+)"\)/g))sqlite.exec(match[1]);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM scan_result').get().count,1);
+  const nextSql=journalSource.slice(journalSource.indexOf('@Synchronized fun nextRetry')).match(/rawQuery\("([^"]+)"/)[1];
+  assert.equal(sqlite.prepare(nextSql).get('fixture').job_key,'early');
+  assert.equal(sqlite.prepare(nextSql).get('other-profile-run'),undefined);
+  console.log('PASS: actual retry-table migration is additive; completed/other-run work excluded');
 } finally { sqlite.close(); }
 
 function cachedJar(group, name, preferredVersion) {
@@ -247,12 +258,30 @@ ${service.slice(parserStart, parserEnd)}
     cancelWaiter.start(); Thread.sleep(150); cancelFlag.set(true); cancelWaiter.join(2000)
     check(!cancelWaiter.isAlive && cancelledResult.get() == false && cancelPermit.availablePermits() == 0)
     println("PASS: actual Kotlin semaphore contention + cancellation without permit leak")
+    val adaptive=AdaptiveScanHostGate()
+    val adaptiveCancel=AtomicBoolean(false)
+    repeat(4){check(adaptive.acquire(adaptiveCancel))}
+    adaptive.rateLimited();adaptive.rateLimited()
+    val gated=AtomicReference<Boolean?>(null)
+    val gatedWaiter=Thread{gated.set(adaptive.acquire(adaptiveCancel))}
+    gatedWaiter.start();Thread.sleep(100);repeat(3){adaptive.release()};Thread.sleep(150)
+    check(gatedWaiter.isAlive) { "rate-limited gate exceeded its reduced capacity" }
+    adaptiveCancel.set(true);gatedWaiter.join(2000);check(gated.get()==false);adaptive.release()
+    println("PASS: actual Kotlin adaptive capacity and cancellable throttled waiter")
+    val interruptedGate=AdaptiveScanHostGate();val neverCancelled=AtomicBoolean(false)
+    repeat(4){check(interruptedGate.acquire(neverCancelled))}
+    val interruptPreserved=AtomicBoolean(false)
+    val interruptedWaiter=Thread{try{interruptedGate.acquire(neverCancelled)}catch(_:InterruptedException){interruptPreserved.set(Thread.currentThread().isInterrupted)}}
+    interruptedWaiter.start();Thread.sleep(100);interruptedWaiter.interrupt();interruptedWaiter.join(2000)
+    check(!interruptedWaiter.isAlive&&interruptPreserved.get());repeat(4){interruptedGate.release()}
+    println("PASS: actual Kotlin adaptive wait preserves interruption")
 
     check(scanAuthStatus(1) == true && scanAuthStatus(true) == true && scanAuthStatus("TRUE") == true)
     check(scanAuthStatus(0) == false && scanAuthStatus(false) == false)
     check(scanAuthStatus(null) == null && scanAuthStatus(2) == null && scanAuthStatus("invalid") == null)
     val retryNow = 1700000000000L
     check(scanRetryAfterMillis("120", retryNow) == 120000L)
+    check(scanBackoffDeadline(Long.MAX_VALUE,retryNow)==Long.MAX_VALUE)
     check(scanRetryAfterMillis("-1", retryNow) == 2000L)
     val retryDate = java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("GMT") }.format(java.util.Date(retryNow + 120000L))
     check(scanRetryAfterMillis(retryDate, retryNow) == 120000L)
@@ -302,10 +331,11 @@ try {
     STREAMING: extract('  private fun runStreamingFileScanV172(', '  private fun runUnifiedScanFromStaging('),
     SINGLE: service.slice(service.indexOf('  private fun runScan('), service.lastIndexOf('\n}')),
     PROBE: extract('  private fun probe(server:', '  /** v18.5.0: proxy'),
+    PROBE_KEYS: extract('  private fun probeCacheKey(', '  private fun canonicalPanelHost('),
     PHYSICAL: extract('  private fun probePhysical(', '  /** Snapshot diskte'),
     SANITIZER: extract('  private fun sanitizeLogin(', '  private fun runBulkScan('),
   };
-  for (const [name, source] of Object.entries(replacements)) serviceFixture = serviceFixture.replace(`  // INSERT_${name}`, () => source);
+  for (const [name, source] of Object.entries(replacements)) serviceFixture = serviceFixture.replace(new RegExp(`  // INSERT_${name}\\r?\\n`,'g'),()=>source+'\n');
   assert.ok(!serviceFixture.includes('// INSERT_'));
   fs.writeFileSync(serviceFixtureFile, serviceFixture, 'utf8');
   const compileOutput = execFileSync('java', ['-cp', compilerClasspath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect', '-classpath', [stdlib, annotations, jsonJar].join(path.delimiter), '-d', classes, path.join(sourceRoot, 'ScanWorkCoordinator.kt'), fixtureFile, serviceFixtureFile], { encoding: 'utf8', timeout: 120000, windowsHide: true });

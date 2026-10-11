@@ -263,7 +263,7 @@ export function portalDiscoveryCandidates(entry: MagHostEntry, options: { allPor
   return out;
 }
 
-export type MagBulkJob = { hostRaw: string; portal: string; mac: string; hasPort: boolean; explicitPort?: string; hasPath?: boolean };
+export type MagBulkJob = { hostRaw: string; portal: string; mac: string; hasPort: boolean; explicitPort?: string; hasPath?: boolean; retryScope?: MagDiscoveryScope; selectedEndpoint?: boolean };
 
 /**
  * (host × MAC) kartezyeni → tarama işleri. Toplam iş MAG_MAX_MACS×host sayısıyla değil,

@@ -187,7 +187,7 @@ function pass(message) { groups++; console.log('PASS DEV1: ' + message); }
     });
     const jobs = [1, 2, 3, 4].map(i => ({ hostRaw: portal, portal, hasPort: true, hasPath: true, mac: `00:1A:79:00:00:0${i}` }));
     const results = await e.load('src/utils/magBulkScan.ts').runMagBulkScan(jobs);
-    assert.equal(budgets.length, 3); assert.ok(budgets.every(b => b === budgets[0])); assert.equal(budgets[0].requests, 3); assert.equal(results.length, 4);
+    assert.equal(budgets.length, 6); assert.ok(budgets.slice(0,3).every(b=>b===budgets[0]));assert.ok(budgets.slice(3).every(b=>b===budgets[3]));assert.notEqual(budgets[0],budgets[3]);assert.equal(budgets[0].requests,3);assert.equal(budgets[3].requests,3);assert.equal(results.length,4);
     pass('gerçek bulk orchestration üç MAC fallback boyunca aynı host bütçesini paylaşır');
   }
   {

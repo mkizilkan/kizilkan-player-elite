@@ -64,6 +64,7 @@ export default function EditPlaylist() {
   const [error, setError] = useState<string | null>(null);
   const [serverCode, setServerCode] = useState(pl?.serverCodeBinding?.code || "");
   const [serverCodeAutoResolve, setServerCodeAutoResolve] = useState(pl?.serverCodeBinding?.autoResolve ?? true);
+  const [directoryAlternatives,setDirectoryAlternatives]=useState(pl?.serverCodeBinding?.allowDirectoryAlternatives??true);
   /** v18.2.0: panel DNS'leri + kullanıcı yedekleri (birincil hariç tutulur, DnsManager ekler). */
   const [dnsHosts, setDnsHosts] = useState<string[]>(() =>
     Array.from(new Set([...(pl?.serverCodeBinding?.validatedHosts || []), ...((pl as any)?.backupHosts || [])].map(normalizeHost).filter(Boolean))));
@@ -148,6 +149,7 @@ export default function EditPlaylist() {
             panelName: resolved.panelName,
             codeSource: pl.serverCodeBinding?.sources?.find(s=>s.source==="splayer")?.baseUrl||(pl.serverCodeBinding?.codeSource?.includes("masteriptv-61b16")?DEFAULT_CODE_SOURCE:pl.serverCodeBinding?.codeSource||DEFAULT_CODE_SOURCE),
             autoResolve: serverCodeAutoResolve,
+            allowDirectoryAlternatives:directoryAlternatives,
             preferredServer: resolved.server,
             validatedHosts: Array.from(new Set([resolved.server, ...resolved.hosts])),
             lastResolvedServer: resolved.server,
@@ -155,7 +157,7 @@ export default function EditPlaylist() {
           };
           setXtServer(resolved.server);
         } else if (pl.serverCodeBinding) {
-          patch.serverCodeBinding = { ...pl.serverCodeBinding, autoResolve: serverCodeAutoResolve };
+          patch.serverCodeBinding = { ...pl.serverCodeBinding, autoResolve: serverCodeAutoResolve,allowDirectoryAlternatives:directoryAlternatives };
         }
 
         // GPT v10.5.1: Sunucu Kodu ile bağlı bir listeyi kullanıcı elle farklı
@@ -312,6 +314,7 @@ export default function EditPlaylist() {
         }
       }
 
+      if(pl.source==='stalker' && pl.serverCodeBinding)patch.serverCodeBinding={...pl.serverCodeBinding,allowDirectoryAlternatives:directoryAlternatives};
       if (controller.signal.aborted) throw Object.assign(new Error('Hazırlama iptal edildi.'), { kind: 'CANCELLED' });
       await updatePlaylist(pl.id, patch);
       router.back();
@@ -359,6 +362,9 @@ export default function EditPlaylist() {
           )}
 
           <Label text="LİSTE ADI" />
+          {!!pl.serverCodeBinding && <TouchableOpacity testID="edit-directory-dns-alternatives" onPress={()=>setDirectoryAlternatives(v=>!v)} style={[styles.tag,{borderColor:colors.border}]}>
+            <Text style={[styles.tagText,{color:colors.onSurface}]}>Seçilen DNS erişilemezse aynı panel rehberindeki diğer adresleri doğrula: {directoryAlternatives?'Açık':'Kapalı'}</Text>
+          </TouchableOpacity>}
           <TextInput
             testID="edit-name-input"
             value={name} onChangeText={setName}

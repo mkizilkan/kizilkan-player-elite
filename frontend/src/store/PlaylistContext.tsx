@@ -1032,6 +1032,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           }
         }
         await commitPlaylistUpdate(id,{...guardedPatch,lastRefreshedAt:new Date().toISOString(),lastRefreshOk:true,lastFreshnessCheckAt:Date.now()});
+        const previousDns=pl.source==='stalker'?pl.stalkerPortal:pl.xtreamServer;
+        const currentDns=pl.source==='stalker'?guardedPatch.stalkerPortal:guardedPatch.xtreamServer;
+        if(currentDns && currentDns!==previousDns)void recordDiagnostic('network','DNS_AUTO_SWAP',{playlistId:id,source:pl.source,previousHost:(()=>{try{return new URL(previousDns||'').host;}catch{return '';}})(),currentHost:(()=>{try{return new URL(currentDns).host;}catch{return '';}})(),committed:true});
         try{
           const {buildRefreshDiff,formatRefreshDiff,diffTelemetry,diffFromNative}=await import('@/src/utils/refreshDiff');
           /**

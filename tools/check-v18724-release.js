@@ -27,7 +27,7 @@ need(/"has-content"/.test(magBulk), 'MAG: ResultFilter has-content yok');
 need(/const contentResults = useMemo\(\(\) => results\.filter\(r => \(r\.liveCount \|\| 0\) > 0\)/.test(magBulk), 'MAG: contentResults (liveCount>0) yok');
 need(/resultFilter === "has-content" \? \(r\.liveCount \|\| 0\) > 0/.test(magBulk), 'MAG: has-content süzme filtresi yok');
 need(/mag-select-has-content/.test(magBulk), 'MAG: "görüntü olanları seç" butonu yok');
-need(/Katalog: \$\{n\} kanal/.test(magBulk) && /ilk kare sınanmadı/.test(magBulk), 'MAG: katalog / ilk kare ayrı gösterilmiyor');
+need(/Katalog(?: örneği)?: \$\{n\} kanal/.test(magBulk) && /ilk kare sınanmadı/.test(magBulk), 'MAG: katalog örneği / ilk kare ayrı gösterilmiyor');
 
 // Xtream combo tarafı (istek üzerine probe)
 need(/const \[bulkContentTest, setBulkContentTest\]/.test(addPl), 'Xtream: bulkContentTest state yok');

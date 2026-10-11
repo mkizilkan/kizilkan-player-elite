@@ -6,7 +6,7 @@ const fetchFixture = async value => {
   const url = new URL(value); calls.push(url.searchParams.get('action') || 'login');
   const action = url.searchParams.get('action');
   const data = !action ? { user_info: { auth } } : action === 'get_vod_streams' ? [{ stream_id: 72, name: 'Fixture film', container_extension: 'mp4' }] : action === 'get_series' ? [{ series_id: 73, name: 'Fixture series' }] : action.endsWith('_categories') ? [] : [{ stream_id: 71 }, { stream_id: 'bad' }];
-  return { ok: true, text: async () => JSON.stringify(data) };
+  return { ok: true, status:200,headers:{get:()=>null},text: async () => JSON.stringify(data) };
 };
 function load(rel) {
   if (cache.has(rel)) return cache.get(rel);

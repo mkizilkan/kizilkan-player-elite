@@ -180,7 +180,11 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.29 RC1 — dal `codex/v18.7.29-rc1-recovery-catalog-player`)
+## 9. Mevcut durum (v18.7.30 RC1 — dal `codex/v18.7.30-rc1-scan-dns-reliability`)
+
+Kullanıcı onaylı 10 maddelik tarama sağlamlaştırma + ortak panel DNS seçimi/sağlık/aynı-panel failover paketi. Ayrıntılı dosya/karar/test/kısıt/DEV komutu: `AI-DEVIR-v18.7.30.md`. Auth/temporary/protection ayrımı, şifreli sınırlı ikinci tur, MAC seçilmiş endpoint kilidi, yöntem hafızası, bounded örnekleme, adaptif host gate, üç örnek gerçek ilk kare, kanıt kalıcılığı ve strict DNS kapsamı. İlk davranış/TypeScript testleri geçti; tam kontroller ve build teslim kaydı devir dosyasında güncellenecek. Ana player buffer/timeshift ve backend-ID mapping bu pakette yeniden tasarlanmadı.
+
+## 9-eski-18729. v18.7.29 RC1 — dal `codex/v18.7.29-rc1-recovery-catalog-player`)
 
 **v18.7.29 (08.10.2026 — GPT büyük recovery/katalog/player + Opus devralma/düzeltme; CİHAZA KURULDU, test bekliyor):**
 GPT (token bitene kadar) 14 maddelik recovery/katalog/player işini yaptı (v18.7.26→29): native emniyet sibobu `ScanSafetyBackup.kt`, tam journal erişimi `getResultsPage` (**7.340 kaybı düzeltmesi**), `hostRequestPolicy.ts` (Retry-After), gerçek ilk-kare test kuyruğu, **MAG katalog Xtream tek-çağrı hızı** (`verifiedXtreamEnrichment` — 17 dk→sn, auth+Stalker yedek+`xtream-verified:` oynatma). Token bitince Opus devraldı. Ayrıntı `AI-DEVIR-v18.7.29.md` (★ OPUS bölümü).

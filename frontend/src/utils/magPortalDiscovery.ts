@@ -35,7 +35,7 @@ export type MagPortalDiscovery = {
 };
 export type MagPortalDiscoveryOptions = {
   scope?: MagDiscoveryScope; concurrency?: number; timeoutMs?: number; useProxy?: boolean; maxCandidatesPerHost?: number;
-  control?: MagScanControl; gate?: Pick<StalkerRequestScope, "beforeRequest" | "onRateLimit">;
+  control?: MagScanControl; gate?: Pick<StalkerRequestScope, "beforeRequest" | "onRateLimit" | "onObservation">;
   onStage?: (message: string) => void; onHost?: (report: MagPortalDiscovery) => void;
   onProgress?: (done: number, total: number, current?: string) => void;
   speed?: MagDiscoverySpeed;
@@ -67,7 +67,7 @@ async function wait(ms: number, control?: MagScanControl): Promise<void> {
   while (Date.now() < end) { check(control); await new Promise(resolve => setTimeout(resolve, Math.min(100, end - Date.now()))); }
   check(control);
 }
-function localGate(control?: MagScanControl): Pick<StalkerRequestScope, "beforeRequest" | "onRateLimit"> {
+function localGate(control?: MagScanControl): Pick<StalkerRequestScope, "beforeRequest" | "onRateLimit" | "onObservation"> {
   const hosts = new Map<string, { tail: Promise<void>; at: number; hold: number }>();
   const state = (url: string) => {
     const key = new URL(url).hostname.toLowerCase(); let current = hosts.get(key);
@@ -281,6 +281,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     };
     const inspect = (target: string, response: Raw): MagPortalCandidate | null => {
       const protection = observeMagProtection({ endpoint: response.finalUrl, stage: "portal-discovery", status: response.status, body: response.body, headers: response.headers, transport: opts.useProxy ? "proxy" : "direct" });
+      gate.onObservation?.(protection);
       if (protection.state === "present") {
         if (protection.kind === "rate_limit") gate.onRateLimit?.(target, retryAfter(response.headers["retry-after"] || ""));
         stop = true; report.state = "protected"; report.message = protection.kind === "rate_limit" ? "Portal istek sınırı uyguladı; host keşfi durduruldu" : "Portal CAPTCHA/WAF doğrulaması istiyor; host keşfi durduruldu";
@@ -381,7 +382,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
               void recordDiagnostic("scan", "MAG_DISCOVERY_VERSION_JS", { base, enqueued, granted: enqueued > 0 });
               emitLive();
             }
-          } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; }
+          } catch (error: any) { if (error?.kind === "MAG_PROTECTION" || isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; }
         }
       }
       // v18.7.17 (P2): exact + arayüz yolu → xpcom'dan da API çözülebilir (aynı kurulum).
@@ -405,7 +406,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
               void recordDiagnostic('scan', 'MAG_DISCOVERY_XPCOM', { path: new URL(script.finalUrl).pathname, endpoints: resolved.endpoints.length, evidence: resolved.evidence });
               emitLive();
             }
-          } catch (error: any) { if (isCancelled(opts.control) || error?.kind === 'CANCELLED' || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; }
+          } catch (error: any) { if (error?.kind === "MAG_PROTECTION" || isCancelled(opts.control) || error?.kind === 'CANCELLED' || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; }
         }
       }
       const fingerprint = response.status >= 200 && response.status < 300 ? htmlEvidence(response.body) : [];
@@ -419,7 +420,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
           const baselineProtection = inspect(target, baseline);
           if (baselineProtection?.confidence === "protected") { candidates.set(baselineProtection.endpoint, baselineProtection); return; }
           if ([200, 404].includes(baseline.status)) same = baseline.body.trim().replace(/\s+/g, " ") === response.body.trim().replace(/\s+/g, " ");
-        } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; }
+        } catch (error: any) { if (error?.kind === "MAG_PROTECTION" || isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; }
         if (!same) {
           const links = linkedApis(response.body, response.finalUrl, base);
           for (const link of links) {
@@ -437,13 +438,13 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     const sweep = async (plan: string[]): Promise<void> => {
       for (const value of plan) { const target = endpoint(value); if (target) planned.add(target.replace(/\/+$/, "")); }
       const extra: string[] = [];
-      for (const target of plan) { if (stop || seen.size >= maxCandidates) break; budget.check(); try { await probe(target, extra); } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; lastError = String(error?.message || error).slice(0, 180);
+      for (const target of plan) { if (stop || seen.size >= maxCandidates) break; budget.check(); try { await probe(target, extra); } catch (error: any) { if (error?.kind === "MAG_PROTECTION" || isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; lastError = String(error?.message || error).slice(0, 180);
         // v18.7.10: FOREIGN_REDIRECT tüm host'u ÖLDÜRMESİN. Portal /c/'den başka yola/origin'e
         // yönlenebilir (cihaz: weko /c/ → redirect → 11 denemede "error" + handshake hiç denenmedi).
         // Yalnız o aday atlanır; diğer yollar/portlar ve handshake yedeği denenmeye devam eder.
         if (error?.kind === "FOREIGN_REDIRECT") { void recordDiagnostic("scan", "MAG_DISCOVERY_FOREIGN_REDIRECT", { target }); continue; }
         if (error?.kind === "PROXY") { report.state = "error"; stop = true; } } }
-      while (extra.length && !stop && seen.size < maxCandidates) { budget.check(); try { await probe(extra.shift()!, extra); } catch (error: any) { if (isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; lastError = String(error?.message || error).slice(0, 180); } }
+      while (extra.length && !stop && seen.size < maxCandidates) { budget.check(); try { await probe(extra.shift()!, extra); } catch (error: any) { if (error?.kind === "MAG_PROTECTION" || isCancelled(opts.control) || error?.kind === "CANCELLED" || error?.kind === 'MAG_DISCOVERY_BUDGET') throw error; lastError = String(error?.message || error).slice(0, 180); } }
     };
     // v18.7.6/v18.7.8 — PARALEL PORT SINIFLAMA. Çok-portlu keşiften önce portlar PARALEL ve
     // gate'siz (her port ayrı TCP ucu; portal API'si değil → ban riski yok) sınıflanır:
@@ -462,6 +463,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
           const repeats = [...fingerprints].filter(([, value]) => value.length > 0 && value.bodyHash === fingerprint.bodyHash && value.status === fingerprint.status && value.contentType === fingerprint.contentType);
           if (repeats.length >= 3) for (const [p] of repeats) wildcardPorts.add(p);
           const guarded = observeMagProtection({ endpoint: portUrl, stage: 'port-probe', status, body, headers, transport: opts.useProxy ? 'proxy' : 'direct' });
+          gate.onObservation?.(guarded);
           if (guarded.state === 'present') { candidates.set(portUrl, { endpoint: portUrl, httpStatus: status, confidence: 'protected', evidence: guarded.evidence, protection: guarded, elapsedMs: 0, selectable: false }); report.state = 'protected'; stop = true; if (guarded.kind === 'rate_limit') gate.onRateLimit?.(portUrl, retryAfter(headers['retry-after'] || '')); }
         };
         if (opts.useProxy) {
@@ -475,9 +477,9 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
         const hf = await loadHostFailover(), conn = hf ? hf.connectInfo(portUrl) : { url: portUrl };
         const r = await budget.run(controlled(portalFetch(conn.url, { method: "GET", headers: conn.host ? { Accept: '*/*', Host: conn.host } : { Accept: '*/*' }, credentials: "omit", redirect: "manual", signal: controller.signal }), opts.control, controller.signal));
         const headers: Record<string, string> = {}; for (const key of MAG_SAFE_RESPONSE_HEADERS) headers[key] = String(r.headers?.get?.(key) || '').slice(0, 256);
-        try { const body = await budget.run(controlled(limitedText(r, controller.signal), opts.control, controller.signal)); save(Number(r.status), body, headers); } catch (error: any) { if (error?.kind === 'MAG_DISCOVERY_BUDGET' || isCancelled(opts.control)) throw error; }
+        try { const body = await budget.run(controlled(limitedText(r, controller.signal), opts.control, controller.signal)); save(Number(r.status), body, headers); } catch (error: any) { if (error?.kind === 'MAG_PROTECTION' || error?.kind === 'MAG_DISCOVERY_BUDGET' || isCancelled(opts.control)) throw error; }
         return Number(r.status) > 0 ? "open" : "unknown";
-      } catch (error: any) { if (error?.kind === 'MAG_DISCOVERY_BUDGET' || isCancelled(opts.control)) throw error; return "unknown"; } finally { clearTimeout(timer); parent?.removeEventListener("abort", onAbort); budget.signal.removeEventListener('abort', onAbort); }
+      } catch (error: any) { if (error?.kind === 'MAG_PROTECTION' || error?.kind === 'MAG_DISCOVERY_BUDGET' || isCancelled(opts.control)) throw error; return "unknown"; } finally { clearTimeout(timer); parent?.removeEventListener("abort", onAbort); budget.signal.removeEventListener('abort', onAbort); }
     };
     // v18.7.9 (iki aşama): portları AÇIK/BİLİNMEYEN olarak ayır. Aşama 2'de önce yalnız AÇIK
     // portlarda yollar denenir; bulunursa bilinmeyen portlara HİÇ dokunulmaz (hız). Bulunamazsa
@@ -565,6 +567,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     return report;
     } catch (error: any) {
       if (isCancelled(opts.control) || error?.kind === 'CANCELLED') throw error;
+      if(error?.kind==='MAG_PROTECTION'){report.candidates=[...candidates.values()];report.state='protected';report.message='Aynı panelde koruma gözlendi; keşif durduruldu.';emitDiscoveryResult();return report;}
       if (error?.kind !== 'MAG_DISCOVERY_BUDGET') throw error;
       report.candidates = [...candidates.values()];
       report.state = report.candidates.some(candidate => candidate.selectable) ? 'ready' : 'not-found';

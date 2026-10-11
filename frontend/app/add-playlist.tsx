@@ -1,3 +1,5 @@
+import {PanelDnsPicker} from "@/src/components/PanelDnsPicker";
+import {mergeEndpointEvidence,playlistEndpoints} from "@/src/utils/playlistEndpoints";
 import {CatalogProgressCards} from "@/src/components/CatalogProgressCards";
 import type {RefreshProgress} from "@/src/utils/refreshPlaylist";
 import {PanelScopePicker} from "@/src/components/PanelScopePicker";
@@ -400,6 +402,8 @@ export default function AddPlaylist() {
   const interruptedRecoveryAttemptedRef = React.useRef(false);
   const nativeScanRunIdRef = React.useRef<string>("");
   const bulkScanRunIdRef = React.useRef<string>("");
+  const bulkEvidenceRunIdRef = React.useRef<string>("");
+  React.useEffect(()=>{if(screenOwnerRef.current!==activeProfile.id){setPlaybackTests([]);bulkEvidenceRunIdRef.current='';}},[activeProfile.id]);
   const [nativeScanRunning, setNativeScanRunning] = useState(false);
   const [scanSafetyStatus, setScanSafetyStatus] = useState("");
   const [nativeScanPaused, setNativeScanPaused] = useState(false);
@@ -636,7 +640,9 @@ export default function AddPlaylist() {
     }
   };
 
+  const [dnsPanelChoice, setDnsPanelChoice] = useState<PanelDirectoryItem | null>(null);
   const choosePanel = (item: PanelDirectoryItem) => {
+    setDnsPanelChoice(item);
     // v15.2.9: kullanıcının seçtiği hosts[] kaybolmaz; submit sırasında Firebase'e
     // ikinci kez gidilmeden doğrudan bu candidate set native scan'e verilir.
     setSelectedPanelItem(item);
@@ -661,6 +667,9 @@ export default function AddPlaylist() {
     sources:sources||directoryRef.current.find(p=>p.panelName===panelName&&p.hosts.includes(server))?.sources,
     realCode:code||null,directoryKey:panelName.trim().normalize('NFC').toLocaleLowerCase('tr'),
     autoResolve: true,
+    allowDirectoryAlternatives: true,
+    selectedHosts: panelTarget.dnsSelections?.[panelName.trim().normalize('NFC').toLocaleLowerCase('tr')] || (selectedPanelItem?.panelName === panelName ? selectedPanelItem.hosts : undefined),
+    directoryHosts: directoryRef.current.find(p=>p.panelName===panelName)?.hosts,
     preferredServer: server,
     validatedHosts: Array.from(new Set(validatedHosts)),
     lastResolvedServer: server,
@@ -1239,6 +1248,23 @@ export default function AddPlaylist() {
    */
   const [archiveRestoring, setArchiveRestoring] = useState(false);
 
+  const restoreUncertainXtreamJobs=async()=>{
+    if(archiveRestoring||bulkFilePicking||loading||bulkAdding)return;
+    const owner=activeProfile.id;setArchiveRestoring(true);
+    try{
+      const archive=await PanelScan.getLatestAccountArchive(owner);if(!archive)throw new Error('Kayıtlı Xtream taraması yok.');
+      let cursor='',jobs:any[]=[];
+      while(true){const page=await PanelScan.getArchiveRetries(archive,owner,cursor);jobs.push(...page.jobs);if(jobs.length>8192)throw new Error('Kayıtlı kuyruk güvenli iş sınırını aşıyor.');if(!page.nextKey)break;if(page.nextKey===cursor)throw new Error('Kuyruk ilerlemiyor.');cursor=page.nextKey;}
+      if(leavingRef.current||!screenAliveRef.current||owner!==screenOwnerRef.current)return;
+      if(!jobs.length)throw new Error('Kayıtlı belirsiz deneme yok.');
+      const parsed=parseBulkAccounts(JSON.stringify(jobs.map(j=>({name:j.name||j.panelName||'',username:j.username,password:j.password,server:j.server}))));
+      if(!parsed.accounts.length)throw new Error('Kayıtlı denemeler okunamadı; arşiv korunuyor.');
+      setBulkText('');setBulkManualRows([]);setBulkFileStreamSource(null);setBulkFileParsed(parsed);setBulkFileLoaded(true);setBulkFileName('Kayıtlı belirsiz Xtream denemeleri');setBulkFilePhase('ready');
+      setProgress(`${parsed.accounts.length} kayıtlı hesap/DNS denemesi hazır. Başlat'a dokunduğunuzda yalnız bu adresler yeniden sınanacak.`);
+    }catch(e:any){if(!leavingRef.current&&screenAliveRef.current)setError(String(e?.message||e));}
+    finally{if(!leavingRef.current&&screenAliveRef.current)setArchiveRestoring(false);}
+  };
+
   const restoreFromArchive = async () => {
     if (archiveRestoring || bulkFilePicking) return;
     setArchiveRestoring(true);
@@ -1303,6 +1329,7 @@ export default function AddPlaylist() {
       } as BulkResolvedCandidate));
 
       setBulkCandidates(restored);
+      bulkEvidenceRunIdRef.current='';
       setSelectedBulkCandidateKeys([]);           // kullanıcı bilinçli seçsin
       setShowBulkCandidates(true);
       setBulkScanFinished(true);
@@ -1463,6 +1490,7 @@ export default function AddPlaylist() {
       try {
         const scan = PanelScan.available ? PanelScan.getSnapshot() : {};
         if (scan.profileId && scan.profileId !== activeProfile.id) return;
+        if(scan.runId)bulkEvidenceRunIdRef.current=String(scan.runId);
         if (scan.runId && await scanRecoveryDeferred(activeProfile.id, scan.runId)) bulkResultsDismissedRef.current = true;
         const { playlists, bulkAdding, commitPreparedPlaylist } = recoveryContextRef.current;
         if (!cancelled && scan.safetyBackup) {
@@ -1560,7 +1588,7 @@ export default function AddPlaylist() {
             else if (!scan.running && bulkScanRunIdRef.current === scan.runId) bulkScanRunIdRef.current = "";
             if (!bulkAdding) setLoading(!!scan.running);
             if (scan.error) setError(String(scan.error));
-            setProgress(scan.running ? `Native tarama geri yüklendi · ${Number(scan.tested||0)}/${Number(scan.total||0)} · ${Number(scan.found||0)} bulundu` : `Tarama sonucu geri yüklendi · ${Number(scan.found||0)} bulundu`);
+            setProgress(scan.running ? `${scan.phase==='retry'?`İkinci tur · ${scan.retryPending||0} bekleyen · ${scan.retryUnresolved||0} belirsiz`:'Native tarama geri yüklendi'} · ${Number(scan.tested||0)}/${Number(scan.total||0)} · ${Number(scan.found||0)} bulundu` : `Tarama sonucu geri yüklendi · ${Number(scan.found||0)} bulundu · ${scan.retryUnresolved||0} yeniden sınanabilir`);
           }
         }
 
@@ -1923,7 +1951,7 @@ export default function AddPlaylist() {
     let runId = "";
     try {
       runId = await startAcceptedScan(() => PanelScan.startUnifiedScanV171(compactPayload, requestedConcurrency, cfg.timeoutMs, batchSize, sourceFingerprint));
-      bulkScanRunIdRef.current = runId;
+      bulkScanRunIdRef.current = runId; bulkEvidenceRunIdRef.current = runId;
     } catch (e) {
       bulkNativeScanRef.current = false;
       bulkScanRunIdRef.current = "";
@@ -2023,7 +2051,7 @@ export default function AddPlaylist() {
       let runId = "";
       try {
         runId = await startAcceptedScan(() => PanelScan.startStreamingFileScanV172(source.uri, directory, requestedConcurrency, cfg.timeoutMs, batchSize, sourceFingerprint));
-        bulkScanRunIdRef.current = runId;
+        bulkScanRunIdRef.current = runId; bulkEvidenceRunIdRef.current = runId;
       } catch (e) {
         bulkNativeScanRef.current = false;
         bulkScanRunIdRef.current = "";
@@ -2217,7 +2245,8 @@ export default function AddPlaylist() {
       const allRows=bulkCandidates.filter(c=>bulkSubscriptionKey(c)===bulkSubscriptionKey(preferred));
       const hosts=Array.from(new Set(bulkUseAllValidatedHosts ? allRows.flatMap(c=>c.validatedHosts?.length?c.validatedHosts:[c.server]) : rows.map(c=>c.server)));
       const stored = playlists.find(p => p.source === 'xtream' && p.xtreamUsername === preferred.username && p.xtreamPassword === preferred.password && p.xtreamServer === preferred.server);
-      return { name:preferred.name, username:preferred.username, password:preferred.password, server:preferred.server, primaryHost:preferred.server, panelName:preferred.panelName, serverCode:preferred.code, validatedHosts:hosts, login:preferred.login, endpoints: stored?.endpoints || allRows.flatMap(c => c.endpoints || [{ url: c.server, kind: 'xtream' as const, source: 'scan' as const, accountVerifiedAt: new Date().toISOString() }]) };
+      const endpoints=allRows.flatMap(c=>c.endpoints||[{url:c.server,kind:'xtream' as const,source:'scan' as const,...([1,'1',true,'true'].includes(c.login?.user_info?.auth)?{accountVerifiedAt:new Date().toISOString()}: {})}]).reduce((merged,e)=>mergeEndpointEvidence(merged,e),stored?.endpoints||[]);
+      return { name:preferred.name, username:preferred.username, password:preferred.password, server:preferred.server, primaryHost:preferred.server, panelName:preferred.panelName, serverCode:preferred.code, validatedHosts:hosts, login:preferred.login, endpoints };
     });
     const text=buildKizilkanAccountArchive(records,safe);
     const baseName=normalizeBulkArchiveBaseName(requestedFileName,safe);
@@ -2925,13 +2954,14 @@ ${pub.path}`, [
     bulkPreparationAbortRef.current?.abort();
     nativePreparationAbortRef.current?.abort();
     stalkerAddAbortRef.current?.abort();
-    const scan = PanelScan.available ? PanelScan.getSnapshot() : {};
+    let scan:ReturnType<typeof PanelScan.getSnapshot>={};
+    try{scan=PanelScan.available?PanelScan.getSnapshot():{};}catch{}
     if (scan.runId && (!scan.profileId || scan.profileId === activeProfile.id)) {
       void deferScanRecovery(activeProfile.id, scan.runId);
       if (scan.running) void PanelScan.pauseScan(scan.runId).catch(() => {});
       void PanelScan.flushResultArchive(scan.runId).catch(() => {});
     }
-    if (KizilkanNativeCore.available && bulkImportOwnedByScreenRef.current) void KizilkanNativeCore.pauseBulkImport().catch(() => {});
+    try{if (KizilkanNativeCore.available && bulkImportOwnedByScreenRef.current) void KizilkanNativeCore.pauseBulkImport().catch(() => {});}catch{}
     void clearScanRecoveryIntent();
     setShowBulkCandidates(false); setShowDiscoveryMatches(false); setLoading(false);
     void recordDiagnostic('scan', 'ADD_PLAYLIST_FORCE_EXIT', { runId: scan.runId, preserved: true, profileId: activeProfile.id });
@@ -2948,7 +2978,13 @@ ${pub.path}`, [
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top", "bottom"]} testID="add-playlist-screen">
       {!!playbackTests.length && <AccountPlaybackTestQueue accounts={playbackTests} onClose={() => setPlaybackTests([])} onEvidence={(key, evidence) => {
-        setBulkCandidates(prev => prev.map(c => c.key === key ? { ...c, endpoints: [...(c.endpoints || []).filter(e => e.url !== evidence.url), evidence] } : c));
+        if(leavingRef.current || !screenAliveRef.current || screenOwnerRef.current!==activeProfile.id)return;
+        const target=bulkCandidates.find(c=>c.key===key);if(!target)return;
+        const endpoints=mergeEndpointEvidence(target.endpoints||[],evidence);
+        setBulkCandidates(prev => prev.map(c => c.key === key ? { ...c, endpoints } : c));
+        if(bulkEvidenceRunIdRef.current)void PanelScan.updateResultEvidence(bulkEvidenceRunIdRef.current,{server:target.server,username:target.username,password:target.password},{endpoints}).then(ok=>{if(!ok)throw new Error('Arşiv sonucu bulunamadı.');}).catch(()=>setError('Görüntü kanıtı arşive yazılamadı; sonuçları TXT olarak kaydedin.'));
+        const stored=playlists.find(p=>p.source==='xtream'&&p.xtreamUsername===target.username&&p.xtreamPassword===target.password&&playlistEndpoints(p).some(e=>e.url===evidence.url));
+        if(stored)void updatePlaylist(stored.id,{endpoints:mergeEndpointEvidence(playlistEndpoints(stored),evidence)});
       }} />}
       <KeyboardAvoidingView
         style={{ flex: 1 }}
@@ -3109,6 +3145,7 @@ ${pub.path}`, [
           )}
 
           {loading&&<CatalogProgressCards progress={catalogProgress}/>}
+          {dnsPanelChoice && <PanelDnsPicker panel={dnsPanelChoice} selected={panelTarget.dnsSelections?.[dnsPanelChoice.directoryKey||dnsPanelChoice.panelName]} onClose={()=>setDnsPanelChoice(null)} onApply={hosts=>{const key=dnsPanelChoice.directoryKey||dnsPanelChoice.panelName;setSelectedPanelItem({...dnsPanelChoice,hosts});setPanelTarget(previous=>({...previous,keys:Array.from(new Set([...(previous.keys||[]),key])),dnsSelections:{...previous.dnsSelections,[key]:hosts}}));}}/>}
           {(method==="code"||method==="bulk")&&<PanelScopePicker scope={sourceScope} target={panelTarget} directory={filterDirectory(panelDirectory,sourceScope)} busy={loading||directoryLoading} onScope={setSourceScope} onTarget={setPanelTarget} onLoad={()=>void loadPanelDirectory()}/>}
           {method === "code" && (
             <>
@@ -3572,6 +3609,9 @@ ${pub.path}`, [
                 <Text style={[styles.fileText, { color: colors.brandPrimary }]} numberOfLines={1}>
                   {archiveRestoring ? "Arşiv okunuyor…" : "KIZILKAN arşivinden geri yükle (TXT)"}
                 </Text>
+              </FocusButton>
+              <FocusButton disabled={archiveRestoring||bulkFilePicking||loading||bulkAdding} onPress={()=>void restoreUncertainXtreamJobs()} style={[styles.fileBtn,{backgroundColor:colors.surfaceSecondary,borderColor:colors.border,marginTop:SPACING.sm}]}>
+                <Text style={[styles.fileText,{color:colors.onSurface}]} numberOfLines={2}>Kayıtlı belirsiz Xtream denemelerini getir</Text>
               </FocusButton>
               {bulkFileLoaded && (
                 <FocusButton focusable onPress={() => { setBulkFileLoaded(false); setBulkFileParsed(null); setBulkFileStreamSource(null); setBulkFileName(""); }} style={{ alignSelf: "flex-start", paddingVertical: 8, paddingHorizontal: 4 }}>

@@ -206,7 +206,9 @@ async function sampleKindsAndBounds() {
   assert.equal((await capped.load('src/utils/stalker.ts').stalkerVerifyAccount({ portal: endpoint, mac }, session(), profile())).sampledItems, 128);
   const oversized = environment(() => response({ js: { login: 'fixture-account', padding: 'ş'.repeat(530000) } }));
   const huge = await oversized.load('src/utils/stalker.ts').stalkerVerifyAccount({ portal: endpoint, mac }, session(), profile());
-  assert.equal(huge.state, 'unverified'); assert.ok(huge.evidence.includes('response-size-limit')); assert.equal(oversized.calls.length, 1, 'UTF8 bytes, not just JS chars, limit the probe');
+  assert.equal(huge.state, 'unverified'); assert.ok(huge.evidence.includes('response-size-limit')); assert.equal(oversized.calls.length, 8, 'each bounded unsupported method may fall back, never traverse the full catalogue');
+  const smallFallback=environment(c=>response(c.action==='get_main_info'?{js:{padding:'ş'.repeat(530000)}}:{js:[item()]}));
+  assert.equal((await smallFallback.load('src/utils/stalker.ts').stalkerVerifyAccount({portal:endpoint,mac},session(),profile())).state,'verified','oversized optional metadata does not discard accessible small catalogue proof');
   groups++;
 }
 async function mainAndCatalogueDenial() {
@@ -276,7 +278,7 @@ async function nativeProxyAndInputSafety() {
   assert.equal(different.state, 'unverified'); assert.ok(different.evidence.includes('session-endpoint-mismatch')); assert.equal(moved.calls.length, 0);
   const limitedProxy = environment(() => { throw new Error('bounded native response is already rejected'); }, { proxyBodyLimit: true });
   const rejected = await limitedProxy.load('src/utils/stalker.ts').stalkerVerifyAccount({ portal: endpoint, mac, requestScope: { transport: 'proxy' } }, session(), profile());
-  assert.equal(rejected.state, 'unverified'); assert.ok(rejected.evidence.includes('response-size-limit')); assert.equal(limitedProxy.calls.length, 1); assert.equal(limitedProxy.calls[0].maxBodyBytes, 1048576);
+  assert.equal(rejected.state, 'unverified'); assert.ok(rejected.evidence.includes('response-size-limit')); assert.equal(limitedProxy.calls.length, 8); assert.ok(limitedProxy.calls.every(c=>c.maxBodyBytes===1048576));
   groups++;
 }
 async function mag320FullParamProfileFallback() {

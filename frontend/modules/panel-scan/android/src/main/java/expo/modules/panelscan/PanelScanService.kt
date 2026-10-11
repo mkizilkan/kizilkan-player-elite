@@ -199,13 +199,17 @@ class PanelScanService : Service() {
   @Volatile private var proxyReadyRunId = ""
   private val proxyReadyLock = Any()
   // v17.1.1: Aynı DNS'e yüzlerce hesabın aynı anda bindirmesini engelle.
-  private val hostPermits = ConcurrentHashMap<String, Semaphore>()
+  private val hostPermits = ConcurrentHashMap<String, AdaptiveScanHostGate>()
   private val hostBackoffUntil = ConcurrentHashMap<String, Long>()
   private val persistentFound = AtomicInteger(0)
   @Volatile private var resultCountRunId = ""
+  @Volatile private var finalizingRetries = false
+  private val protectedScanHosts = ConcurrentHashMap.newKeySet<String>()
+  private val protectedScanGroups = ConcurrentHashMap.newKeySet<String>()
 
   private fun initializeResultCount() {
     if (resultCountRunId == currentRunId) return
+    finalizingRetries = false; protectedScanHosts.clear(); protectedScanGroups.clear();hostPermits.clear(); hostBackoffUntil.clear()
     val journal = ScanJournalStore.get(applicationContext)
     journal.pruneUnverifiedResults(currentRunId)
     persistentFound.set(journal.resultCount(currentRunId))
@@ -523,6 +527,10 @@ class PanelScanService : Service() {
   }
 
   @Synchronized private fun writeSnapshot(obj: JSONObject) {
+    if (!finalizingRetries && !cancelled.get() && !obj.has("error") && ScanJournalStore.get(applicationContext).retryCount(currentRunId) > 0) {
+      obj.put("running",true).put("retryPending",ScanJournalStore.get(applicationContext).retryCount(currentRunId))
+      if(obj.optString("state") == "COMPLETED")obj.put("state","RUNNING")
+    }
     if (resultCountRunId == currentRunId && currentRunId.isNotBlank()) obj.put("found", persistentFound.get())
     if (currentRunId.isNotBlank() && !obj.has("runId")) obj.put("runId", currentRunId)
     if (!obj.has("createdAt")) {
@@ -566,6 +574,10 @@ class PanelScanService : Service() {
    * snapshot bırak. Böylece UI CANCELLING/STARTING durumunda sonsuza kadar kalmaz.
    */
   private fun finalizeSnapshot(mode: String) {
+    try { drainDeferredProbes() } catch (e: Throwable) {
+      patchSnapshot { it.put("error", "İkinci tur tamamlanamadı; kayıtlı denemeler korunuyor.") }
+    }
+    finalizingRetries = true
     patchSnapshot { obj ->
       obj.put("mode", mode)
         .put("running", false)
@@ -579,10 +591,53 @@ class PanelScanService : Service() {
         val state = obj.optString("state", "")
         if (state !in setOf("COMPLETED", "FAILED", "CANCELLED")) obj.put("state", "COMPLETED")
       }
+      obj.put("retryPending", ScanJournalStore.get(applicationContext).retryCount(currentRunId))
+      obj.put("retryUnresolved", ScanJournalStore.get(applicationContext).retryCount(currentRunId,"unresolved"))
+    }
+  }
+
+  private fun retryContext(candidate: JSONObject, accountIndex: Number = -1, row: Int = accountIndex.toInt() + 1, name: String = ""): JSONObject =
+    JSONObject(candidate.toString()).put("accountIndex",accountIndex).put("sourceRow",row).put("name",name)
+
+  /** Second pass survives process death: credentials and work identity are encrypted in the journal. */
+  private fun drainDeferredProbes() {
+    val journal = ScanJournalStore.get(applicationContext)
+    if(cancelled.get() || journal.retryCount(currentRunId) == 0) return
+    val snapshot = JSONObject(getSharedPreferences(PREFS,0).getString(KEY_SNAPSHOT,"{}") ?: "{}")
+    if(snapshot.has("error")) return
+    patchSnapshot { it.put("running",true).put("phase","retry").put("state","RUNNING") }
+    while(!cancelled.get()) {
+      val job = journal.nextRetry(currentRunId) ?: break
+      while(paused.get() && !cancelled.get()) Thread.sleep(100)
+      if(cancelled.get()) break
+      val wait = maxOf(job.optLong("dueAt") - System.currentTimeMillis(), hostBackoffUntil[URL(job.getString("server")).host.lowercase()]?.minus(System.currentTimeMillis()) ?: 0L)
+      if(wait > 0) { Thread.sleep(minOf(wait,500L)); continue }
+      if(job.optInt("attempts")>=2){job.put("reason","interrupted-retry-budget");journal.updateRetry(currentRunId,job.getString("jobKey"),2,"unresolved",System.currentTimeMillis(),job);continue;}
+      val attempt = job.optInt("attempts") + 1
+      journal.updateRetry(currentRunId,job.getString("jobKey"),attempt,"pending",System.currentTimeMillis(),job)
+      val cacheKey=probeCacheKey(job.getString("server"),job.getString("username"),job.getString("password"))
+      val cached=journal.readProbe(currentRunId,cacheKey)
+      val cachedLogin=if(cached!=null && cached!=SCAN_AUTH_REJECTED_CACHE)runCatching{JSONObject(cached)}.getOrNull() else null
+      val outcome = if(cached==SCAN_AUTH_REJECTED_CACHE)ScanProbeOutcome<JSONObject>(null,cacheable=true) else if(scanAuthStatus(cachedLogin?.optJSONObject("user_info")?.opt("auth"))==true)ScanProbeOutcome(cachedLogin,cacheable=true) else probePhysical(job.getString("server"),job.getString("username"),job.getString("password"),job.optInt("timeoutMs",12000),job.optString("panelName"))
+      if(cancelled.get()) break
+      if(outcome.cacheable)journal.writeProbe(currentRunId,cacheKey,outcome.value?.let{sanitizeLogin(it).toString()}?:SCAN_AUTH_REJECTED_CACHE)
+      if(outcome.value != null) {
+        val hit = JSONObject(job.toString()).put("login",sanitizeLogin(outcome.value))
+        for(k in arrayOf("jobKey","dueAt","attempts","timeoutMs","reason","resultKey"))hit.remove(k)
+        persistScanResult(job.getString("resultKey"),hit,job.getString("username"),job.getString("password"))
+      }
+      job.put("reason",outcome.reason)
+      val state = if(outcome.state == "temporary" && attempt < 2) "pending" else if(outcome.state == "temporary") "unresolved" else outcome.state
+      journal.updateRetry(currentRunId,job.getString("jobKey"),attempt,state,scanBackoffDeadline(maxOf(outcome.retryAfterMs,2000L*attempt)),job)
+      patchSnapshot { it.put("running",true).put("phase","retry").put("found",journal.resultCount(currentRunId)).put("retryPending",journal.retryCount(currentRunId)).put("retryUnresolved",journal.retryCount(currentRunId,"unresolved")) }
     }
   }
 
   private val probeStripes=Array(128){Any()}
+  private fun probeCacheKey(base:String,username:String,password:String):String {
+    val rawKey=JSONArray().put(base).put(username).put(password).toString()
+    return java.security.MessageDigest.getInstance("SHA-256").digest(rawKey.toByteArray(Charsets.UTF_8)).joinToString(""){"%02x".format(it)}
+  }
   private fun canonicalPanelHost(raw:String):String? {
     var value=raw.trim()
     if(value.isBlank()||Regex("[\\s\\\\<>\"']").containsMatchIn(value)||Regex("removed|deleted|sentinel|undefined|null",RegexOption.IGNORE_CASE).containsMatchIn(value))return null
@@ -611,11 +666,10 @@ class PanelScanService : Service() {
     }
   }
 
-  private fun probe(server:String,username:String,password:String,timeoutMs:Int):JSONObject? {
+  private fun probe(server:String,username:String,password:String,timeoutMs:Int,context:JSONObject = JSONObject()):JSONObject? {
     val base=canonicalPanelHost(server)?:return null
     ensureScanProxyReady()
-    val rawKey=JSONArray().put(base).put(username).put(password).toString()
-    val key=java.security.MessageDigest.getInstance("SHA-256").digest(rawKey.toByteArray(Charsets.UTF_8)).joinToString(""){"%02x".format(it)}
+    val key=probeCacheKey(base,username,password)
     synchronized(probeStripes[(key.hashCode() and Int.MAX_VALUE)%probeStripes.size]){
       if(cancelled.get()||Thread.currentThread().isInterrupted)return null
       val journal=ScanJournalStore.get(applicationContext)
@@ -626,8 +680,16 @@ class PanelScanService : Service() {
         val cachedLogin = runCatching { JSONObject(cached) }.getOrNull()
         if (scanAuthStatus(cachedLogin?.optJSONObject("user_info")?.opt("auth")) == true) return cachedLogin
       }
-      val outcome=probePhysical(base,username,password,timeoutMs)
+      val outcome=probePhysical(base,username,password,timeoutMs,context.optString("panelName"))
       if(outcome.cacheable&&!cancelled.get()&&!Thread.currentThread().isInterrupted)journal.writeProbe(currentRunId,key,outcome.value?.let{sanitizeLogin(it).toString()}?:SCAN_AUTH_REJECTED_CACHE)
+      if(outcome.state == "temporary" && !cancelled.get() && !Thread.currentThread().isInterrupted) {
+        val job = JSONObject(context.toString()).put("server",base).put("username",username).put("password",password).put("timeoutMs",timeoutMs).put("reason",outcome.reason)
+        val ai = job.optLong("accountIndex",-1L)
+        val resultKey = (if(ai >= 0) "$ai|" else "") + "${job.optString("panelName")}|${job.optString("code")}|$base"
+        job.put("resultKey",resultKey)
+        journal.enqueueRetry(currentRunId,"$key|$resultKey",job,scanBackoffDeadline(maxOf(1000L,outcome.retryAfterMs)))
+      }
+      recordExternalDiagnostic(applicationContext,JSONObject().put("state","SCAN_PROBE_OUTCOME").put("outcome",outcome.state).put("reason",outcome.reason))
       return outcome.value
     }
   }
@@ -645,11 +707,13 @@ class PanelScanService : Service() {
     }
   }
 
-  private fun probePhysical(server: String, username: String, password: String, timeoutMs: Int): ScanProbeOutcome<JSONObject> {
+  private fun probePhysical(server: String, username: String, password: String, timeoutMs: Int, panelName: String = ""): ScanProbeOutcome<JSONObject> {
     val base = server.trim().trimEnd('/')
     val hostKey = runCatching { URL(base).host.lowercase() }.getOrDefault(base.lowercase())
-    val permit = hostPermits.computeIfAbsent(hostKey) { Semaphore(4, true) }
-    if (!awaitScanHostPermit(permit, cancelled)) return ScanProbeOutcome(null)
+    val groupKey=if(panelName.isNotBlank() && panelName != "Doğrudan DNS") "panel:$panelName" else hostKey
+    if(protectedScanHosts.contains(hostKey)||protectedScanGroups.contains(groupKey)) return ScanProbeOutcome(null,state="protected",reason="host-protected")
+    val permit = hostPermits.computeIfAbsent(groupKey) { AdaptiveScanHostGate() }
+    if (!permit.acquire(cancelled)) return ScanProbeOutcome(null,state="cancelled",reason="cancelled")
     val u = java.net.URLEncoder.encode(username, "UTF-8")
     val p = java.net.URLEncoder.encode(password, "UTF-8")
     try {
@@ -672,7 +736,8 @@ class PanelScanService : Service() {
         }
         var conn: HttpURLConnection? = null
         try {
-          if (!awaitScanHostBackoff({ hostBackoffUntil[hostKey] ?: 0L }, cancelled)) return ScanProbeOutcome(null)
+          if (!awaitScanHostBackoff({ maxOf(hostBackoffUntil[hostKey] ?: 0L,hostBackoffUntil[groupKey] ?: 0L) }, cancelled)) return ScanProbeOutcome(null)
+          if(protectedScanHosts.contains(hostKey)||protectedScanGroups.contains(groupKey))return ScanProbeOutcome(null,state="protected",reason="host-protected")
           val target = URL("$base/player_api.php?username=$u&password=$p")
           val opened = (if (sel != null) target.openConnection(sel.proxy) else target.openConnection()) as HttpURLConnection
           conn = opened
@@ -686,22 +751,29 @@ class PanelScanService : Service() {
           val code = opened.responseCode
           // Buraya geldiysek proxy isteği İLETTİ → proxy sağlam (TARGET geri bildir).
           sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, ScanProxyPool.Fault.TARGET) }
+          if (code == 401 || code == 403 || opened.getHeaderField("cf-mitigated").equals("challenge",true)) { protectedScanHosts.add(hostKey);protectedScanGroups.add(groupKey);return ScanProbeOutcome(null,state="protected",reason="HTTP$code") }
           if (code == 429 || code == 503) {
+            permit.rateLimited()
             val now = System.currentTimeMillis()
             val retryMs = scanRetryAfterMillis(opened.getHeaderField("Retry-After"), now)
             val deadline = now + minOf(retryMs, Long.MAX_VALUE - now)
             hostBackoffUntil.compute(hostKey) { _, previous -> maxOf(previous ?: 0L, deadline) }
+            hostBackoffUntil.compute(groupKey) { _, previous -> maxOf(previous ?: 0L, deadline) }
             recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("state", "HOST_BACKOFF").put("host", hostKey).put("httpCode", code).put("backoffMs", retryMs))
-            return ScanProbeOutcome(null)
+            return ScanProbeOutcome(null, state = "temporary", reason = "HTTP$code", retryAfterMs = retryMs)
           }
-          if (code !in 200..299) return ScanProbeOutcome(null)
-          val text = opened.inputStream.bufferedReader().use { it.readText() }
+          if (code !in 200..299) return ScanProbeOutcome(null,reason="HTTP$code")
+          val text = opened.inputStream.use { reader ->
+            val body=java.io.ByteArrayOutputStream(); val buffer=ByteArray(8192)
+            while(true){ val n=reader.read(buffer); if(n<0)break; if(body.size()+n>1_048_576)return ScanProbeOutcome(null,reason="response-size-limit"); body.write(buffer,0,n) }; body.toString("UTF-8")
+          }
+          if(Regex("/cdn-cgi/challenge-platform/|cf_chl_opt|captcha (is )?required|human verification required",RegexOption.IGNORE_CASE).containsMatchIn(text.take(65536))) { protectedScanHosts.add(hostKey);protectedScanGroups.add(groupKey);return ScanProbeOutcome(null,state="protected",reason="challenge") }
           val data = JSONObject(text)
-          val ui = data.optJSONObject("user_info") ?: return ScanProbeOutcome(null)
+          val ui = data.optJSONObject("user_info") ?: return ScanProbeOutcome(null,reason="missing-auth-proof")
           return when (scanAuthStatus(ui.opt("auth"))) {
             false -> ScanProbeOutcome(null, cacheable = true)
-            true -> ScanProbeOutcome(data, cacheable = true)
-            null -> ScanProbeOutcome(null)
+            true -> { permit.success(); ScanProbeOutcome(data, cacheable = true) }
+            null -> ScanProbeOutcome(null,reason="missing-auth-proof")
           }
         } catch (t: Throwable) {
           if (t is InterruptedException) {
@@ -711,7 +783,7 @@ class PanelScanService : Service() {
           // Hata sınıflandır: PROXY suçluysa proxy'yi düşür ve SIRADAKİ proxy ile tekrar dene.
           val fault = if (sel != null) (if (ScanProxyPool.classify(t) == ScanProxyPool.Fault.TARGET) ScanProxyPool.Fault.TARGET else ScanProxyPool.Fault.PROXY) else ScanProxyPool.Fault.TARGET
           sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, fault) }
-          if (sel == null || fault == ScanProxyPool.Fault.TARGET) return ScanProbeOutcome(null)
+          if (sel == null || fault == ScanProxyPool.Fault.TARGET) return ScanProbeOutcome(null,reason=if(t is java.net.SocketTimeoutException)"timeout" else "transport")
           // PROXY hatası: döngü sıradaki proxy ile devam eder.
         } finally {
           conn?.let { activeConnections.remove(it) }; conn?.disconnect()
@@ -781,7 +853,7 @@ class PanelScanService : Service() {
             val flat = checkpointTracker.claim(workerId, cursor, total) ?: break
             val ai = flat / candidateCount; val ci = flat % candidateCount
             val account = accounts.getJSONObject(ai); val candidate = candidates.getJSONObject(ci)
-            val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
+            val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs, retryContext(candidate, ai, account.optInt("row", ai + 1), account.optString("name")))
             if (cancelled.get() || workerFailure.get() != null) break
             if (Thread.currentThread().isInterrupted) throw InterruptedException("Tarama işçisi kesildi")
             if (login != null) { val hit=JSONObject()
@@ -1141,7 +1213,7 @@ class PanelScanService : Service() {
                 if (cancelled.get() || producerFailure.get() != null) break
                 val server = candidate.optString("server")
                 if (server.isBlank()) continue
-                val login = probe(server, account.username, account.password, timeoutMs)
+                val login = probe(server, account.username, account.password, timeoutMs, retryContext(candidate, account.ordinal, account.row, account.name))
                 if (cancelled.get() || producerFailure.get() != null) break
                 if (Thread.currentThread().isInterrupted) throw InterruptedException("Tarama işçisi kesildi")
                 val done = tested.incrementAndGet()
@@ -1498,7 +1570,7 @@ class PanelScanService : Service() {
                 val accountIndex = batchStart + local
                 val account = jobs.getJSONObject(accountIndex)
                 val candidate = candidatesFor(accountIndex).getJSONObject(candidateIndex)
-                val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
+                val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs, retryContext(candidate, accountIndex, account.optInt("row", accountIndex + 1), account.optString("name")))
                 if (cancelled.get() || workerFailure.get() != null) break
                 if (Thread.currentThread().isInterrupted) throw InterruptedException("Tarama işçisi kesildi")
                 if (login != null) {
@@ -1754,7 +1826,7 @@ class PanelScanService : Service() {
               val account = jobs.getJSONObject(accountIndex)
               val candidates = candidateArrays[accountIndex]
               val candidate = candidates.getJSONObject(candidateIndex)
-              val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs)
+              val login = probe(candidate.optString("server"), account.optString("username"), account.optString("password"), timeoutMs, retryContext(candidate, accountIndex, account.optInt("row", accountIndex + 1), account.optString("name")))
               if (cancelled.get() || workerFailure.get() != null) break
               if (Thread.currentThread().isInterrupted) throw InterruptedException("Tarama işçisi kesildi")
               if (login != null) { val hit=JSONObject()
@@ -1860,7 +1932,7 @@ class PanelScanService : Service() {
             val c = arr.getJSONObject(i)
             val panelName = c.optString("panelName")
             val server = c.optString("server")
-            val data = probe(server, user, pass, timeoutMs)
+            val data = probe(server, user, pass, timeoutMs, retryContext(c))
             if (cancelled.get() || workerFailure.get() != null) break
             if (Thread.currentThread().isInterrupted) throw InterruptedException("Tarama işçisi kesildi")
             if (data != null) {

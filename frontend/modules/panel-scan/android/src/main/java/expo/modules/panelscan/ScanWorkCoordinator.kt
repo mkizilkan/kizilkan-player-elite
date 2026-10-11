@@ -116,8 +116,32 @@ internal fun awaitScanHostPermit(permit: Semaphore, cancelled: AtomicBoolean): B
   return false
 }
 
+/** Rate signals lower per-host parallelism; stable auth responses gradually restore it. */
+internal class AdaptiveScanHostGate {
+  private var active = 0
+  private var limit = 4
+  private var intervalMs = 100L
+  private var nextStart = 0L
+  private var successes = 0
+  fun acquire(cancelled: AtomicBoolean): Boolean {
+    while (!cancelled.get() && !Thread.currentThread().isInterrupted) {
+      synchronized(this) {
+        val now = System.currentTimeMillis()
+        if (active < limit && now >= nextStart) { active++; nextStart = now + intervalMs; return true }
+      }
+      try { Thread.sleep(50L) } catch(error:InterruptedException) { Thread.currentThread().interrupt();throw error }
+    }
+    return false
+  }
+  @Synchronized fun release() { active = (active - 1).coerceAtLeast(0) }
+  @Synchronized fun rateLimited() { limit = (limit / 2).coerceAtLeast(1); intervalMs = (intervalMs * 2).coerceAtMost(2000L); successes = 0 }
+  @Synchronized fun success() { if (++successes >= 8) { limit = (limit + 1).coerceAtMost(4); intervalMs = (intervalMs * 9 / 10).coerceAtLeast(100L); successes = 0 } }
+}
+
 /** Only positive login or an explicit auth rejection may enter the persistent probe cache. */
-internal data class ScanProbeOutcome<T>(val value: T?, val cacheable: Boolean = false)
+internal data class ScanProbeOutcome<T>(val value: T?, val cacheable: Boolean = false,
+  val state: String = if (value != null) "valid" else if (cacheable) "rejected" else "temporary",
+  val reason: String = "", val retryAfterMs: Long = 0L)
 
 internal const val SCAN_AUTH_REJECTED_CACHE = "auth-rejected:v18.7.3"
 internal const val SCAN_CHECKPOINT_VERSION = 2
@@ -150,6 +174,8 @@ internal fun scanRetryAfterMillis(value: String?, now: Long): Long {
   }.getOrNull() }
   return date?.let { (it - now).coerceAtLeast(0L) } ?: 2000L
 }
+
+internal fun scanBackoffDeadline(delay:Long,now:Long=System.currentTimeMillis()):Long = now + delay.coerceIn(0L,Long.MAX_VALUE-now)
 
 /** Reread the deadline after every short wait: a concurrent 429 may extend the cooldown. */
 internal fun awaitScanHostBackoff(deadline: () -> Long, cancelled: AtomicBoolean): Boolean {
