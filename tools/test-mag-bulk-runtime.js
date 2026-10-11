@@ -138,6 +138,61 @@ async function protectionAndRates() {
   assert.equal(blocked[0].category, 'protected'); assert.equal(blocked[0].protection.kind, 'challenge');
   groups++;
 }
+async function rateLimitRetryOrchestration() {
+  for (const stage of ['discovery', 'handshake', 'account', 'persistent', 'captcha']) {
+    let discoveries = 0, handshakes = 0, logins = 0, limitedAt = 0, retriedAt = 0;
+    const retryStates = [], callbacks = [];
+    const protection = { state: 'present', kind: stage === 'captcha' ? 'captcha' : 'rate_limit',
+      endpoint: portal, stage: 'analysis', evidence: ['fixture'], httpStatus: stage === 'captcha' ? 403 : 429,
+      observedAt: new Date().toISOString(), transport: 'direct' };
+    const terminalReport = host => ({ ...report(host, null), state: 'protected', candidates: [{
+      endpoint: portal, httpStatus: protection.httpStatus, confidence: 'protected', selectable: false,
+      evidence: protection.evidence, elapsedMs: 0, protection,
+    }] });
+    const fail = scope => {
+      limitedAt = Date.now(); scope.onObservation(protection); scope.onRateLimit(portal, 2000);
+      throw Object.assign(new Error('fixture rate limit'), { kind: 'MAG_RATE_LIMIT', observation: protection });
+    };
+    const fake = {
+      stalkerLogin: async cred => {
+        await cred.requestScope.beforeRequest(cred.portal); logins++;
+        if (stage === 'account' && logins === 1) fail(cred.requestScope);
+        retriedAt = Date.now(); return account(cred.portal);
+      },
+      discoverMagPortal: async cred => { handshakes++; fail(cred.requestScope); },
+      normalizeStalkerAccountInfo: profile => ({ status: profile.status }),
+    };
+    const runner = environment({ '@/src/utils/stalker': fake, '@/src/utils/magPortalDiscovery': {
+      discoverMagHosts: async (hosts, opts) => {
+        discoveries++;
+        if (discoveries === 1 && stage === 'handshake') return hosts.map(host => report(host, null));
+        if (stage === 'captcha' || stage === 'persistent' || (stage === 'discovery' && discoveries === 1)) {
+          if (stage !== 'captcha') { limitedAt = Date.now(); opts.gate.onRateLimit(portal, 2000); }
+          opts.gate.onObservation(protection); return hosts.map(terminalReport);
+        }
+        // Real discovery requests also obey the gate before the second pass.
+        if (discoveries > 1) await opts.gate.beforeRequest(portal);
+        return hosts.map(host => report(host, portal));
+      },
+    } }).load('src/utils/magBulkScan.ts');
+    const result = await runner.runMagBulkScan([job(1)], { scope: 'exact',
+      onRetry: async (_job, state) => retryStates.push(state), onResult: r => callbacks.push(r.category) });
+    if (stage === 'captcha') {
+      assert.equal(discoveries, 1); assert.equal(logins, 0); assert.deepEqual(retryStates, []);
+    } else if (stage === 'persistent') {
+      assert.equal(discoveries, 2); assert.equal(logins, 0);
+      assert.deepEqual(retryStates, ['pending', 'unresolved']); assert.equal(result[0].category, 'protected');
+    } else {
+      assert.equal(result[0].category, 'valid'); assert.deepEqual(retryStates, ['pending', 'resolved']);
+      assert.ok(retriedAt - limitedAt >= 1950, 'bounded retry must retain server Retry-After gate');
+      assert.deepEqual(callbacks, ['protected', 'valid']);
+      assert.equal(discoveries, stage === 'account' ? 1 : 2, 'selected endpoint never reopens discovery');
+      assert.equal(handshakes, stage === 'handshake' ? 1 : 0, 'rate signal stops the fallback MAC loop');
+    }
+    assert.equal(runner.isUncertainMagResult({ category: 'blocked' }), false);
+  }
+  groups++;
+}
 async function realExactScopeAndExpiry() {
   const calls = [];
   const env = environment({ fetch: async url => {
@@ -328,6 +383,6 @@ async function restoredScopeAndEndpoint() {
   groups++;
 }
 (async () => {
-  await scopeAndIdentity(); await negativeAndSingleFlight(); await cancellationAndParallel(); await protectionAndRates(); await realExactScopeAndExpiry(); await terminalCatalogProtectionAndQueuedArchive(); await selectedActionsAndArchive(); await portalChoiceAndUnverified(); await terminalDiscoveryStopsAccountStage(); await nativeProxyCancel();await restoredScopeAndEndpoint();
+  await scopeAndIdentity(); await negativeAndSingleFlight(); await cancellationAndParallel(); await protectionAndRates(); await rateLimitRetryOrchestration(); await realExactScopeAndExpiry(); await terminalCatalogProtectionAndQueuedArchive(); await selectedActionsAndArchive(); await portalChoiceAndUnverified(); await terminalDiscoveryStopsAccountStage(); await nativeProxyCancel();await restoredScopeAndEndpoint();
   console.log(`PASS: MAG kapsam/yarış/iptal/koruma/seçim/TXT/proxy — ${groups} davranış grubu`);
 })().catch(error => { console.error(error); process.exitCode = 1; });

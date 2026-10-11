@@ -20,6 +20,17 @@ export type MagScanResult = {
   endpoints?: PlaylistEndpoint[];
   categories?: { live?: string[]; vod?: string[]; series?: string[]; warnings?: string[] };
 };
+/** Rate limits are temporary; CAPTCHA/WAF/challenges never enter an automatic retry. */
+export function isUncertainMagResult(result: MagScanResult): boolean {
+  return ["error", "unverified", "probable", "no-portal"].includes(result.category)
+    || (result.category === "protected" && result.protection?.kind === "rate_limit");
+}
+function failureObservation(error: any, previous: MagProtectionObservation): MagProtectionObservation {
+  if (error?.observation) return error.observation;
+  if (error?.kind === "MAG_RATE_LIMIT") return { ...previous, state: "present", kind: "rate_limit",
+    httpStatus: Number(error?.status) || previous.httpStatus, evidence: [...previous.evidence, "rate-limit-stop"] };
+  return previous;
+}
 export type MagScanControl = { isCancelled?: () => boolean; waitIfPaused?: () => Promise<void>; signal?: AbortSignal };
 export type MagScanOptions = {
   concurrency?: number; useProxy?: boolean; scope?: MagDiscoveryScope;
@@ -264,7 +275,15 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
         // Koruma/istek sınırı terminaldir: başka MAC denenmez, host koruma olarak işaretlenir (M02 ile tutarlı).
         if (kind === "MAG_PROTECTION" || kind === "MAG_RATE_LIMIT") {
           protectedStop = true;
-          if (existing) { existing.state = "protected"; existing.message = "Portal koruması / istek sınırı; handshake yedeği durduruldu"; }
+          const protection = failureObservation(error, observation);
+          const candidate: MagPortalDiscovery["candidates"][number] = { endpoint: protection.endpoint || hostKey,
+            httpStatus: protection.httpStatus || 0, confidence: "protected", selectable: false,
+            evidence: protection.evidence, elapsedMs: 0, protection };
+          const terminal = existing || { host: hostEntry, candidates: [], probes: 0, state: "protected" as const };
+          terminal.state = "protected"; terminal.message = "Portal koruması / istek sınırı; handshake yedeği durduruldu";
+          terminal.candidates = [candidate, ...terminal.candidates.filter(c => c.endpoint !== candidate.endpoint)];
+          if (!existing) { reports.push(terminal); reportByHost.set(hostKey, terminal); }
+          opts.onPortalDiscovery?.([...reports]);
           void recordDiagnostic("scan", "MAG_BULK_HANDSHAKE_FALLBACK_PROTECTED", { host: firstJob.hostRaw, kind });
         } else {
           void recordDiagnostic("scan", "MAG_BULK_HANDSHAKE_FALLBACK_ERROR", { host: firstJob.hostRaw, message: String(error?.message || error).slice(0, 160) });
@@ -354,7 +373,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
         protection: observation, verificationEvidence: verification.evidence, message: verification.message };
     } catch (error: any) {
       if (aborted(error) || cancelled(opts.control)) throw error;
-      if (error?.observation) observation = error.observation;
+      observation = failureObservation(error, observation);
       const kind = String(error?.kind || "");
       const explicitlyUnauthorized = /authorization failed|not authorized|unauthori[sz]ed/.test(String(error?.snippet || error?.message || "").toLowerCase());
       return { ...base, category: kind === "MAG_PROTECTION" || kind === "MAG_RATE_LIMIT" ? "protected" : explicitlyUnauthorized ? "blocked" : "error",
@@ -372,16 +391,16 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
       try {
         const result = await scanOne(job);
         if (cancelled(opts.control)) return;
-        if(!opts.retryPass && ['error','unverified','probable','no-portal'].includes(result.category))await opts.onRetry?.({...job,portal:choices[job.portal]||job.portal,retryScope:opts.scope||(/\.php$/i.test(new URL(job.portal).pathname)?'exact':'fallback'),selectedEndpoint:!!choices[job.portal]},'pending',0);
+        if(!opts.retryPass && isUncertainMagResult(result))await opts.onRetry?.({...job,portal:choices[job.portal]||job.portal,retryScope:opts.scope||(/\.php$/i.test(new URL(job.portal).pathname)?'exact':'fallback'),selectedEndpoint:!!choices[job.portal]},'pending',0);
         results.push(result); done++;
         await opts.onResult?.(result); opts.onProgress?.(done, accountJobs.length, job.hostRaw + " · " + job.mac);
       } catch (error: any) { if (aborted(error) || cancelled(opts.control)) return; throw error; }
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, accountJobs.length) }, () => worker()));
-  // A fresh, bounded discovery budget is used only for uncertain jobs, never for explicit rejection/protection.
+  // A fresh, bounded discovery budget is used only for uncertain jobs, never for explicit rejection or CAPTCHA/WAF/challenges; 429 respects the same gate.
   if(!opts.retryPass && !cancelled(opts.control)) {
-    const uncertain=results.filter(r=>['error','unverified','probable','no-portal'].includes(r.category));
+    const uncertain=results.filter(isUncertainMagResult);
     const uncertainKeys=new Set(uncertain.map(r=>JSON.stringify([r.hostRaw,r.mac])));
     const retryJobs=accountJobs.filter(j=>uncertainKeys.has(JSON.stringify([j.hostRaw,j.mac])));
     if(retryJobs.length){
@@ -396,7 +415,7 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
       }
     }
   }
-  if(opts.retryPass)for(const result of results){const job=accountJobs.find(j=>j.mac===result.mac&&j.hostRaw===result.hostRaw);if(job)await opts.onRetry?.({...job,portal:choices[job.portal]||job.portal,retryScope:opts.scope||(/\.php$/i.test(new URL(job.portal).pathname)?'exact':'fallback'),selectedEndpoint:!!choices[job.portal]},['error','unverified','probable','no-portal'].includes(result.category)?'unresolved':'resolved',1);}
+  if(opts.retryPass)for(const result of results){const job=accountJobs.find(j=>j.mac===result.mac&&j.hostRaw===result.hostRaw);if(job)await opts.onRetry?.({...job,portal:choices[job.portal]||job.portal,retryScope:opts.scope||(/\.php$/i.test(new URL(job.portal).pathname)?'exact':'fallback'),selectedEndpoint:!!choices[job.portal]},isUncertainMagResult(result)?'unresolved':'resolved',1);}
   void recordDiagnostic("scan", "MAG_BULK_SCAN_DONE", { jobs: accountJobs.length, hosts: reports.length, scanned: done,
     valid: results.filter(r => r.category === "valid").length, cancelled: cancelled(opts.control) });
   return results;
