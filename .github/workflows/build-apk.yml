@@ -182,7 +182,25 @@ jobs:
           echo "path=artifacts/$NAME" >> "$GITHUB_OUTPUT"
       - name: APK ABI ve native boyut raporu
         run: node ../tools/analyze-apk.js "../${{ steps.apk.outputs.path }}" "../artifacts/APK-BOYUT-RAPORU-v${{ steps.apk.outputs.version }}.txt"
+      - name: GitHub Release olustur
+        id: release
+        if: ${{ github.event.inputs.make_release != 'false' && github.ref != 'refs/heads/v17.3.0-rc1-smart-db-multisource' }}
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="build-${{ github.run_number }}"
+          APK="${{ steps.apk.outputs.name }}"
+          REPORT="APK-BOYUT-RAPORU-v${{ steps.apk.outputs.version }}.txt"
+          gh release create "$TAG" "artifacts/$APK" "artifacts/$REPORT" --target "$GITHUB_SHA" --title "KIZILKAN PLAYER ELITE v${{ steps.apk.outputs.version }} (build ${{ github.run_number }})" --notes "Yeni Mimari: ${NEW_ARCH} · Build tipi: ${BUILD_TYPE}"
+          ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          printf '%s\n' "$ASSETS" | grep -Fxq -- "$APK"
+          printf '%s\n' "$ASSETS" | grep -Fxq -- "$REPORT"
+      # Release assets use a separate storage service. Avoid a second large APK
+      # upload to the quota-limited Actions artifact store for release builds.
       - name: Artifact olarak yukle
+        if: ${{ steps.release.outcome == 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.apk.outputs.name }}
@@ -191,14 +209,6 @@ jobs:
             artifacts/APK-BOYUT-RAPORU-*.txt
           retention-days: 30
           if-no-files-found: error
-      - name: GitHub Release olustur
-        if: ${{ github.event.inputs.make_release != 'false' && github.ref != 'refs/heads/v17.3.0-rc1-smart-db-multisource' }}
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="build-${{ github.run_number }}"
-          gh release create "$TAG" "artifacts/${{ steps.apk.outputs.name }}" --target "$GITHUB_SHA" --title "KIZILKAN PLAYER ELITE v${{ steps.apk.outputs.version }} (build ${{ github.run_number }})" --notes "Yeni Mimari: ${NEW_ARCH} · Build tipi: ${BUILD_TYPE}"
       - name: Hata gunlugu (build patlarsa)
         if: failure()
         run: |
