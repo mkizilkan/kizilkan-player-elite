@@ -20,7 +20,14 @@ export async function withCatalogLock<T>(id:string,work:()=>Promise<T>):Promise<
   try{return await operation;}finally{if(tails.get(id)===operation)tails.delete(id);}
 }
 export const DEFAULT_FRESHNESS_MINUTES=15;
+export const FRESHNESS_OPTIONS = [5, 15, 30, 60, 180, 360, 1440, 2880, 4320, 10080, 43200];
+export function freshnessLabel(minutes: number): string {
+  if (minutes === 43200) return '1 ay (30 gün)';
+  if (minutes === 10080) return '1 hafta';
+  if (minutes >= 1440) return `${minutes / 1440} gün`;
+  return minutes < 60 ? `${minutes} dk` : `${minutes / 60} sa`;
+}
 export function freshnessDue(lastAttempt:number,minutes:number|undefined,now=Date.now()):boolean{
-  const interval=Math.max(1,Math.min(1440,Number.isFinite(minutes)?minutes!:DEFAULT_FRESHNESS_MINUTES));
+  const interval=Math.max(1,Math.min(43200,Number.isFinite(minutes)?minutes!:DEFAULT_FRESHNESS_MINUTES));
   return now-lastAttempt>=interval*60000;
 }

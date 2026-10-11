@@ -180,7 +180,11 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.30 RC1 — dal `codex/v18.7.30-rc1-scan-dns-reliability`)
+## 9. Mevcut durum (v18.7.31 RC1 — dal `codex/v18.7.31-dns-tests-fast-catalog`)
+
+Kullanıcı onaylı DNS/görüntü testi/en iyi seçim ve MAG soğuk başlangıç hızlı API köprüsü paketi. Ayrıntılar ve gerçekleşen teslim kayıtları: `AI-DEVIR-v18.7.31.md`. Ayarlar hesabın üstünde ortak DNS yöneticisi; ek DNS, gerçek ilk kare, seri toplu test, manuel/en hızlı kare veren seçim, tam metadata yazımı/rollback. Aynı-panel auth=0/timeout failover; CF/429 terminal. Özel MAG path/port korunur. Film/Dizi için doğrulanmış Xtream bulk API soğuk başlangıçta da denenir; saf Stalker fallback/live-first korunur. 1/2/3 gün, hafta, 30 gün aralıkları gerçek hesaplamayla eklenir. Yeni davranış testleri ve tsc geçti; nihai build/teslim sonucu devir dosyasında tutulur.
+
+## 9-eski-18730. v18.7.30 RC1 — dal `codex/v18.7.30-rc1-scan-dns-reliability`
 
 Kullanıcı onaylı 10 maddelik tarama sağlamlaştırma + ortak panel DNS seçimi/sağlık/aynı-panel failover paketi. Ayrıntılı dosya/karar/test/kısıt/DEV komutu: `AI-DEVIR-v18.7.30.md`. Auth/temporary/protection ayrımı, şifreli sınırlı ikinci tur, MAC seçilmiş endpoint kilidi, yöntem hafızası, bounded örnekleme, adaptif host gate, üç örnek gerçek ilk kare, kanıt kalıcılığı ve strict DNS kapsamı. İlk davranış/TypeScript testleri geçti; tam kontroller ve build teslim kaydı devir dosyasında güncellenecek. Ana player buffer/timeshift ve backend-ID mapping bu pakette yeniden tasarlanmadı.
 

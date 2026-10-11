@@ -20,11 +20,11 @@ import type { Playlist } from "@/src/types";
 import { resolveBoundPanel } from "@/src/utils/serverCode";
 import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
 import { normalizeHost } from "@/src/player/hostFailover";
-import { boundPanelDnsCandidates, magDnsCandidate, canTryDnsAlternative } from './panelDnsFailover';
+import { boundPanelDnsCandidates, magDnsCandidate, canTryDnsAlternative, canTryPlaylistDnsAlternative } from './panelDnsFailover';
 import { applyContentSelection } from "@/src/utils/contentSelection";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { applyCatalogProgress } from '@/src/utils/catalogProgress';
-import { mergeEndpointEvidence, playlistEndpoints } from './playlistEndpoints';
+import { mergeEndpointEvidence, playlistEndpoints, selectedMagDnsCandidate } from './playlistEndpoints';
 
 export type CatalogKind="live"|"vod"|"series";
 export type CatalogProgressState="waiting"|"saving"|"done"|"error"|"skipped";
@@ -139,7 +139,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
             lastResolvedAt: new Date().toISOString(),
           };
         } catch (error) {
-          if(options?.signal?.aborted || !canTryDnsAlternative(error))throw error;
+          if(options?.signal?.aborted || !canTryPlaylistDnsAlternative(error))throw error;
           // Rehber geçici erişilemezse mevcut çalışan DNS ile devam et.
         }
       }
@@ -155,9 +155,9 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       try {
         login = resolvedLogin || await xtreamLogin(cred, options?.signal);
       } catch (primaryError) {
-        if(options?.signal?.aborted || !canTryDnsAlternative(primaryError)) throw primaryError;
+        if(options?.signal?.aborted || !canTryPlaylistDnsAlternative(primaryError)) throw primaryError;
         const primaryNorm = normalizeHost(resolvedServer);
-        const backups = Array.from(new Set([...(pl.backupHosts || []), ...(bindingPatch?.validatedHosts || [])].map(normalizeHost)))
+        const backups = Array.from(new Set([...(pl.backupHosts || []), ...(bindingPatch?.validatedHosts || []), ...(bindingPatch?.selectedHosts || [])].map(normalizeHost)))
           .filter(h => !!h && h !== primaryNorm && (pl.serverCodeBinding?.allowDirectoryAlternatives !== false || (pl.serverCodeBinding.selectedHosts || pl.serverCodeBinding.validatedHosts || []).map(normalizeHost).includes(h)));
         let recovered: typeof login | null = null;
         for (const host of backups) {
@@ -169,7 +169,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
             cred.server = host;
             void recordDiagnostic("network", "REFRESH_BACKUP_DNS_OK", { playlistId: pl.id, tried: backups.indexOf(host) + 1, total: backups.length }, { stage: "refresh", outcome: "recovered" });
             break;
-          } catch (error) { if(options?.signal?.aborted || !canTryDnsAlternative(error))throw error; }
+          } catch (error) { if(options?.signal?.aborted || !canTryPlaylistDnsAlternative(error))throw error; }
         }
         if (!recovered) {
           if (backups.length) void recordDiagnostic("network", "REFRESH_BACKUP_DNS_FAILED", { playlistId: pl.id, total: backups.length }, { stage: "refresh", outcome: "failed" });
@@ -377,8 +377,8 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       catch(error) {
         if(options?.signal?.aborted || terminalMagError(error) || !canTryDnsAlternative(error))throw error;
         const fresh = pl.serverCodeBinding ? await boundPanelDnsCandidates(pl.serverCodeBinding,options?.signal) : [];
-        const allowed=pl.serverCodeBinding?.allowDirectoryAlternatives===false ? (pl.serverCodeBinding.selectedHosts||pl.serverCodeBinding.validatedHosts||[]).map(h=>magDnsCandidate(h,pl.stalkerPortal!)) : undefined;
-        const alternatives=Array.from(new Set([...(pl.stalkerBackupPortals||[]),...fresh.map(h=>magDnsCandidate(h,pl.stalkerPortal!))])).filter(h=>h!==pl.stalkerPortal && (!allowed || allowed.includes(h)));
+        const allowed=pl.serverCodeBinding?.allowDirectoryAlternatives===false ? (pl.serverCodeBinding.selectedHosts||pl.serverCodeBinding.validatedHosts||[]).map(h=>selectedMagDnsCandidate(h,pl.stalkerPortal!)) : undefined;
+        const alternatives=Array.from(new Set([...(pl.stalkerBackupPortals||[]),...fresh.map(h=>magDnsCandidate(h,pl.stalkerPortal!))])).filter(h=>!!h && h!==pl.stalkerPortal && (!allowed || allowed.includes(h)));
         let recovered: typeof magLogin | undefined;
         for(const portal of alternatives) {
           if(options?.signal?.aborted)throw error;

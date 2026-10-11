@@ -122,13 +122,20 @@ export async function pickWorkingHost(
 ): Promise<{ server: string; login: { user_info: any; server_info: any } }> {
   let lastErr: Error | null = null;
   for (const server of validPanelHosts(hosts)) {
+    if (signal?.aborted) throw Object.assign(new Error('DNS testi iptal edildi.'), { kind: 'CANCELLED' });
+    const controller = new AbortController(); let timedOut = false;
+    const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 10000);
     try {
-      const login = await xtreamLogin({ server, username, password }, signal);
+      const login = await xtreamLogin({ server, username, password }, controller.signal);
+      if (controller.signal.aborted) throw Object.assign(new Error('DNS yanıtı zaman aşımına uğradı.'), { kind: 'TIMEOUT' });
       return { server, login };
     } catch (e: any) {
-      if(signal?.aborted || ['CANCELLED','BACKGROUND_PAUSE','PROTECTION','RATE_LIMIT','ACCOUNT_REJECTED'].includes(String(e?.kind||'')) || [401,403,429].includes(Number(e?.status)))throw e;
-      lastErr = e instanceof Error ? e : new Error(String(e));
-    }
+      // These are user-approved aliases of one panel. auth=0 at an obsolete
+      // alias does not prove rejection at the other aliases. Protection stops.
+      if(signal?.aborted || ['PROTECTION','RATE_LIMIT'].includes(String(e?.kind||'')) || (!timedOut && ['CANCELLED','BACKGROUND_PAUSE'].includes(String(e?.kind||''))) || [401,403,429].includes(Number(e?.status)))throw e;
+      lastErr = timedOut ? Object.assign(new Error('DNS 10 saniyede yanıt vermedi.'), { kind: 'TIMEOUT' }) : e instanceof Error ? e : new Error(String(e));
+    } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
   }
   // Hepsi denendi, hiçbiri çalışmadı.
   throw lastErr || new Error("Hiçbir sunucu adresi çalışmadı.");

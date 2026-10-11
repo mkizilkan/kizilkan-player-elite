@@ -30,7 +30,7 @@ import { DnsManager } from "@/src/components/DnsManager";
 import { FocusButton } from "@/src/components/FocusButton";
 import * as Clipboard from "expo-clipboard";
 import { haptic } from "@/src/utils/haptic";
-import { normalizeHost } from "@/src/player/hostFailover";
+import { normalizeHost, rememberWorkingHost } from "@/src/player/hostFailover";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { canonicalEndpointUrl, playlistEndpoints } from '@/src/utils/playlistEndpoints';
 import { useProfiles } from '@/src/store/ProfileContext';
@@ -67,8 +67,8 @@ export default function EditPlaylist() {
   const [directoryAlternatives,setDirectoryAlternatives]=useState(pl?.serverCodeBinding?.allowDirectoryAlternatives??true);
   /** v18.2.0: panel DNS'leri + kullanıcı yedekleri (birincil hariç tutulur, DnsManager ekler). */
   const [dnsHosts, setDnsHosts] = useState<string[]>(() =>
-    Array.from(new Set([...(pl?.serverCodeBinding?.validatedHosts || []), ...((pl as any)?.backupHosts || [])].map(normalizeHost).filter(Boolean))));
-  const [macPortals, setMacPortals] = useState<string[]>(pl?.stalkerBackupPortals || []);
+    Array.from(new Set([...(pl?.serverCodeBinding?.validatedHosts || []), ...(pl?.serverCodeBinding?.selectedHosts || []), ...((pl as any)?.backupHosts || [])].map(normalizeHost).filter(Boolean))));
+  const [macPortals, setMacPortals] = useState<string[]>(() => playlistEndpoints(pl || {}).filter(e => e.kind === 'stalker' && !e.primary).map(e => e.url));
   const [endpointEvidence, setEndpointEvidence] = useState<PlaylistEndpoint[]>(playlistEndpoints(pl || {}));
   const acceptEvidence = (e: PlaylistEndpoint) => setEndpointEvidence(prev => { const map = new Map(prev.map(p => [canonicalEndpointUrl(p.url), p])); map.set(canonicalEndpointUrl(e.url), { ...map.get(canonicalEndpointUrl(e.url)), ...e }); return [...map.values()]; });
   const [playbackUserAgent, setPlaybackUserAgent] = useState(pl?.playbackHeaders?.userAgent || "");
@@ -168,7 +168,8 @@ export default function EditPlaylist() {
           pl.serverCodeBinding &&
           requestedCode === currentCode &&
           patch.xtreamServer &&
-          patch.xtreamServer !== pl.xtreamServer
+          patch.xtreamServer !== pl.xtreamServer &&
+          ![...(pl.backupHosts || []), ...(pl.serverCodeBinding.validatedHosts || []), ...(pl.serverCodeBinding.selectedHosts || []), ...endpointEvidence.filter(e => e.accountVerifiedAt || e.firstFrameAt).map(e => e.url)].map(normalizeHost).includes(normalizeHost(patch.xtreamServer))
         ) {
           patch.serverCodeBinding = {
             ...(patch.serverCodeBinding || pl.serverCodeBinding),
@@ -189,14 +190,17 @@ export default function EditPlaylist() {
           const binding = patch.serverCodeBinding || pl.serverCodeBinding;
           if (binding && requestedCode === currentCode) {
             const allowed = new Set([primaryNorm, ...kept]);
-            patch.serverCodeBinding = { ...binding, validatedHosts: (binding.validatedHosts || []).filter((h: string) => allowed.has(normalizeHost(h))) };
+            patch.serverCodeBinding = { ...binding, selectedHosts: [...allowed], validatedHosts: (binding.validatedHosts || []).filter((h: string) => allowed.has(normalizeHost(h))), preferredServer: primaryNorm };
           }
         }
 
         // v17.1.1: Kimlik/DNS metadata commit'i katalog yenilemesinden bağımsızdır.
         // Büyük Room refresh başarısız olsa bile kullanıcının yeni DNS seçimi eski
         // değere geri dönmez. Refresh yalnız ikinci fazda sayaç/accountInfo günceller.
-        await updatePlaylist(pl.id, { ...patch });
+        const primaryChanged = normalizeHost(patch.xtreamServer || '') !== normalizeHost(pl.xtreamServer || '');
+        if (primaryChanged) await rememberWorkingHost(pl.id, patch.xtreamServer);
+        try { await updatePlaylist(pl.id, { ...patch }); }
+        catch (e) { if (primaryChanged) await rememberWorkingHost(pl.id, pl.xtreamServer || ''); throw e; }
         metadataCommittedEarly = true;
         if (reloadContent) {
           setProgress("Hesap adresi kaydedildi. İçerik yeni adres üzerinden yenileniyor...");
@@ -262,6 +266,10 @@ export default function EditPlaylist() {
         patch.stalkerPortal = stPortal.trim() || pl.stalkerPortal;
         patch.stalkerBackupPortals = macPortals.filter(p => canonicalEndpointUrl(p) !== canonicalEndpointUrl(String(patch.stalkerPortal || '')));
         patch.endpoints = endpointEvidence.filter(e => e.kind === 'stalker' && [patch.stalkerPortal, ...macPortals].map(p => canonicalEndpointUrl(String(p || ''))).includes(canonicalEndpointUrl(e.url)));
+        if (pl.serverCodeBinding) {
+          const selected = Array.from(new Set([patch.stalkerPortal, ...macPortals].map(p => canonicalEndpointUrl(String(p || ''))).filter(Boolean)));
+          patch.serverCodeBinding = { ...pl.serverCodeBinding, selectedHosts: selected, validatedHosts: (pl.serverCodeBinding.validatedHosts || []).filter(h => selected.includes(canonicalEndpointUrl(h))), preferredServer: patch.stalkerPortal };
+        }
         if (canonicalEndpointUrl(String(patch.stalkerPortal || '')) !== canonicalEndpointUrl(String(pl.stalkerPortal || ''))) patch.stalkerResolvedPortal = endpointEvidence.find(e => canonicalEndpointUrl(e.url) === canonicalEndpointUrl(String(patch.stalkerPortal)))?.resolvedPortal;
         patch.stalkerMac = (stMac.trim().toUpperCase()) || pl.stalkerMac;
         patch.stalkerSerial = stSerial.trim() || pl.stalkerSerial;

@@ -178,9 +178,13 @@ export interface PlaylistEndpoint {
   catalogVerifiedAt?: string;
   firstFrameAt?: string;
   firstFrameElapsedMs?: number;
+  accountLatencyMs?: number;
+  playbackTestAt?: string;
+  playbackTestState?: 'frame' | 'no_frame' | 'blocked' | 'cancelled';
   playbackObservedAt?: string;
   lastTestAt?: string;
   lastError?: string;
+  lastErrorKind?: string;
   /** Content ID correspondence is a separate fact from authentication. */
   contentMapping?: 'unverified' | 'verified';
   resolvedPortal?: import('@/src/utils/magEndpointRegistry').ResolvedMagPortal;

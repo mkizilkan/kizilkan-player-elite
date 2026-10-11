@@ -34,7 +34,10 @@ function environment(overrides = {}) {
   function load(rel) {
     if (cache.has(rel)) return cache.get(rel);
     const exports = {}; cache.set(rel, exports);
-    vm.runInNewContext(compile(source(rel)), { exports, require: req, console, URL, URLSearchParams, AbortController, setTimeout, clearTimeout, fetch: overrides.fetch }, { filename: rel });
+    const relativeRequire = id => id.startsWith('.')
+      ? load(path.posix.normalize(path.posix.join(path.posix.dirname(rel), id + '.ts')))
+      : req(id);
+    vm.runInNewContext(compile(source(rel)), { exports, require: relativeRequire, console, URL, URLSearchParams, AbortController, setTimeout, clearTimeout, fetch: overrides.fetch }, { filename: rel });
     return exports;
   }
   return { load, req };
@@ -218,7 +221,9 @@ async function terminalCatalogProtectionAndQueuedArchive() {
     const stalker = env.load('src/utils/stalker.ts'), gate = env.load('src/utils/magBulkScan.ts').createMagRequestGate();
     const cred = { portal, mac: mac(1), endpointPolicy: 'exact', requestScope: { ...gate, transport: 'direct' } };
     await assert.rejects(stalker[method](cred, session, { kinds: ['vod', 'series'] }), error => error.kind === 'MAG_PROTECTION' && error.observation.kind === 'captcha');
-    assert.equal(calls.length, 1, method + ' must not request series after the VOD challenge'); assert.equal(new URL(calls[0]).searchParams.get('type'), 'vod');
+    // v18.7.31: a cold account first tries the bounded live/bridge handshake.
+    // If that first request hits protection, neither VOD nor series may follow.
+    assert.equal(calls.length, 1, method + ' must not request catalogs after the cold-bridge challenge'); assert.equal(new URL(calls[0]).searchParams.get('type'), 'stb');
   }
   const calls = [], seen = [];
   const env = environment({ fetch: async url => {

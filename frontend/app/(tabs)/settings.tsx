@@ -37,6 +37,8 @@ import { fetchAndCacheEpg } from "@/src/utils/epg";
 import { api } from "@/src/utils/api";
 import { FocusButton } from "@/src/components/FocusButton";
 import { refreshPlaylistContent } from "@/src/utils/refreshPlaylist";
+import { PlaylistDnsControls } from '@/src/components/PlaylistDnsControls';
+import { FRESHNESS_OPTIONS, freshnessLabel } from '@/src/utils/catalogOperations';
 import { playlistTypeLabel, playlistVisualColor, playlistTypeIcon } from "@/src/utils/playlistVisual";
 import { storage } from "@/src/utils/storage";
 import { loadBackgroundPlayback, saveBackgroundPlayback } from "@/src/player/backgroundPlayback";
@@ -333,7 +335,7 @@ export default function SettingsTab() {
         </View>
 
         {/* Hesap Bilgileri */}
-        {activePlaylist?.accountInfo ? (
+        {activePlaylist && (activePlaylist.accountInfo || activePlaylist.source === 'xtream' || activePlaylist.source === 'stalker') ? (
           <>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
               <SectionTitle text="HESAP BİLGİLERİ" />
@@ -363,6 +365,7 @@ export default function SettingsTab() {
               )}
             </View>
             <View style={{ paddingHorizontal: SPACING.lg }}>
+              <PlaylistDnsControls key={`${activeProfile.id}|${activePlaylist.id}`} playlist={activePlaylist} />
               <AccountInfoCard
             playlist={activePlaylist}
             provider={activePlaylist?.providerInfo}
@@ -1132,9 +1135,9 @@ export default function SettingsTab() {
               </View>
               {activePlaylist.autoRefreshEnabled !== false && (
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm, marginTop: SPACING.sm }}>
-                  {[5,15,30,60,180,360].map(min => (
+                  {FRESHNESS_OPTIONS.map(min => (
                     <FocusButton key={min} testID={`auto-refresh-${min}`} onPress={() => void updatePlaylist(activePlaylist.id, { freshnessMinutes: min })} style={[styles.smallBtn, { borderWidth: 1, borderColor: (activePlaylist.freshnessMinutes || 15) === min ? colors.brandPrimary : colors.border, backgroundColor: (activePlaylist.freshnessMinutes || 15) === min ? colors.brandPrimary + "22" : colors.surfaceTertiary }]}>
-                      <Text style={{ color: colors.onSurface, fontWeight: "700" }}>{min < 60 ? `${min} dk` : `${min/60} sa`}</Text>
+                      <Text style={{ color: colors.onSurface, fontWeight: "700" }}>{freshnessLabel(min)}</Text>
                     </FocusButton>
                   ))}
                 </View>

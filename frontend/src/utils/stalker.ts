@@ -2972,6 +2972,7 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
   catch (e:any) { if (terminalMagError(e)) throw e; liveError=String(e?.message || e); void recordDiagnostic("mag","STALKER_LIVE_PARTIAL_FAILURE",{message:liveError,status:e?.status,kind:e?.kind}); }
   finally { finishLiveTask(); }
   const liveCount=channels.length;
+  const bridgeSeed = channels.slice(0, 1);
   void recordDiagnostic("catalog","STALKER_CATALOG_STAGE_DONE",{stage:"live",elapsedMs:Date.now()-liveStageStarted,count:liveCount,error:liveError});
   emitCatalogProgress(opts,{stage:"live",message:`Canlı TV tamamlandı · ${liveCount} kanal`,loaded:liveCount,total:liveCount});
   if (wanted.has("live") && !liveError && opts.onKindReady) {
@@ -2993,7 +2994,7 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
     return result;
   }
 
-  const fast = wanted.has('vod') || wanted.has('series') ? await verifiedXtreamEnrichment(cred, opts) : null;
+  const fast = wanted.has('vod') || wanted.has('series') ? await verifiedXtreamEnrichment(cred, opts, ses, bridgeSeed) : null;
   if (fast) {
     const counts = { vod: fast.vod.length, series: fast.series.length };
     for (const kind of ['vod', 'series'] as const) if (wanted.has(kind) && opts.onKindReady) {
@@ -3069,17 +3070,33 @@ async function runStalkerCatalog(cred: StalkerCreds, ses: StalkerSession, opts: 
 
 export type StalkerEnrichmentResult = { vod:VodItem[]; series:SeriesItem[]; diagnostics:StalkerCatalogDiagnostics };
 
-async function verifiedXtreamEnrichment(cred: StalkerCreds, opts: StalkerCatalogOptions): Promise<StalkerEnrichmentResult | null> {
+const nativeOnlyBridgeChecks = new Map<string, number>();
+async function verifiedXtreamEnrichment(cred: StalkerCreds, opts: StalkerCatalogOptions, ses?: StalkerSession, channels: Channel[] = []): Promise<StalkerEnrichmentResult | null> {
   const started = Date.now();
-    // A stream-shaped URL alone is not API proof. Authenticate and validate a real live response.
-    const bridge = getStreamDerivedCredentials(cred.mac, cred.portal, cred.profileId || (await storage.getItem<string>('kizilkan.activeProfileId', 'default') || 'default'));
-    if (bridge?.server && bridge.username && bridge.password) {
-      const api = await import('@/src/utils/iptv');
-      const controller = new AbortController();
-      const abort = () => controller.abort(); opts.signal?.addEventListener('abort', abort, { once: true });
-      const timer = setTimeout(abort, 20000);
-      try {
+    const profileId = cred.profileId || (await storage.getItem<string>('kizilkan.activeProfileId', 'default') || 'default');
+    const scoped = { ...cred, profileId };
+    const controller = new AbortController();
+    const abort = () => controller.abort(); opts.signal?.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(abort, 20000);
+    try {
         if (opts.signal?.aborted) throw scopeCancelledError();
+        let bridge = getStreamDerivedCredentials(cred.mac, cred.portal, profileId);
+        if (!bridge) { await hydrateStreamDerivedCredentials(); bridge = getStreamDerivedCredentials(cred.mac, cred.portal, profileId); }
+        const key = streamCredentialScope(cred.mac, cred.portal, profileId) || '';
+        if (!bridge && (!key || Date.now() - (nativeOnlyBridgeChecks.get(key) || 0) > 3600000)) {
+          // Extract from this account's own create_link before costly VOD pages.
+          // Film-only refresh uses a bounded live sample, never a port/path sweep.
+          if (channels[0]?.url && ses) await stalkerResolveStream({ ...scoped, requestScope: { ...cred.requestScope, transport: cred.requestScope?.transport || 'direct', signal: controller.signal } }, ses, channels[0].url);
+          else await stalkerLiveSample(scoped, controller.signal);
+          bridge = getStreamDerivedCredentials(cred.mac, cred.portal, profileId);
+          if (!bridge && !controller.signal.aborted && key) {
+            nativeOnlyBridgeChecks.set(key, Date.now());
+            if (nativeOnlyBridgeChecks.size > 512) nativeOnlyBridgeChecks.delete(nativeOnlyBridgeChecks.keys().next().value!);
+          }
+        }
+        if (!bridge?.server || !bridge.username || !bridge.password || controller.signal.aborted) return null;
+        // A stream-shaped URL alone is not proof. Authenticate a real API response.
+        const api = await import('@/src/utils/iptv');
         const credentials = { server: bridge.server, username: bridge.username, password: bridge.password };
         await api.xtreamLiveSample(credentials, controller.signal);
         clearTimeout(timer);
@@ -3091,11 +3108,11 @@ async function verifiedXtreamEnrichment(cred: StalkerCreds, opts: StalkerCatalog
         void recordDiagnostic('catalog', 'STALKER_XTREAM_API_VERIFIED', { elapsedMs: Date.now() - started, vod: vod.length, series: series.length, accountAuthenticated: true });
         emitCatalogProgress(opts, { stage: 'final', message: `Doğrulanmış Xtream API · ${vod.length} film · ${series.length} dizi` });
         return { vod, series, diagnostics };
-      } catch (e) {
+      } catch (e: any) {
         if (opts.signal?.aborted) throw scopeCancelledError();
+        if (terminalMagError(e) || ['PROTECTION', 'RATE_LIMIT'].includes(String(e?.kind || '')) || [401,403,429].includes(Number(e?.status))) throw e;
         void recordDiagnostic('catalog', 'STALKER_XTREAM_API_FALLBACK', { apiVerified: false });
       } finally { clearTimeout(timer); opts.signal?.removeEventListener('abort', abort); }
-    }
   return null;
 }
 
@@ -3117,7 +3134,7 @@ export async function stalkerEnrichment(cred:StalkerCreds, ses:StalkerSession, o
     }
   };
   try {
-    const fast = await verifiedXtreamEnrichment(cred, opts);
+    const fast = await verifiedXtreamEnrichment(cred, opts, ses);
     if (fast) return fast;
     emitCatalogProgress(opts,{stage:"vod",message:"Film kataloğu arka planda tamamlanıyor..."});
     let vodPart:VodPartition, vodError="";
@@ -3383,7 +3400,13 @@ export async function hydrateStreamDerivedCredentials(): Promise<void> {
     if (!raw) return;
     const obj = JSON.parse(raw) as Record<string, { username?: string; password?: string; server?: string; at?: number }>;
     for (const [k, v] of Object.entries(obj || {})) {
-      if (k.startsWith('v2|') && v && typeof v.username === "string" && typeof v.password === "string") streamDerivedCreds.set(k, { username: v.username, password: v.password, server: typeof v.server === "string" ? v.server : undefined, at: Number(v.at) || Date.now() });
+      if (k.startsWith('v2|') && v && typeof v.username === "string" && typeof v.password === "string") {
+        const storedAt = Number(v.at) || 0;
+        // A create_link completed while storage was being read must keep its
+        // newer credentials; parallel cold refreshes may hydrate together.
+        if ((streamDerivedCreds.get(k)?.at || 0) > storedAt) continue;
+        streamDerivedCreds.set(k, { username: v.username, password: v.password, server: typeof v.server === "string" ? v.server : undefined, at: storedAt });
+      }
     }
   } catch {}
 }

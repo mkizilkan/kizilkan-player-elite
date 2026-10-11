@@ -376,7 +376,7 @@ async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSi
     } catch (e:any) {
       if (externalSignal?.aborted) throwIfExternallyAborted(externalSignal);
       last = e;
-      if (e?.kind === 'PROTECTION' || e?.kind === 'ACCOUNT_REJECTED' || e?.kind === 'HTML_RESPONSE' || e?.kind === 'INVALID_JSON' || (e?.status && ![429, 500, 502, 503, 504].includes(e.status))) throw e;
+      if (e?.kind === 'PROTECTION' || e?.kind === 'RATE_LIMIT' || e?.kind === 'ACCOUNT_REJECTED' || e?.kind === 'HTML_RESPONSE' || e?.kind === 'INVALID_JSON' || (e?.status && ![429, 500, 502, 503, 504].includes(e.status))) throw e;
       if (controller.signal.aborted) last = Object.assign(new Error('API yanıtı zaman aşımına uğradı.'), { kind: 'TIMEOUT' });
     } finally { cleanup(); release(); }
     if (attempt === 0) await abortableDelay(500, externalSignal);

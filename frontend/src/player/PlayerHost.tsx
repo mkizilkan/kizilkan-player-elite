@@ -987,11 +987,21 @@ export default function PlayerHost() {
    * Yalnız Xtream + doğrulanmış DNS'i olan listelerde; M3U/MAG'da liste aynen kalır.
    */
   const [preferredHost, setPreferredHost] = useState<string | null>(null);
+  const preferredAccount = useRef({ id: '', server: '' });
   useEffect(() => {
+    const id = String(activePlaylist?.id || ''), server = String(activePlaylist?.xtreamServer || '');
+    const previous = preferredAccount.current; preferredAccount.current = { id, server };
+    // Manual selection or a committed refresh swap takes precedence over a
+    // previously remembered host, which may be the DNS that just failed.
+    if (id && server && previous.id === id && previous.server !== server) {
+      setPreferredHost(originOf(server)); void rememberWorkingHost(id, server);
+      return;
+    }
     let alive = true;
+    setPreferredHost(null);
     void loadPreferredHost(String(activePlaylist?.id || "")).then(h => { if (alive) setPreferredHost(h); });
     return () => { alive = false; };
-  }, [activePlaylist?.id]);
+  }, [activePlaylist?.id, activePlaylist?.xtreamServer]);
 
   const playbackCandidates = useMemo(() => {
     if (!basePlaybackRequest) return [] as string[];
@@ -999,6 +1009,7 @@ export default function PlayerHost() {
     // v18.2.0: panelin doğruladığı DNS'ler + kullanıcının eklediği yedek DNS'ler.
     const hosts = playlistSource === "xtream"
       ? Array.from(new Set([
+          ...((activePlaylist as any)?.xtreamServer ? [(activePlaylist as any).xtreamServer] : []),
           ...(((activePlaylist as any)?.serverCodeBinding?.validatedHosts as string[] | undefined) || []),
           ...(((activePlaylist as any)?.backupHosts as string[] | undefined) || []),
         ]))
@@ -1019,9 +1030,9 @@ export default function PlayerHost() {
       && !!hosts?.some(h => originOf(/^https?:\/\//i.test(h) ? h : `http://${h}`) === preferredOrigin);
     const preferredFirst = preferredValidated ? alternates.filter(u => originOf(u) === preferredOrigin) : [];
     return [...preferredFirst, ...base, ...alternates].filter((u, i, arr) => !!u && arr.indexOf(u) === i);
-  }, [basePlaybackRequest, channel, playlistSource, activePlaylist?.id, (activePlaylist as any)?.serverCodeBinding?.validatedHosts, (activePlaylist as any)?.backupHosts, preferredHost]);
+  }, [basePlaybackRequest, channel, playlistSource, activePlaylist?.id, activePlaylist?.xtreamServer, (activePlaylist as any)?.serverCodeBinding?.validatedHosts, (activePlaylist as any)?.backupHosts, preferredHost]);
 
-  useEffect(() => { setPlaybackUrlIndex(0); }, [channel?.id, playUrl]);
+  useEffect(() => { setPlaybackUrlIndex(0); }, [channel?.id, playUrl, activePlaylist?.xtreamServer]);
 
   const playbackRequest = useMemo(() => {
     if (!basePlaybackRequest) return null;

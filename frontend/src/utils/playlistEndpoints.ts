@@ -8,12 +8,27 @@ export function canonicalEndpointUrl(value: string): string {
   } catch { return ''; }
 }
 
+/** A selected full portal keeps its path; an origin inherits the active path. */
+export function selectedMagDnsCandidate(value: string, currentEndpoint: string): string {
+  const canonical = canonicalEndpointUrl(value);
+  if (!canonical) return '';
+  try {
+    const target = new URL(canonical);
+    if (target.pathname.replace(/\/+$/, '')) return canonical;
+    const current = new URL(currentEndpoint);
+    const explicitPort = /^[a-z]+:\/\/(?:\[[^\]]+\]|[^/:?#]+):\d+(?:[/?#]|$)/i.test(value);
+    if (!explicitPort && !target.port && current.port) target.port = current.port;
+    target.pathname = current.pathname;
+    return canonicalEndpointUrl(target.toString());
+  } catch { return ''; }
+}
+
 /** Address membership is explicit. Sharing a MAC/username never merges accounts. */
 export function playlistEndpoints(pl: Partial<Playlist>): PlaylistEndpoint[] {
   const kind = pl.source === 'stalker' ? 'stalker' : pl.source === 'xtream' ? 'xtream' : null;
   if (!kind) return [];
   const primary = kind === 'stalker' ? pl.stalkerPortal : pl.xtreamServer;
-  const urls = kind === 'stalker' ? [primary, ...(pl.stalkerBackupPortals || [])] : [primary, ...(pl.serverCodeBinding?.validatedHosts || []), ...(pl.backupHosts || [])];
+  const urls = kind === 'stalker' ? [primary, ...(pl.stalkerBackupPortals || []), ...(pl.serverCodeBinding?.selectedHosts || []).map(h => selectedMagDnsCandidate(h, primary || ''))] : [primary, ...(pl.serverCodeBinding?.validatedHosts || []), ...(pl.serverCodeBinding?.selectedHosts || []), ...(pl.backupHosts || [])];
   const existing = new Map((pl.endpoints || []).filter(e => e.kind === kind).map(e => [canonicalEndpointUrl(e.url), e]));
   const out = new Map<string, PlaylistEndpoint>();
   for (const value of urls) {
@@ -24,6 +39,12 @@ export function playlistEndpoints(pl: Partial<Playlist>): PlaylistEndpoint[] {
 }
 
 export function endpointProofLabel(endpoint: PlaylistEndpoint): string {
+  if (endpoint.playbackTestAt && endpoint.playbackTestState && endpoint.playbackTestState !== 'frame'
+    && (!endpoint.firstFrameAt || Date.parse(endpoint.playbackTestAt) >= Date.parse(endpoint.firstFrameAt))) {
+    const result = endpoint.playbackTestState === 'no_frame' ? 'Testte görüntü alınamadı'
+      : endpoint.playbackTestState === 'cancelled' ? 'Görüntü testi iptal edildi' : 'Görüntü testi tamamlanamadı';
+    return `${result} · ${new Date(endpoint.playbackTestAt).toLocaleString('tr-TR')}`;
+  }
   if (endpoint.firstFrameAt) return `İlk kare görüldü${Number.isFinite(endpoint.firstFrameElapsedMs) ? ` · ${(endpoint.firstFrameElapsedMs! / 1000).toFixed(1)} sn` : ''} · ${new Date(endpoint.firstFrameAt).toLocaleString('tr-TR')}`;
   if (endpoint.playbackObservedAt) return `Video ve ilerleyen oynatma gözlendi · ${new Date(endpoint.playbackObservedAt).toLocaleString('tr-TR')}`;
   if (endpoint.catalogVerifiedAt) return 'Katalog alındı · ilk kare sınanmadı';

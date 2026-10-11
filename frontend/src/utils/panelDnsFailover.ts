@@ -23,3 +23,8 @@ export function magDnsCandidate(base: string, currentEndpoint: string): string {
 export function canTryDnsAlternative(error: any): boolean {
   return !['CANCELLED','BACKGROUND_PAUSE','MAG_RATE_LIMIT','MAG_PROTECTION','PROTECTION','RATE_LIMIT','ACCOUNT_REJECTED'].includes(String(error?.kind||'')) && ![401,403,429].includes(Number(error?.status));
 }
+/** Existing playlist aliases only: a dead/reassigned DNS may return auth=0. */
+export function canTryPlaylistDnsAlternative(error: any): boolean {
+  return error?.kind === 'ACCOUNT_REJECTED' && ![401,403,429].includes(Number(error?.status))
+    || canTryDnsAlternative(error);
+}
