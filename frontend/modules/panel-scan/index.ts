@@ -229,6 +229,10 @@ export const PanelScan = {
     try { return JSON.parse(await native.startScanProxyTest(JSON.stringify(cfg))); } catch (e: any) { return { started: false, error: String(e?.message || e) }; }
   },
   pauseScanProxyTest: (): boolean => native ? !!native.pauseScanProxyTest?.() : false,
+  updateScanProxyTestConcurrency: async (runId: string, parallel: number): Promise<ScanProxyTestProgress> => {
+    if (!native?.updateScanProxyTestConcurrency) throw new Error("Hız değişikliği için güncel APK gerekli.");
+    return JSON.parse(await native.updateScanProxyTestConcurrency(runId, parallel));
+  },
   resumeScanProxyTest: (): boolean => native ? !!native.resumeScanProxyTest?.() : false,
   stopScanProxyTest: async (useTested: boolean): Promise<NativeScanProxyStatus> => {
     if (!native?.stopScanProxyTest) return emptyProxyStatus("native-unavailable");
@@ -312,6 +316,7 @@ export type ScanProxyTestConfig = {
   url?: string;
   expectText?: string;
   concurrency?: number;
+  verifyConcurrency?: number;
   timeoutMs?: number;
   rejectTransparent?: boolean;
   /** v18.5.0: yalnız elite (IP gizli + proxy izi yok) proxy'ler havuza girer. */
@@ -325,6 +330,7 @@ export type ScanProxyTestProgress = {
   /** v18.5.0: "tcp" hızlı bağlantı elemesi → "verify" doğrulama + anonimlik. */
   stage?: "" | "tcp" | "verify";
   tcpTotal?: number; tcpTested?: number; tcpAlive?: number;
+  tcpConcurrency?: number; verifyConcurrency?: number; activeWorkers?: number;
   elite?: number; anonymous?: number; unknownAnon?: number;
   total: number; tested: number; working: number; dead: number; transparent: number;
   http: number; socks4: number; socks5: number;

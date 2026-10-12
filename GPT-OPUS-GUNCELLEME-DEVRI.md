@@ -1,5 +1,9 @@
 # GPT DEVİR — KIZILKAN PLAYER ELITE (güncel durum ve talimatlar)
 
+## Güncel ek — 12.10.2026 / v18.7.33 RC1
+
+İkinci aşama proxy doğrulaması önce sabit16 ile sınırlıydı. Kullanıcı isteğiyle Yavaş16/Güvenli32/Hızlı64/Ultra128/Manuel1–128 eklendi; butonlarda paralellik, bağımsız gerçek TCP sayısı, manuel uygulama/doğrulama, aktif testte runId sahibi hız artırma/azaltma, şifreli config/journal/resume, dinamik bounded işçi havuzu ve gerçek progress/bildirim sayıları. Ayrıntılı dosya/kök neden/ölçüm/sınırlar ve teslim için **`AI-DEVIR-v18.7.33.md`** okunmalı. Dal `codex/v18.7.33-proxy-validation-speed`, taban `436f6db1`. 145 master/tsc PASS; gerçek Kotlin 1/7/16/32/64/128 parallel ve canlı update/paused/resume/input-write-failure/no-repeat PASS. Telefon kullanıcı tarafından çıkarıldı; bu sürümde cihaz kurulumu/kabulü yapılmış denmez. Commit/push/manuel NORMAL release/PC DEV açık yetkili; nihai bağlantılar derlemeler bitince yazılır. Aşağıdaki v18.7.32 bölümleri tarihçedir.
+
 **Son güncelleme:** 2026-10-12, GPT oturumu — v18.7.32 RC1 proxy ve arka plan paketi. Ayrıntılı dosya/karar/kök neden/test/cihaz sınırı/teslim: [AI-DEVIR-v18.7.32.md](AI-DEVIR-v18.7.32.md). Önceki sürüm notları ve planlar tarihî kayıt olarak aşağıda korunmuştur. Bu dosya, token/bağlam azaldığında
 başka bir yapay zekânın (GPT) işi kaldığı yerden sürdürmesi için yazıldı. Önce `CLAUDE.md`'yi (özellikle §2 çalışma
 sözleşmesi, §3 doğrulama, §4 sürüm/dal, §5 mimari, §7 tuzaklar, §8 log analizi) oku; aşağıdakiler ona EKtir.

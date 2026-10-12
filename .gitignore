@@ -15,6 +15,7 @@ frontend/ios/
 *.log
 .jdk-sockets/
 artifacts/
+.codex-remote-attachments/
 *.apk
 .DS_Store
 

@@ -101,6 +101,10 @@ class PanelScanModule : Module() {
     }
     Function("pauseScanProxyTest") { ScanProxyPool.pauseTest(); true }
     Function("resumeScanProxyTest") { ScanProxyPool.resumeTest(); true }
+    AsyncFunction("updateScanProxyTestConcurrency") { runId: String, parallel: Int ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ProxyTestEngine.updateConcurrency(context, runId, parallel).toString()
+    }.runOnQueue(appContext.backgroundCoroutineScope)
     AsyncFunction("stopScanProxyTest") { useTested: Boolean ->
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
       ScanProxyPool.stopTest(context, useTested).toString()

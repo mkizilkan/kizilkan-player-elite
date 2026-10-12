@@ -15,6 +15,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { PanelScan, type NativeScanProxyEntry, type NativeScanProxyStatus, type ScanProxyTestConfig } from "../../modules/panel-scan";
 import { parseProxyText, countBySchemeKind, proxyEntryKey, type ProxyEntry, type ProxyScheme } from "./scanProxyParse";
 import { recordDiagnostic } from "./diagnostics";
+import { proxyTcpParallel, proxyVerificationSettings } from "./scanProxySpeed";
 
 export type ProxyProtocol = "http" | "socks4" | "socks5";
 export type ScanProxySource = "manual" | "auto";
@@ -119,6 +120,9 @@ export type ScanProxyTestPrefs = {
   url: string;
   expectText: string;
   concurrency: number;
+  verificationSpeed: import("./scanProxySpeed").ProxyVerificationSpeed;
+  verifyConcurrency: number;
+  manualVerifyConcurrency: number;
   timeoutMs: number;
   rejectTransparent: boolean;
   /** v18.5.0: yalnız elite proxy'ler havuza girsin. */
@@ -147,7 +151,7 @@ export const DEFAULT_SCAN_PROXY_CONFIG: ScanProxyConfig = {
   manualScheme: "http", rotation: "round_robin",
   autoSelections: {},
   customSources: [],
-  test: { mode: "system", url: "", expectText: "", concurrency: 64, timeoutMs: 6000, rejectTransparent: true, eliteOnly: false },
+  test: { mode: "system", url: "", expectText: "", concurrency: 128, verificationSpeed: "slow", verifyConcurrency: 16, manualVerifyConcurrency: 16, timeoutMs: 6000, rejectTransparent: true, eliteOnly: false },
 };
 
 export async function loadScanProxyConfig(): Promise<ScanProxyConfig> {
@@ -176,7 +180,10 @@ export async function loadScanProxyConfig(): Promise<ScanProxyConfig> {
       rotation: ["round_robin", "random", "gateway"].includes(p.rotation) ? p.rotation : "round_robin",
       autoSelections: p?.autoSelections && typeof p.autoSelections === "object" ? p.autoSelections : {},
       customSources: Array.isArray(p?.customSources) ? p.customSources : Array.isArray(privateConfig.customSources) ? privateConfig.customSources : [],
-      test: { ...DEFAULT_SCAN_PROXY_CONFIG.test, ...(p?.test || {}), ...testSecrets },
+      test: { ...DEFAULT_SCAN_PROXY_CONFIG.test, ...(p?.test || {}), ...testSecrets,
+        ...proxyVerificationSettings(p?.test || {}),
+        concurrency: proxyTcpParallel(p?.test?.concurrency ?? DEFAULT_SCAN_PROXY_CONFIG.test.concurrency, p?.test?.concurrency !== undefined && p?.test?.verifyConcurrency === undefined),
+      },
     };
   } catch (error) { throw new Error("Proxy tercihleri okunamadı; mevcut bilgiler korundu. " + String((error as Error)?.message || "")); }
 }
@@ -343,6 +350,7 @@ export async function startLivenessTest(prefs: ScanProxyTestPrefs, resume = fals
     url: prefs.mode === "custom" ? prefs.url : undefined,
     expectText: prefs.expectText || undefined,
     concurrency: prefs.concurrency,
+    verifyConcurrency: prefs.verifyConcurrency,
     timeoutMs: prefs.timeoutMs,
     rejectTransparent: prefs.rejectTransparent,
     eliteOnly: prefs.eliteOnly,
@@ -354,6 +362,7 @@ export const resumeLivenessTest = () => PanelScan.resumeScanProxyTest();
 /** useTested=true → "bu kadar yeter", o ana kadar çalışanlar havuz olur. */
 export const stopLivenessTest = (useTested: boolean) => PanelScan.stopScanProxyTest(useTested);
 export const livenessProgress = () => PanelScan.getScanProxyTestProgress();
+export const updateLivenessParallel = (runId: string, parallel: number) => PanelScan.updateScanProxyTestConcurrency(runId, parallel);
 
 export async function testSingleProxy() { return PanelScan.testScanProxy(); }
 export function scanProxyStatus(): NativeScanProxyStatus { return PanelScan.getScanProxyStatus(); }

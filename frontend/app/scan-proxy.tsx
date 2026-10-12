@@ -17,11 +17,12 @@ import { haptic } from "@/src/utils/haptic";
 import {
   loadScanProxyConfig, applyScanProxyConfig, saveScanProxyConfig,
   startLivenessTest, pauseLivenessTest, resumeLivenessTest, stopLivenessTest, livenessProgress,
-  testSingleProxy, useWithoutTest, human, setScanProxyUse, clearScanProxyLists, scanProxyStatus,
+  testSingleProxy, useWithoutTest, human, setScanProxyUse, clearScanProxyLists, scanProxyStatus, updateLivenessParallel,
   PROXY_SOURCE_CATALOG, DEFAULT_SCAN_PROXY_CONFIG, removeProxySource,
   type ScanProxyConfig, type ProxyProtocol,
 } from "@/src/utils/scanProxy";
 import { PanelScan, type NativeScanProxyStatus, type ScanProxyTestProgress } from "@/modules/panel-scan";
+import { PROXY_VERIFY_SPEEDS, parseManualProxyParallel, proxyVerificationSettings, type ProxyVerificationSpeed } from "@/src/utils/scanProxySpeed";
 
 const PROTOS: ProxyProtocol[] = ["http", "socks4", "socks5"];
 
@@ -37,6 +38,9 @@ export default function ScanProxyScreen() {
   const [prog, setProg] = useState<ScanProxyTestProgress | null>(null);
   const [customUrl, setCustomUrl] = useState("");
   const [customScheme, setCustomScheme] = useState<ProxyProtocol>("http");
+  const [manualParallel, setManualParallel] = useState("16");
+  const [speedSaving, setSpeedSaving] = useState(false);
+  const speedSavingRef = useRef(false);
   const pollRef = useRef<any>(null);
   // v18.5.0: native havuz özeti (proxy kapalıyken de görünür).
   const [pst, setPst] = useState<NativeScanProxyStatus | null>(null);
@@ -44,7 +48,7 @@ export default function ScanProxyScreen() {
 
   useEffect(() => {
     let alive = true;
-    loadScanProxyConfig().then(c => { if (alive) { setCfg(c); setLoaded(true); } }).catch(error => {
+    loadScanProxyConfig().then(c => { if (alive) { setCfg(c); setManualParallel(String(c.test.manualVerifyConcurrency)); setLoaded(true); } }).catch(error => {
       if (alive) { setLoaded(true); setLoadError(String(error?.message || error)); }
     });
     return () => { alive = false; if (pollRef.current) clearInterval(pollRef.current); };
@@ -93,12 +97,32 @@ export default function ScanProxyScreen() {
   };
 
   const onStartTest = async (resume = false) => {
+    if (speedSavingRef.current) return;
+    if (cfg.test.verificationSpeed === "manual" && parseManualProxyParallel(manualParallel) !== cfg.test.verifyConcurrency) {
+      Alert.alert("Manuel paralellik", "1–128 arasında bir tam sayı girip Uygula düğmesine dokunun."); return;
+    }
     try {
       await saveScanProxyConfig(cfg);
       const r = await startLivenessTest(cfg.test, resume);
       if (!r.started) { Alert.alert("Test başlamadı", r.error || "Bilinmeyen hata"); return; }
       startPolling();
     } catch(error:any) { Alert.alert('Test başlamadı',String(error?.message||error)); }
+  };
+  const onVerificationSpeed = async (speed: ProxyVerificationSpeed, manual?: number) => {
+    if (speedSavingRef.current) return;
+    speedSavingRef.current = true; setSpeedSaving(true);
+    const test = { ...cfg.test, ...proxyVerificationSettings({ ...cfg.test, verificationSpeed: speed,
+      manualVerifyConcurrency: manual ?? cfg.test.manualVerifyConcurrency }) };
+    try {
+      await saveScanProxyConfig({ ...cfg, test });
+      setCfg(prev => ({ ...prev, test }));
+      setManualParallel(String(test.manualVerifyConcurrency));
+      if (prog?.runId && ["running", "paused", "interrupted"].includes(prog.phase)) {
+        try { setProg(await updateLivenessParallel(prog.runId, test.verifyConcurrency)); }
+        catch (error: any) { setStatus("Seçilen hız sonraki test için kaydedildi; mevcut teste uygulanamadı: " + String(error?.message || error)); }
+      }
+    } catch (error: any) { Alert.alert("Hız kaydedilemedi", String(error?.message || error)); }
+    finally { speedSavingRef.current = false; setSpeedSaving(false); }
   };
   const onStopUseTested = async () => { try{await stopLivenessTest(true); const current=livenessProgress();setProg(current); refreshStatus();
     setStatus(current.working ? `${current.working} doğrulanmış proxy havuz olarak kullanılıyor.` : 'Yeni doğrulanmış proxy yok; mevcut havuz korundu. Test etmeden kullan ayrı bir seçenektir.');}
@@ -305,9 +329,9 @@ export default function ScanProxyScreen() {
                   <Switch value={cfg.test.eliteOnly} onValueChange={v => patch({ test: { ...cfg.test, eliteOnly: v } })} trackColor={{ true: colors.brandPrimary, false: colors.surfaceTertiary }} />
                 </View>
                 <View style={[styles.optRow, { gap: SPACING.xs }]}>
-                  <Text style={[muted, { flex: 1 }]}>Paralellik</Text>
+                  <Text style={[muted, { flex: 1 }]}>1. aşama · TCP paralellik</Text>
                   {[32, 64, 128].map(n => (
-                    <TouchableOpacity key={n} onPress={() => patch({ test: { ...cfg.test, concurrency: n } })}
+                    <TouchableOpacity key={n} disabled={testing} onPress={() => patch({ test: { ...cfg.test, concurrency: n } })}
                       style={[styles.miniChip, { borderColor: cfg.test.concurrency === n ? colors.brandPrimary : colors.border }]}>
                       <Text style={{ color: cfg.test.concurrency === n ? colors.brandPrimary : colors.onSurfaceSecondary, fontSize: FONT.size.xs, fontWeight: FONT.weight.bold }}>{n}</Text>
                     </TouchableOpacity>
@@ -324,6 +348,41 @@ export default function ScanProxyScreen() {
                 </View>
               </View>
 
+              <Text style={[label, { marginTop: SPACING.md }]}>2. aşama · Doğrulama hızı</Text>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm, marginTop: SPACING.sm }}>
+                {PROXY_VERIFY_SPEEDS.map(speed => {
+                  const selected = cfg.test.verificationSpeed === speed.id;
+                  const parallel = speed.parallel ?? cfg.test.manualVerifyConcurrency;
+                  return <FocusButton key={speed.id} focusKey={`sp-speed-${speed.id}`} testID={`scan-proxy-speed-${speed.id}`}
+                    accessibilityRole="button" accessibilityState={{ selected, disabled: speedSaving }}
+                    accessibilityLabel={`${speed.label}, ${parallel} paralel doğrulama`}
+                    disabled={speedSaving} onPress={() => { haptic.light(); void onVerificationSpeed(speed.id); }}
+                    style={{ minWidth: 96, flexGrow: 1, paddingVertical: SPACING.sm, paddingHorizontal: SPACING.sm,
+                      borderRadius: RADIUS.sm, borderWidth: 1, alignItems: "center", opacity: speedSaving ? 0.6 : 1,
+                      backgroundColor: selected ? colors.brandPrimary + "22" : "transparent", borderColor: selected ? colors.brandPrimary : colors.border }}>
+                    <Text style={{ color: selected ? colors.brandPrimary : colors.onSurfaceSecondary, fontSize: FONT.size.sm, fontWeight: FONT.weight.bold }}>{speed.label}</Text>
+                    <Text style={{ color: selected ? colors.brandPrimary : colors.onSurfaceSecondary, fontSize: FONT.size.xs }}>{parallel} paralel</Text>
+                  </FocusButton>;
+                })}
+              </View>
+              {cfg.test.verificationSpeed === "manual" && <View style={{ marginTop: SPACING.sm, gap: SPACING.xs }}>
+                <Text style={muted}>Manuel paralel doğrulama sayısı · 1–128</Text>
+                <View style={{ flexDirection: "row", gap: SPACING.sm, alignItems: "center" }}>
+                  <TextInput testID="scan-proxy-manual-parallel" accessibilityLabel="Manuel paralel doğrulama sayısı"
+                    value={manualParallel} onChangeText={setManualParallel} keyboardType="number-pad" maxLength={6} editable={!speedSaving}
+                    style={{ flex: 1, color: colors.onSurface, backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1,
+                      borderRadius: RADIUS.sm, padding: SPACING.sm }} />
+                  <FocusButton focusKey="sp-speed-apply" testID="scan-proxy-speed-apply" disabled={speedSaving || parseManualProxyParallel(manualParallel) === null}
+                    onPress={() => { const n = parseManualProxyParallel(manualParallel); if (n !== null) void onVerificationSpeed("manual", n); }}
+                    style={{ borderRadius: RADIUS.sm, padding: SPACING.sm, backgroundColor: colors.brandPrimary,
+                      opacity: speedSaving || parseManualProxyParallel(manualParallel) === null ? 0.5 : 1 }}>
+                    <Text style={{ color: colors.onBrandPrimary, fontWeight: FONT.weight.bold }}>Uygula</Text>
+                  </FocusButton>
+                </View>
+                {parseManualProxyParallel(manualParallel) === null && <Text style={{ color: colors.error }}>1–128 arasında bir tam sayı girin.</Text>}
+              </View>}
+              <Text style={[muted, { marginTop: SPACING.sm }]}>Yavaş mevcut hızdır. Bu seçim yalnız 2. aşamayı değiştirir; HTTP, HTTPS ve anonimlik kontrolleri korunur. Test sürerken değiştirebilirsiniz. Azaltınca mevcut işlemler tamamlanır, yeni işlemler seçilen sınırla başlar. Yüksek paralellik bağlantı yükünü artırır; hız artışı bağlantıya ve test sunucularına bağlıdır.</Text>
+
               {prog && (prog.phase !== "idle") && (
                 <View style={{ marginTop: SPACING.md, gap: SPACING.xs }}>
                   <Text style={{ color: colors.onSurface, fontSize: FONT.size.sm, fontWeight: FONT.weight.semibold }}>
@@ -338,7 +397,7 @@ export default function ScanProxyScreen() {
                     {`🛡 Elite ${prog.elite || 0} · Anonim ${prog.anonymous || 0} · Şeffaf ${prog.transparent} · Bilinmiyor ${prog.unknownAnon || 0}\n`}
                     {`HTTP ${prog.http} · SOCKS4 ${prog.socks4} · SOCKS5 ${prog.socks5}  ·  ${prog.ratePerSec}/sn${prog.etaMs > 0 ? `  ·  ~${Math.ceil(prog.etaMs / 1000)} sn` : ""}`}
                   </Text>
-                  <Text style={muted}>HTTP yanıtı: {prog.httpUsable || 0} · HTTPS yanıtı: {prog.httpsUsable || 0}{"\n"}TCP açık port, çalışan proxy demek değildir. Doğrulama en çok 16 paralel istekle çalışır.</Text>
+                  <Text style={muted}>HTTP yanıtı: {prog.httpUsable || 0} · HTTPS yanıtı: {prog.httpsUsable || 0}{"\n"}TCP açık port, çalışan proxy demek değildir.{"\n"}TCP sınırı: {prog.tcpConcurrency ?? cfg.test.concurrency} · Doğrulama sınırı: {prog.verifyConcurrency ?? 16} paralel · İşlemde: {prog.activeWorkers ?? 0}</Text>
                   {!prog.ownIp && cfg.test.mode === "system" && <Text style={muted}>Doğrudan çıkış IP'si belirlenemedi; anonimlik bilinmiyor olarak tutulur.</Text>}
                   {!!prog.error && <Text style={{ color: colors.error }}>{prog.error}</Text>}
                   {Object.entries(prog.reasons || {}).map(([reason, count]) => <Text key={reason} style={muted}>{({ "proxy-auth": "Proxy parolası reddedildi", protocol: "Protokol uyuşmazlığı", tls: "TLS/sertifika", timeout: "Zaman aşımı", "rate-limit": "Test adresi hız sınırı", "not-ip": "Yanıtta geçerli IP yok", "elite-filter": "Elite filtresi", "transparent-filter": "Şeffaf filtresi", connection: "Bağlantı kurulamadı", "body-limit": "Yanıt çok büyük", "content-mismatch": "Beklenen içerik yok" } as Record<string, string>)[reason] || reason}: {count}</Text>)}

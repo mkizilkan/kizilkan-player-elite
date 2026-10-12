@@ -17,12 +17,12 @@ import java.util.concurrent.atomic.*
 object ScanProxyPool {
  data class Entry(val scheme:String,val host:String,val port:Int,val user:String) {val key=user;fun masked()=user;fun schemeIndex()=0;fun toJson(ms:Long=-1)=JSONObject().put("scheme",scheme).put("host",host).put("port",port).put("user",user).put("ms",ms)}
  data class Tested(val entry:Entry,val ms:Long,val anon:String="unknown",val http:Boolean?=null,val https:Boolean?=null)
- var work=listOf<Entry>();var pool=listOf<Tested>();val disk=ConcurrentHashMap<String,String>();var baseline=true;var delay=0L
+ var work=listOf<Entry>();var pool=listOf<Tested>();val disk=ConcurrentHashMap<String,String>();var baseline=true;var delay=0L;var failInput=false
  val calls=ConcurrentHashMap<String,AtomicInteger>();val inflight=AtomicInteger();val peak=AtomicInteger()
  fun entriesFromJson(arr:JSONArray)=(0 until arr.length()).map {arr.getJSONObject(it).let {o->Entry(o.getString("scheme"),o.getString("host"),o.getInt("port"),o.getString("user"))}}
  fun encryptedFileExists(context:Context,file:String)=disk.containsKey(file.removePrefix("scan_proxy_test_").removeSuffix(".enc"))
  fun loadTestJournal(context:Context,part:String)=disk[part]?:throw java.io.FileNotFoundException()
- fun saveTestJournal(context:Context,part:String,text:String){disk[part]=text}
+ fun saveTestJournal(context:Context,part:String,text:String){if(part=="input"&&failInput)throw java.io.IOException("fixture write failed");disk[part]=text}
  fun testEntries(context:Context)=work
  fun applyTestResults(context:Context,results:List<Tested>,tested:Boolean){if(results.isNotEmpty())pool=results}
  fun openConnection(url:URL,e:Entry?)=object:HttpURLConnection(url){var ended=false
@@ -43,7 +43,7 @@ object ProxyTestService {fun begin(c:Context){}}
 object EngineFixture {
  private fun reset() {val f=ProxyTestEngine::class.java.getDeclaredField("active");f.isAccessible=true;f.set(null,null)}
  private fun waitFor(accept:(JSONObject)->Boolean):JSONObject {val end=System.currentTimeMillis()+10000;while(true){val p=ProxyTestEngine.progress();if(accept(p))return p;check(System.currentTimeMillis()<end){p.toString()};Thread.sleep(10)}}
- @JvmStatic fun main(args:Array<String>){val context=Context();val tcp=ServerSocket(0,100,InetAddress.getLoopbackAddress());val server=Executors.newSingleThreadExecutor();server.submit{while(!tcp.isClosed)runCatching{tcp.accept().close()}}
+ @JvmStatic fun main(args:Array<String>){val context=Context();val tcp=ServerSocket(0,1024,InetAddress.getLoopbackAddress());val server=Executors.newSingleThreadExecutor();server.submit{while(!tcp.isClosed)runCatching{tcp.accept().close()}}
   try {
    fun entries(names:List<String>)=names.map {ScanProxyPool.Entry("http","127.0.0.1",tcp.localPort,it)}
    ScanProxyPool.work=entries(listOf("elite","anonymous","substring","transparent","leak","judge-failed","html","auth","rate"))
@@ -55,15 +55,47 @@ object EngineFixture {
    ScanProxyPool.baseline=false;ScanProxyPool.work=entries(listOf("elite"));check(ProxyTestEngine.start(context,"{}").optBoolean("started"));val unknown=waitFor{it.optString("phase")=="done"}
    check(unknown.optInt("unknownAnon")==1&&unknown.optInt("elite")==0)
    ScanProxyPool.baseline=true;ScanProxyPool.delay=80;ScanProxyPool.work=entries((0..15).map{"elite$it"});ScanProxyPool.calls.clear()
-   check(ProxyTestEngine.start(context,"{\"concurrency\":4}").optBoolean("started"));waitFor{it.optInt("tested")>=1};ProxyTestEngine.pause();Thread.sleep(300);ProxyTestEngine.checkpoint(context)
+   check(ProxyTestEngine.start(context,"{\"concurrency\":4,\"verifyConcurrency\":4}").optBoolean("started"));waitFor{it.optInt("tested")>=1};ProxyTestEngine.pause();Thread.sleep(300);ProxyTestEngine.checkpoint(context)
    ProxyTestEngine.stop(context,false);Thread.sleep(300);val before=JSONObject(ScanProxyPool.disk.getValue("progress"));val completed=before.optInt("tested")
    check(completed in 1..15);before.put("phase","running").put("endedAt",0);ScanProxyPool.disk["progress"]=before.toString();reset();ProxyTestEngine.restore(context)
-   check(ProxyTestEngine.progress().optString("phase")=="interrupted");check(ProxyTestEngine.start(context,"{\"resume\":true}").optBoolean("started"));val recovered=waitFor{it.optString("phase")=="done"}
+   check(ProxyTestEngine.progress().optString("phase")=="interrupted");check(ProxyTestEngine.start(context,"{\"resume\":true,\"verifyConcurrency\":7}").optBoolean("started"));val recovered=waitFor{it.optString("phase")=="done"}
    check(recovered.optInt("tested")==16&&recovered.optInt("working")==16){recovered.toString()}
+   check(recovered.optInt("verifyConcurrency")==7)
    val doneKeys=(0 until before.getJSONArray("results").length()).map{before.getJSONArray("results").getJSONObject(it).getString("user")}
    check(doneKeys.all {ScanProxyPool.calls[it]!!.get()==3}) {"completed proxies retested"}
-   println("PASS: actual Kotlin IP/HTML/auth/rate-limit/anonymous/unknown-baseline classification and verification limit")
+   println("PASS: actual Kotlin IP/HTML/auth/rate-limit/anonymous/unknown-baseline classification and legacy verification limit")
    println("PASS: actual Kotlin encrypted-journal interface, paused work recovery and completed-bitset no-repeat")
+   for(n in listOf(1,7,16,32,64,128)) {
+     val count=if(n<=7)40 else 160
+     ScanProxyPool.peak.set(0);ScanProxyPool.delay=40;ScanProxyPool.calls.clear();ScanProxyPool.work=entries((0 until count).map{"speed$n-$it"})
+     check(ProxyTestEngine.start(context,JSONObject().put("concurrency",128).put("verifyConcurrency",n).toString()).optBoolean("started"))
+     val speed=waitFor{it.optString("phase")=="done"}
+     check(speed.optInt("tested")==count&&speed.optInt("working")==count){speed.toString()}
+     check(speed.optInt("verifyConcurrency")==n&&speed.optInt("tcpConcurrency")==128)
+     check(ScanProxyPool.peak.get() in maxOf(1,n/2)..n){"parallel "+n+" peak "+ScanProxyPool.peak.get()}
+     check(ScanProxyPool.calls.filterKeys{it!="own"}.values.all{it.get()==3}) {"speed change skipped HTTP/HTTPS/judge or repeated a candidate"}
+     println("PASS: verification parallel "+n+", observed peak "+ScanProxyPool.peak.get()+", full HTTP/HTTPS/anonymity checks")
+   }
+   ScanProxyPool.delay=50;ScanProxyPool.peak.set(0);ScanProxyPool.work=entries((0..399).map{"dynamic$it"});ScanProxyPool.calls.clear()
+   check(ProxyTestEngine.start(context,"{\"concurrency\":8,\"verifyConcurrency\":2}").optBoolean("started"));val running=waitFor{it.optString("stage")=="verify"&&it.optInt("activeWorkers")>0}
+   val id=running.getString("runId");check(runCatching{ProxyTestEngine.updateConcurrency(context,"old-run",64)}.isFailure)
+   check(runCatching{ProxyTestEngine.updateConcurrency(context,id,129)}.isFailure)
+   ScanProxyPool.failInput=true;check(runCatching{ProxyTestEngine.updateConcurrency(context,id,32)}.isFailure);ScanProxyPool.failInput=false
+   check(ProxyTestEngine.progress().optInt("verifyConcurrency")==2)
+   ProxyTestEngine.updateConcurrency(context,id,64);waitFor{ScanProxyPool.peak.get()>=32}
+   ProxyTestEngine.updateConcurrency(context,id,3);Thread.sleep(400);ScanProxyPool.peak.set(0)
+   ProxyTestEngine.pause();Thread.sleep(250);ProxyTestEngine.updateConcurrency(context,id,7)
+   check(ProxyTestEngine.progress().optString("phase")=="paused")
+   check(JSONObject(ScanProxyPool.disk.getValue("input")).getJSONObject("config").getInt("verifyConcurrency")==7)
+   ProxyTestEngine.resume();val dynamic=waitFor{it.optString("phase")=="done"}
+   val eligible=running.getInt("tcpAlive")
+   check(eligible>=100) {"local TCP fixture did not supply enough verification candidates"}
+   check(dynamic.optInt("tested")==eligible&&dynamic.optInt("working")==eligible&&dynamic.optInt("verifyConcurrency")==7){dynamic.toString()}
+   val candidateCalls=ScanProxyPool.calls.filterKeys{it!="own"}
+   check(ScanProxyPool.peak.get()<=7&&candidateCalls.size==eligible&&candidateCalls.values.all{it.get()==3})
+   check(runCatching{ProxyTestEngine.updateConcurrency(context,id,32)}.isFailure)
+   reset();ProxyTestEngine.restore(context);check(ProxyTestEngine.progress().optInt("verifyConcurrency")==7)
+   println("PASS: live increase/decrease, pause-update-resume, persisted speed, run ownership and no lost/repeated results")
   }finally{tcp.close();server.shutdownNow()}
  }
 }`;
@@ -72,5 +104,5 @@ try {const classes=path.join(temp,'classes');fs.mkdirSync(classes);
  const files=[['Context.kt','package android.content\nclass Context'],['Base64.kt','package android.util\nobject Base64 {const val NO_WRAP=2;fun decode(s:String,f:Int)=java.util.Base64.getDecoder().decode(s);fun encodeToString(b:ByteArray,f:Int)=java.util.Base64.getEncoder().encodeToString(b)}'],['EngineFixture.kt',fixture]].map(([name,text])=>{const file=path.join(temp,name);fs.writeFileSync(file,text);return file;});
  const cp=[classes,...libs].join(path.delimiter);
  execFileSync('java',['-cp',compilerCP,'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',cp,'-d',classes,...files,path.join(base,'ProxyTestEngine.kt')],{windowsHide:true,timeout:120000});
- console.log(execFileSync('java',['-cp',cp,'expo.modules.panelscan.EngineFixture'],{encoding:'utf8',windowsHide:true,timeout:30000}).trim());
+ console.log(execFileSync('java',['-cp',cp,'expo.modules.panelscan.EngineFixture'],{encoding:'utf8',windowsHide:true,timeout:120000}).trim());
 }finally{assert.equal(path.dirname(path.resolve(temp)),path.resolve(os.tmpdir()));assert.ok(path.basename(temp).startsWith('kizilkan-proxy-engine-test-'));fs.rmSync(temp,{recursive:true,force:true});}

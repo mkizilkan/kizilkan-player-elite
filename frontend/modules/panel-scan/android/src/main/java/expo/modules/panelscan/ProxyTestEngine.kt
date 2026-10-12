@@ -11,12 +11,15 @@ import java.net.URL
 import java.util.BitSet
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.ExecutorCompletionService
+import java.util.concurrent.Future
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 /** Each run owns its workers, counters and connections. Interrupted work is encrypted and resumable. */
 internal object ProxyTestEngine {
-  private class State(val id: String, val cfg: JSONObject, val work: List<ScanProxyPool.Entry>) {
+  private class State(val id: String, @Volatile var cfg: JSONObject, val work: List<ScanProxyPool.Entry>) {
     val lock = Any()
     val tcpDone = BitSet(); val tcpAlive = BitSet(); val verifyDone = BitSet()
     val results = mutableListOf<ScanProxyPool.Tested>()
@@ -24,6 +27,11 @@ internal object ProxyTestEngine {
     val connections = ConcurrentHashMap.newKeySet<HttpURLConnection>()
     @Volatile var phase = "running"; @Volatile var stage = "tcp"
     @Volatile var stopped = false; @Volatile var ownIp = ""; @Volatile var error = ""
+    val tcpConcurrency = if(cfg.has("verifyConcurrency")) cfg.optInt("concurrency",128).coerceIn(4,128)
+      else (cfg.optInt("concurrency",32).coerceIn(4,128)*2).coerceAtMost(128)
+    @Volatile var verifyConcurrency = cfg.optInt("verifyConcurrency",16).coerceIn(1,128)
+    @Volatile var activeWorkers = 0
+    init { cfg.put("concurrency",tcpConcurrency).put("verifyConcurrency",verifyConcurrency) }
     var startedAt = System.currentTimeMillis(); var endedAt = 0L
     var verifyStartedAt = 0L; var pausedAt = 0L; var pausedMs = 0L
     var elite = 0; var anonymous = 0; var transparent = 0; var unknown = 0
@@ -84,6 +92,10 @@ internal object ProxyTestEngine {
     if (state.work.isEmpty()) return JSONObject().put("started",false).put("error","Önce proxy listesi yükleyin.")
     state.phase="running"; state.stopped=false; state.error=""; state.endedAt=0
     if(resume) {
+      if(cfg.has("verifyConcurrency")) {
+        state.verifyConcurrency=cfg.optInt("verifyConcurrency",16).coerceIn(1,128)
+        state.cfg=JSONObject(state.cfg.toString()).put("verifyConcurrency",state.verifyConcurrency)
+      }
       state.ownIp="" // A resumed test may use a different network than the checkpoint.
       if(state.pausedAt>0) { state.pausedMs+=System.currentTimeMillis()-state.pausedAt; state.pausedAt=0 }
     }
@@ -101,32 +113,52 @@ internal object ProxyTestEngine {
     return JSONObject().put("started",true).put("runId",state.id)
   }
 
-  private fun workers(state: State, indices: List<Int>, n: Int, task: (Int)->Unit) {
-    val index=AtomicInteger(); val executor=Executors.newFixedThreadPool(n.coerceAtLeast(1).coerceAtMost(indices.size.coerceAtLeast(1)))
+  private fun workers(state: State, indices: List<Int>, limit: ()->Int, task: (Int)->Unit) {
+    if(indices.isEmpty()) return
+    // Only a bounded number of candidates are submitted. Resize between completions;
+    // lowering speed drains existing requests without losing or repeating their results.
+    val executor=ThreadPoolExecutor(1,128,30L,TimeUnit.SECONDS,LinkedBlockingQueue<Runnable>())
+    executor.allowCoreThreadTimeOut(true)
+    val completed=ExecutorCompletionService<Unit>(executor)
+    val pending=mutableSetOf<Future<Unit>>()
+    var next=0
     try {
-      val futures=(0 until n.coerceAtLeast(1).coerceAtMost(indices.size.coerceAtLeast(1))).map {
-        executor.submit {
-          while(!state.stopped) {
-            while(state.phase=="paused" && !state.stopped) Thread.sleep(100)
-            if(state.stopped) break
-            val i=index.getAndIncrement(); if(i>=indices.size) break
-            task(indices[i])
+      while(!state.stopped && (next<indices.size || pending.isNotEmpty())) {
+        val n=limit().coerceIn(1,128).coerceAtMost(indices.size)
+        if(executor.corePoolSize!=n) executor.corePoolSize=n
+        while(!state.stopped && state.phase=="running" && next<indices.size && pending.size<n) {
+          val i=indices[next++]
+          pending.add(completed.submit(java.util.concurrent.Callable {
+            if(!state.stopped) task(i)
+            Unit
+          }))
+        }
+        state.activeWorkers=pending.size
+        if(pending.isEmpty()) Thread.sleep(100)
+        else {
+          val finished=completed.poll(100,TimeUnit.MILLISECONDS)
+          if(finished!=null) {
+            pending.remove(finished)
+            state.activeWorkers=pending.size
+            finished.get()
           }
         }
       }
-      for(f in futures) f.get()
-    } finally { executor.shutdownNow() }
+    } finally {
+      pending.forEach { it.cancel(true) }
+      executor.shutdownNow()
+      state.activeWorkers=0
+    }
   }
 
   private fun run(context: Context, state: State) {
     val timeout=state.cfg.optInt("timeoutMs",6000).coerceIn(2000,20000)
-    val concurrency=state.cfg.optInt("concurrency",32).coerceIn(4,128)
     try {
       if(state.ownIp.isEmpty() && state.cfg.optString("mode")!="custom") {
         for(echo in echoes.take(2)) { if(state.stopped) break; val check=request(state,null,"https://$echo",timeout); if(check.ip.isNotEmpty()) { state.ownIp=check.ip; break } }
       }
       if(state.stage=="tcp") {
-        workers(state,state.work.indices.filter { synchronized(state.lock) { !state.tcpDone[it] } },(concurrency*2).coerceAtMost(128)) { i ->
+        workers(state,state.work.indices.filter { synchronized(state.lock) { !state.tcpDone[it] } },{state.tcpConcurrency}) { i ->
           val e=state.work[i]
           val alive=try { Socket().use { it.connect(InetSocketAddress(e.host,e.port),(timeout/2).coerceIn(1500,3000)); true } } catch (_: Throwable) { false }
           synchronized(state.lock) { if(!state.stopped) { state.tcpDone.set(i); if(alive) state.tcpAlive.set(i) } }
@@ -135,8 +167,8 @@ internal object ProxyTestEngine {
         synchronized(state.lock) { state.stage="verify"; state.verifyStartedAt=System.currentTimeMillis() }
         checkpoint(context)
       }
-      // Avoid overwhelming a single public echo/judge. TCP and verification have separate limits.
-      workers(state,state.work.indices.filter { synchronized(state.lock) { state.tcpAlive[it] && !state.verifyDone[it] } },concurrency.coerceAtMost(16)) { i ->
+      // The user's verification limit is independent from the TCP stage.
+      workers(state,state.work.indices.filter { synchronized(state.lock) { state.tcpAlive[it] && !state.verifyDone[it] } },{state.verifyConcurrency}) { i ->
         val e=state.work[i]
         val custom=state.cfg.optString("mode")=="custom"
         val h=if(custom) request(state,e,state.cfg.getString("url"),timeout,state.cfg.optString("expectText"),true)
@@ -223,6 +255,26 @@ internal object ProxyTestEngine {
   }
 
   fun pause() { active?.let { synchronized(it.lock) { if(it.phase=="running") { it.phase="paused"; it.pausedAt=System.currentTimeMillis() } } } }
+  fun updateConcurrency(context: Context, runId: String, parallel: Int): JSONObject {
+    require(parallel in 1..128) { "Doğrulama paralelliği 1–128 arasında olmalı." }
+    val state=active ?: throw IllegalStateException("Aktif test yok.")
+    synchronized(journalLock) {
+      val nextConfig=synchronized(state.lock) {
+        require(active===state && state.id==runId && state.phase in setOf("running","paused","interrupted")) { "Test değişmiş veya bitmiş; hızı yeni testte seçin." }
+        JSONObject(state.cfg.toString()).put("verifyConcurrency",parallel)
+      }
+      // A large encrypted input write must not block progress polling/result commits.
+      ScanProxyPool.saveTestJournal(context,"input",JSONObject().put("id",state.id).put("config",nextConfig)
+        .put("entries",JSONArray(state.work.map { it.toJson() })).toString())
+      synchronized(state.lock) {
+        require(active===state && state.phase in setOf("running","paused","interrupted")) { "Test hız kaydı sırasında tamamlandı; seçiminiz sonraki testte kullanılacak." }
+        state.cfg=nextConfig
+        state.verifyConcurrency=parallel
+      }
+      checkpoint(context)
+    }
+    return snapshot(state,false)
+  }
   fun resume() { active?.let { synchronized(it.lock) { if(it.phase=="paused") { it.pausedMs+=System.currentTimeMillis()-it.pausedAt; it.pausedAt=0; it.phase="running" } } } }
   fun stop(context: Context, useTested: Boolean, failure: String="") {
     val state=active ?: return
@@ -246,6 +298,7 @@ internal object ProxyTestEngine {
     val per=IntArray(3); state.results.forEach { per[it.entry.schemeIndex()]++ }
     val result=JSONObject().put("runId",state.id).put("phase",state.phase).put("mode",state.cfg.optString("mode","system")).put("stage",state.stage)
       .put("tcpTotal",state.work.size).put("tcpTested",state.tcpDone.cardinality()).put("tcpAlive",state.tcpAlive.cardinality())
+      .put("tcpConcurrency",state.tcpConcurrency).put("verifyConcurrency",state.verifyConcurrency).put("activeWorkers",state.activeWorkers)
       .put("total",state.tcpAlive.cardinality()).put("tested",state.verifyDone.cardinality()).put("working",state.results.size).put("dead",state.failed).put("filtered",state.filtered)
       .put("elite",state.elite).put("anonymous",state.anonymous).put("transparent",state.transparent).put("unknownAnon",state.unknown)
       .put("httpUsable",state.http).put("httpsUsable",state.https).put("http",per[0]).put("socks4",per[1]).put("socks5",per[2])

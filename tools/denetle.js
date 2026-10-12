@@ -42,6 +42,7 @@ if (process.cwd() !== PROJECT_ROOT) process.chdir(PROJECT_ROOT);
 
 const CHECKS = [
   ["test-v18732-background.js", "v18.7.32 durable tests, source downloads and encrypted paid-proxy configuration", ""],
+  ["test-proxy-speed.js", "five verification speeds, strict manual input and independent TCP concurrency", ""],
   ["test-proxy-socket-runtime.js", "production SOCKS4/5 protocol, authentication and remote DNS", ""],
   ["test-v18731-dns-catalog.js", "v18.7.31 DNS video selection, alias failover, MAG cold bridge and monthly scheduling", ""],
   ["test-ci-release-publication.js", "CI Release publication and artifact-only quota isolation", ""],

@@ -44,7 +44,7 @@ class ProxyTestService : Service() {
       if(phase=="running") { if(wake?.isHeld!=true) wake?.acquire(30_000L) } else if(wake?.isHeld==true) wake?.release()
       val tcp=state.optString("stage")=="tcp"
       val text=if(phase=="paused")"Duraklatıldı; sonuçlar korunuyor" else
-        "${if(tcp)"Bağlantı" else "IP/protokol"}: ${state.optInt(if(tcp)"tcpTested" else "tested")}/${state.optInt(if(tcp)"tcpTotal" else "total")} · ${state.optInt("working")} doğrulandı"
+        "${if(tcp)"Bağlantı" else "IP/protokol"}: ${state.optInt(if(tcp)"tcpTested" else "tested")}/${state.optInt(if(tcp)"tcpTotal" else "total")} · ${state.optInt("working")} doğrulandı · ${state.optInt(if(tcp)"tcpConcurrency" else "verifyConcurrency",16)} paralel"
       runCatching { (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(ONGOING,notification("Proxy testi",text,true)) }
       if(System.currentTimeMillis()-lastCheckpoint>=5000) {
         lastCheckpoint=System.currentTimeMillis(); io.execute {

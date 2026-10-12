@@ -180,7 +180,11 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.32 RC1 — dal `codex/v18.7.32-proxy-background`)
+## 9. Mevcut durum (v18.7.33 RC1 — dal `codex/v18.7.33-proxy-validation-speed`)
+
+Kullanıcı onaylı proxy ikinci aşama hız paketi: Yavaş16/Güvenli32/Hızlı64/Ultra128/Manuel1–128; butonlarda gerçek sayı. TCP ayrı ve eski fiilî yükü koruyan migration; aktif/paused/interrupted runId sahibi canlı hız güncelleme, disk input yazımı sonuç kilidi dışında, bounded dinamik scheduler, input-journal-before-speed, native/progress/bildirim gerçek sınırları, tamamlanmış bitlerin korunması. 145 master PASS/tsc PASS; üretim Kotlin 1/7/16/32/64/128 ölçümü + canlı değişim/pause/resume/input-write-failure/no-repeat PASS. NPM deps/player/Room/hesap taraması değişmedi. Kullanıcı commit/push/manuel normal build/PC DEV ve gerektiğinde otomatik düzeltme yetkisi verdi, telefonu çıkardı. Ayrıntı ve gerçek teslim: `AI-DEVIR-v18.7.33.md`.
+
+## 9-eski-18732. v18.7.32 RC1 — dal `codex/v18.7.32-proxy-background`
 
 Kullanıcı onaylı tek-build proxy/arka plan paketi: gerçek SOCKS4a/5 ve HTTP/HTTPS gateway, request-specific auth/parola dahil anahtar; 23 kaynak/global tür/4 download worker/resmî mirror/8 MiB streaming; sıralı-rastgele-gateway rotasyon/kesin 4 bağlantı; IP/anonimlik/HTTP-HTTPS/neden ayrımı. Manuel/custom kaynak-test sırları Keystore AES-GCM/AtomicFile/fail-closed restore. Native proxy FGS/checkpoint/resume; MAG first-pass preseed/heartbeat/global proxy; durable katalog/frame queue; Media3 background gerçek first-frame/401-403-429 retreat; terminal bildirim/runId/profil arşivi. **144 master gate PASS; localhost SOCKS, HTTP/TLS, engine, iptal ve TS queue PASS.** Son DEV/package/commit/run teslimi `AI-DEVIR-v18.7.32.md` §8. Fiziksel cihaz kabulü ayrı; force-stop/reboot/OEM kesintisiz çalışma garantisi yok. Repo 12.10.2026 gh kontrolünde **public**, kullanıcı talebi; değiştirilmeyecek. Ham hesap/source/log/APK git'e eklenmez.
 

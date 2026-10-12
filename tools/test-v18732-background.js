@@ -5,7 +5,7 @@ const plain=v=>JSON.parse(JSON.stringify(v)),sleep=ms=>new Promise(r=>setTimeout
 function loader(mocks,globals={}) {
   const cache=new Map();return function load(id){
     if(Object.hasOwn(mocks,id))return mocks[id];
-    const rel=id==='./scanProxyParse'?'src/utils/scanProxyParse':id.replace(/^@\//,'');
+    const rel=id==='./scanProxyParse'?'src/utils/scanProxyParse':id==='./scanProxySpeed'?'src/utils/scanProxySpeed':id.replace(/^@\//,'');
     const file=path.join(root,rel+'.ts');if(cache.has(file))return cache.get(file);
     const exports={};cache.set(file,exports);
     const js=ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
@@ -31,6 +31,10 @@ function loader(mocks,globals={}) {
   await sources.saveScanProxyConfig({...cfg,manualText:'new-secret',test:{...cfg.test,url:'https://fixture.test/?token=test-secret',expectText:'test-token'}});assert.equal(privateConfig.manualText,'new-secret');assert.ok(!JSON.stringify(plainConfig).includes('new-secret'));
   assert.ok(!JSON.stringify(plainConfig).includes('test-secret'));assert.ok(!JSON.stringify(plainConfig).includes('test-token'));
   const reread=await sources.loadScanProxyConfig();assert.equal(reread.test.url,'https://fixture.test/?token=test-secret');assert.equal(reread.test.expectText,'test-token');
+  plainConfig.test={concurrency:32};const legacySpeed=await sources.loadScanProxyConfig();
+  assert.equal(legacySpeed.test.concurrency,64);assert.equal(legacySpeed.test.verifyConcurrency,16);assert.equal(legacySpeed.test.verificationSpeed,'slow');
+  await sources.saveScanProxyConfig({...legacySpeed,test:{...legacySpeed.test,verificationSpeed:'manual',manualVerifyConcurrency:73,verifyConcurrency:73}});
+  const manualSpeed=await sources.loadScanProxyConfig();assert.equal(manualSpeed.test.verifyConcurrency,73);assert.equal(manualSpeed.test.concurrency,64);
   plainConfig={manualText:'keep-on-failure',customSources:[]};configFail=true;
   await assert.rejects(sources.loadScanProxyConfig());assert.equal(plainConfig.manualText,'keep-on-failure');configFail=false;
   const jobs=Array.from({length:9},(_,i)=>({label:'fixture '+i,url:'https://fixture.test/'+i,scheme:'http',sourceId:'s'+i}));
