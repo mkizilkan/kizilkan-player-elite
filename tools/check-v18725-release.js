@@ -24,8 +24,9 @@ need(JSON.parse(rd('frontend/package.json')).version === ver, 'package.json sür
 
 // B — görüntü testi hızı
 need(/const CONC = 20/.test(addPl), 'B: içerik testi paralelliği 20 değil');
-need(/per\.abort\(\), 30000\)/.test(addPl), 'B: içerik testi timeout 30 sn (hafif katalog probe dış bütçesi) değil');
-need(/startForegroundKeepAlive\("Katalog testi"/.test(addPl) && /stopForegroundKeepAlive\(keepAliveOwner\); \} catch \{\}\s*\n\s*void recordDiagnostic\("scan", "BULK_CONTENT_TEST_DONE"/.test(addPl), 'B: içerik testi sahipli keep-alive sargısı yok');
+const queue = rd('frontend/src/utils/durableTestQueue.ts');
+need(/per\.abort\(\), 30000\)/.test(addPl) || /timeoutMs:30000/.test(addPl) && /setTimeout\(\(\)=>per\.abort\(\),options\.timeoutMs/.test(queue), 'B: içerik testi 30 sn dış bütçesi yok');
+need(/startForegroundKeepAlive\("Katalog testi"/.test(addPl) || /runTestQueue\(/.test(addPl) && /startForegroundKeepAlive\(options\.title/.test(queue) && /stopForegroundKeepAlive\(scope\)/.test(queue), 'B: içerik testi sahipli keep-alive sargısı yok');
 
 // C — paralellik birleştirme
 need(/Number\.parseInt\(comboParallelText, 10\) \|\| 32/.test(addPl), 'C: requestedCustom comboParallelText kullanmıyor');

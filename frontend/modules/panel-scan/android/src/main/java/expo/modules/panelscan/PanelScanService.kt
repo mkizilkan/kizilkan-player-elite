@@ -261,6 +261,7 @@ class PanelScanService : Service() {
       .setContentText(text)
       .setSmallIcon(android.R.drawable.stat_sys_download)
       .setOngoing(true)
+      .setContentIntent(JobNotices.open(this,"add-playlist",currentRunId))
     if (max > 0) b.setProgress(max, progress.coerceAtMost(max), false)
     return b.build()
   }
@@ -582,7 +583,9 @@ class PanelScanService : Service() {
       obj.put("mode", mode)
         .put("running", false)
         .put("paused", false)
-      if (cancelled.get()) {
+      if (obj.optString("terminalReason") == "ANDROID_FOREGROUND_TIMEOUT") {
+        obj.put("state", "FAILED")
+      } else if (cancelled.get()) {
         obj.put("cancelled", true).put("state", "CANCELLED")
         obj.remove("error")
       } else if (obj.has("error")) {
@@ -594,6 +597,9 @@ class PanelScanService : Service() {
       obj.put("retryPending", ScanJournalStore.get(applicationContext).retryCount(currentRunId))
       obj.put("retryUnresolved", ScanJournalStore.get(applicationContext).retryCount(currentRunId,"unresolved"))
     }
+    val terminal=runCatching { JSONObject(getSharedPreferences(PREFS,0).getString(KEY_SNAPSHOT,"{}") ?: "{}") }.getOrDefault(JSONObject())
+    JobNotices.show(this,currentRunId,when(terminal.optString("state")) { "CANCELLED"->"Tarama durduruldu"; "FAILED"->"Tarama kesildi"; else->"Tarama tamamlandı" },
+      "${terminal.optInt("found")} sonuç korundu · ${terminal.optInt("retryUnresolved")} belirsiz deneme","add-playlist")
   }
 
   private fun retryContext(candidate: JSONObject, accountIndex: Number = -1, row: Int = accountIndex.toInt() + 1, name: String = ""): JSONObject =
@@ -729,6 +735,7 @@ class PanelScanService : Service() {
         // bu işçi bekler, sonra aynı denemeyi yeniden dener.
         while (ScanProxyPool.enabled && sel == null) {
           if (cancelled.get() || Thread.currentThread().isInterrupted) return ScanProbeOutcome(null)
+          if (!ScanProxyPool.isEmptyPool() && !ScanProxyPool.isExhausted()) { Thread.sleep(100); sel = ScanProxyPool.select(); continue }
           pauseForProxy(if (ScanProxyPool.isEmptyPool()) "SCAN_PROXY_EMPTY" else "SCAN_PROXY_EXHAUSTED", hostKey)
           while (paused.get() && !cancelled.get()) Thread.sleep(200)
           if (cancelled.get()) return ScanProbeOutcome(null)
@@ -739,7 +746,7 @@ class PanelScanService : Service() {
           if (!awaitScanHostBackoff({ maxOf(hostBackoffUntil[hostKey] ?: 0L,hostBackoffUntil[groupKey] ?: 0L) }, cancelled)) return ScanProbeOutcome(null)
           if(protectedScanHosts.contains(hostKey)||protectedScanGroups.contains(groupKey))return ScanProbeOutcome(null,state="protected",reason="host-protected")
           val target = URL("$base/player_api.php?username=$u&password=$p")
-          val opened = (if (sel != null) target.openConnection(sel.proxy) else target.openConnection()) as HttpURLConnection
+          val opened = ScanProxyPool.openConnection(target, sel?.entry)
           conn = opened
           activeConnections.add(opened)
           if (cancelled.get() || Thread.currentThread().isInterrupted) return ScanProbeOutcome(null)
@@ -750,7 +757,8 @@ class PanelScanService : Service() {
           sel?.basicHeader?.let { opened.setRequestProperty("Proxy-Authorization", it) }
           val code = opened.responseCode
           // Buraya geldiysek proxy isteği İLETTİ → proxy sağlam (TARGET geri bildir).
-          sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, ScanProxyPool.Fault.TARGET) }
+          sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, if (code == 407) ScanProxyPool.Fault.PROXY else ScanProxyPool.Fault.TARGET) }
+          if (code == 407) return ScanProbeOutcome(null, reason = "proxy-auth")
           if (code == 401 || code == 403 || opened.getHeaderField("cf-mitigated").equals("challenge",true)) { protectedScanHosts.add(hostKey);protectedScanGroups.add(groupKey);return ScanProbeOutcome(null,state="protected",reason="HTTP$code") }
           if (code == 429 || code == 503) {
             permit.rateLimited()
@@ -781,9 +789,9 @@ class PanelScanService : Service() {
             throw t
           }
           // Hata sınıflandır: PROXY suçluysa proxy'yi düşür ve SIRADAKİ proxy ile tekrar dene.
-          val fault = if (sel != null) (if (ScanProxyPool.classify(t) == ScanProxyPool.Fault.TARGET) ScanProxyPool.Fault.TARGET else ScanProxyPool.Fault.PROXY) else ScanProxyPool.Fault.TARGET
-          sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, fault) }
-          if (sel == null || fault == ScanProxyPool.Fault.TARGET) return ScanProbeOutcome(null,reason=if(t is java.net.SocketTimeoutException)"timeout" else "transport")
+          val fault = if (sel != null) ScanProxyPool.classify(t) else ScanProxyPool.Fault.TARGET
+          if(fault!=ScanProxyPool.Fault.TARGET)sel?.let { ScanProxyPool.reportResult(applicationContext, it.entry.key, fault) }
+          if (sel == null || fault != ScanProxyPool.Fault.PROXY) return ScanProbeOutcome(null,reason=if(t is java.net.SocketTimeoutException)"timeout" else "transport")
           // PROXY hatası: döngü sıradaki proxy ile devam eder.
         } finally {
           conn?.let { activeConnections.remove(it) }; conn?.disconnect()

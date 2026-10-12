@@ -74,6 +74,19 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
     val v = ContentValues().apply {put("attempts",attempts);put("state",state);put("due_at",dueAt);put("payload_enc",enc(payload.toString()))}
     check(writableDatabase.update("scan_retry",v,"run_id=? AND job_key=?",arrayOf(runId,key)) == 1)
   }
+  @Synchronized fun seedArchiveRetries(runId: String, profileId: String, rows: JSONArray) {
+    check(ownerOf(runId)==profileId) { "Tarama başka profile ait" }
+    check(rows.length()<=128) { "Kuyruk partisi çok büyük" }
+    val db=writableDatabase;db.beginTransaction()
+    try {
+      for(i in 0 until rows.length()) {
+        val row=rows.getJSONObject(i);val key=row.getString("key");val payload=row.getJSONObject("payload")
+        check(key.length<=4096 && payload.toString().toByteArray(Charsets.UTF_8).size<=250000)
+        enqueueRetry(runId,key,payload,System.currentTimeMillis())
+      }
+      db.setTransactionSuccessful()
+    } finally { db.endTransaction() }
+  }
   @Synchronized fun archiveRetries(runId: String, afterKey: String): JSONObject {
     val rows=JSONArray();var last=afterKey;var bytes=0
     readableDatabase.rawQuery("SELECT job_key,payload_enc FROM scan_retry WHERE run_id=? AND state IN ('pending','unresolved') AND job_key>? ORDER BY job_key LIMIT 100",arrayOf(runId,afterKey)).use { c ->
@@ -307,6 +320,13 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
     }
   }
 
+  @Synchronized fun archiveInfo(runId: String, profileId: String): JSONObject? {
+    if(ownerOf(runId)!=profileId)return null
+    return readableDatabase.rawQuery("SELECT mode,state,created_at FROM scan_session WHERE run_id=?",arrayOf(runId)).use { c ->
+      if(!c.moveToFirst())null else JSONObject().put("runId",runId).put("profileId",profileId).put("mode",c.getString(0))
+        .put("state",c.getString(1)).put("createdAt",c.getLong(2))
+    }
+  }
   @Synchronized fun latestResultArchive(profileId: String, mag: Boolean = true): String? {
     val modeClause = if (mag) "s.mode='MAG_RESULTS'" else "s.mode<>'MAG_RESULTS'"
     readableDatabase.rawQuery("SELECT s.run_id FROM scan_session s JOIN scan_session_owner o ON o.run_id=s.run_id WHERE o.profile_id=? AND $modeClause AND (EXISTS (SELECT 1 FROM scan_result r WHERE r.run_id=s.run_id) OR EXISTS (SELECT 1 FROM scan_retry q WHERE q.run_id=s.run_id AND q.state IN ('pending','unresolved'))) ORDER BY s.created_at DESC LIMIT 1", arrayOf(profileId)).use { c -> if(c.moveToFirst()) return c.getString(0) }

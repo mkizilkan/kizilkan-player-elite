@@ -7,10 +7,8 @@ import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.net.Authenticator
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
-import java.net.PasswordAuthentication
 import java.net.Proxy
 import java.net.URL
 import java.security.KeyStore
@@ -49,9 +47,9 @@ import javax.crypto.spec.GCMParameterSpec
  * TEST MODLARI
  *  - system: birden çok IP-yankı adresi (sırayla; tek servise yüklenmez) +
  *    şeffaf proxy tespiti (yanıttaki IP = kendi IP'miz → kimliği gizlemiyor).
- *  - custom: kullanıcının URL'i; 2xx/3xx + (isteğe bağlı) yanıtta metin.
+ *  - custom: kullanıcının URL'i; 2xx + (isteğe bağlı) yanıtta metin.
  *
- * PROTOKOLLER: http/https → Proxy.Type.HTTP; socks4/5 → Proxy.Type.SOCKS.
+ * PROTOKOLLER: bağlantıya özel HTTP/CONNECT, TLS-proxy, SOCKS4a ve SOCKS5.
  * Kimlik bilgileri LOG'a yazılmaz; tanıda yalnız maskeli host.
  */
 object ScanProxyPool {
@@ -62,8 +60,11 @@ object ScanProxyPool {
     val port: Int,
     val user: String?,
     val pass: String?,
+    val sourceIds: List<String> = emptyList(),
   ) {
-    val key: String get() = "$scheme://${user ?: ""}@${host.lowercase()}:$port"
+    val key: String = java.security.MessageDigest.getInstance("SHA-256")
+      .digest(JSONArray(listOf(scheme, host.lowercase(), port, user ?: "", pass ?: "")).toString().toByteArray(Charsets.UTF_8))
+      .let { bytes -> val hex="0123456789abcdef";buildString(64){for(byte in bytes){val n=byte.toInt() and 255;append(hex[n shr 4]);append(hex[n and 15])}} }
     fun proxyType(): Proxy.Type =
       if (scheme == "socks4" || scheme == "socks5") Proxy.Type.SOCKS else Proxy.Type.HTTP
     fun basicHeader(): String? {
@@ -72,10 +73,11 @@ object ScanProxyPool {
       return "Basic " + Base64.encodeToString(raw.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
     }
     fun toProxy(): Proxy = Proxy(proxyType(), InetSocketAddress.createUnresolved(host, port))
-    fun masked(): String = if (user.isNullOrEmpty()) "$scheme://$host:$port" else "$scheme://***:***@$host:$port"
+    fun masked(): String { val address=if(host.contains(':'))"[$host]" else host;return if(user.isNullOrEmpty())"$scheme://$address:$port" else "$scheme://***:***@$address:$port" }
     fun schemeIndex(): Int = when (scheme) { "socks4" -> 1; "socks5" -> 2; else -> 0 }
     fun toJson(ms: Long = -1L): JSONObject {
       val o = JSONObject().put("scheme", scheme).put("host", host).put("port", port)
+      if (sourceIds.isNotEmpty()) o.put("sourceIds", JSONArray(sourceIds))
       if (!user.isNullOrEmpty()) o.put("user", user)
       if (!pass.isNullOrEmpty()) o.put("pass", pass)
       if (ms >= 0) o.put("ms", ms)
@@ -84,7 +86,7 @@ object ScanProxyPool {
   }
 
   /** v18.5.0: anon = elite | anonymous | transparent | unknown (httpbin başlık analizi). */
-  data class Tested(val entry: Entry, val ms: Long, val anon: String = "unknown")
+  data class Tested(val entry: Entry, val ms: Long, val anon: String = "unknown", val http: Boolean? = null, val https: Boolean? = null)
 
   /** probePhysical / proxiedGet bunu kullanır. */
   data class Selection(val entry: Entry, val proxy: Proxy, val basicHeader: String?)
@@ -95,23 +97,6 @@ object ScanProxyPool {
   private const val GOOD_FILE = "scan_proxy_good.enc"
   private const val KEY_ALIAS = "kizilkan_scan_proxy_v1"
   private const val MAX_CANDIDATES = 200_000
-  private val SYSTEM_ECHO = listOf(
-    "http://api.ipify.org?format=json",
-    "http://icanhazip.com",
-    "http://checkip.amazonaws.com",
-    "http://ifconfig.me/ip",
-  )
-  private val IPV4 = Regex("\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b")
-  /**
-   * v18.5.0 — Anonimlik yargıcı (kullanıcı onayı 28.09.2026). Proxy üzerinden düz HTTP ile
-   * istenir; yanıt, sunucuya ulaşan başlıkları ve çıkış IP'sini (origin) döndürür. Xtream
-   * hesap bilgisi GİTMEZ (yalnız bu adrese GET).
-   */
-  private const val JUDGE_URL = "http://httpbin.org/get"
-  private val PROXY_HEADERS = setOf(
-    "via", "x-forwarded-for", "forwarded", "forwarded-for", "x-forwarded", "x-real-ip",
-    "proxy-connection", "x-proxy-id", "client-ip", "x-client-ip", "x-originating-ip", "x-proxy-connection",
-  )
   /** Aynı proxy'ye aynı anda en çok bu kadar tarama isteği (yük dağıtımı). */
   private const val PER_PROXY_INFLIGHT = 4
   /** Havuz bundan eskiyse tarama başında hızlı TCP tazelemesi yapılır. */
@@ -125,6 +110,7 @@ object ScanProxyPool {
   @Volatile private var lastError: String = ""
   @Volatile private var lastProxyMasked: String = ""
   @Volatile private var restored = false
+  @Volatile private var rotation = "round_robin"
 
   private val lock = Any()
   private var candidates: List<Entry> = emptyList()      // lock
@@ -137,39 +123,29 @@ object ScanProxyPool {
   private val dead = ConcurrentHashMap.newKeySet<String>()
   private val rr = AtomicInteger(0)
   private val rrGood = AtomicInteger(0)
-  @Volatile private var authInstalled = false
 
-  // ── Test motoru durumu ──────────────────────────────────────────────────────
-  private object T {
-    @Volatile var phase: String = "idle"            // idle|running|paused|done|stopped|cancelled|failed
-    @Volatile var mode: String = "system"
-    @Volatile var startedAt: Long = 0L
-    @Volatile var endedAt: Long = 0L
-    @Volatile var pausedAccumMs: Long = 0L
-    @Volatile var pausedSince: Long = 0L
-    @Volatile var total: Int = 0
-    @Volatile var ownIp: String = ""
-    @Volatile var error: String = ""
-    /** v18.5.0: "tcp" (hızlı bağlantı elemesi) → "verify" (IP/protokol + anonimlik). */
-    @Volatile var stage: String = ""
-    @Volatile var tcpTotal: Int = 0
-    val tcpTested = AtomicInteger(0)
-    val tcpAlive = AtomicInteger(0)
-    val tcpResults = java.util.Collections.synchronizedList(mutableListOf<Entry>())
-    val elite = AtomicInteger(0)
-    val anonymous = AtomicInteger(0)
-    val unknownAnon = AtomicInteger(0)
-    val tested = AtomicInteger(0)
-    val working = AtomicInteger(0)
-    val deadCount = AtomicInteger(0)
-    val transparent = AtomicInteger(0)
-    val perScheme = AtomicIntegerArray(3)
-    val paused = AtomicBoolean(false)
-    val stop = AtomicBoolean(false)
-    val results = java.util.Collections.synchronizedList(mutableListOf<Tested>())
-    @Volatile var executor: ExecutorService? = null
-    @Volatile var runId: Int = 0
+  fun openConnection(url: URL, entry: Entry?): HttpURLConnection =
+    if (entry == null) url.openConnection(Proxy.NO_PROXY) as HttpURLConnection else ProxyHttpConnection(url, entry)
+
+  fun setRotation(context: Context, mode: String): JSONObject {
+    require(mode in setOf("round_robin", "random", "gateway")) { "Geçersiz rotasyon" }
+    restoreIfNeeded(context); rotation = mode; persist(context); return status()
   }
+
+  fun saveManualText(context: Context, text: String): Boolean {
+    require(text.toByteArray(Charsets.UTF_8).size <= 8 * 1024 * 1024) { "Manuel liste 8 MiB sınırını aşıyor" }
+    saveEncrypted(context, text, "scan_proxy_manual.enc"); return true
+  }
+  fun loadManualText(context: Context): String =
+    if (encryptedFileExists(context, "scan_proxy_manual.enc")) loadEncrypted(context, "scan_proxy_manual.enc") else ""
+  fun savePrivateConfig(context: Context, json: String): Boolean {
+    require(json.toByteArray(Charsets.UTF_8).size <= 8 * 1024 * 1024) { "Proxy yapılandırması çok büyük" }
+    JSONObject(json); saveEncrypted(context, json, "scan_proxy_private.enc"); return true
+  }
+  fun loadPrivateConfig(context: Context): String =
+    if (encryptedFileExists(context, "scan_proxy_private.enc")) loadEncrypted(context, "scan_proxy_private.enc") else "{}"
+
+  // Test workers and journals are owned by ProxyTestEngine.
 
   // ── Yapılandırma ────────────────────────────────────────────────────────────
 
@@ -215,6 +191,18 @@ object ScanProxyPool {
     persist(context)
     return status()
   }
+  fun removeSource(context: Context, id: String): JSONObject {
+    restoreIfNeeded(context)
+    require(ProxyTestEngine.progress().optString("phase") !in setOf("running", "paused")) { "Önce proxy testini durdurun" }
+    require(id.matches(Regex("[a-z0-9_-]{1,100}")))
+    fun strip(e: Entry): Entry? = if (id !in e.sourceIds) e else e.sourceIds.filter { it != id }.takeIf { it.isNotEmpty() }?.let { e.copy(sourceIds = it) }
+    synchronized(lock) {
+      candidates = candidates.mapNotNull { strip(it) }
+      pool = pool.mapNotNull { item -> strip(item.entry)?.let { item.copy(entry = it) } }
+      val kept = good.values.mapNotNull { strip(it) }; good.clear(); for(e in kept)good[e.key]=e
+    }
+    persist(context); return status()
+  }
 
   /** Süreç yeniden başladıysa şifreli durumu geri yükle. */
   fun restoreIfNeeded(context: Context) {
@@ -222,11 +210,12 @@ object ScanProxyPool {
     synchronized(lock) {
       if (restored) return
       restored = true
-      val f = File(context.filesDir, ENC_FILE)
-      if (!f.exists()) return
-      val json = runCatching { loadEncrypted(context) }.getOrNull() ?: return
-      val o = runCatching { JSONObject(json) }.getOrNull() ?: return
+      if (!encryptedFileExists(context, ENC_FILE)) return
+      val o = runCatching { JSONObject(loadEncrypted(context)) }.getOrElse {
+        enabled=true;lastError="Proxy havuzu okunamadı; doğrudan bağlantıya geçilmedi. Proxy merkezini kontrol edin.";return
+      }
       enabled = o.optBoolean("enabled", false)
+      rotation = o.optString("rotation", "round_robin").takeIf { it in setOf("round_robin", "random", "gateway") } ?: "round_robin"
       lastTestAt = o.optLong("lastTestAt", 0L)
       lastRefreshAt = o.optLong("lastRefreshAt", 0L)
       poolTested = o.optBoolean("poolTested", false)
@@ -236,7 +225,7 @@ object ScanProxyPool {
         val list = ArrayList<Tested>()
         for (i in 0 until p.length()) {
           val e = p.optJSONObject(i) ?: continue
-          parseEntry(e)?.let { list.add(Tested(it, e.optLong("ms", -1L), e.optString("anon", "unknown"))) }
+          parseEntry(e)?.let { list.add(Tested(it, e.optLong("ms", -1L), e.optString("anon", "unknown"), if(e.has("http"))e.optBoolean("http") else null, if(e.has("https"))e.optBoolean("https") else null)) }
         }
         pool = list
         good.clear()
@@ -254,19 +243,22 @@ object ScanProxyPool {
   fun poolSize(): Int = synchronized(lock) { pool.size }
 
   fun status(): JSONObject {
+    val sources = linkedMapOf<String, Int>()
     val cPer = IntArray(3); val per = IntArray(3); val anon = IntArray(4)
     val (c, p, g) = synchronized(lock) {
       for (t in pool) {
         per[t.entry.schemeIndex()]++
         anon[when (t.anon) { "elite" -> 0; "anonymous" -> 1; "transparent" -> 2; else -> 3 }]++
       }
-      for (e in candidates) cPer[e.schemeIndex()]++
+      for (e in candidates) { cPer[e.schemeIndex()]++; for(id in e.sourceIds) sources[id]=(sources[id]?:0)+1 }
       Triple(candidates.size, pool.size, good.size)
     }
     var busy = 0; for (v in inFlight.values) busy += v.get().coerceAtLeast(0)
     var ok = 0; for (v in successCount.values) ok += v.get()
     return JSONObject()
       .put("enabled", enabled)
+      .put("rotation", rotation)
+      .put("sources", JSONObject(sources.toMap()))
       .put("candidates", c)
       .put("candidatesByScheme", JSONObject().put("http", cPer[0]).put("socks4", cPer[1]).put("socks5", cPer[2]))
       .put("pool", p)
@@ -281,7 +273,7 @@ object ScanProxyPool {
       .put("lastProxy", lastProxyMasked)
       .put("lastTestAt", lastTestAt)
       .put("lastRefreshAt", lastRefreshAt)
-      .put("testPhase", T.phase)
+      .put("testPhase", ProxyTestEngine.progress().optString("phase", "idle"))
       .put("exhausted", isExhausted())
       .put("lastError", lastError)
       // Geriye dönük alanlar (v18.3.0 JS'i okuyordu).
@@ -289,277 +281,43 @@ object ScanProxyPool {
       .put("working", p)
   }
 
-  // ── Canlılık testi ──────────────────────────────────────────────────────────
-
-  /**
-   * cfg: {mode:"system"|"custom", url, expectText, concurrency, timeoutMs, rejectTransparent, eliteOnly}
-   *
-   * v18.5.0 — İKİ AŞAMALI TEST (kullanıcı önerisi):
-   *  1) TCP: yalnız proxy portuna bağlantı açılıyor mu (kısa zaman aşımı, yüksek paralellik).
-   *     Ölü adresler saniyeler içinde elenir; eskiden her ölü proxy tam HTTP zaman aşımını bekletiyordu.
-   *  2) Doğrulama: yalnız hayatta kalanlara yargıç (httpbin) isteği → çalışıyor mu + anonimlik
-   *     (elite / anonim / şeffaf). Özel modda kullanıcının adresi.
-   * "Yeter, kullan": 1. aşamadaysa bağlantısı açılanlar (doğrulanmamış), 2. aşamadaysa doğrulananlar havuz olur.
-   * Önceki taramalarda panel yanıtı almış "iyi" proxy'ler en önce denenir.
-   */
-  fun startTest(context: Context, cfgJson: String): JSONObject {
+  // ── Canlılık testi: native foreground worker + encrypted checkpoint ──
+  fun startTest(context: Context, cfgJson: String): JSONObject = ProxyTestEngine.start(context, cfgJson)
+  fun pauseTest() = ProxyTestEngine.pause()
+  fun resumeTest() = ProxyTestEngine.resume()
+  fun stopTest(context: Context, useTested: Boolean): JSONObject { ProxyTestEngine.stop(context, useTested); return status() }
+  fun getTestProgress(): JSONObject = ProxyTestEngine.progress()
+  internal fun testEntries(context: Context): List<Entry> {
     restoreIfNeeded(context)
-    if (T.phase == "running" || T.phase == "paused") return JSONObject().put("started", false).put("error", "Test zaten çalışıyor.")
-    val cfg = runCatching { JSONObject(cfgJson) }.getOrDefault(JSONObject())
-    val mode = if (cfg.optString("mode") == "custom") "custom" else "system"
-    val customUrl = cfg.optString("url", "").trim()
-    if (mode == "custom" && !customUrl.matches(Regex("(?i)^https?://.+"))) {
-      return JSONObject().put("started", false).put("error", "Kontrol adresi http(s):// ile başlamalı.")
+    return synchronized(lock) {
+      val first = good.values.toList(); val keys = first.mapTo(HashSet()) { it.key }
+      first + candidates.filter { it.key !in keys }
     }
-    val expectText = cfg.optString("expectText", "")
-    val concurrency = cfg.optInt("concurrency", 64).coerceIn(4, 160)
-    val timeoutMs = cfg.optInt("timeoutMs", 6000).coerceIn(2000, 20000)
-    val rejectTransparent = cfg.optBoolean("rejectTransparent", true)
-    val eliteOnly = cfg.optBoolean("eliteOnly", false)
-    val work: List<Entry> = synchronized(lock) {
-      val goodFirst = good.values.toList()
-      val keys = goodFirst.map { it.key }.toHashSet()
-      goodFirst + candidates.filter { it.key !in keys }.shuffled()
-    }
-    if (work.isEmpty()) return JSONObject().put("started", false).put("error", "Test edilecek proxy yok. Önce liste indirin veya girin.")
-
-    val myRun = ++T.runId
-    T.mode = mode; T.error = ""; T.stage = "tcp"; T.tcpTotal = work.size; T.total = 0
-    T.tcpTested.set(0); T.tcpAlive.set(0); T.tcpResults.clear()
-    T.elite.set(0); T.anonymous.set(0); T.unknownAnon.set(0)
-    T.tested.set(0); T.working.set(0); T.deadCount.set(0); T.transparent.set(0)
-    for (i in 0 until 3) T.perScheme.set(i, 0)
-    T.results.clear(); T.paused.set(false); T.stop.set(false)
-    T.startedAt = System.currentTimeMillis(); T.endedAt = 0L; T.pausedAccumMs = 0L; T.pausedSince = 0L
-    T.phase = "running"
-    val tcpTimeout = (timeoutMs / 2).coerceIn(1500, 3000)
-    val tcpThreads = (concurrency * 2).coerceIn(32, 256)
-
-    Thread {
-      try {
-        T.ownIp = if (mode == "system") runCatching { fetchOwnIp(timeoutMs) }.getOrDefault("") else ""
-        // ── Aşama 1: TCP ──
-        runWorkers(tcpThreads, work.size, myRun) { i ->
-          val e = work[i]
-          if (tcpAlive(e, tcpTimeout)) { T.tcpAlive.incrementAndGet(); T.tcpResults.add(e) }
-          T.tcpTested.incrementAndGet()
-        }
-        if (!T.stop.get() && myRun == T.runId) {
-          // ── Aşama 2: doğrulama + anonimlik ──
-          val alive = ArrayList(T.tcpResults)
-          T.stage = "verify"; T.total = alive.size
-          runWorkers(concurrency, alive.size, myRun) { i ->
-            val e = alive[i]
-            val (ms, anon) = if (mode == "custom") Pair(measureCustom(e, customUrl, expectText, timeoutMs), "unknown")
-                             else verifyJudge(e, timeoutMs, rejectTransparent)
-            T.tested.incrementAndGet()
-            when {
-              ms >= 0 -> {
-                when (anon) {
-                  "elite" -> T.elite.incrementAndGet()
-                  "anonymous" -> T.anonymous.incrementAndGet()
-                  "transparent" -> T.transparent.incrementAndGet()
-                  else -> T.unknownAnon.incrementAndGet()
-                }
-                if (!eliteOnly || anon == "elite") {
-                  T.working.incrementAndGet(); T.perScheme.incrementAndGet(e.schemeIndex())
-                  T.results.add(Tested(e, ms, anon))
-                }
-              }
-              ms == -2L -> T.transparent.incrementAndGet()
-              else -> T.deadCount.incrementAndGet()
-            }
-          }
-        }
-      } catch (_: Throwable) {} finally {
-        if (myRun == T.runId) {
-          commitTestResults(context)
-          T.phase = if (T.stop.get()) "stopped" else "done"
-          T.endedAt = System.currentTimeMillis()
-          PanelScanService.recordExternalDiagnostic(context, JSONObject()
-            .put("state", "SCAN_PROXY_POOL_BUILT").put("total", T.tcpTotal).put("found", T.working.get())
-            .put("tested", T.tcpAlive.get()))
-        }
-      }
-    }.apply { isDaemon = true }.start()
-    return JSONObject().put("started", true)
   }
-
-  /** Paylaşılan işçi havuzu: duraklatma/durdurma/run kimliğine uyar. */
-  private fun runWorkers(threads: Int, count: Int, myRun: Int, body: (Int) -> Unit) {
-    if (count <= 0) return
-    val n = threads.coerceIn(1, 256).coerceAtMost(count)
-    val ex = Executors.newFixedThreadPool(n)
-    T.executor = ex
-    val idx = AtomicInteger(0)
-    try {
-      val futures = (0 until n).map {
-        ex.submit {
-          while (true) {
-            if (T.stop.get() || myRun != T.runId) break
-            while (T.paused.get() && !T.stop.get()) Thread.sleep(120)
-            val i = idx.getAndIncrement()
-            if (i >= count) break
-            try { body(i) } catch (_: Throwable) {}
-          }
-        }
-      }
-      for (f in futures) runCatching { f.get() }
-    } finally { runCatching { ex.shutdownNow() } }
+  internal fun applyTestResults(context: Context, results: List<Tested>, verified: Boolean) {
+    // A failed judge/empty retest must not destroy an existing working pool.
+    if (results.isEmpty()) return
+    synchronized(lock) { pool = results.sortedBy { it.ms }; poolTested = verified }
+    resetHealth(); lastTestAt = System.currentTimeMillis(); lastRefreshAt = lastTestAt; persist(context)
   }
-
-  /** Aşama 1: proxy portuna TCP bağlantısı açılıyor mu. */
-  private fun tcpAlive(e: Entry, timeoutMs: Int): Boolean = try {
-    java.net.Socket().use { s -> s.connect(InetSocketAddress(e.host, e.port), timeoutMs); true }
+  internal fun saveTestJournal(context: Context, part: String, json: String) = saveEncrypted(context, json, "scan_proxy_test_$part.enc")
+  internal fun loadTestJournal(context: Context, part: String): String = loadEncrypted(context, "scan_proxy_test_$part.enc")
+  private fun workFile(scope: String): String {
+    require(scope.length in 1..200)
+    val hash=java.security.MessageDigest.getInstance("SHA-256").digest(scope.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    return "background_work_$hash.enc"
+  }
+  internal fun saveWorkJournal(context: Context, scope: String, json: String): Boolean {
+    require(json.toByteArray(Charsets.UTF_8).size<=16*1024*1024) { "İş kaydı çok büyük" }
+    JSONObject(json);saveEncrypted(context,json,workFile(scope));return true
+  }
+  internal fun loadWorkJournal(context: Context, scope: String): String {
+    val name=workFile(scope);return if(encryptedFileExists(context,name))loadEncrypted(context,name) else "{}"
+  }
+  internal fun entriesFromJson(rows: JSONArray): List<Entry> = parseEntries(rows)
+  private fun tcpAlive(e: Entry, timeout: Int): Boolean = try {
+    java.net.Socket().use { it.connect(InetSocketAddress(e.host, e.port), timeout); true }
   } catch (_: Throwable) { false }
-
-  /**
-   * Aşama 2 (sistem modu): yargıç üzerinden çalışıyor mu + anonimlik.
-   *  - transparent: çıkış IP'si veya başlıklarda KENDİ IP'miz görünüyor (kimlik gizlenmiyor)
-   *  - anonymous  : IP gizli ama proxy olduğunu belli eden başlık (Via, X-Forwarded-For…) var
-   *  - elite      : IP gizli, proxy izi yok
-   * Dönüş: (gecikme ms | -1 ölü | -2 şeffaf-reddedildi, sınıf).
-   */
-  private fun verifyJudge(e: Entry, timeoutMs: Int, rejectTransparent: Boolean): Pair<Long, String> {
-    var conn: HttpURLConnection? = null
-    var judgeAnswered = false
-    try {
-      val start = System.currentTimeMillis()
-      conn = (URL(JUDGE_URL).openConnection(e.toProxy()) as HttpURLConnection).apply {
-        connectTimeout = timeoutMs; readTimeout = timeoutMs; requestMethod = "GET"
-        setRequestProperty("Accept", "application/json")
-        if (e.proxyType() == Proxy.Type.HTTP) e.basicHeader()?.let { setRequestProperty("Proxy-Authorization", it) }
-      }
-      val code = conn!!.responseCode
-      judgeAnswered = true
-      if (code in 200..299) {
-        val body = conn!!.inputStream.bufferedReader().use { it.readText() }
-        val ms = System.currentTimeMillis() - start
-        val o = runCatching { JSONObject(body) }.getOrNull()
-        if (o != null && o.has("origin")) {
-          val origin = o.optString("origin")
-          val hdrs = o.optJSONObject("headers")
-          val own = T.ownIp
-          val leaks = own.isNotEmpty() && (origin.contains(own) || (hdrs?.toString()?.contains(own) == true))
-          if (leaks) return Pair(if (rejectTransparent) -2L else ms, "transparent")
-          var proxyHeader = false
-          hdrs?.keys()?.forEach { k -> if (k.lowercase() in PROXY_HEADERS) proxyHeader = true }
-          return Pair(ms, if (proxyHeader || origin.contains(",")) "anonymous" else "elite")
-        }
-      }
-    } catch (_: Throwable) {
-      // Bağlantı/zaman aşımı: proxy ölü (TCP açıktı ama HTTP/SOCKS konuşmuyor).
-      return Pair(-1L, "unknown")
-    } finally { runCatching { conn?.disconnect() } }
-    // Proxy yanıt verdi ama yargıç engellendi / beklenmeyen yanıt → IP-yankı yolu (anonimlik bilinmez).
-    if (!judgeAnswered) return Pair(-1L, "unknown")
-    val ms = measureSystem(e, timeoutMs, rejectTransparent)
-    return Pair(ms, if (ms == -2L) "transparent" else "unknown")
-  }
-
-  private fun commitTestResults(context: Context) {
-    // 1. aşamada "yeter" → bağlantısı açılanlar (doğrulanmamış, gecikme bilinmiyor).
-    val ordered: List<Tested> = if (T.stage == "tcp") T.tcpResults.toList().map { Tested(it, -1L, "unknown") }
-                                else T.results.sortedBy { it.ms }
-    synchronized(lock) { pool = ordered; poolTested = T.stage != "tcp" }
-    resetHealth(); lastTestAt = System.currentTimeMillis(); lastRefreshAt = lastTestAt
-    persist(context)
-  }
-
-  fun pauseTest() { if (T.phase == "running") { T.paused.set(true); T.pausedSince = System.currentTimeMillis(); T.phase = "paused" } }
-  fun resumeTest() { if (T.phase == "paused") { if (T.pausedSince > 0) T.pausedAccumMs += System.currentTimeMillis() - T.pausedSince; T.pausedSince = 0; T.paused.set(false); T.phase = "running" } }
-
-  /** Durdur. useTested=true → o ana kadar çalışanlar havuz olur ("bu kadar yeter"). */
-  fun stopTest(context: Context, useTested: Boolean): JSONObject {
-    if (T.phase == "running" || T.phase == "paused") {
-      T.stop.set(true); T.paused.set(false)
-      if (useTested) commitTestResults(context)
-      T.phase = "stopped"; T.endedAt = System.currentTimeMillis()
-      T.runId++
-      runCatching { T.executor?.shutdownNow() }
-    }
-    return status()
-  }
-
-  fun getTestProgress(): JSONObject {
-    val now = System.currentTimeMillis()
-    val elapsed = if (T.startedAt == 0L) 0L else (now - T.startedAt - T.pausedAccumMs - (if (T.pausedSince > 0) now - T.pausedSince else 0L)).coerceAtLeast(0L)
-    val tcp = T.stage == "tcp"
-    val done = if (tcp) T.tcpTested.get() else T.tested.get()
-    val all = if (tcp) T.tcpTotal else T.total
-    val rate = if (elapsed > 0) done * 1000.0 / elapsed else 0.0
-    val etaMs = if (rate > 0 && all > done) ((all - done) / rate * 1000).toLong() else 0L
-    val fastest = T.results.sortedBy { it.ms }.take(10).map { JSONObject().put("proxy", it.entry.masked()).put("ms", it.ms).put("anon", it.anon) }
-    return JSONObject()
-      .put("phase", T.phase).put("mode", T.mode).put("stage", T.stage)
-      .put("tcpTotal", T.tcpTotal).put("tcpTested", T.tcpTested.get()).put("tcpAlive", T.tcpAlive.get())
-      .put("total", T.total).put("tested", T.tested.get())
-      .put("working", T.working.get()).put("dead", T.deadCount.get()).put("transparent", T.transparent.get())
-      .put("elite", T.elite.get()).put("anonymous", T.anonymous.get()).put("unknownAnon", T.unknownAnon.get())
-      .put("http", T.perScheme.get(0)).put("socks4", T.perScheme.get(1)).put("socks5", T.perScheme.get(2))
-      .put("elapsedMs", elapsed).put("etaMs", etaMs).put("ratePerSec", Math.round(rate * 10) / 10.0)
-      .put("ownIp", T.ownIp).put("error", T.error)
-      .put("fastest", JSONArray(fastest))
-  }
-
-  private fun fetchOwnIp(timeoutMs: Int): String {
-    for (u in SYSTEM_ECHO) {
-      val r = runCatching {
-        val c = URL(u).openConnection() as HttpURLConnection
-        c.connectTimeout = timeoutMs; c.readTimeout = timeoutMs
-        val body = c.inputStream.bufferedReader().use { it.readText() }
-        c.disconnect(); IPV4.find(body)?.value ?: ""
-      }.getOrDefault("")
-      if (r.isNotEmpty()) return r
-    }
-    return ""
-  }
-
-  /** Sistem testi: IP-yankı; şeffaf proxy (yanıt IP = kendi IP) reddedilebilir.
-   *  Dönüş: >=0 gecikme(ms) çalışıyor · -1 ölü · -2 şeffaf(reddedildi). */
-  private fun measureSystem(e: Entry, timeoutMs: Int, rejectTransparent: Boolean): Long {
-    for (u in SYSTEM_ECHO) {
-      var conn: HttpURLConnection? = null
-      val ms = runCatching {
-        val start = System.currentTimeMillis()
-        conn = (URL(u).openConnection(e.toProxy()) as HttpURLConnection).apply {
-          connectTimeout = timeoutMs; readTimeout = timeoutMs; requestMethod = "GET"
-          if (e.proxyType() == Proxy.Type.HTTP) e.basicHeader()?.let { setRequestProperty("Proxy-Authorization", it) }
-        }
-        val code = conn!!.responseCode
-        val body = conn!!.inputStream.bufferedReader().use { it.readText() }
-        if (code !in 200..399) return@runCatching -1L
-        val seen = IPV4.find(body)?.value ?: ""
-        if (rejectTransparent && T.ownIp.isNotEmpty() && seen == T.ownIp) return@runCatching -2L
-        System.currentTimeMillis() - start
-      }.getOrDefault(-1L)
-      runCatching { conn?.disconnect() }
-      if (ms == -2L) return -2L
-      if (ms >= 0) return ms
-    }
-    return -1L
-  }
-
-  /** Özel URL testi: 2xx/3xx + (varsa) yanıtta beklenen metin. */
-  private fun measureCustom(e: Entry, url: String, expectText: String, timeoutMs: Int): Long {
-    var conn: HttpURLConnection? = null
-    return runCatching {
-      val start = System.currentTimeMillis()
-      conn = (URL(url).openConnection(e.toProxy()) as HttpURLConnection).apply {
-        connectTimeout = timeoutMs; readTimeout = timeoutMs; requestMethod = "GET"
-        if (e.proxyType() == Proxy.Type.HTTP) e.basicHeader()?.let { setRequestProperty("Proxy-Authorization", it) }
-      }
-      val code = conn!!.responseCode
-      if (code !in 200..399) return@runCatching -1L
-      if (expectText.isNotEmpty()) {
-        val body = conn!!.inputStream.bufferedReader().use { it.readText() }
-        if (!body.contains(expectText, ignoreCase = true)) return@runCatching -1L
-      } else {
-        conn!!.inputStream.use { it.readBytes() }
-      }
-      System.currentTimeMillis() - start
-    }.getOrDefault(-1L).also { runCatching { conn?.disconnect() } }
-  }
 
   // ── Seçim / rotasyon / sağlık ───────────────────────────────────────────────
 
@@ -594,31 +352,31 @@ object ScanProxyPool {
 
   /**
    * v18.5.0 — Seçim: (1) panel yanıtı almış "iyi" proxy'ler öncelikli (3 seçimin 2'si),
-   * (2) aynı proxy'ye en çok PER_PROXY_INFLIGHT eşzamanlı istek, (3) hepsi doluysa ölü
-   * olmayan herhangi biri (tarama durmasın). Ölü yoksa null → servis duraklar.
+   * (2) aynı proxy'ye en çok PER_PROXY_INFLIGHT eşzamanlı istek. Hepsi doluysa null;
+   * çağıran boş/tükenmiş havuzdan ayırır ve dolu bağlantıları bekler.
    */
-  fun select(): Selection? {
+  fun select(targetUrl: String? = null): Selection? {
     if (!enabled) return null
     val (snap, goodAlive) = synchronized(lock) {
-      val entries = pool.map { it.entry }
+      val secure = targetUrl?.startsWith("https://", true)
+      val entries = pool.filter { secure == null || if(secure) it.https != false else it.http != false }.map { it.entry }
       val keys = entries.mapTo(HashSet()) { it.key }
       Pair(entries, good.values.filter { it.key in keys && !dead.contains(it.key) })
     }
     if (snap.isEmpty()) return null
-    if (goodAlive.isNotEmpty() && rrGood.incrementAndGet() % 3 != 0) {
+    if (rotation == "round_robin" && goodAlive.isNotEmpty() && rrGood.incrementAndGet() % 3 != 0) {
       for (attempt in goodAlive.indices) {
         val e = goodAlive[(rrGood.getAndIncrement() and Int.MAX_VALUE) % goodAlive.size]
         if (tryAcquire(e)) return selectionOf(e)
       }
     }
-    var fallback: Entry? = null
+    val start = when (rotation) { "random" -> java.util.concurrent.ThreadLocalRandom.current().nextInt(snap.size); "gateway" -> 0; else -> rr.getAndIncrement() and Int.MAX_VALUE }
     for (attempt in snap.indices) {
-      val e = snap[(rr.getAndIncrement() and Int.MAX_VALUE) % snap.size]
+      val e = snap[((start.toLong() + attempt) % snap.size).toInt()]
       if (dead.contains(e.key)) continue
       if (tryAcquire(e)) return selectionOf(e)
-      if (fallback == null) fallback = e
     }
-    return fallback?.let { inFlight.computeIfAbsent(it.key) { AtomicInteger(0) }.incrementAndGet(); selectionOf(it) }
+    return null // A busy proxy is not permission to exceed the per-proxy connection limit.
   }
 
   /**
@@ -664,6 +422,7 @@ object ScanProxyPool {
   fun classify(t: Throwable?): Fault {
     val m = (t?.message ?: "").lowercase()
     return when {
+      m.contains("target_") -> Fault.TARGET
       m.contains("through proxy") || m.contains("socks") || m.contains("proxy") -> Fault.PROXY
       m.contains("connect") && (m.contains("timed out") || m.contains("refused")) -> Fault.PROXY
       m.contains("unable to tunnel") || m.contains("407") -> Fault.PROXY
@@ -677,6 +436,7 @@ object ScanProxyPool {
    * (kalıcı; sonraki testlerde ilk denenir, taramada öncelikli seçilir).
    */
   fun reportResult(context: Context, key: String, fault: Fault) {
+    if (fault == Fault.UNKNOWN) return
     if (fault == Fault.TARGET) {
       failCount.remove(key)
       val first = successCount.computeIfAbsent(key) { AtomicInteger(0) }.incrementAndGet() == 1
@@ -703,31 +463,7 @@ object ScanProxyPool {
     }
   }
 
-  // Tek proxy dis IP testi (Test et dugmesi; secili/ilk calisan)
-  fun testExternalIp(context: Context, timeoutMs: Int = 6000): JSONObject {
-    val out = JSONObject()
-    // v18.5.0: proxy KAPALIYKEN de test edilebilir (proxy merkezi her durumda çalışır).
-    restoreIfNeeded(context)
-    val cand = synchronized(lock) { pool.firstOrNull()?.entry } ?: synchronized(lock) { candidates.firstOrNull() }
-    ?: return out.put("ok", false).put("error", "Proxy yok.")
-    var conn: HttpURLConnection? = null
-    return try {
-      conn = (URL(SYSTEM_ECHO[0]).openConnection(cand.toProxy()) as HttpURLConnection).apply {
-        connectTimeout = timeoutMs; readTimeout = timeoutMs
-        if (cand.proxyType() == Proxy.Type.HTTP) cand.basicHeader()?.let { setRequestProperty("Proxy-Authorization", it) }
-      }
-      val code = conn!!.responseCode
-      val body = conn!!.inputStream.bufferedReader().use { it.readText() }
-      val ip = IPV4.find(body)?.value ?: ""
-      PanelScanService.recordExternalDiagnostic(context, JSONObject()
-        .put("state", if (ip.isNotEmpty()) "SCAN_PROXY_TEST_OK" else "SCAN_PROXY_TEST_FAILED").put("total", poolSize()))
-      out.put("ok", code in 200..299 && ip.isNotEmpty()).put("ip", ip).put("httpCode", code).put("proxy", cand.masked())
-    } catch (t: Throwable) {
-      lastError = t.message ?: "test hata"
-      PanelScanService.recordExternalDiagnostic(context, JSONObject().put("state", "SCAN_PROXY_TEST_FAILED").put("total", poolSize()))
-      out.put("ok", false).put("error", lastError).put("proxy", cand.masked())
-    } finally { runCatching { conn?.disconnect() } }
-  }
+  fun testExternalIp(context: Context, timeoutMs: Int = 6000): JSONObject = ProxyTestEngine.single(context, timeoutMs)
 
   // JS kesfi icin proxy uzerinden GET (serverCode.ts); olen proxy'de siradakine gecer.
   fun proxiedGet(context: Context, url: String, timeoutMs: Int): JSONObject =
@@ -771,11 +507,17 @@ object ScanProxyPool {
     val headers: JSONObject? = headersJson?.takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() }
     for (attempt in 0 until 3) {
       if (control?.cancelled?.get() == true) return out.put("ok", false).put("status", 0).put("body", "").put("error", "CANCELLED")
-      val sel = select() ?: break
+      var sel = select(url)
+      val acquireUntil = System.currentTimeMillis() + timeoutMs
+      while(sel == null && !isEmptyPool() && !isExhausted() && System.currentTimeMillis() < acquireUntil) {
+        if(control?.cancelled?.get()==true) return out.put("ok",false).put("status",0).put("body","").put("error","CANCELLED")
+        Thread.sleep(50); sel=select(url)
+      }
+      if(sel == null) break
       var conn: HttpURLConnection? = null
       try {
         val target = URL(url)
-        conn = (target.openConnection(sel.proxy) as HttpURLConnection).apply {
+        conn = openConnection(target, sel.entry).apply {
           connectTimeout = timeoutMs; readTimeout = timeoutMs
           requestMethod = method.uppercase().let { if (it in setOf("GET", "POST", "HEAD")) it else "GET" }
           instanceFollowRedirects = false
@@ -810,47 +552,38 @@ object ScanProxyPool {
           } ?: ""
         val respHeaders = JSONObject()
         conn!!.headerFields?.forEach { (k, v) -> if (k != null) respHeaders.put(k, v.joinToString(", ")) }
-        reportResult(context, sel.entry.key, Fault.TARGET)
+        reportResult(context, sel.entry.key, if (code == 407) Fault.PROXY else Fault.TARGET)
         return out.put("ok", code in 200..299).put("status", code).put("body", respBody).put("headers", respHeaders)
           .put("proxy", sel.entry.host + ":" + sel.entry.port)
       } catch (t: Throwable) {
         if (control?.cancelled?.get() == true) return out.put("ok", false).put("status", 0).put("body", "").put("error", "CANCELLED")
         if (t is BodyLimitExceeded) return out.put("ok", false).put("status", 0).put("body", "").put("error", "BODY_LIMIT")
         lastEx = t
-        reportResult(context, sel.entry.key, if (classify(t) == Fault.UNKNOWN) Fault.PROXY else classify(t))
+        val fault=classify(t)
+        if(fault!=Fault.TARGET)reportResult(context, sel.entry.key, fault)
+        if(fault!=Fault.PROXY)return out.put("ok",false).put("status",0).put("body","").put("error",if(fault==Fault.TARGET)"TARGET_TRANSPORT" else "TRANSPORT_UNCERTAIN")
       } finally { control?.connection?.set(null); runCatching { conn?.disconnect() }; release(sel) }
     }
     return out.put("ok", false).put("status", 0).put("body", "").put("error", lastEx?.message ?: "proxy yok")
     } finally { if (requestId != null && control != null) requestControls.remove(requestId, control) }
   }
 
-  // Authenticator (SOCKS5 + HTTP proxy auth)
+  // Credentials are scoped to ProxyHttpConnection; never install a process-global authenticator.
   private fun installAuthenticator() {
-    if (authInstalled) return
-    authInstalled = true
-    runCatching { System.setProperty("jdk.http.auth.tunneling.disabledSchemes", "") }
-    Authenticator.setDefault(object : Authenticator() {
-      override fun getPasswordAuthentication(): PasswordAuthentication? {
-        if (requestorType != RequestorType.PROXY) return null
-        val h = requestingHost?.lowercase() ?: return null
-        val p = requestingPort
-        val match = synchronized(lock) {
-          (pool.map { it.entry } + candidates).firstOrNull { it.host.lowercase() == h && it.port == p && !it.user.isNullOrEmpty() }
-        } ?: return null
-        return PasswordAuthentication(match.user, (match.pass ?: "").toCharArray())
-      }
-    })
+    // Kept as an internal compatibility hook for existing call sites.
   }
 
   // Ayristirma
   private fun parseEntry(e: JSONObject): Entry? {
     val scheme = e.optString("scheme", "http").lowercase().let {
-      when (it) { "http", "https", "socks4", "socks5" -> it; "socks" -> "socks5"; else -> "http" }
+      when (it) { "http", "https", "socks4", "socks5" -> it; "socks" -> "socks5"; else -> return null }
     }
     val host = e.optString("host", "").trim()
     val port = e.optInt("port", 0)
     if (host.isEmpty() || port !in 1..65535) return null
-    return Entry(scheme, host, port, e.optString("user", "").ifBlank { null }, e.optString("pass", "").ifBlank { null })
+    val ids = e.optJSONArray("sourceIds") ?: JSONArray()
+    return Entry(scheme, host, port, e.optString("user", "").ifEmpty { null }, e.optString("pass", "").ifEmpty { null },
+      (0 until ids.length()).map { ids.optString(it) }.filter { it.matches(Regex("[a-z0-9_-]{1,100}")) }.distinct())
   }
   private fun parseEntries(arr: JSONArray): List<Entry> {
     val seen = LinkedHashMap<String, Entry>()
@@ -862,11 +595,11 @@ object ScanProxyPool {
   private fun persist(context: Context) {
     val (cand, p) = synchronized(lock) { Pair(candidates, pool) }
     val json = JSONObject()
-      .put("v", 3).put("enabled", enabled).put("lastTestAt", lastTestAt).put("lastRefreshAt", lastRefreshAt).put("poolTested", poolTested)
+      .put("v", 4).put("enabled", enabled).put("rotation", rotation).put("lastTestAt", lastTestAt).put("lastRefreshAt", lastRefreshAt).put("poolTested", poolTested)
       .put("candidates", JSONArray(cand.map { it.toJson() }))
-      .put("pool", JSONArray(p.map { it.entry.toJson(it.ms).put("anon", it.anon) }))
+      .put("pool", JSONArray(p.map { it.entry.toJson(it.ms).put("anon", it.anon).put("http", it.http).put("https", it.https) }))
       .toString()
-    runCatching { saveEncrypted(context, json) }
+    saveEncrypted(context, json)
     persistGood(context)
   }
 
@@ -890,15 +623,20 @@ object ScanProxyPool {
       .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
     return gen.generateKey()
   }
-  private fun saveEncrypted(context: Context, plain: String, fileName: String = ENC_FILE) {
+  @Synchronized private fun saveEncrypted(context: Context, plain: String, fileName: String = ENC_FILE) {
     val cipher = Cipher.getInstance("AES/GCM/NoPadding")
     cipher.init(Cipher.ENCRYPT_MODE, secretKey())
     val blob = JSONObject().put("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
       .put("ct", Base64.encodeToString(cipher.doFinal(plain.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)).toString()
-    File(context.filesDir, fileName).writeText(blob)
+    val file = android.util.AtomicFile(File(context.filesDir, fileName))
+    val output = file.startWrite()
+    try { output.write(blob.toByteArray(Charsets.UTF_8)); file.finishWrite(output) }
+    catch (t: Throwable) { file.failWrite(output); throw t }
   }
+  internal fun encryptedFileExists(context: Context, fileName: String): Boolean =
+    File(context.filesDir,fileName).exists() || File(context.filesDir,"$fileName.bak").exists()
   private fun loadEncrypted(context: Context, fileName: String = ENC_FILE): String {
-    val blob = JSONObject(File(context.filesDir, fileName).readText())
+    val blob = JSONObject(android.util.AtomicFile(File(context.filesDir, fileName)).openRead().bufferedReader().use { it.readText() })
     val iv = Base64.decode(blob.getString("iv"), Base64.NO_WRAP)
     val ct = Base64.decode(blob.getString("ct"), Base64.NO_WRAP)
     val cipher = Cipher.getInstance("AES/GCM/NoPadding")

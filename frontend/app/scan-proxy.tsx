@@ -18,10 +18,10 @@ import {
   loadScanProxyConfig, applyScanProxyConfig, saveScanProxyConfig,
   startLivenessTest, pauseLivenessTest, resumeLivenessTest, stopLivenessTest, livenessProgress,
   testSingleProxy, useWithoutTest, human, setScanProxyUse, clearScanProxyLists, scanProxyStatus,
-  PROXY_SOURCE_CATALOG, DEFAULT_SCAN_PROXY_CONFIG,
+  PROXY_SOURCE_CATALOG, DEFAULT_SCAN_PROXY_CONFIG, removeProxySource,
   type ScanProxyConfig, type ProxyProtocol,
 } from "@/src/utils/scanProxy";
-import type { NativeScanProxyStatus, ScanProxyTestProgress } from "@/modules/panel-scan";
+import { PanelScan, type NativeScanProxyStatus, type ScanProxyTestProgress } from "@/modules/panel-scan";
 
 const PROTOS: ProxyProtocol[] = ["http", "socks4", "socks5"];
 
@@ -30,6 +30,7 @@ export default function ScanProxyScreen() {
   const router = useRouter();
   const [cfg, setCfg] = useState<ScanProxyConfig>(DEFAULT_SCAN_PROXY_CONFIG);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
   const [dl, setDl] = useState<{ done: number; total: number; label: string } | null>(null);
   const [status, setStatus] = useState("");
@@ -40,11 +41,12 @@ export default function ScanProxyScreen() {
   // v18.5.0: native havuz özeti (proxy kapalıyken de görünür).
   const [pst, setPst] = useState<NativeScanProxyStatus | null>(null);
   const refreshStatus = useCallback(() => { try { setPst(scanProxyStatus()); } catch {} }, []);
-  useEffect(() => { refreshStatus(); }, [refreshStatus]);
 
   useEffect(() => {
     let alive = true;
-    loadScanProxyConfig().then(c => { if (alive) { setCfg(c); setLoaded(true); } });
+    loadScanProxyConfig().then(c => { if (alive) { setCfg(c); setLoaded(true); } }).catch(error => {
+      if (alive) { setLoaded(true); setLoadError(String(error?.message || error)); }
+    });
     return () => { alive = false; if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
@@ -70,6 +72,13 @@ export default function ScanProxyScreen() {
       if (p.phase !== "running" && p.phase !== "paused") { clearInterval(pollRef.current); pollRef.current = null; refreshStatus(); }
     }, 500);
   }, [refreshStatus]);
+  useEffect(() => {
+    let alive=true;
+    void PanelScan.restoreScanProxyState().then(current=>{if(!alive)return;setProg(current);refreshStatus();
+      if(current.phase==='running'||current.phase==='paused')startPolling();
+    }).catch(()=>{if(alive)setStatus('Proxy test kaydı okunamadı; mevcut dosyalar korunuyor.');});
+    return()=>{alive=false;};
+  }, [startPolling]);
 
   const onSave = async () => {
     setBusy(true); setStatus(""); setDl(null);
@@ -77,25 +86,30 @@ export default function ScanProxyScreen() {
       const res = await applyScanProxyConfig(cfg, (done, total, last) => setDl({ done, total, label: last.label }));
       setDl(null); refreshStatus();
       const bs = res.byScheme;
-      const lines = res.sources.slice(0, 12).map(s => `• ${s.label}: ${s.error ? "HATA" : human(s.count)}`).join("\n");
+      const lines = res.sources.map(s => `• ${s.label}: ${s.error || `${human(s.count)} yeni / ${human(s.rawCount ?? s.count)} satır${s.mirrorUsed ? " · yedek kaynak" : ""}`}`).join("\n");
       setStatus(`${human(res.entryCount)} aday yüklendi  (HTTP ${human(bs.http)} · SOCKS4 ${human(bs.socks4)} · SOCKS5 ${human(bs.socks5)}).\n${lines}\n\nCanlılık testini başlatın veya "Test etmeden kullan".`);
     } catch (e: any) { setStatus("Hata: " + String(e?.message || e)); setDl(null); }
     finally { setBusy(false); }
   };
 
-  const onStartTest = async () => {
-    await saveScanProxyConfig(cfg);
-    const r = await startLivenessTest(cfg.test);
-    if (!r.started) { Alert.alert("Test başlamadı", r.error || "Bilinmeyen hata"); return; }
-    startPolling();
+  const onStartTest = async (resume = false) => {
+    try {
+      await saveScanProxyConfig(cfg);
+      const r = await startLivenessTest(cfg.test, resume);
+      if (!r.started) { Alert.alert("Test başlamadı", r.error || "Bilinmeyen hata"); return; }
+      startPolling();
+    } catch(error:any) { Alert.alert('Test başlamadı',String(error?.message||error)); }
   };
-  const onStopUseTested = async () => { await stopLivenessTest(true); setProg(livenessProgress()); refreshStatus(); setStatus("Test durduruldu; çalışan proxy'ler havuz olarak kullanılıyor."); };
+  const onStopUseTested = async () => { try{await stopLivenessTest(true); const current=livenessProgress();setProg(current); refreshStatus();
+    setStatus(current.working ? `${current.working} doğrulanmış proxy havuz olarak kullanılıyor.` : 'Yeni doğrulanmış proxy yok; mevcut havuz korundu. Test etmeden kullan ayrı bir seçenektir.');}
+    catch(error:any){setStatus('Test durdurma/kayıt işlemi tamamlanamadı: '+String(error?.message||error));} };
   const onSingleTest = async () => {
     setBusy(true);
     try { const r = await testSingleProxy(); setStatus(r.ok ? `✔ Proxy çalışıyor.\nDış IP: ${r.ip}\nProxy: ${r.proxy}` : `✖ ${r.error || "başarısız"}`); }
+    catch(error:any){setStatus('Test tamamlanamadı: '+String(error?.message||error));}
     finally { setBusy(false); }
   };
-  const onUseWithout = async () => { const s = await useWithoutTest(); setPst(s); setStatus(`Test edilmeden ${human(s.pool)} proxy havuz yapıldı.`); };
+  const onUseWithout = async () => { try{const s = await useWithoutTest(); setPst(s); setStatus(`Test edilmeden ${human(s.pool)} proxy havuz yapıldı.`);}catch(error:any){setStatus('Havuz kaydedilemedi: '+String(error?.message||error));} };
 
   const card = { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, borderWidth: 1, borderRadius: RADIUS.md, padding: SPACING.md } as const;
   const label = { color: colors.onSurface, fontSize: FONT.size.base, fontWeight: FONT.weight.semibold } as const;
@@ -112,10 +126,10 @@ export default function ScanProxyScreen() {
         <View style={{ width: 26 }} />
       </View>
 
-      {!loaded ? <ActivityIndicator style={{ marginTop: SPACING.xxl }} color={colors.brandPrimary} /> : (
+      {!loaded ? <ActivityIndicator style={{ marginTop: SPACING.xxl }} color={colors.brandPrimary} /> : loadError ? <Text style={{ color: colors.error, padding: SPACING.lg }}>{loadError}{"\n"}Mevcut tercihleri değiştirmeden ekranı kapatıp tekrar açın.</Text> : (
         <ScrollView contentContainerStyle={{ padding: SPACING.lg, paddingBottom: SPACING.xxxl, gap: SPACING.md }}>
           <View style={card}>
-            <Text style={muted}>Proxy YALNIZ çoklu hesap/panel taramasında kullanılır. Sağlayıcı IP'nizi engellerse engel proxy'ye düşer; izlemeniz etkilenmez.</Text>
+            <Text style={muted}>Proxy tarama bağlantısında kullanılır. Hesap veya IP engeli olmamasını garanti etmez. Koruma ve hız sınırı yanıtlarında tarama geri çekilir.</Text>
           </View>
 
           <View style={[card, { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }]}>
@@ -123,7 +137,7 @@ export default function ScanProxyScreen() {
               <Text style={label}>Taramada proxy kullan</Text>
               <Text style={muted}>Kapalıyken tarama doğrudan sizin bağlantınızdan yapılır.</Text>
             </View>
-            <Switch testID="scan-proxy-enabled" value={cfg.enabled} onValueChange={v => { haptic.light(); patch({ enabled: v }); void setScanProxyUse(v).then(setPst); }}
+            <Switch testID="scan-proxy-enabled" value={cfg.enabled} onValueChange={v => { haptic.light(); patch({ enabled: v }); void setScanProxyUse(v).then(setPst).catch(()=>setStatus('Proxy tercihi kaydedilemedi; mevcut havuz korunuyor.')); }}
               trackColor={{ true: colors.brandPrimary, false: colors.surfaceTertiary }} />
           </View>
 
@@ -149,11 +163,16 @@ export default function ScanProxyScreen() {
           {cfg.source === "manual" && (
             <View style={card}>
               <Text style={label}>Proxy satırları</Text>
-              <Text style={[muted, { marginBottom: SPACING.sm }]}>Her satıra bir proxy:{"\n"}socks5://kullanici:sifre@gw.saglayici.com:7777{"\n"}http://1.2.3.4:8080  ·  1.2.3.4:1080</Text>
+              <Text style={[muted, { marginBottom: SPACING.sm }]}>Ücretsiz veya ücretli, her satıra bir proxy:{"\n"}socks5://kullanici:sifre@gateway:7777{"\n"}host:port:kullanici:sifre · kullanici:sifre@host:port{"\n"}JSON listesi ve cURL -x / -U biçimi de okunur. Komut çalıştırılmaz. Özel karakterler URL biçiminde yüzde kodlanabilir. SOCKS4 parola doğrulamasını desteklemez.</Text>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm, marginBottom: SPACING.sm }}>
+                {(["http", "https", "socks4", "socks5"] as const).map(scheme => <FocusButton key={scheme} focusKey={`sp-manual-${scheme}`} onPress={() => patch({ manualScheme: scheme })}
+                  style={[styles.miniChip, { borderColor: cfg.manualScheme === scheme ? colors.brandPrimary : colors.border }]}><Text style={muted}>{scheme.toUpperCase()}</Text></FocusButton>)}
+              </View>
+              <Text style={muted}>Bu tür, yalnız türü yazılmamış satırlara uygulanır. HTTPS türü proxy sunucusuna TLS bağlantısı içindir.</Text>
               <TextInput testID="scan-proxy-manual" value={cfg.manualText} onChangeText={t => patch({ manualText: t })}
                 placeholder="scheme://kullanici:sifre@host:port" placeholderTextColor={colors.onSurfaceTertiary}
-                multiline autoCapitalize="none" autoCorrect={false}
-                style={{ color: colors.onSurface, backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: RADIUS.sm, padding: SPACING.md, minHeight: 110, textAlignVertical: "top", fontSize: FONT.size.sm }} />
+                multiline scrollEnabled autoCapitalize="none" autoCorrect={false}
+                style={{ color: colors.onSurface, backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: RADIUS.sm, padding: SPACING.md, height: 180, textAlignVertical: "top", fontSize: FONT.size.sm }} />
             </View>
           )}
 
@@ -161,6 +180,12 @@ export default function ScanProxyScreen() {
             <View style={card}>
               <Text style={label}>Kaynaklar ve türleri</Text>
               <Text style={[muted, { marginBottom: SPACING.sm }]}>Her kaynaktan hangi türü indireceğinizi seçin. Ücretsiz listelerin çoğu kısa ömürlüdür; canlılık testi ayıklar.</Text>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm }}>
+                {(["all", ...PROTOS, "none"] as const).map(kind => <FocusButton key={kind} focusKey={`sp-global-${kind}`} onPress={() => setCfg(prev => ({ ...prev,
+                  autoSelections: Object.fromEntries(PROXY_SOURCE_CATALOG.map(src => [src.id, PROTOS.filter(proto => !!src.urls[proto] && (kind === "all" || kind === proto))])) }))}
+                  style={[styles.miniChip, { borderColor: colors.border }]}><Text style={muted}>{kind === "all" ? "Tümünü seç" : kind === "none" ? "Temizle" : `${kind.toUpperCase()} seç`}</Text></FocusButton>)}
+              </View>
+              <Text style={[muted, { marginVertical: SPACING.sm }]}>Bütün sağlayıcılarda uygulanır. Ardından aşağıdaki seçimleri tek tek değiştirebilirsiniz.</Text>
               {PROXY_SOURCE_CATALOG.map(src => {
                 const sel = cfg.autoSelections[src.id] || [];
                 const avail = PROTOS.filter(p => src.urls[p]);
@@ -172,7 +197,10 @@ export default function ScanProxyScreen() {
                         <Text style={{ color: colors.brandPrimary, fontSize: FONT.size.xs }}>{sel.length === avail.length ? "Temizle" : "Tümü"}</Text>
                       </TouchableOpacity>
                     </View>
-                    {!src.fresh && <Text style={[muted, { marginTop: SPACING.xs }]}>Eski liste · indirdikten sonra canlılık testi uygulayın.</Text>}
+                    {!src.fresh && <Text style={[muted, { marginTop: SPACING.xs }]}>Güncelliği garanti edilmeyen liste · canlılık testi uygulayın.</Text>}
+                    {!!pst?.sources?.[src.id] && <TouchableOpacity disabled={testing || busy} onPress={() => Alert.alert("Kaynağı havuzdan çıkar", "Başka kaynakta da bulunan proxy'ler korunur.", [
+                      { text: "Vazgeç", style: "cancel" }, { text: "Çıkar", onPress: () => { void removeProxySource(src.id).then(setPst).catch(error => setStatus(String(error?.message || error))); } }
+                    ])}><Text style={{ color: colors.error, fontSize: FONT.size.xs }}>{human(pst.sources[src.id])} aday · havuzdan çıkar</Text></TouchableOpacity>}
                     <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.xs }}>
                       {avail.map(proto => {
                         const on = sel.includes(proto);
@@ -215,6 +243,18 @@ export default function ScanProxyScreen() {
               ))}
             </View>
           )}
+
+          <View style={card}>
+            <Text style={label}>Proxy rotasyonu</Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm, marginTop: SPACING.sm }}>
+              {(["round_robin", "random", "gateway"] as const).map(mode => <FocusButton key={mode} focusKey={`sp-rotation-${mode}`} onPress={() => {
+                patch({ rotation: mode }); void saveScanProxyConfig({ ...cfg, rotation: mode }).catch(error => setStatus(String(error?.message || error)));
+              }} style={[styles.miniChip, { borderColor: cfg.rotation === mode ? colors.brandPrimary : colors.border }]}>
+                <Text style={muted}>{mode === "round_robin" ? "Sırayla" : mode === "random" ? "Rastgele" : "Sağlayıcı gateway"}</Text>
+              </FocusButton>)}
+            </View>
+            <Text style={[muted, { marginTop: SPACING.sm }]}>Gateway modunda ilk kullanılabilir adres korunur; IP değişimini sağlayıcınız yapar. Kullanıcı adındaki oturum/bölge parametreleri değiştirilmez.</Text>
+          </View>
 
           {/* Kaydet + indirme ilerlemesi */}
           <FocusButton focusKey="sp-save" disabled={busy} onPress={() => { haptic.medium(); void onSave(); }}
@@ -287,25 +327,29 @@ export default function ScanProxyScreen() {
               {prog && (prog.phase !== "idle") && (
                 <View style={{ marginTop: SPACING.md, gap: SPACING.xs }}>
                   <Text style={{ color: colors.onSurface, fontSize: FONT.size.sm, fontWeight: FONT.weight.semibold }}>
-                    {prog.phase === "running" ? "Test ediliyor…" : prog.phase === "paused" ? "Duraklatıldı" : prog.phase === "stopped" ? "Durduruldu" : "Bitti"}
+                    {prog.phase === "running" ? "Test ediliyor…" : prog.phase === "paused" ? "Duraklatıldı" : prog.phase === "interrupted" ? "Kesildi; kalan testler korunuyor" : prog.phase === "failed" ? "Test tamamlanamadı" : prog.phase === "stopped" ? "Durduruldu" : "Bitti"}
                   </Text>
                   <Text style={muted}>1/2 Hızlı bağlantı elemesi · {human(prog.tcpTested || 0)}/{human(prog.tcpTotal || 0)} · açık port {human(prog.tcpAlive || 0)}</Text>
                   <Bar colors={colors} ratio={prog.tcpTotal ? (prog.tcpTested || 0) / prog.tcpTotal : 0} />
                   <Text style={[muted, { marginTop: SPACING.xs }]}>2/2 Doğrulama + anonimlik · {human(prog.tested)}/{human(prog.total)}</Text>
                   <Bar colors={colors} ratio={prog.stage === "verify" && prog.total ? prog.tested / prog.total : 0} />
                   <Text style={[muted, { marginTop: SPACING.xs }]}>
-                    {`✔ Kullanılabilir ${prog.working}  ·  ✖ Ölü ${prog.dead}\n`}
+                    {`✔ Kullanılabilir ${prog.working}  ·  Doğrulanamadı ${prog.dead} · Filtrelendi ${prog.filtered || 0}\n`}
                     {`🛡 Elite ${prog.elite || 0} · Anonim ${prog.anonymous || 0} · Şeffaf ${prog.transparent} · Bilinmiyor ${prog.unknownAnon || 0}\n`}
                     {`HTTP ${prog.http} · SOCKS4 ${prog.socks4} · SOCKS5 ${prog.socks5}  ·  ${prog.ratePerSec}/sn${prog.etaMs > 0 ? `  ·  ~${Math.ceil(prog.etaMs / 1000)} sn` : ""}`}
                   </Text>
+                  <Text style={muted}>HTTP yanıtı: {prog.httpUsable || 0} · HTTPS yanıtı: {prog.httpsUsable || 0}{"\n"}TCP açık port, çalışan proxy demek değildir. Doğrulama en çok 16 paralel istekle çalışır.</Text>
+                  {!prog.ownIp && cfg.test.mode === "system" && <Text style={muted}>Doğrudan çıkış IP'si belirlenemedi; anonimlik bilinmiyor olarak tutulur.</Text>}
+                  {!!prog.error && <Text style={{ color: colors.error }}>{prog.error}</Text>}
+                  {Object.entries(prog.reasons || {}).map(([reason, count]) => <Text key={reason} style={muted}>{({ "proxy-auth": "Proxy parolası reddedildi", protocol: "Protokol uyuşmazlığı", tls: "TLS/sertifika", timeout: "Zaman aşımı", "rate-limit": "Test adresi hız sınırı", "not-ip": "Yanıtta geçerli IP yok", "elite-filter": "Elite filtresi", "transparent-filter": "Şeffaf filtresi", connection: "Bağlantı kurulamadı", "body-limit": "Yanıt çok büyük", "content-mismatch": "Beklenen içerik yok" } as Record<string, string>)[reason] || reason}: {count}</Text>)}
                 </View>
               )}
 
               <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.md, flexWrap: "wrap" }}>
                 {!testing ? (
-                  <FocusButton focusKey="sp-test-start" onPress={() => { haptic.medium(); void onStartTest(); }}
+                  <FocusButton focusKey="sp-test-start" onPress={() => { haptic.medium(); void onStartTest(prog?.phase === "interrupted"); }}
                     style={{ flexGrow: 1, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, alignItems: "center", backgroundColor: colors.brandPrimary }}>
-                    <Text style={{ color: colors.onBrandPrimary, fontWeight: FONT.weight.bold }}>Testi Başlat</Text>
+                    <Text style={{ color: colors.onBrandPrimary, fontWeight: FONT.weight.bold }}>{prog?.phase === "interrupted" ? "Kalan testleri devam ettir" : "Testi Başlat"}</Text>
                   </FocusButton>
                 ) : (
                   <>

@@ -15,11 +15,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ActivityIndicator, Alert, BackHandler, FlatList, StyleSheet, Switch, Text, TextInput, View, ScrollView } from "react-native";
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import { AccountPlaybackTestQueue, type PlaybackTestAccount } from '@/src/components/AccountPlaybackTestQueue';
+import { AccountPlaybackTestQueue, pendingPlaybackTests, type PlaybackTestAccount } from '@/src/components/AccountPlaybackTestQueue';
 import { parseMagArchive } from '@/src/utils/magArchive';
 import { canonicalEndpointUrl, mergeEndpointEvidence, playlistEndpoints, endpointProofLabel } from '@/src/utils/playlistEndpoints';
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT, type ThemePalette } from "@/src/theme/themes";
@@ -48,6 +48,7 @@ import { PanelScopePicker } from '@/src/components/PanelScopePicker';
 import type { DirectoryPanel, PanelTarget } from '@/src/utils/panelDirectoryModel';
 import { fetchPanelDirectory, filterDirectory, DEFAULT_CODE_SOURCE, CODE_SOURCE_KEY } from '@/src/utils/serverCode';
 import { storage } from '@/src/utils/storage';
+import { setScanProxyUse, scanProxyStatus } from '@/src/utils/scanProxy';
 
 type HostMode = "manual" | "code" | "name" | "all";
 
@@ -95,6 +96,7 @@ function magIdentity(portal: string, mac: string): string {
 
 export default function MagBulkScreen() {
   const router = useRouter();
+  const {scanRunId}=useLocalSearchParams<{scanRunId?:string}>();
   const { colors } = useTheme();
   const { playlists, addPlaylist, enrichPlaylistMedia, updatePlaylist } = usePlaylists();
   const { activeProfile } = useProfiles();
@@ -124,7 +126,7 @@ export default function MagBulkScreen() {
       let cursor='',pending:any[]=[];
       while(true){const page=await PanelScan.getArchiveRetries(archive,owner,cursor);pending.push(...page.jobs);if(!page.nextKey)break;if(page.nextKey===cursor)throw new Error('Kuyruk ilerlemiyor.');cursor=page.nextKey;}
       if(owner!==profileRef.current||epoch!==profileEpochRef.current)return;
-      if(!pending.length)throw new Error('Bu taramada bekleyen belirsiz hesap yok.');
+      if(!pending.length)throw new Error('Bu taramada bekleyen veya yarım kalmış iş yok.');
       if(pending.length>8192)throw new Error('Kayıtlı kuyruk güvenli iş sınırını aşıyor.');
       restoredRetryJobsRef.current=pending.map(row=>({...row.job,retryScope:row.job.retryScope||row.scope||'exact',selectedEndpoint:row.job.selectedEndpoint??false}));
       restoredRetryPanelsRef.current=new Map(pending.filter(row=>row.panel).map(row=>[row.job.portal,row.panel]));
@@ -137,6 +139,7 @@ export default function MagBulkScreen() {
   const [rangeCount, setRangeCount] = useState("");
   const [useRange, setUseRange] = useState(false);
   const [useProxy, setUseProxy] = useState(false);
+  useEffect(()=>{let alive=true;void PanelScan.restoreScanProxyState().then(()=>{if(alive)setUseProxy(scanProxyStatus().enabled);}).catch(()=>{});return()=>{alive=false;};},[]);
   // v18.7.2: analiz modu (eşzamanlılık + zaman aşımı + aday sınırı profili) + elle paralel sayı.
   const [scanMode, setScanMode] = useState<ScanModeKey>("balanced");
   const [parallelText, setParallelText] = useState("");   // boş → mod varsayılanı
@@ -157,6 +160,11 @@ export default function MagBulkScreen() {
   const [stageMsg, setStageMsg] = useState("");
   const [results, setResults] = useState<MagScanResult[]>([]);
   const [playbackTests, setPlaybackTests] = useState<PlaybackTestAccount[]>([]);
+  const [playbackResume,setPlaybackResume]=useState(false);
+  const resumePlaybackTests=async()=>{const owner=profileRef.current;try{const jobs=await pendingPlaybackTests(owner,'mac-frame');
+    if(profileRef.current!==owner||!mountedRef.current)return;if(!jobs.length){Alert.alert('Görüntü testi','Kalan kayıtlı görüntü testi yok.');return;}
+    setPlaybackResume(true);setPlaybackTests(jobs);
+  }catch{Alert.alert('Kurtarma','Görüntü test kaydı okunamadı; mevcut dosya korunuyor.');}};
   const [testScope, setTestScope] = useState<'selected' | 'all'>('selected');
   const [safetyStatus, setSafetyStatus] = useState('');
   const [adding, setAdding] = useState(false);
@@ -226,7 +234,8 @@ export default function MagBulkScreen() {
     const owner = activeProfile.id;
     void (async () => {
       try {
-        const archiveId = await PanelScan.getLatestResultArchive(owner);
+        const requested=typeof scanRunId==='string'?await PanelScan.getResultArchiveInfo(scanRunId,owner):null;
+        const archiveId = requested?.mode==='MAG_RESULTS'?requested.runId:await PanelScan.getLatestResultArchive(owner);
         if (!archiveId || !alive || busyRef.current) return;
         backupNameRef.current = archiveId;
         const read = createScanResultReader(PanelScan.getResultsPage);
@@ -242,7 +251,7 @@ export default function MagBulkScreen() {
       } catch (e: any) { if (alive) setStageMsg(`Kalıcı sonuçlar okunamadı: ${e?.message || e}`); }
     })();
     return () => { alive = false; };
-  }, [activeProfile.id]);
+  }, [activeProfile.id,scanRunId]);
   useEffect(() => {
     if (profileEpoch !== profileEpochRef.current || resetProfileEpochRef.current === profileEpoch) return;
     resetProfileEpochRef.current = profileEpoch;
@@ -289,6 +298,7 @@ export default function MagBulkScreen() {
 
   const startScan = useCallback(async () => {
     if (busyRef.current) return;
+    if(scanRunId)router.setParams({scanRunId:undefined});
     if (parsed.macs.length === 0) { Alert.alert("MAC yok", "En az bir geçerli MAC girin (liste veya aralık)."); return; }
     if (parsed.macs.length > MAG_MAX_MACS) { Alert.alert("Çok fazla MAC", `En fazla ${MAG_MAX_MACS} MAC taranabilir.`); return; }
     busyRef.current = true;
@@ -302,6 +312,9 @@ export default function MagBulkScreen() {
     allFoundRef.current = []; lastBackupAtRef.current = 0;
     const archiveId = `mac-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const archiveOwner=profileRef.current;
+    let scanFailed=false;
+    let heartbeat:ReturnType<typeof setInterval>|undefined;
+    let heartbeatDone=0,heartbeatTotal=0;
     backupNameRef.current = archiveId;
     setPortalReports([]); setPortalChoices({}); portalChoicesRef.current = {}; setScanPhase("discovery");
     setPaused(false); setScanning(true); setResults([]); setStageMsg("Portal kaynağı hazırlanıyor…"); setProgress({ done: 0, total: 0, current: "" });
@@ -309,8 +322,16 @@ export default function MagBulkScreen() {
     // kesiyordu). Ayrı keep-awake paketi yok; native pencere bayrağı kullanılır.
     try { KizilkanNativeCore.setKeepScreenOn(true); } catch {}
     // v18.7.21 (D): uygulama arka plana alınsa da tarama sürsün (foreground keep-alive servisi).
-    try { KizilkanNativeCore.startForegroundKeepAlive("KIZILKAN · Çoklu MAC", "Portal taraması çalışıyor…", `mac-scan:${archiveId}`, () => { controller.abort(); if (mountedRef.current) setStageMsg('Android arka plan süre sınırı; bulunan kayıtlar korunuyor.'); }); } catch {}
     try {
+      if(PanelScan.available)await setScanProxyUse(useProxy);
+      else if(useProxy)throw new Error('Proxy için Android native modülü gerekli.');
+      if(useProxy) {
+        const proxy=scanProxyStatus();
+        if(!proxy.pool || !proxy.alive)throw new Error('Proxy havuzu boş/tükenmiş. Proxy merkezinde test edin veya güvenilir gateway için Test etmeden kullan seçin.');
+      }
+      if(!KizilkanNativeCore.startForegroundKeepAlive("KIZILKAN · Çoklu MAC", "Portal taraması çalışıyor…", `mac-scan:${archiveId}`, () => { controller.abort(); if (mountedRef.current) setStageMsg('Android arka plan süre sınırı; bulunan kayıtlar korunuyor.'); }))
+        throw new Error('Arka plan servisi başlatılamadı; tarama başlamadı.');
+      heartbeat=setInterval(()=>{try{KizilkanNativeCore.updateForegroundKeepAlive(pauseRef.current?'MAC analizi duraklatıldı':`MAC analizi · ${heartbeatDone}/${heartbeatTotal}`,heartbeatDone,heartbeatTotal,`mac-scan:${archiveId}`);}catch{controller.abort();}},2000);
       await PanelScan.createResultArchive(archiveId, archiveOwner);
       const hosts = await resolveHosts();
       if (controller.signal.aborted || run !== runRef.current) return;
@@ -319,6 +340,12 @@ export default function MagBulkScreen() {
       const jobs=restoredRetryJobsRef.current||builtJobs;restoredRetryJobsRef.current=null;
       for(const [host,panel] of restoredRetryPanelsRef.current)panelByHostRef.current.set(host,panel);restoredRetryPanelsRef.current.clear();
       const hostGroups:Record<string,string>={};for(const [host,panel]of panelByHostRef.current){try{hostGroups[new URL(host).hostname.toLowerCase()]=panel.directoryKey||panel.panelName;}catch{}}
+      await PanelScan.seedArchiveRetries(archiveId,archiveOwner,jobs.map(job=>{
+        const panel=panelByHostRef.current.get(job.portal);const compactPanel=panel?{...panel,hosts:[job.portal],sources:panel.sources?.map(source=>({...source,hosts:[]}))}:undefined;
+        const scope=job.retryScope || (scopeChosen?discoveryScope:(/\.php$/i.test(new URL(job.portal).pathname)?'exact':'fallback'));
+        return {key:JSON.stringify([job.hostRaw,job.mac]),payload:{job:{...job,retryScope:scope},scope,panel:compactPanel,firstPassPending:true}};
+      }));
+      if(controller.signal.aborted || run!==runRef.current)return;
       if (capped) Alert.alert("Uyarı", "Çok fazla kombinasyon; ilk 8192 iş taranacak.");
       haptic.medium(); setProgress({ done: 0, total: jobs.length, current: "" });
       void recordDiagnostic("scan", "MAG_BULK_UI_START", { jobs: jobs.length, hosts: hosts.length, macs: parsed.macs.length, proxy: useProxy, hostMode, mode: scanMode, scope: scopeChosen ? discoveryScope : 'auto', parallel });
@@ -351,7 +378,7 @@ export default function MagBulkScreen() {
           resultBufferRef.current.push(r);
           if (!flushTimerRef.current) flushTimerRef.current = setTimeout(flushResults, 150);
         },
-        onProgress: (done, total, current) => { if (mountedRef.current && run === runRef.current) { setProgress({ done, total, current: current || "" }); try { KizilkanNativeCore.updateForegroundKeepAlive(`Tarama · ${done}/${total}`, done, total, `mac-scan:${archiveId}`); } catch {} } },
+        onProgress: (done, total, current) => { heartbeatDone=done;heartbeatTotal=total;if (mountedRef.current && run === runRef.current) { setProgress({ done, total, current: current || "" }); try { KizilkanNativeCore.updateForegroundKeepAlive(`Tarama · ${done}/${total}`, done, total, `mac-scan:${archiveId}`); } catch {} } },
         onStage: msg => { if (mountedRef.current && run === runRef.current) setStageMsg(msg); },
         control: {
           isCancelled: () => cancelRef.current,
@@ -360,12 +387,15 @@ export default function MagBulkScreen() {
         },
       });
     } catch (e: any) {
+      scanFailed=true;
       if (!controller.signal.aborted && mountedRef.current) Alert.alert("Tarama hatası", String(e?.message || e));
     } finally {
+      if(heartbeat)clearInterval(heartbeat);
       let backupNote = "";
       try { const status = await writeMagSafetyBackup(archiveId); backupNote = status?.path ? `Emniyet yedeği: ${status.path}` : ""; }
       catch (e: any) { backupNote = `TXT başarısız; kalıcı sonuçlar korunuyor: ${e?.message || e}`; }
       try { KizilkanNativeCore.stopForegroundKeepAlive(`mac-scan:${archiveId}`); } catch {}
+      PanelScan.notifyBackgroundResult(archiveId,scanFailed?'MAC analizi kesildi':controller.signal.aborted?'MAC analizi durduruldu':'MAC analizi tamamlandı','Bulunan sonuçlar ve kalan işler kalıcı kayıtta.','mag-bulk');
       if (run === runRef.current) {
         portalPickerRef.current = null;
         flushResults(); busyRef.current = false; scanAbortRef.current = null;
@@ -622,7 +652,7 @@ export default function MagBulkScreen() {
 
   return (
     <SafeAreaView style={S.root} edges={["top", "bottom"]}>
-      {!!playbackTests.length && <AccountPlaybackTestQueue accounts={playbackTests} onClose={() => setPlaybackTests([])} onEvidence={(key, evidence) => {
+      {!!playbackTests.length && <AccountPlaybackTestQueue owner={activeProfile.id} kind="mac-frame" resume={playbackResume} accounts={playbackTests} onClose={() => setPlaybackTests([])} onEvidence={(key, evidence) => {
         const target = results.find(r => magIdentity(r.portal, r.mac) === key); if (!target || !mountedRef.current) return;
         const endpoints = mergeEndpointEvidence(target.endpoints || [], evidence);
         setResults(prev => prev.map(r => magIdentity(r.portal, r.mac) === key ? { ...r, endpoints } : r));
@@ -681,6 +711,7 @@ export default function MagBulkScreen() {
 
         {hostMode !== 'manual' && <PanelScopePicker scope="all" target={magPanelTarget} directory={magDirectory} onScope={()=>{}} onTarget={setMagPanelTarget} onLoad={()=>void loadMagDirectory()} busy={scanning||adding||saving||magDirectoryBusy}/>}
         <FocusButton disabled={scanning||adding||saving} onPress={()=>void restorePendingMacJobs()} style={S.chip}><Text style={S.chipText}>Kayıtlı belirsiz MAC denemelerini getir</Text></FocusButton>
+        <FocusButton disabled={scanning||adding||saving||playbackTests.length>0} onPress={()=>void resumePlaybackTests()} style={S.chip}><Text style={S.chipText}>Yarım kalan görüntü testlerini devam ettir</Text></FocusButton>
         {/* MAC girişi */}
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: SPACING.md }}>
           <Text style={S.label}>MAC ADRESLERİ</Text>
@@ -849,7 +880,7 @@ export default function MagBulkScreen() {
               <FocusButton disabled={scanning || adding || saving} onPress={() => {
                 const list = (testScope === 'all' ? results : selectedResults).filter(r => r.category === 'valid' || r.category === 'probable');
                 if (!list.length) { Alert.alert('Görüntü testi', 'Test için geçerli/muhtemel hesap seçin.'); return; }
-                setPlaybackTests(list.map(r => ({ key: magIdentity(r.portal, r.mac), endpoint: r.portal, kind: 'stalker', mac: r.mac, profileId: activeProfile.id })));
+                setPlaybackResume(false);setPlaybackTests(list.map(r => ({ key: magIdentity(r.portal, r.mac), endpoint: r.portal, kind: 'stalker', mac: r.mac, profileId: activeProfile.id,archiveId:backupNameRef.current,priorEndpoints:r.endpoints })));
               }} style={S.chip}><Text style={S.chipText}>Gerçek ilk kareyi test et</Text></FocusButton>
             </View>
             {!scanning && (

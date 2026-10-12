@@ -181,7 +181,7 @@ async function rateLimitRetryOrchestration() {
     const result = await runner.runMagBulkScan([job(1)], { scope: 'exact',
       onRetry: async (_job, state) => retryStates.push(state), onResult: r => callbacks.push(r.category) });
     if (stage === 'captcha') {
-      assert.equal(discoveries, 1); assert.equal(logins, 0); assert.deepEqual(retryStates, []);
+      assert.equal(discoveries, 1); assert.equal(logins, 0); assert.deepEqual(retryStates, ['resolved'], 'CAPTCHA is terminal; a preseeded job is cleared without a retry');
     } else if (stage === 'persistent') {
       assert.equal(discoveries, 2); assert.equal(logins, 0);
       assert.deepEqual(retryStates, ['pending', 'unresolved']); assert.equal(result[0].category, 'protected');

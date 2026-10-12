@@ -14,7 +14,7 @@ function between(source, first, last) {
   assert.ok(start >= 0 && end > start, `Missing production extraction boundary: ${first}`);
   return source.slice(start, end);
 }
-const poolBodies = between(poolSource, '  private class RequestControl {', '  // Authenticator');
+const poolBodies = between(poolSource, '  private class RequestControl {', '  // Credentials are scoped');
 const moduleQueues = between(moduleSource, '  // Cancellation must remain', '  override fun definition()');
 const registrations = between(moduleSource, '    AsyncFunction("proxiedProbe")', '    // v17.1.1:');
 const destroy = between(moduleSource, '    OnDestroy {', '    // ── v18.4.0:');
@@ -52,7 +52,10 @@ object ScanProxyPool {
   data class Entry(val key: String = "fixture", val host: String = "localhost", val port: Int = 1)
   data class Selection(val proxy: Proxy = Proxy.NO_PROXY, val basicHeader: String? = null, val entry: Entry = Entry())
   val selected = AtomicInteger(0); val released = AtomicInteger(0); val faults = CopyOnWriteArrayList<Fault>()
-  fun select(): Selection { selected.incrementAndGet(); return Selection() }
+  fun select(url: String? = null): Selection { selected.incrementAndGet(); return Selection() }
+  fun isEmptyPool() = false
+  fun isExhausted() = false
+  fun openConnection(url: URL, entry: Entry?) = url.openConnection(Proxy.NO_PROXY) as HttpURLConnection
   fun release(selection: Selection) { released.incrementAndGet() }
   fun reportResult(context: Context, key: String, fault: Fault) { faults.add(fault) }
   fun classify(error: Throwable) = Fault.UNKNOWN

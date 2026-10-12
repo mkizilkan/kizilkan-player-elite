@@ -32,7 +32,7 @@ need(/Katalog(?: örneği)?: \$\{n\} kanal/.test(magBulk) && /ilk kare sınanmad
 // Xtream combo tarafı (istek üzerine probe)
 need(/const \[bulkContentTest, setBulkContentTest\]/.test(addPl), 'Xtream: bulkContentTest state yok');
 need(/const testBulkContent = React\.useCallback/.test(addPl), 'Xtream: testBulkContent yok');
-need(/xtreamLiveCatalogProbe\(\{ server: c\.server, username: c\.username, password: c\.password \}, per\.signal\)/.test(addPl), 'Xtream: hafif canlı katalog probe çağrısı yok');
+need(/xtreamLiveCatalogProbe\(\{\s*server:\s*c\.server,\s*username:\s*c\.username,\s*password:\s*c\.password\s*\},\s*(?:per\.signal|signal)(?:,\s*catalogProxy)?\)/.test(addPl), 'Xtream: hafif canlı katalog probe çağrısı yok');
 need(/bulk-content-test-btn/.test(addPl), 'Xtream: "Görüntü Test Et" butonu yok');
 need(/bulk-select-content-btn/.test(addPl) && /bulkContentYesKeys/.test(addPl), 'Xtream: "Görüntü Olanları Seç" butonu/anahtar seti yok');
 need(/const ct = bulkContentTest\[c\.key\]/.test(addPl) && /Katalog var · \$\{ct\.count\} kanal/.test(addPl), 'Xtream: dürüst katalog rozeti yok');

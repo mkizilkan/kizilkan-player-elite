@@ -180,7 +180,11 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.31 RC1 — dal `codex/v18.7.31-dns-tests-fast-catalog`)
+## 9. Mevcut durum (v18.7.32 RC1 — dal `codex/v18.7.32-proxy-background`)
+
+Kullanıcı onaylı tek-build proxy/arka plan paketi: gerçek SOCKS4a/5 ve HTTP/HTTPS gateway, request-specific auth/parola dahil anahtar; 23 kaynak/global tür/4 download worker/resmî mirror/8 MiB streaming; sıralı-rastgele-gateway rotasyon/kesin 4 bağlantı; IP/anonimlik/HTTP-HTTPS/neden ayrımı. Manuel/custom kaynak-test sırları Keystore AES-GCM/AtomicFile/fail-closed restore. Native proxy FGS/checkpoint/resume; MAG first-pass preseed/heartbeat/global proxy; durable katalog/frame queue; Media3 background gerçek first-frame/401-403-429 retreat; terminal bildirim/runId/profil arşivi. **144 master gate PASS; localhost SOCKS, HTTP/TLS, engine, iptal ve TS queue PASS.** Son DEV/package/commit/run teslimi `AI-DEVIR-v18.7.32.md` §8. Fiziksel cihaz kabulü ayrı; force-stop/reboot/OEM kesintisiz çalışma garantisi yok. Repo 12.10.2026 gh kontrolünde **public**, kullanıcı talebi; değiştirilmeyecek. Ham hesap/source/log/APK git'e eklenmez.
+
+## 9-eski-18731. v18.7.31 RC1 — dal `codex/v18.7.31-dns-tests-fast-catalog`
 
 Kullanıcı onaylı DNS/görüntü testi/en iyi seçim ve MAG soğuk başlangıç hızlı API köprüsü paketi. Ayrıntılar ve gerçekleşen teslim kayıtları: `AI-DEVIR-v18.7.31.md`. Ayarlar hesabın üstünde ortak DNS yöneticisi; ek DNS, gerçek ilk kare, seri toplu test, manuel/en hızlı kare veren seçim, tam metadata yazımı/rollback. Aynı-panel auth=0/timeout failover; CF/429 terminal. Özel MAG path/port korunur. Film/Dizi için doğrulanmış Xtream bulk API soğuk başlangıçta da denenir; saf Stalker fallback/live-first korunur. 1/2/3 gün, hafta, 30 gün aralıkları gerçek hesaplamayla eklenir. **142 denetim temiz, tsc temiz, DEV BUILD SUCCESSFUL ve telefona 180731 / 18.7.31-dev kuruldu; PC/telefon SHA aynı. Kod 8b7f42f4 ayrı dala push edildi. Manuel normal build 154 success; APK+rapor Release'e yayımlandı.** Gerçek panel/player kabul testleri bekliyor. Repo private; eski 579 arşiviyle public talebi auto-review tarafından reddedildi.
 

@@ -10,6 +10,7 @@ const fs = require('fs'), path = require('path');
 const root = path.resolve(__dirname, '..');
 const rd = f => fs.readFileSync(path.join(root, f), 'utf8');
 const pool = rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/ScanProxyPool.kt');
+const engine = rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/ProxyTestEngine.kt');
 const svc = rd('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/PanelScanService.kt');
 const add = rd('frontend/app/add-playlist.tsx');
 const code = rd('frontend/src/utils/serverCode.ts');
@@ -27,8 +28,8 @@ need(/await confirmScanProxyReady\(\);\s*await confirmBackgroundScanProtection\(
 need(/proxyState\.enabled && \(proxyState\.alive \|\| 0\) === 0/.test(code), 'JS keşfi boş havuzda açık hata vermiyor');
 
 // 2) Test motoru
-need(/private fun tcpAlive\(/.test(pool) && /T\.stage = "tcp"/.test(pool) && /T\.stage = "verify"/.test(pool), 'iki aşamalı test (tcp → verify) yok');
-need(/JUDGE_URL = "http:\/\/httpbin\.org\/get"/.test(pool) && /"elite"/.test(pool) && /"anonymous"/.test(pool) && /"transparent"/.test(pool), 'anonimlik sınıflandırması yok');
+need(/ProxyTestEngine\.start/.test(pool) && /var stage = "tcp"/.test(engine) && /state\.stage="verify"/.test(engine), 'iki aşamalı test (tcp → verify) yok');
+need(/https:\/\/httpbin\.org\/get/.test(engine) && /"elite"/.test(engine) && /"anonymous"/.test(engine) && /"transparent"/.test(engine) && /state\.ownIp\.isNotEmpty/.test(engine), 'kanıtlı anonimlik sınıflandırması yok');
 need(/PER_PROXY_INFLIGHT/.test(pool) && /fun release\(sel: Selection\?\)/.test(pool), 'proxy başına yük sınırı yok');
 need(/fun refreshPoolIfStale\(/.test(pool) && /ScanProxyPool\.refreshPoolIfStale\(applicationContext\)/.test(svc), 'tarama öncesi tazeleme yok');
 need(/GOOD_FILE/.test(pool) && /good\[key\] = entry/.test(pool), 'kalıcı iyi proxy listesi yok');

@@ -28,6 +28,22 @@ class PanelScanModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("PanelScan")
+    Function("notifyBackgroundResult") { id: String, title: String, text: String, route: String ->
+      appContext.reactContext?.let { JobNotices.show(it,id,title,text,route) } ?: false
+    }
+    AsyncFunction("saveBackgroundWork") { scope: String, json: String ->
+      val context=appContext.reactContext ?: error("Android context yok")
+      ScanProxyPool.saveWorkJournal(context,scope,json)
+    }
+    AsyncFunction("loadBackgroundWork") { scope: String ->
+      val context=appContext.reactContext ?: error("Android context yok")
+      ScanProxyPool.loadWorkJournal(context,scope)
+    }
+    AsyncFunction("probePlaybackFrame") { id: String, url: String, headers: String, timeout: Int ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      FrameProbe.probe(context, id, url, headers, timeout.coerceIn(3000,20000)).toString()
+    }.runOnQueue(appContext.backgroundCoroutineScope)
+    AsyncFunction("cancelPlaybackFrame") { id: String -> FrameProbe.cancel(id) }.runOnQueue(proxyCancelScope)
     OnDestroy {
       proxyCancelScope.cancel()
       proxyCancelDispatcher.close()
@@ -39,6 +55,26 @@ class PanelScanModule : Module() {
     AsyncFunction("setScanProxyEnabled") { on: Boolean ->
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
       ScanProxyPool.setEnabled(context, on).toString()
+    }
+    AsyncFunction("setScanProxyRotation") { mode: String ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.setRotation(context, mode).toString()
+    }
+    AsyncFunction("saveScanProxyManualText") { text: String ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.saveManualText(context, text)
+    }
+    AsyncFunction("loadScanProxyManualText") {
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.loadManualText(context)
+    }
+    AsyncFunction("saveScanProxyPrivateConfig") { json: String ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.savePrivateConfig(context, json)
+    }
+    AsyncFunction("loadScanProxyPrivateConfig") {
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.loadPrivateConfig(context)
     }
     // JS listeleri tür bazında ayrıştırıp yapısal aday listesi gönderir. replace=false → ekle.
     AsyncFunction("loadScanProxyCandidates") { json: String, replace: Boolean ->
@@ -54,6 +90,10 @@ class PanelScanModule : Module() {
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
       ScanProxyPool.clearAll(context).toString()
     }
+    AsyncFunction("removeScanProxySource") { sourceId: String ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.removeSource(context, sourceId).toString()
+    }
     // Canlılık testi: {mode, url, expectText, concurrency, timeoutMs, rejectTransparent}
     AsyncFunction("startScanProxyTest") { cfgJson: String ->
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
@@ -65,7 +105,14 @@ class PanelScanModule : Module() {
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
       ScanProxyPool.stopTest(context, useTested).toString()
     }
-    Function("getScanProxyTestProgress") { ScanProxyPool.getTestProgress().toString() }
+    Function("getScanProxyTestProgress") {
+      ScanProxyPool.getTestProgress().toString()
+    }
+    AsyncFunction("restoreScanProxyState") {
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanProxyPool.restoreIfNeeded(context); ProxyTestEngine.restore(context)
+      ScanProxyPool.getTestProgress().toString()
+    }.runOnQueue(appContext.backgroundCoroutineScope)
     AsyncFunction("testScanProxy") {
       val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
       ScanProxyPool.testExternalIp(context).toString()
@@ -353,6 +400,10 @@ class PanelScanModule : Module() {
       val job=org.json.JSONObject(payload);journal.enqueueRetry(runId,key,job,System.currentTimeMillis())
       journal.updateRetry(runId,key,attempts,state,System.currentTimeMillis(),job);true
     }
+    AsyncFunction("seedArchiveRetries") { runId: String, profileId: String, json: String ->
+      val context=appContext.reactContext ?: error("Android context yok")
+      ScanJournalStore.get(context).seedArchiveRetries(runId,profileId,org.json.JSONArray(json));true
+    }
     AsyncFunction("getArchiveRetries") { runId: String, profileId: String, afterKey: String ->
       val context=appContext.reactContext ?: error("Android context yok");val journal=ScanJournalStore.get(context)
       check(journal.ownerOf(runId)==profileId){"Yeniden deneme başka profile ait"}
@@ -373,6 +424,10 @@ class PanelScanModule : Module() {
       val context = appContext.reactContext ?: error("Android context yok")
       ScanJournalStore.get(context).latestResultArchive(profileId) ?: ""
     }
+    AsyncFunction("getResultArchiveInfo") { runId:String, profileId:String ->
+      val context = appContext.reactContext ?: throw IllegalStateException("Android context yok")
+      ScanJournalStore.get(context).archiveInfo(runId,profileId)?.toString() ?: "null"
+    }.runOnQueue(appContext.backgroundCoroutineScope)
     AsyncFunction("getLatestAccountArchive") { profileId: String ->
       val context = appContext.reactContext ?: error("Android context yok")
       ScanJournalStore.get(context).latestResultArchive(profileId, false) ?: ""

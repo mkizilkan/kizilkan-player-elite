@@ -3,6 +3,7 @@ import {mergeEndpointEvidence,playlistEndpoints} from "@/src/utils/playlistEndpo
 import {CatalogProgressCards} from "@/src/components/CatalogProgressCards";
 import type {RefreshProgress} from "@/src/utils/refreshPlaylist";
 import {PanelScopePicker} from "@/src/components/PanelScopePicker";
+import { loadTestQueue, runTestQueue } from '@/src/utils/durableTestQueue';
 import React, { useMemo, useState } from "react";
 import {
   View,
@@ -22,7 +23,7 @@ import {
   BackHandler,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as Sharing from "expo-sharing";
@@ -42,7 +43,7 @@ import { catalogCategories, applyContentSelection, allContentSelection } from "@
 import { playlistIdentityCanonical } from "@/src/utils/playlistManagement";
 import { FocusButton } from "@/src/components/FocusButton";
 import { CatalogPreparationModal } from "@/src/components/CatalogPreparationModal";
-import { AccountPlaybackTestQueue, type PlaybackTestAccount } from '@/src/components/AccountPlaybackTestQueue';
+import { AccountPlaybackTestQueue, pendingPlaybackTests, type PlaybackTestAccount } from '@/src/components/AccountPlaybackTestQueue';
 import { applyCatalogProgress } from "@/src/utils/catalogProgress";
 import {
   DEFAULT_CODE_SOURCE,CODE_SOURCE_KEY,filterDirectory,canonicalPanelHost,validPanelHosts,type DirectoryScope,type PanelTarget,
@@ -204,6 +205,7 @@ export default function AddPlaylist() {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const router = useRouter();
+  const {scanRunId}=useLocalSearchParams<{scanRunId?:string}>();
   const { colors } = useTheme();
   const { playlists, addPlaylist, addPreparedPlaylist, enrichPlaylistMedia, updatePlaylist, setActivePlaylist } = usePlaylists();
   const { activeProfile } = useProfiles();
@@ -322,53 +324,44 @@ export default function AddPlaylist() {
     return !(Number.isFinite(n) && n > 0 && n * 1000 < Date.now());
   }).map(c => c.key), [bulkCandidates]);
   const [selectedBulkCandidateKeys, setSelectedBulkCandidateKeys] = useState<string[]>([]);
-  // v18.7.24 (B — istek üzerine): Xtream combo'da bulunan hesaplara isteğe bağlı "görüntü var/yok" testi.
-  // Tarama login çeker (içerik çekmez); gerçek görüntü yalnız get_live_streams probe'u ile anlaşılır.
-  // Kullanıcı butonla başlatır (otomatik değil → ban/hız riski yok).
+  // Katalog kontrolü kanal varlığını ölçer; görüntü kanıtı ayrı ilk kare testidir.
   const [bulkContentTest, setBulkContentTest] = useState<Record<string, { state: "testing" | "yes" | "no" | "err"; count: number; error?: string }>>({});
   const [bulkTestScope, setBulkTestScope] = useState<'selected' | 'all'>('selected');
   const [playbackTests, setPlaybackTests] = useState<PlaybackTestAccount[]>([]);
+  const [playbackResume,setPlaybackResume]=useState(false);
+  const resumePlaybackTests=async()=>{const owner=activeProfile.id;try{const jobs=await pendingPlaybackTests(owner,'xtream-frame');
+    if(screenOwnerRef.current!==owner)return;if(!jobs.length){Alert.alert('Görüntü testi','Kalan kayıtlı görüntü testi yok.');return;}
+    setPlaybackResume(true);setPlaybackTests(jobs);
+  }catch{Alert.alert('Kurtarma','Görüntü test kaydı okunamadı; mevcut dosya korunuyor.');}};
   const [bulkContentTesting, setBulkContentTesting] = useState(false);
   const [bulkContentTestProgress, setBulkContentTestProgress] = useState({ done: 0, total: 0 });
   const bulkContentAbortRef = React.useRef<AbortController | null>(null);
   React.useEffect(() => () => { bulkContentAbortRef.current?.abort(); }, []);
   const bulkContentYesKeys = useMemo(() => Object.keys(bulkContentTest).filter(k => bulkContentTest[k]?.state === "yes"), [bulkContentTest]);
-  const testBulkContent = React.useCallback(async () => {
-    const list = bulkCandidates.filter(c => c.server && c.username && c.password && (bulkTestScope === 'all' || selectedBulkCandidateKeys.includes(c.key)));
-    if (!list.length || bulkContentTesting) { if (!list.length) Alert.alert('Hesap seçin', 'Test edilecek hesapları seçin veya Tümü kapsamını açın.'); return; }
-    const ctrl = new AbortController(); bulkContentAbortRef.current = ctrl;
-    setBulkContentTesting(true);
-    setBulkContentTestProgress({ done: 0, total: list.length });
-    setBulkContentTest(prev => { const next = { ...prev }; for (const c of list) next[c.key] = { state: "testing", count: 0 }; return next; });
-    void recordDiagnostic("scan", "BULK_CONTENT_TEST_START", { accounts: list.length });
-    // v18.7.25 (B): hız — arka planda throttle olmasın diye ön plan servisi; paralellik 6→20, timeout 15→10 sn.
-    const keepAliveOwner = `catalog-test-${Date.now()}`;
-    try { KizilkanNativeCore.startForegroundKeepAlive("Katalog testi", `${list.length} hesap kontrol ediliyor`, keepAliveOwner, () => ctrl.abort()); } catch {}
-    let done = 0; let yes = 0; const CONC = 20; let idx = 0;
-    const worker = async () => {
-      while (idx < list.length && !ctrl.signal.aborted) {
-        const c = list[idx++];
-        let result: { state: "yes" | "no" | "err"; count: number; error?: string } = { state: "no", count: 0 };
-        try {
-          const per = new AbortController(); const timer = setTimeout(() => per.abort(), 30000);
-          const onAbort = () => per.abort(); ctrl.signal.addEventListener("abort", onAbort);
-          try {
-            const count = await xtreamLiveCatalogProbe({ server: c.server, username: c.username, password: c.password }, per.signal);
-            result = count > 0 ? { state: "yes", count } : { state: "no", count: 0 };
-          } finally { clearTimeout(timer); ctrl.signal.removeEventListener("abort", onAbort); }
-        } catch (e: any) { result = { state: "err", count: 0, error: `${e?.kind || e?.name || 'NETWORK'}${e?.status ? ` · HTTP ${e.status}` : ''}` }; }
-        if (ctrl.signal.aborted) break;
-        if (result.state === "yes") yes++;
-        setBulkContentTest(prev => ({ ...prev, [c.key]: result }));
-        done++; setBulkContentTestProgress({ done, total: list.length });
-      }
-    };
-    try { await Promise.all(Array.from({ length: Math.min(CONC, list.length) }, worker)); } finally {
-      if (bulkContentAbortRef.current === ctrl) { bulkContentAbortRef.current = null; setBulkContentTesting(false); }
-      try { KizilkanNativeCore.stopForegroundKeepAlive(keepAliveOwner); } catch {}
-      void recordDiagnostic("scan", "BULK_CONTENT_TEST_DONE", { tested: done, withContent: yes, aborted: ctrl.signal.aborted });
-    }
-  }, [bulkCandidates, bulkContentTesting, bulkTestScope, selectedBulkCandidateKeys]);
+  const [catalogRecoveryCount,setCatalogRecoveryCount]=useState(0);
+  React.useEffect(()=>{let alive=true;void loadTestQueue<{key:string;server:string;username:string;password:string},{state:'yes'|'no'|'err';count:number;error?:string}>(activeProfile.id,'catalog').then(saved=>{
+    if(!alive || !saved)return;setBulkContentTest(saved.results);setCatalogRecoveryCount(saved.phase==='done'?0:saved.jobs.filter(job=>!Object.prototype.hasOwnProperty.call(saved.results,job.key)).length);
+  }).catch(()=>{if(alive)setError('Kayıtlı katalog testleri okunamadı; mevcut kayıtlar silinmedi.');});return()=>{alive=false;bulkContentAbortRef.current?.abort();};},[activeProfile.id]);
+  const testBulkContent = React.useCallback(async (resume=false) => {
+    const list=bulkCandidates.filter(c=>c.server&&c.username&&c.password&&(bulkTestScope==='all'||selectedBulkCandidateKeys.includes(c.key)));
+    if(bulkContentTesting)return;
+    if(!resume&&!list.length){Alert.alert('Hesap seçin','Test edilecek hesapları seçin veya Tümü kapsamını açın.');return;}
+    const owner=activeProfile.id;const ctrl=new AbortController();bulkContentAbortRef.current=ctrl;setBulkContentTesting(true);
+    const catalogProxy = PanelScan.getScanProxyStatus().enabled;
+    try {
+      const CONC = 20;
+      const state=await runTestQueue({owner,kind:'catalog',title:'Canlı katalog testi',resume,jobs:list.map(c=>({key:c.key,server:c.server,username:c.username,password:c.password})),signal:ctrl.signal,concurrency:CONC,timeoutMs:30000,
+        test:async(c,signal)=>{
+          try{const count=await xtreamLiveCatalogProbe({server:c.server,username:c.username,password:c.password},signal,catalogProxy);return {state:count>0?'yes' as const:'no' as const,count};}
+          catch(e:any){return {state:'err' as const,count:0,error:e?.kind||e?.name||'NETWORK'};}
+        },
+        onResult:(c,result)=>{if(screenAliveRef.current&&screenOwnerRef.current===owner&&!leavingRef.current)setBulkContentTest(prev=>({...prev,[c.key]:result}));},
+        onProgress:(done,total)=>{if(screenAliveRef.current&&screenOwnerRef.current===owner&&!leavingRef.current)setBulkContentTestProgress({done,total});}
+      });
+      if(screenOwnerRef.current===owner)setCatalogRecoveryCount(state.phase==='done'?0:state.jobs.length-Object.keys(state.results).length);
+    }catch(e:any){Alert.alert('Katalog testi kesildi',String(e?.message||e));}
+    finally{if(bulkContentAbortRef.current===ctrl){bulkContentAbortRef.current=null;setBulkContentTesting(false);}}
+  },[bulkCandidates,bulkContentTesting,bulkTestScope,selectedBulkCandidateKeys,activeProfile.id]);
   const [bulkUseAllValidatedHosts, setBulkUseAllValidatedHosts] = useState(true);
   const [showBulkCandidates, setShowBulkCandidates] = useState(false);
   const bulkResultsDismissedRef = React.useRef(false);
@@ -813,6 +806,7 @@ export default function AddPlaylist() {
   };
 
   const startAcceptedScan = async (starter: () => Promise<NativeScanStartResult | null>): Promise<string> => {
+    if(scanRunId)router.setParams({scanRunId:undefined});
     await confirmScanProxyReady();
     await confirmBackgroundScanProtection();
     let result = await starter();
@@ -836,6 +830,7 @@ export default function AddPlaylist() {
   const isScanAbort = (e: any) => e?.name === "AbortError" || /kullanıcı tarafından durduruldu/i.test(String(e?.message || e || ""));
 
   const beginDiscoveryPreparation = (title: string, subtitle: string, progressText: string) => {
+    setShowBulkCandidates(false);
     nativePreparationAbortRef.current?.abort();
     const controller = new AbortController();
     nativePreparationAbortRef.current = controller;
@@ -865,6 +860,7 @@ export default function AddPlaylist() {
     }
     if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
     nativeScanSeenRef.current = new Set();
+    setShowBulkCandidates(false);
     setDiscoveryMatches([]);
     setSelectedDiscoveryKeys([]);
     setDiscoveryTitle(title);
@@ -886,9 +882,19 @@ export default function AddPlaylist() {
 
     return await new Promise<PanelCredentialMatch[]>((resolve, reject) => {
       let settled = false;
+      const snapshotDeadline = Date.now() + 30000;
       nativeScanTimerRef.current = setInterval(() => {
         const snap = PanelScan.getSnapshot();
-        if (snap.runId !== runId) return; // eski/stale snapshot yeni işi tamamlayamaz
+        if (snap.runId !== runId) {
+          if (Date.now() > snapshotDeadline && !settled) {
+            settled = true; if(nativeScanTimerRef.current)clearInterval(nativeScanTimerRef.current); nativeScanTimerRef.current = null;
+            void PanelScan.cancelScan(runId).catch(()=>{});
+            setNativeScanRunning(false); setNativeScanPaused(false); setNativeScanStopping(false); setLoading(false);
+            if(nativeScanRunIdRef.current===runId)nativeScanRunIdRef.current="";
+            reject(new Error("Native tarama 30 saniyede durum bildirmedi. Sonuçlar silinmedi."));
+          }
+          return;
+        }
         if (snap.error) {
           if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
           nativeScanTimerRef.current = null;
@@ -907,13 +913,13 @@ export default function AddPlaylist() {
         const testedNow = Number(snap.tested || 0);
         const totalNow = Number(snap.total || candidates.length);
         setProgress(
-          `${cfg.label} · NATIVE · %${pct}\n` +
+          `${cfg.label} · NATIVE · ${snap.phase === "retry" ? `İkinci tur · ${snap.retryPending || 0} bekleyen` : `İlk tur · %${pct}`}\n` +
           `Panel ${snap.panelTested || 0}/${snap.panelTotal || 0} · Adres ${testedNow}/${totalNow} · Kalan ${Math.max(0,totalNow-testedNow)} · Bulunan ${snap.found || matches.length}` +
           (snap.panelName ? `\nŞu an: ${snap.panelName}${snap.currentServer ? ` · ${snap.currentServer}` : ""}` : "") +
-          `\nGeçen: ${formatScanDuration(Date.now()-createdAt)} · Tahmini kalan: ${scanEta(createdAt,testedNow,totalNow)}` +
+          `\nGeçen: ${formatScanDuration(Date.now()-createdAt)} · Tahmini kalan: ${snap.phase === "retry" ? "ikinci tur sürüyor" : scanEta(createdAt,testedNow,totalNow)}` +
           (snap.paused ? `\nDURAKLATILDI` : snap.state === "CANCELLING" ? `\nDURDURULUYOR — aktif ağ istekleri kapatılıyor` : "")
         );
-        if (snap.running === false && (snap.total || 0) > 0) {
+        if (snap.running === false && ((snap.total || 0) > 0 || ["COMPLETED", "CANCELLED", "FAILED"].includes(String(snap.state)))) {
           if (nativeScanTimerRef.current) clearInterval(nativeScanTimerRef.current);
           nativeScanTimerRef.current = null;
           setNativeScanRunning(false); setNativeScanPaused(false); setNativeScanStopping(false); setLoading(false);
@@ -1488,8 +1494,16 @@ export default function AddPlaylist() {
       if (syncing || cancelled || leavingRef.current) return;
       syncing = true;
       try {
-        const scan = PanelScan.available ? PanelScan.getSnapshot() : {};
+        let scan = PanelScan.available ? PanelScan.getSnapshot() : {};
+        if(typeof scanRunId==='string' && scan.runId!==scanRunId) {
+          const requested=await PanelScan.getResultArchiveInfo(scanRunId,activeProfile.id);
+          if(requested && requested.mode!=='MAG_RESULTS')scan={...requested,mode:requested.mode as 'single'|'bulk'|'unified'|'streaming-file-v172',state:requested.state==='FAILED'?'FAILED':requested.state==='CANCELLED'?'CANCELLED':requested.state==='COMPLETED'?'COMPLETED':'PAUSED',running:false,paused:!['COMPLETED','CANCELLED','FAILED'].includes(String(requested.state))};
+        }
         if (scan.profileId && scan.profileId !== activeProfile.id) return;
+        if(!nativePreparationAbortRef.current && !bulkPreparationAbortRef.current) {
+          if(scan.runId && scan.mode === "single") setShowBulkCandidates(false);
+          else if(scan.runId && scan.mode) setShowDiscoveryMatches(false);
+        }
         if(scan.runId)bulkEvidenceRunIdRef.current=String(scan.runId);
         if (scan.runId && await scanRecoveryDeferred(activeProfile.id, scan.runId)) bulkResultsDismissedRef.current = true;
         const { playlists, bulkAdding, commitPreparedPlaylist } = recoveryContextRef.current;
@@ -1583,6 +1597,7 @@ export default function AddPlaylist() {
             mergeBulkCandidates(resolved, shouldReveal);
             if (Array.isArray(scan.accountStatuses)) setBulkAccountProgress(scan.accountStatuses);
             setBulkScanPaused(!!scan.paused); setBulkScanFinished(!scan.running); bulkNativeScanRef.current=!!scan.running;
+            if (!scan.running) setBulkScanStopping(false);
             if(scan.mode === "streaming-file-v172")setBulkStreamProgress({read:Number(scan.accountTotal||0),completed:Number(scan.accountTested||0),tested:Number(scan.tested||0),found:Number(scan.found||0),producerDone:!!scan.producerDone});
             if (scan.running && scan.runId) bulkScanRunIdRef.current = String(scan.runId);
             else if (!scan.running && bulkScanRunIdRef.current === scan.runId) bulkScanRunIdRef.current = "";
@@ -1730,7 +1745,7 @@ export default function AddPlaylist() {
     void syncSnapshots();
     timer = setInterval(() => { void syncSnapshots(); }, 850);
     return () => { cancelled = true; if (timer) clearInterval(timer); };
-  }, [mergeStreamingMatches, mergeBulkCandidates, activeProfile.id]);
+  }, [mergeStreamingMatches, mergeBulkCandidates, activeProfile.id,scanRunId]);
 
   const resolveOneBulkAccount = async (
     account: BulkAccountInput,
@@ -1962,11 +1977,18 @@ export default function AddPlaylist() {
     const snapshotDeadline=Date.now()+30000;
     while (true) {
       const snap=PanelScan.getSnapshot();
-      if (snap.runId !== runId) { if(Date.now()>snapshotDeadline)throw new Error("Native tarama 30 saniyede durum bildirmedi; yeniden deneyin.");await new Promise(resolve=>setTimeout(resolve,120)); continue; }
+      if (snap.runId !== runId) {
+        if(Date.now()>snapshotDeadline) {
+          await PanelScan.cancelScan(runId).catch(()=>false);
+          bulkNativeScanRef.current=false;
+          if(bulkScanRunIdRef.current===runId)bulkScanRunIdRef.current="";
+          throw new Error("Native tarama 30 saniyede durum bildirmedi. Durdurma istendi; kalıcı sonuçlar korunuyor.");
+        }
+        await new Promise(resolve=>setTimeout(resolve,120)); continue;
+      }
       if (Array.isArray(snap.accountStatuses)) setBulkAccountProgress(snap.accountStatuses);
       const raw: any[] = [];
       await readJournal(runId, !snap.running, rows => { raw.push(...rows); });
-      if (snap.error && !raw.length) throw new Error(snap.error);
       if (raw.length) {
         const resolved: BulkResolvedCandidate[]=[];
         for (const m of raw) {
@@ -1975,6 +1997,11 @@ export default function AddPlaylist() {
           resolved.push({ key:bulkCandidateKey(account.row,account.username,code,panelName,server), sourceRow:account.row, name:account.name.trim()||panelName||hostName(server), username:account.username, password:account.password, panelName:panelName||hostName(server), code, server,login:m.login,sources:m.sources, validatedHosts:[server], direct:!!account.server || panelName === "Doğrudan DNS" });
         }
         mergeBulkCandidates(resolved); lastFound=raw.length;
+      }
+      if (snap.error) {
+        bulkNativeScanRef.current=false;
+        if(bulkScanRunIdRef.current===runId)bulkScanRunIdRef.current="";
+        throw new Error(snap.error);
       }
       completed=Number(snap.accountTested||0); const tested=Number(snap.tested||0), total=Number(snap.total||0), pct=total?Math.round(tested/total*100):0;
       const createdAt = Number(snap.createdAt || Date.now());
@@ -1986,7 +2013,7 @@ export default function AddPlaylist() {
         ? ` · Parti ${Math.min(Number(snap.batchCount), Number(snap.batchIndex) + 1)}/${Number(snap.batchCount)}` : "";
       const concurrencyLabel = snap.requestedConcurrency
         ? `\nParalellik: istenen ${snap.requestedConcurrency} · etkin ${snap.effectiveConcurrency || snap.requestedConcurrency} · parti ${snap.batchSize || batchSize}` : "";
-      setProgress(`${cfg.label} · NATIVE · %${pct}${batchLabel}\nHesap ${completed}/${accounts.length} · Adres ${tested}/${total} · Kalan ${Math.max(0,total-tested)} · Bulunan ${foundCount}${snap.panelName?`\nŞu an: ${snap.panelName}${snap.currentServer ? ` · ${snap.currentServer}` : ""}`:""}${concurrencyLabel}\nGeçen: ${formatScanDuration(Date.now()-createdAt)} · Tahmini kalan: ${scanEta(createdAt,tested,total)}${snap.paused?"\nDURAKLATILDI":snap.state==="CANCELLING"?"\nDURDURULUYOR — aktif ağ istekleri kapatılıyor":""}`);
+      setProgress(`${cfg.label} · NATIVE · ${snap.phase==='retry'?`İkinci tur · ${snap.retryPending||0} bekleyen`:`İlk tur · %${pct}`}${batchLabel}\nHesap ${completed}/${accounts.length} · Adres ${tested}/${total} · Kalan ${Math.max(0,total-tested)} · Bulunan ${foundCount}${snap.panelName?`\nŞu an: ${snap.panelName}${snap.currentServer ? ` · ${snap.currentServer}` : ""}`:""}${concurrencyLabel}\nGeçen: ${formatScanDuration(Date.now()-createdAt)} · Tahmini kalan: ${snap.phase==='retry'?'ikinci tur sürüyor':scanEta(createdAt,tested,total)}${snap.paused?"\nDURAKLATILDI":snap.state==="CANCELLING"?"\nDURDURULUYOR — aktif ağ istekleri kapatılıyor":""}`);
       if (!snap.running) {
         // v17.0.3: terminal scan snapshot + account map kullanıcı açıkça kapatana/ekleyene kadar korunur.
         // Activity/process yeniden oluşsa bile bulunan sonuçlar tekrar hydrate edilir.
@@ -2063,10 +2090,17 @@ export default function AddPlaylist() {
       const snapshotDeadline=Date.now()+30000;
       while (true) {
         const snap = PanelScan.getSnapshot();
-        if (snap.runId !== runId) { if(Date.now()>snapshotDeadline)throw new Error("Dosya taraması 30 saniyede durum bildirmedi; yeniden deneyin.");await new Promise(resolve => setTimeout(resolve, 120)); continue; }
+        if (snap.runId !== runId) {
+          if(Date.now()>snapshotDeadline) {
+            await PanelScan.cancelScan(runId).catch(()=>false);
+            bulkNativeScanRef.current=false;
+            if(bulkScanRunIdRef.current===runId)bulkScanRunIdRef.current="";
+            throw new Error("Dosya taraması 30 saniyede durum bildirmedi. Durdurma istendi; kalıcı sonuçlar korunuyor.");
+          }
+          await new Promise(resolve => setTimeout(resolve, 120)); continue;
+        }
         const raw: any[] = [];
         await readJournal(runId, !snap.running, rows => { raw.push(...rows); });
-        if (snap.error && !raw.length) throw new Error(snap.error);
         if (raw.length) {
           const resolved: BulkResolvedCandidate[] = [];
           for (const m of raw) {
@@ -2082,6 +2116,11 @@ export default function AddPlaylist() {
           }
           mergeBulkCandidates(resolved,!bulkResultsDismissedRef.current); lastFound = raw.length;
         }
+        if (snap.error) {
+          bulkNativeScanRef.current=false;
+          if(bulkScanRunIdRef.current===runId)bulkScanRunIdRef.current="";
+          throw new Error(snap.error);
+        }
         completed = Number(snap.accountTested || 0);
         const tested = Number(snap.tested || 0);
         const accountTotal = Number(snap.accountTotal || 0);
@@ -2093,7 +2132,7 @@ export default function AddPlaylist() {
         const foundCount = Number(snap.found ?? raw.length);
         const producerLabel = snap.producerDone ? "dosya okuma tamam" : Number(snap.queueCapacity||0) ? `dosya okunuyor · kuyruk ${Number(snap.queueDepth||0)}/${Number(snap.queueCapacity||0)}` : "dosya hazırlanıyor · henüz hesap okunmadı";
         const concurrencyLabel = `\nParalellik: istenen ${snap.requestedConcurrency || requestedConcurrency} · etkin ${snap.effectiveConcurrency || requestedConcurrency} · parti ${snap.batchSize || batchSize}`;
-        setProgress(`${cfg.label} · NATIVE STREAM v17.3\nHesap tamamlanan ${completed}${snap.producerDone ? `/${accountTotal}` : ` · okunan ${accountTotal}`} · Adres ${tested} · Bulunan ${foundCount}${Number(snap.skippedNoCandidate||0) ? ` · Hedefsiz ${Number(snap.skippedNoCandidate)}` : ""}\n${producerLabel}${concurrencyLabel}\nGeçen: ${formatScanDuration(Date.now()-createdAt)}${snap.paused?"\nDURAKLATILDI":snap.state==="CANCELLING"?"\nDURDURULUYOR — aktif ağ istekleri kapatılıyor":""}`);
+        setProgress(`${cfg.label} · NATIVE STREAM v17.3 · ${snap.phase==='retry'?`İkinci tur · ${snap.retryPending||0} bekleyen · ${snap.retryUnresolved||0} belirsiz`:'İlk tur'}\nHesap tamamlanan ${completed}${snap.producerDone ? `/${accountTotal}` : ` · okunan ${accountTotal}`} · Adres ${tested} · Bulunan ${foundCount}${Number(snap.skippedNoCandidate||0) ? ` · Hedefsiz ${Number(snap.skippedNoCandidate)}` : ""}\n${producerLabel}${concurrencyLabel}\nGeçen: ${formatScanDuration(Date.now()-createdAt)}${snap.paused?"\nDURAKLATILDI":snap.state==="CANCELLING"?"\nDURDURULUYOR — aktif ağ istekleri kapatılıyor":""}`);
         if (!snap.running) {
           bulkNativeScanRef.current = false;
           if (bulkScanRunIdRef.current === runId) bulkScanRunIdRef.current = "";
@@ -2107,6 +2146,7 @@ export default function AddPlaylist() {
   };
 
   const submitBulkAccounts = async () => {
+    setShowDiscoveryMatches(false);
     bulkContentAbortRef.current?.abort(); bulkContentAbortRef.current = null;
     setBulkContentTest({}); setBulkContentTesting(false);
     const parsed = bulkParsed;
@@ -2977,7 +3017,7 @@ ${pub.path}`, [
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top", "bottom"]} testID="add-playlist-screen">
-      {!!playbackTests.length && <AccountPlaybackTestQueue accounts={playbackTests} onClose={() => setPlaybackTests([])} onEvidence={(key, evidence) => {
+      {!!playbackTests.length && <AccountPlaybackTestQueue owner={activeProfile.id} kind="xtream-frame" resume={playbackResume} accounts={playbackTests} onClose={() => setPlaybackTests([])} onEvidence={(key, evidence) => {
         if(leavingRef.current || !screenAliveRef.current || screenOwnerRef.current!==activeProfile.id)return;
         const target=bulkCandidates.find(c=>c.key===key);if(!target)return;
         const endpoints=mergeEndpointEvidence(target.endpoints||[],evidence);
@@ -3009,6 +3049,8 @@ ${pub.path}`, [
           }}
         >
           {!!scanSafetyStatus && <Text selectable style={{ color: colors.onSurfaceSecondary, marginBottom: SPACING.md }}>{scanSafetyStatus}</Text>}
+          <FocusButton disabled={loading||bulkContentTesting||playbackTests.length>0} onPress={()=>void resumePlaybackTests()} style={{padding:12}}><Text style={{color:colors.brandPrimary}}>Yarım kalan görüntü testlerini devam ettir</Text></FocusButton>
+          {catalogRecoveryCount>0 && <FocusButton disabled={loading||bulkContentTesting} onPress={()=>void testBulkContent(true)} style={{padding:12}}><Text style={{color:colors.brandPrimary}}>Kalan {catalogRecoveryCount} katalog testini devam ettir</Text></FocusButton>}
           <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary }]}>KAYNAK TÜRÜ</Text>
           <View style={styles.methodGrid}>
             {methods.map(m => {
@@ -3873,8 +3915,14 @@ ${pub.path}`, [
                     bulkScanPausedRef.current = false;
                     setBulkScanPaused(false);
                     bulkPreparationAbortRef.current?.abort();
-                    if (bulkScanRunIdRef.current) await PanelScan.cancelScan(bulkScanRunIdRef.current);
-                    setProgress("DURDURULUYOR — katalog hazırlığı/ağ istekleri kesiliyor; bulunan sonuçlar korunacak.");
+                    try {
+                      const snap=PanelScan.getSnapshot();
+                      const owned=bulkScanRunIdRef.current || (snap.profileId===activeProfile.id && snap.mode!=='single' && snap.running ? snap.runId : '');
+                      if(owned) {
+                        if(!await PanelScan.cancelScan(owned))throw new Error('Durdurma isteği kabul edilmedi. Tekrar deneyin veya Zorla çık kullanın.');
+                        setProgress("DURDURULUYOR — ağ istekleri kesiliyor; bulunan sonuçlar korunacak.");
+                      } else { setBulkScanStopping(false);setBulkScanFinished(true);setLoading(false);setProgress('Hazırlık durduruldu; kayıtlı sonuçlar korundu.'); }
+                    } catch(error:any) { setBulkScanStopping(false);setError(String(error?.message||error)); }
                   }} style={[styles.bulkBtn,{borderColor:colors.error,backgroundColor:colors.surfaceSecondary,opacity:bulkScanStopping?0.55:1}]}>
                     <Text style={{color:colors.error,fontWeight:FONT.weight.bold}}>{bulkScanStopping ? "Durduruluyor…" : "Durdur"}</Text>
                   </FocusButton>
@@ -3916,7 +3964,7 @@ ${pub.path}`, [
                 <FocusButton disabled={bulkAdding || bulkContentTesting} onPress={() => {
                   const list = bulkCandidates.filter(c => bulkTestScope === 'all' || selectedBulkCandidateKeys.includes(c.key));
                   if (!list.length) { Alert.alert('Hesap seçin', 'Önce test edilecek hesapları seçin.'); return; }
-                  setPlaybackTests(list.map(c => ({ key: c.key, endpoint: c.server, kind: 'xtream', username: c.username, password: c.password, profileId: activeProfile.id })));
+                  setPlaybackResume(false);setPlaybackTests(list.map(c => ({ key: c.key, endpoint: c.server, kind: 'xtream', username: c.username, password: c.password, profileId: activeProfile.id,archiveId:bulkEvidenceRunIdRef.current,priorEndpoints:c.endpoints })));
                 }} style={{ padding: 12 }}><Text style={{ color: colors.brandPrimary }}>Gerçek ilk kare testi</Text></FocusButton>
               </View>
               {/* Katalog kontrolü ilk kare kanıtı değildir. */}
@@ -3928,6 +3976,9 @@ ${pub.path}`, [
                     {bulkContentTesting ? <ActivityIndicator size="small" color={colors.brandPrimary} /> : <Ionicons name="tv-outline" size={16} color={colors.brandPrimary} />}
                     <Text style={{color:colors.brandPrimary,fontWeight:FONT.weight.bold,marginLeft:6}}>{bulkContentTesting ? `Test ediliyor ${bulkContentTestProgress.done}/${bulkContentTestProgress.total} (durdur)` : "Canlı Katalog Test Et"}</Text>
                   </FocusButton>
+                  {catalogRecoveryCount>0 && <FocusButton disabled={bulkAdding||bulkContentTesting} onPress={()=>void testBulkContent(true)} style={[styles.bulkBtn,{borderColor:colors.brandPrimary}]}>
+                    <Text style={{color:colors.brandPrimary}}>Kalan {catalogRecoveryCount} katalog testini devam ettir</Text>
+                  </FocusButton>}
                   {bulkContentYesKeys.length > 0 && (
                     <FocusButton focusable testID="bulk-select-content-btn" disabled={bulkAdding}
                       onPress={() => setSelectedBulkCandidateKeys(bulkContentYesKeys)}

@@ -60,13 +60,25 @@ async function ownedScan(start: () => Promise<any>): Promise<NativeScanStartResu
 }
 
 export const PanelScan = {
+  notifyBackgroundResult: (id:string,title:string,text:string,route:'add-playlist'|'mag-bulk'|'scan-proxy'):boolean => !!native?.notifyBackgroundResult?.(id,title,text,route),
+  saveBackgroundWork: async (scope:string,value:unknown):Promise<void> => {
+    if(!native?.saveBackgroundWork || !await native.saveBackgroundWork(scope,JSON.stringify(value)))throw new Error('Arka plan iş kaydı kaydedilemedi.');
+  },
+  loadBackgroundWork: async <T,>(scope:string):Promise<T|null> => {
+    if(!native?.loadBackgroundWork)return null;const value=JSON.parse(await native.loadBackgroundWork(scope));return Object.keys(value).length?value:null;
+  },
   writeArchiveRetry: async (runId:string,profileId:string,key:string,payload:any,state:string,attempts:number):Promise<void> => {
     if(!native?.writeArchiveRetry)throw new Error('Kalıcı yeniden deneme için güncel uygulama gerekli.');
     await native.writeArchiveRetry(runId,profileId,key,JSON.stringify(payload),state,attempts);
   },
+  seedArchiveRetries: async (runId:string,profileId:string,rows:Array<{key:string;payload:unknown}>):Promise<void> => {
+    if(!native?.seedArchiveRetries)throw new Error('Kalıcı iş kuyruğu için güncel uygulama gerekli.');
+    for(let i=0;i<rows.length;i+=128)await native.seedArchiveRetries(runId,profileId,JSON.stringify(rows.slice(i,i+128)));
+  },
   getArchiveRetries: async (runId:string,profileId:string,afterKey=''):Promise<{jobs:any[];nextKey:string}> => native?.getArchiveRetries ? JSON.parse(await native.getArchiveRetries(runId,profileId,afterKey)) : {jobs:[],nextKey:''},
   available: !!native,
   getLatestAccountArchive: async (profileId: string): Promise<string> => native?.getLatestAccountArchive ? await native.getLatestAccountArchive(profileId) : "",
+  getResultArchiveInfo: async (runId:string,profileId:string):Promise<{runId:string;profileId:string;mode:string;state:string;createdAt:number}|null> => native?.getResultArchiveInfo ? JSON.parse(await native.getResultArchiveInfo(runId,profileId)) : null,
   updateResultEvidence: async (runId: string, identity: Record<string, string>, evidence: unknown): Promise<boolean> => native?.updateResultEvidence ? !!(await native.updateResultEvidence(runId, JSON.stringify(identity), JSON.stringify(evidence))) : false,
   createResultArchive: async (runId: string, profileId: string) => native ? await native.createResultArchive(runId, profileId) : runId,
   appendResultArchive: async (runId: string, key: string, payload: any): Promise<{ok?:boolean;error?:string;path?:string}> => native ? JSON.parse(await native.appendResultArchive(runId, key, JSON.stringify(payload))) : { ok: false, error: 'Otomatik kalıcı tarama yedeği Android Native gerektirir; bu sonuçları TXT ile kaydedin.' },
@@ -169,6 +181,30 @@ export const PanelScan = {
   clearDiagnostics: (): boolean => native ? !!native.clearDiagnostics?.() : false,
 
   // ── v18.4.0: Taramaya özel proxy (test motoru + rotasyon) ─────────────────
+  probePlaybackFrame: async (id: string, url: string, headers: Record<string,string>, signal?: AbortSignal): Promise<{frame:boolean;reason:string;elapsedMs?:number}> => {
+    if (!native?.probePlaybackFrame) return {frame:false,reason:"NATIVE_UNAVAILABLE"};
+    const cancel=()=>{void native.cancelPlaybackFrame?.(id);};
+    signal?.addEventListener("abort",cancel,{once:true});
+    try { if(signal?.aborted)return {frame:false,reason:"CANCELLED"}; return JSON.parse(await native.probePlaybackFrame(id,url,JSON.stringify(headers),12000)); }
+    finally { signal?.removeEventListener("abort",cancel); }
+  },
+  saveScanProxyManualText: async (text: string): Promise<void> => {
+    if (!native?.saveScanProxyManualText) throw new Error("Şifreli proxy kaydı için uygulamayı güncelleyin.");
+    if (!await native.saveScanProxyManualText(text)) throw new Error("Proxy bilgisi kaydedilemedi.");
+  },
+  loadScanProxyManualText: async (): Promise<string> => native?.loadScanProxyManualText ? String(await native.loadScanProxyManualText()) : "",
+  saveScanProxyPrivateConfig: async (json: string): Promise<void> => {
+    if (!native?.saveScanProxyPrivateConfig || !await native.saveScanProxyPrivateConfig(json)) throw new Error("Şifreli proxy tercihleri kaydedilemedi.");
+  },
+  loadScanProxyPrivateConfig: async (): Promise<string> => native?.loadScanProxyPrivateConfig ? String(await native.loadScanProxyPrivateConfig()) : "{}",
+  removeScanProxySource: async (sourceId: string): Promise<NativeScanProxyStatus> => {
+    if (!native?.removeScanProxySource) throw new Error("Kaynak silme desteklenmiyor.");
+    return JSON.parse(await native.removeScanProxySource(sourceId));
+  },
+  setScanProxyRotation: async (mode: "round_robin" | "random" | "gateway"): Promise<NativeScanProxyStatus> => {
+    if (!native?.setScanProxyRotation) throw new Error("Proxy rotasyonu için uygulamayı güncelleyin.");
+    return JSON.parse(await native.setScanProxyRotation(mode));
+  },
   setScanProxyEnabled: async (on: boolean): Promise<NativeScanProxyStatus> => {
     if (!native?.setScanProxyEnabled) return emptyProxyStatus("native-unavailable");
     try { return JSON.parse(await native.setScanProxyEnabled(on)); } catch (e: any) { return emptyProxyStatus(String(e?.message || e)); }
@@ -197,6 +233,10 @@ export const PanelScan = {
   stopScanProxyTest: async (useTested: boolean): Promise<NativeScanProxyStatus> => {
     if (!native?.stopScanProxyTest) return emptyProxyStatus("native-unavailable");
     try { return JSON.parse(await native.stopScanProxyTest(useTested)); } catch (e: any) { return emptyProxyStatus(String(e?.message || e)); }
+  },
+  restoreScanProxyState: async (): Promise<ScanProxyTestProgress> => {
+    if (!native?.restoreScanProxyState) return PanelScan.getScanProxyTestProgress();
+    return JSON.parse(await native.restoreScanProxyState());
   },
   getScanProxyTestProgress: (): ScanProxyTestProgress => {
     if (!native?.getScanProxyTestProgress) return { phase: "idle", total: 0, tested: 0, working: 0, dead: 0, transparent: 0, http: 0, socks4: 0, socks5: 0, elapsedMs: 0, etaMs: 0, ratePerSec: 0, ownIp: "", fastest: [] };
@@ -258,6 +298,7 @@ function emptyProxyStatus(err: string): NativeScanProxyStatus {
 }
 
 export type NativeScanProxyEntry = {
+  sourceIds?: string[];
   scheme: "http" | "https" | "socks4" | "socks5";
   host: string;
   port: number;
@@ -266,6 +307,7 @@ export type NativeScanProxyEntry = {
 };
 
 export type ScanProxyTestConfig = {
+  resume?: boolean;
   mode: "system" | "custom";
   url?: string;
   expectText?: string;
@@ -277,7 +319,8 @@ export type ScanProxyTestConfig = {
 };
 
 export type ScanProxyTestProgress = {
-  phase: "idle" | "running" | "paused" | "done" | "stopped" | "cancelled" | "failed";
+  phase: "idle" | "running" | "paused" | "done" | "stopped" | "cancelled" | "failed" | "interrupted";
+  runId?: string; filtered?: number; httpUsable?: number; httpsUsable?: number; reasons?: Record<string, number>;
   mode?: string;
   /** v18.5.0: "tcp" hızlı bağlantı elemesi → "verify" doğrulama + anonimlik. */
   stage?: "" | "tcp" | "verify";
@@ -287,10 +330,12 @@ export type ScanProxyTestProgress = {
   http: number; socks4: number; socks5: number;
   elapsedMs: number; etaMs: number; ratePerSec: number;
   ownIp: string; error?: string;
-  fastest: Array<{ proxy: string; ms: number; anon?: string }>;
+  fastest: Array<{ proxy: string; ms: number; anon?: string; http?: boolean; https?: boolean }>;
 };
 
 export type NativeScanProxyStatus = {
+  sources?: Record<string, number>;
+  rotation?: "round_robin" | "random" | "gateway";
   enabled: boolean;
   candidates: number;
   candidatesByScheme?: { http: number; socks4: number; socks5: number };

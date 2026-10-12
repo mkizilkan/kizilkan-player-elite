@@ -333,6 +333,10 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
   const accountJobs = opts.selectPortals
     ? jobs.filter(job => choices[job.portal] || selectablePortalCandidates(reportByHost.get(job.portal)).length === 0)
     : jobs;
+  if(opts.selectPortals) {
+    const selectedJobs=new Set(accountJobs.map(job=>JSON.stringify([job.hostRaw,job.mac])));
+    for(const job of jobs)if(!selectedJobs.has(JSON.stringify([job.hostRaw,job.mac])))await opts.onRetry?.(job,'resolved',0);
+  }
   opts.onPhase?.("accounts");
   let done = 0, cursor = 0;
   const scanOne = async (job: MagBulkJob): Promise<MagScanResult> => {
@@ -393,7 +397,9 @@ export async function runMagBulkScan(jobs: MagBulkJob[], opts: MagScanOptions = 
         if (cancelled(opts.control)) return;
         if(!opts.retryPass && isUncertainMagResult(result))await opts.onRetry?.({...job,portal:choices[job.portal]||job.portal,retryScope:opts.scope||(/\.php$/i.test(new URL(job.portal).pathname)?'exact':'fallback'),selectedEndpoint:!!choices[job.portal]},'pending',0);
         results.push(result); done++;
-        await opts.onResult?.(result); opts.onProgress?.(done, accountJobs.length, job.hostRaw + " · " + job.mac);
+        await opts.onResult?.(result);
+        if(!opts.retryPass && !isUncertainMagResult(result))await opts.onRetry?.(job,'resolved',0);
+        opts.onProgress?.(done, accountJobs.length, job.hostRaw + " · " + job.mac);
       } catch (error: any) { if (aborted(error) || cancelled(opts.control)) return; throw error; }
     }
   };

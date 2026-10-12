@@ -99,4 +99,18 @@ pass++;
   pass++;
 }
 
+// Provider credentials are opaque; punctuation and different passwords must survive.
+one('gw.example:7777:Customer-Region-TR:p:a;ss|word', {scheme:'http',host:'gw.example',port:7777,user:'Customer-Region-TR',pass:'p:a;ss|word'});
+one('socks5h://CaseUser:p%40ss%3A%2F%20word@gw.example:1080', {scheme:'socks5',host:'gw.example',port:1080,user:'CaseUser',pass:'p@ss:/ word'});
+one('http://[2001:db8::1]:3128', {scheme:'http',host:'2001:db8::1',port:3128});
+assert.equal(P.parseProxyLine('ftp://host:123').length,0);
+assert.equal(P.parseProxyLine('host:8080oops').length,0);
+assert.equal(P.parseProxyLine('2001:db8::1').length,0);
+assert.equal(P.parseProxyText('u:p@host:80\nu:q@host:80').length,2);
+const json=P.parseProxyText(JSON.stringify({results:[{proxy_address:'gw.example',port:8080,username:'USER',password:'p,;: |',protocol:'socks5'}]}));
+assert.deepEqual(norm(json),[{scheme:'socks5',host:'gw.example',port:8080,user:'USER',pass:'p,;: |'}]);
+const curl=P.parseProxyText(`curl 'https://example.test' -U 'customer-USER:p:a;ss' -x 'gw.example:7777'`);
+assert.deepEqual(norm(curl),[{scheme:'http',host:'gw.example',port:7777,user:'customer-USER',pass:'p:a;ss'}]);
+assert.equal(P.parseProxyText('{broken json').length,0);
+pass+=5;
 console.log(`PASS: scan-proxy parser — ${pass} test grubu TEMİZ`);

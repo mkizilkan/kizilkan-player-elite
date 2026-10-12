@@ -1,9 +1,25 @@
 # GPT DEVİR — KIZILKAN PLAYER ELITE (güncel durum ve talimatlar)
 
-**Son güncelleme:** 2026-10-08, GPT oturumu — v18.7.28 RC1 proxy kaynakları güncellemesi. Önceki sürüm notları ve planlar tarihî kayıt olarak aşağıda korunmuştur. Bu dosya, token/bağlam azaldığında
+**Son güncelleme:** 2026-10-12, GPT oturumu — v18.7.32 RC1 proxy ve arka plan paketi. Ayrıntılı dosya/karar/kök neden/test/cihaz sınırı/teslim: [AI-DEVIR-v18.7.32.md](AI-DEVIR-v18.7.32.md). Önceki sürüm notları ve planlar tarihî kayıt olarak aşağıda korunmuştur. Bu dosya, token/bağlam azaldığında
 başka bir yapay zekânın (GPT) işi kaldığı yerden sürdürmesi için yazıldı. Önce `CLAUDE.md`'yi (özellikle §2 çalışma
 sözleşmesi, §3 doğrulama, §4 sürüm/dal, §5 mimari, §7 tuzaklar, §8 log analizi) oku; aşağıdakiler ona EKtir.
-**En güncel durum aşağıdaki “0. GÜNCEL EK — 08.10.2026 / v18.7.28 RC1 / proxy kaynakları” bölümündedir.**
+**En güncel durum v18.7.32 devir dosyası ve aşağıdaki 12.10.2026 bölümündedir; eski incelemeler uygulama öncesi fotoğraftır.**
+
+## 0. GÜNCEL EK — 12.10.2026 / v18.7.32 RC1
+
+**Yetki:** Tek build, kontroller, ayrı dal commit/push, manuel NORMAL release, PC DEV/bağlı telefona veri silmeden kurulum. Dal `codex/v18.7.32-proxy-background`, taban `940dffdc`. Repo public doğrulandı/değiştirilmedi. Telefon ADB boştu; uninstall yok.
+
+**Dosya/karar:**
+- `scanProxyParse.ts`: strict scheme/port/URI/host:port:user:pass/IPv6/JSON/cURL metni, özel karakter, parola dahil dedup/source ownership. `scanProxy.ts`/`scan-proxy.tsx`: 23 sağlayıcı/global tür+bireysel düzenleme/4 streaming worker/8 MiB/mirror/ham-yeni-ms-hata. Manuel/custom kaynak-test sırları encrypted private config'e başarılı yazı sonrası migrate.
+- `ProxySocketFactory.java`/`ProxyHttpConnection.kt`: gerçek SOCKS4a/5 remote DNS, request HTTP407/CONNECT, TLS-to-proxy/nested TLS. Global Authenticator yerine request auth/SHA256 kimlik; proxy auth hedefe gitmez, cert kontrolü açık. `ScanProxyPool.kt`: kesin 4 bağlantı/rotation/unknown-target fault, source removal/shared preserve, zero-test eski pool, AtomicFile AES-GCM/fail-closed.
+- `ProxyTestEngine.kt`/`ProxyTestService.kt`: TCP/IP/anonimlik/HTTP-HTTPS/nedenler, UUID workers/connections, encrypted BitSet checkpoint/resume/FGS/wake/timeout. Eski motor pool'dan buraya taşındı; test özellikleri çıkarılmadı.
+- `add-playlist.tsx`: modal sahipliği/retry/streaming/terminal/30sn owned snapshot deadline ve iptal, partial-hit+error koruma, exact archive route. `mag-bulk.tsx`/`magBulkScan.ts`: global proxy/preflight/FGS heartbeat, ağ öncesi tüm first-pass 128'lik journal, DB-before-complete/scope/recovery.
+- `durableTestQueue.ts`: profil/type/run, encrypted jobs/results, checkpoint-before-network/bounded workers/abort/fatal join; katalog/frame restore. `iptv.ts`: katalog scan button opt-in proxy; normal player/content default korunur.
+- `AccountPlaybackTestQueue.tsx`/`EndpointPlaybackTest.tsx`/`FrameProbe.kt`: tek upstream/seri renderer, foreground VideoView, background detached Surface/Media3 first-frame, her kanıt ilerlemeden arşiv+journal; unmeasurable cancelled/kalan. Native HTTP401/403/429 retry/sonraki örnek durur. `JobNotices.kt`: allowlist runId/profil route; bridge/manifest/Gradle bağlandı.
+
+**Kontrol:** Master 144 PASS; parser28 PASS; production Java SOCKS remote-DNS/auth/reject/timeout PASS; production Kotlin/OkHttp HTTP/TLS/nested CONNECT/auth isolation/cancel/cert reject PASS; production Kotlin engine IP/HTML/auth/429/anonimlik/unknown baseline/verify≤16/pause-process/no-repeat PASS; TS download/mirror/secret migration/queue cancel/profile/FGtimeout/fatal-join/frame checkpoint PASS; Kotlin cancellation/body-byte PASS. Sandbox localhost/Bash izin hatası test atlanmadan PC yetkileriyle tekrar edildi ve full master geçti. `poll` recursive inference açık Runnable ile düzeltildi. Son tsc/DEV/package/commit/run bağlantıları ayrıntılı dosya §8'de tamamlanır.
+
+**Opus sınırı:** Same-run 57k→4k→0–2 cihaz logu yok; tek kesin neden/yeni hit sayısı iddia edilmeyecek. TCP≠proxy≠hesap≠katalog≠ilk kare. Baseline/judge belirsizi elite değil. Keystore hardware/frame/OEM screen-off kabulü PC fixture değildir. Force-stop/pil/reboot kalan iş kurtarmadır. Proxy katalog 1MiB BODY_LIMIT belirsizdir. Room/PlayerHost/timeshift/tek upstream korundu. Gateway gerçek rotasyonu sağlayıcıya ait; WAF bypass/public credential testi/token rewriting yok. NPM dependency eklenmedi; native OkHttp4.12/Media3 1.8 mevcut sürümler.
 
 ## 0. GÜNCEL EK — 08.10.2026 / v18.7.28 RC1 / proxy kaynakları
 

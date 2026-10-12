@@ -350,7 +350,7 @@ function normalizeServer(server: string): string {
   return s.replace(/\/+$/, '');
 }
 
-async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSignal): Promise<T> {
+async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSignal, scanProxy = false): Promise<T> {
   const { acquireHostRequest, deferHost, retryAfterMilliseconds, abortableDelay } = await import('./hostRequestPolicy');
   const host = new URL(url).hostname.toLowerCase();
   let last: any = null;
@@ -359,9 +359,16 @@ async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSi
     const release = await acquireHostRequest(host, externalSignal);
     const { controller, cleanup } = linkedAbortController(timeoutMs, externalSignal);
     try {
-      const res = await fetch(url, {
+      const requestHeaders = { 'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16', 'Accept': 'application/json,*/*' };
+      const res = scanProxy ? await (async()=>{
+        const { PanelScan }=await import('@/modules/panel-scan');
+        const reply=await PanelScan.proxiedRequest(url,'GET',requestHeaders,'',timeoutMs,controller.signal,1048576);
+        if(!reply.status)throw Object.assign(new Error('Proxy üzerinden katalog yanıtı tamamlanamadı; sonuç belirsiz.'),{kind:reply.error||'TRANSPORT_UNCERTAIN'});
+        const headers=new Headers(reply.headers||{});
+        return {ok:reply.ok,status:reply.status,headers,text:async()=>reply.body};
+      })() : await fetch(url, {
         signal: controller.signal,
-        headers: { 'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16', 'Accept': 'application/json,*/*' },
+        headers: requestHeaders,
       });
       throwIfExternallyAborted(externalSignal);
         if(res.headers?.get?.('cf-mitigated')?.toLowerCase()==='challenge')throw Object.assign(new Error('Sunucu doğrulama/koruma istiyor.'),{kind:'PROTECTION',status:res.status});
@@ -376,7 +383,7 @@ async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSi
     } catch (e:any) {
       if (externalSignal?.aborted) throwIfExternallyAborted(externalSignal);
       last = e;
-      if (e?.kind === 'PROTECTION' || e?.kind === 'RATE_LIMIT' || e?.kind === 'ACCOUNT_REJECTED' || e?.kind === 'HTML_RESPONSE' || e?.kind === 'INVALID_JSON' || (e?.status && ![429, 500, 502, 503, 504].includes(e.status))) throw e;
+      if (scanProxy || e?.kind === 'PROTECTION' || e?.kind === 'RATE_LIMIT' || e?.kind === 'ACCOUNT_REJECTED' || e?.kind === 'HTML_RESPONSE' || e?.kind === 'INVALID_JSON' || (e?.status && ![429, 500, 502, 503, 504].includes(e.status))) throw e;
       if (controller.signal.aborted) last = Object.assign(new Error('API yanıtı zaman aşımına uğradı.'), { kind: 'TIMEOUT' });
     } finally { cleanup(); release(); }
     if (attempt === 0) await abortableDelay(500, externalSignal);
@@ -465,9 +472,9 @@ export async function xtreamLiveSample(cred: XtreamCredentials, signal?: AbortSi
   return { url: `${base}/live/${encodeURIComponent(cred.username)}/${encodeURIComponent(cred.password)}/${row.stream_id}.${ext}`, count: valid.length, alternatives:Array.from(new Set(valid.slice(0,16).map(urlFor))).slice(0,3) };
 }
 
-export async function xtreamLiveCatalogProbe(cred: XtreamCredentials, signal?: AbortSignal): Promise<number> {
+export async function xtreamLiveCatalogProbe(cred: XtreamCredentials, signal?: AbortSignal, scanProxy = false): Promise<number> {
   const base = normalizeServer(cred.server);
-  const rows = await xtGet<unknown>(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_streams`, 10000, signal);
+  const rows = await xtGet<unknown>(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_streams`, 10000, signal, scanProxy);
   if (!Array.isArray(rows)) throw new Error('Canlı katalog API yanıtı dizi değil.');
   return rows.filter(row => row && typeof row === 'object' && /^\d+$/.test(String(row.stream_id))).length;
 }
