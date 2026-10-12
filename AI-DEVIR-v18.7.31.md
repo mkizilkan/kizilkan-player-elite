@@ -146,8 +146,8 @@ DEV ayrı paket `com.gpt.kizilkan.player.dev`; normal uygulamanın üstüne kuru
   MAG MAC (+base64 yeniden hesaplandı) ve 5 panel alan adı yer tutucuya çevrildi
   (`panel-a.example`…`panel-e.example`). Gerçek→yer tutucu tablosu yalnız yerel, gitignore'lu
   `KIZILKAN-HESAP-ARSIVI-panel-eslesme.txt` dosyasında.
-- Davranış değişikliği yok: tek işlevsel fark tanı etiketi `HKPREMIUM_PCAP_HANDSHAKE` →
-  `PANEL_A_PCAP_HANDSHAKE`; bu değeri okuyan başka kod yok. Doğrulama: tsc temiz,
+- Davranış değişikliği yok: tek işlevsel fark, eski panel adını taşıyan PCAP handshake
+  tanı etiketinin `PANEL_A_PCAP_HANDSHAKE` olması; bu değeri okuyan başka kod yok. Doğrulama: tsc temiz,
   `denetle.js` TÜM TEMİZ, MAG testleri + v18711/18713/18722 kapıları PASS.
 - **Depo hâlâ PRIVATE.** Görünürlük değişikliği izin sınıflandırıcısı tarafından engellendi;
   kullanıcı kendi çalıştıracak: `gh repo edit mkizilkan/kizilkan-player-elite --visibility public
