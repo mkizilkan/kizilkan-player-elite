@@ -79,11 +79,12 @@ panelscan/ yukarıda: frontend/modules/panel-scan/android/src/main/java/expo/mod
 - Gerçek TS source/queue fixture PASS: 4 download worker/mirror/shared source/oversize/empty/encrypted migration; pre-network save, cancel/restart/profile/FG timeout/fatal worker join/per-frame checkpoint.
 - Üretim Kotlin cancel fixture PASS: localhost cancel/pre-cancel, UTF-8 bytes/body limit/proxy fault ayrımı.
 - MAG scope/protection/cancel runtime PASS.
+- Ek fiziksel Android12/API31 TLS fixture denemesi üretim socket koduyla hazırlandı; bağımsız `app_process` **Killed/137** oldu. Ayrı `app_process --help` de dalvik-cache ownership **Permission denied** verdi. Test uygulama içindeki TLS sonucunu kanıtlayamadı; PASS/FAIL-proxy diye etiketlenmez. Sistem trust store'u değiştirilmedi; root kullanılmadı; geçici cihaz dex/PKCS12 silindi, kaynak/log yalnız git dışı yerel inceleme klasöründe korundu. Bu fixture kurulmuş DEV uygulamasının crash'i değildir.
 - Master 144 gate = 142 eski + iki yeni runtime. Son teslim sonuçları §8.
 - İlk Kotlin compile'da ProxyTestService.poll recursive type inference: açık Runnable declaration ile düzeltildi; son compile geçti.
 - İlk packageDebug genel hata; stacktrace tekrarında BUILD SUCCESSFUL (4m16s). İlk log somut exception nedeni içermedi; dosya kilidi/disk gibi kök neden uydurulmuyor. Son teslim build/ZIP/native/signature kontrolleri tekrar alınır.
 - Sandbox full master'da localhost Java Permission denied:getsockopt ve Git Bash erişim hatası görüldü. Testler atlanmadı; aynı full master normal PC yetkileriyle tekrar çalıştırıldı.
-- Archive terminal state düzeltmesinde TypeScript enum/string uyumsuzluğu yakalandı; açık literal daraltma sonrası tsc PASS (25,68s). Son native stream retreat eki de derlenecek/doğrulanacak.
+- Archive terminal state düzeltmesinde TypeScript enum/string uyumsuzluğu yakalandı; açık literal daraltma sonrası tsc PASS (25,68s). Son native stream retreat eki de teslim Kotlin/Java/APK derlemesinden ve son tsc'den geçti (§8).
 
 ## 7. Dürüst çalışma sınırı ve cihaz kabulü
 
@@ -112,8 +113,13 @@ Cihaz kabul sırası:
 - SHA-256: **f02e392b431885db872cff40d04a59c878dde2b496264a3313e784e48347070b**.
 - Paket/versionCode/versionName: **com.gpt.kizilkan.player.dev / 180732 / 18.7.32-dev**; etiket **KIZILKAN DEV**. Bağımsız JS bundle **4.886.044 byte**; yeni FrameProbe DEX içinde.
 - `apksigner verify`: **PASS**, v2 imza. Final APK MPV/native/DEX/C++ gate: **PASS**, arm64-v8a/armeabi-v7a/x86_64/x86; bütün dört ABI'da gereken __ndk1/from_chars sembolleri karşılanıyor. Yalnız AAR/cache bulunmasına dayanılmadı.
-- Son ADB devices listesi **boş**. Bu sürüm telefona yüklenmedi; uygulama/veri kaldırılmadı. Fiziksel cihaz kabul senaryoları §7 bekliyor.
-- Commit/push ve manuel NORMAL GitHub run/Release APK bağlantısı aşağıya tamamlanacak. Ham kaynak/hesap arşivi/cihaz logu/APK git'e eklenmez. Repo public doğrulandı; görünürlük değiştirilmedi.
+- İlk ADB listeleri boştu; sonra telefon **c3a4097e** bağlandı. `adb install -r -g` **Success**; **180731/18.7.31-dev → 180732/18.7.32-dev**, uygulama/veri silinmedi. Cihaz base.apk SHA'sı PC ile **birebir aynı**.
+- DEV proxy ekranı deep link ile cold açıldı: **Status ok**, MainActivity, TotalTime **4487 ms**, çalışan PID **27233**. Açılış crash-buffer'da uygulama fatal kaydı yok; seçilen logdaki FeatureFlagsImplExport class lookup uyarısı W seviyesinde, uygulama fatal crash'i değil. Bu kısa açılış kontrolü §7'deki gerçek frame/codec/screen-off/hesap testlerinin yerine geçmez.
+- Uygulama commit'i **0443c8c21175f1bdb16b7fa0fdbcd2a2f9ef085d**, ayrı dala push **başarılı**. 41 kaynak/test/rapor dosyası; hesap arşivi/ham cihaz logu/decompile kaynak/APK commit edilmedi.
+- Manuel **NORMAL release**, new_architecture=true, make_release=true: [build155 / run38219027770](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/38219027770), **completed / success**. Job 07:40:12–08:02:03 UTC (**21 dk 51 sn**). Run headSha tam olarak uygulama commit'i. GitHub master/tsc/prebuild/manifest/signing/disk, release compile, final APK MPV/native, paket/sürüm/imza ve Release yayınlama kontrolleri **PASS**.
+- [NORMAL APK doğrudan indir](https://github.com/mkizilkan/kizilkan-player-elite/releases/download/build-155/KIZILKAN-PLAYER-ELITE-v18.7.32-build155.apk): **KIZILKAN-PLAYER-ELITE-v18.7.32-build155.apk**, **385.487.395 byte**. GitHub asset **633098483 / uploaded**, download endpoint **HTTP200 / application/vnd.android.package-archive**. GitHub tarafından hesaplanan SHA-256 **57cdb9008be1c4eb2446a0e4ee2f1ec47c3e7ad25ce3c1b35004d02afcf94f8e**.
+- [Release sayfası](https://github.com/mkizilkan/kizilkan-player-elite/releases/tag/build-155): normal APK ve **APK-BOYUT-RAPORU-v18.7.32.txt** mevcut. Release target_commitish uygulama commit'iyle aynı. DEV GitHub'a normal diye yüklenmedi. Release yayınlandığı için kota kullanan Actions artifact adımı tasarım gereği skipped; bu APK kaybı/derleme hatası değildir.
+- Repo public doğrulandı; görünürlük değiştirilmedi. Son teslim raporu için yalnız MD güncellemesi ayrı commit olabilir; APK'nın derlendiği uygulama commit'i değişmez.
 
 PC komutu (depo kökünden):
 
@@ -123,7 +129,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build-dev.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build-dev.ps1 -Install
 ```
 
-DEV ayrı com.gpt.kizilkan.player.dev; normal uygulama verisini taşımaz/silmez. İlk USB listesi boştu; gerçekten yetkili cihaz bağlı olursa kurulur.
+DEV ayrı com.gpt.kizilkan.player.dev; normal uygulama verisini taşımaz/silmez. Bu teslimde telefon sonradan bağlandı ve DEV güncelleme başarıyla kuruldu. Normal APK yalnız GitHub'da yayımlandı; telefona normal paket kurulmadı.
 
 ## 9. Birincil araştırma kaynakları
 
