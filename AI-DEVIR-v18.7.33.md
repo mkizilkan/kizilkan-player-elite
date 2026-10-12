@@ -81,3 +81,29 @@ Telefon sonradan bağlı ve yetkiliyse veriyi silmeden kurulum için aynı komut
 - [Oracle ExecutorCompletionService](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/util/concurrent/ExecutorCompletionService.html): tamamlanan işleri toplama API'si. Scheduler uygulaması proje kararıdır.
 - [Android threading](https://developer.android.com/topic/performance/threads): ağır/ağ işlerini UI thread dışında yürütme ve UI tepkiselliği.
 - [RFC 6585](https://www.rfc-editor.org/rfc/rfc6585): 429 Too Many Requests anlamı; yüksek paralellik hız garantisi değildir.
+
+### Gerçekleşen teslim — Opus, 12.10.2026
+
+**Doğrulama (GPT raporuna güvenilmedi, bağımsız tekrarlandı):**
+- `yarn tsc --noEmit`: PASS (14,94 sn).
+- `node tools/denetle.js`: **TÜM DENETİMLER TEMİZ**, exit 0.
+- **`tools/build-dev.ps1 -SkipChecks` → `:app:assembleDebug` BUILD SUCCESSFUL** (1 dk 34 sn,
+  475 görev, 20 Kotlin derleme görevi, `e:`/`error:`/`FAILED` yok). GPT bu adımı yapmamıştı
+  ve bu turda Kotlin değişmişti (`PanelScanModule.kt`, `ProxyTestEngine.kt`, `ProxyTestService.kt`).
+- `git diff frontend/package.json` prebuild sonrası yalnız sürüm satırını gösterdi (§7 tuzağı temiz).
+
+**Commit / dal:** `10f905e0` (v18.7.33 işi), `0707d19d` (CI görünürlük düzeltmesi),
+`15280043` (devir notundaki panel adı redaksiyonu). Dal
+`codex/v18.7.33-proxy-validation-speed` origin'e push edildi. Ana dal değiştirilmedi.
+
+**Manuel normal build:** [38241671851](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/38241671851)
+— **success**. `build_type=release`, `make_release=true`, `new_architecture=true`.
+- Release **build-156**: `KIZILKAN-PLAYER-ELITE-v18.7.33-build156.apk` (367 MB) + boyut raporu.
+- **Actions artifact da oluştu** (172 MB — GitHub artifact'i zipler, içindeki APK 367 MB'tır).
+- Adım sonuçları: "GitHub Release olustur" success · "Calisma ozeti (APK nerede?)" success ·
+  "Artifact olarak yukle" success.
+- **Node.js 20 uyarısı kalmadı** (çalışmanın annotation listesi boş).
+
+**CİHAZ KABULÜ YAPILMADI.** Telefon bağlı değildi; v18.7.33 proxy hız senaryoları, gerçek
+proxy doğrulaması, arka plan/FGS davranışı ve ekran kontrolleri açık. Derlemenin geçmesi
+çalıştığı anlamına gelmez (CLAUDE.md §7).
