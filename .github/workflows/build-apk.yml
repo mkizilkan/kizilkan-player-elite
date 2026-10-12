@@ -48,7 +48,7 @@ jobs:
       ANDROID_CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
     steps:
       - name: Depoyu indir
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Android icin runner diskini hazirla
         working-directory: .
         run: bash tools/ci-android-disk.sh prepare
@@ -118,7 +118,7 @@ jobs:
           grep -q 'KEYCODE_DPAD_CENTER' "$MA"
           grep -q 'putString("key", "select")' "$MA"
       - name: Gradle onbellegi
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.gradle/caches/modules-2
@@ -197,11 +197,45 @@ jobs:
           ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name')
           printf '%s\n' "$ASSETS" | grep -Fxq -- "$APK"
           printf '%s\n' "$ASSETS" | grep -Fxq -- "$REPORT"
-      # Release assets use a separate storage service. Avoid a second large APK
-      # upload to the quota-limited Actions artifact store for release builds.
+      # APK'nin nerede oldugu calisma sayfasinda dogrudan gorunsun. Daha once
+      # yalnizca Release'e yukleniyordu ve run sayfasinda hicbir iz yoktu;
+      # "Eserler: -" yazisi APK uretilmedi sanilmasina yol aciyordu.
+      - name: Calisma ozeti (APK nerede?)
+        if: ${{ always() && steps.apk.outputs.name != '' }}
+        working-directory: .
+        run: |
+          set -euo pipefail
+          APK="${{ steps.apk.outputs.name }}"
+          FILE="artifacts/$APK"
+          SIZE_MB=$(( $(stat -c%s "$FILE") / 1048576 ))
+          SHA=$(sha256sum "$FILE" | cut -d' ' -f1)
+          TAG="build-${{ github.run_number }}"
+          BASE="${{ github.server_url }}/${{ github.repository }}"
+          {
+            echo "## APK hazir - v${{ steps.apk.outputs.version }} (build ${{ github.run_number }})"
+            echo ""
+            if [ "${{ steps.release.outcome }}" = "success" ]; then
+              echo "### Indir: [$APK]($BASE/releases/download/$TAG/$APK)"
+              echo ""
+              echo "Telefondan en guncel surum: **$BASE/releases/latest**"
+            else
+              echo "Release olusturulmadi. APK asagidaki **Eserler (Artifacts)** bolumunde."
+            fi
+            echo ""
+            echo "APK ayrica bu sayfanin **Eserler (Artifacts)** bolumunde de yer alir."
+            echo ""
+            echo "| Alan | Deger |"
+            echo "| --- | --- |"
+            echo "| Dosya | $APK |"
+            echo "| Boyut | $SIZE_MB MB |"
+            echo "| SHA-256 | $SHA |"
+            echo "| Build tipi | ${BUILD_TYPE} |"
+            echo "| Yeni Mimari | ${NEW_ARCH} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      # Depo public oldugu icin Actions artifact deposu ucretsiz/sinirsiz.
+      # APK artik hem Release'te hem Eserler bolumunde bulunur (kosulsuz).
       - name: Artifact olarak yukle
-        if: ${{ steps.release.outcome == 'skipped' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.apk.outputs.name }}
           path: |
