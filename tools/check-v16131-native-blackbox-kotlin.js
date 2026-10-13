@@ -12,7 +12,21 @@ ok(semverAtLeast(pkg.version,'16.13.1'),'package version preserves v16.13.1+');
 ok(app.expo.version===pkg.version && semverAtLeast(app.expo.version,'16.13.1'),'app version preserves v16.13.1+');
 ok(Number(app.expo.android.versionCode) >= 161301,'Android versionCode preserves v16.13.1+');
 ok(!bb.includes('insertEvent(context, "system", "ANR_WATCHDOG_STALL"'),'legacy positional ANR insertEvent call removed');
-for (const token of ['event = "ANR_WATCHDOG_STALL"','traceId = "anr-$appSessionId"','operationId = "anr-watchdog"','stage = "main-thread-stall"','durationMs = lag','outcome = "failure"','errorClass = "MAIN_THREAD_STALL"','payloadJson = payload.toString()','critical = true']) ok(bb.includes(token), token);
+for (const token of ['event = "ANR_WATCHDOG_STALL"','traceId = "anr-$appSessionId"','operationId = "anr-watchdog"','durationMs = lag','outcome = "failure"','payloadJson = payload.toString()']) ok(bb.includes(token), token);
+/**
+ * v18.7.34: `stage`, `errorClass`, `severity` ve `critical` artık KOŞULLU —
+ * dondurulmuş süreç kaydı (processFrozen) gerçek bir ana-thread bloğu değildir
+ * ve "MAIN_THREAD_STALL" diye etiketlenmemelidir. Bu kapının amacı isimli
+ * parametre imzasının korunmasıdır (eski hata konumsal çağrıydı); değerlerin
+ * sabit metin olması şart değildir. Kontrol gevşetilmedi: her dört parametrenin
+ * de VARLIĞI ve stall dalında doğru değeri taşıdığı aranır.
+ */
+for (const [re, label] of [
+  [/stage = (?:"main-thread-stall"|if \(processFrozen\) "process-frozen" else "main-thread-stall")/, 'stage (stall dalı "main-thread-stall")'],
+  [/errorClass = (?:"MAIN_THREAD_STALL"|if \(processFrozen\) "PROCESS_FROZEN" else "MAIN_THREAD_STALL")/, 'errorClass (stall dalı "MAIN_THREAD_STALL")'],
+  [/severity = (?:"critical"|if \(processFrozen\) "warn" else "critical")/, 'severity (stall dalı "critical")'],
+  [/critical = (?:true|!processFrozen)/, 'critical (stall dalında true)'],
+]) ok(re.test(bb), label);
 const calls = [...bb.matchAll(/insertEvent\s*\(/g)];
 ok(calls.length >= 4, `insertEvent definitions/calls found: ${calls.length}`);
 if (!process.exitCode) console.log('PASS: v16.13.1 NativeBlackBox Kotlin signature regression gate TEMİZ');

@@ -156,6 +156,15 @@ node tools/denetle.js        # sonunda başarısız kapı olmamalı
   durumunu asla "sunucu yok" diye yorumlama.
 - **ANR_WATCHDOG_STALL'ı ön/arka plan ayırmadan yorumlama:** v18.5.0 logunda 47 kaydın hepsi uygulama arka
   plandayken (zamanlayıcılar yavaşlar). APP_BACKGROUND/FOREGROUND aralıklarıyla eşleştir.
+- **`anrOnPlan` sayacına 18.7.34'ten ÖNCE güvenme (Opus 13.10.2026'da bu tuzağa düştü):** sayaç
+  `265 ön plan ANR` diyordu, gerçek sayı **1**'di. Lag'i 5 saniyeyi belirgin aşan hiçbir kayıt gerçek ön
+  plan bloğu OLAMAZ — Android ~5 sn'de öldürür. Yığının tepesine bak: `MessageQueue.nativePollOnce`,
+  `OplusTheiaUIMonitor`, `LooperMessageSuperviser`, `RefStaticMethod` veya bekçinin kendi
+  `startAnrWatchdog$beat`'i varsa ana thread BLOKE DEĞİL, **süreç dondurulmuş**tur (OEM freezer).
+  Gerçek blokta yığında uygulama/UI işi görünür (örn. `StaticLayout.generate`, `DynamicLayout.reflow`).
+  v18.7.34+ raporlarda `processFrozen`/`watchdogLateMs` ve `anrOlcumGuvenilir` bayrağı vardır;
+  bayrak `false` ise sayı tahminidir. **Cihazın kendi `dumpsys activity exit-info` çıktısı
+  (`reason=6 (ANR)`) uygulamanın kendi sayacından daha güvenilir kanıttır.**
 - **Android kısayol isteği:** ek veri (extra) Intent eşleştirmesine girmez; kısayol normal açılışla aynı eylemi kullanırsa
   açık uygulamaya iletilmez. Her kısayola ayrı eylem ver.
 - **Sessiz çıkış bırakma:** her `return` noktası bir sebep ile telemetri yazmalı; yoksa sorun
@@ -180,7 +189,27 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.33 RC1 — dal `codex/v18.7.33-proxy-validation-speed`)
+## 9. Mevcut durum (v18.7.34 RC1 — dal `v18.7.34-rc1-ui-stale-anr-telemetry`)
+
+Cihaz kanıtına (13.10.2026 ekran görüntüsü + uçuş kaydı) dayalı 4 maddelik paket; kullanıcı
+"hepsi" dedi ve commit/push/tetikleme yetkisini verdi. Ayrıntı: `AI-DEVIR-v18.7.34.md`.
+- **Yapışık bant:** "Yarım kalan görüntü testlerini devam ettir" HER ZAMAN çiziliyordu (iki kod
+  yolunda da koşulsuz). Artık gerçek bekleyen test sayısına bağlı, sayıyı gösterir, iş bitince kaybolur.
+- **Yapışık "Emniyet TXT hazırlanıyor":** durum yalnız set ediliyordu; ayrıca tarama bitmişken
+  "hazırlanıyor" demek yanıltıcıydı. Temizleme + terminal ayrımı + `BULK_TXT_EXPORT_INDETERMINATE`.
+- **🔴 ANR ÖLÇÜMÜ DÜZELTİLDİ (bu bir log-okuma tuzağıydı):** `anrOnPlan: 265` tamamen yanıltıcıydı.
+  v17.7.0 `uptimeMillis` ile DERİN UYKU'yu elemişti ama **OEM süreç dondurmasını** (OnePlus
+  `OplusHansManager`/cgroup freezer) elemiyordu: cihaz uyanık, `uptimeMillis` ilerliyor, `sleptMs=0`,
+  yalnız uygulamanın thread'leri koşmuyor. Lag'ler 77 sn – **43 dk**; gerçek ön plan bloğu TEK (4346 ms).
+  Çözüm uydurma eşik değil: bekçi ANA THREAD'DEN BAĞIMSIZ thread'de koşar, süreç dondurulduysa O DA
+  tikleyemez → `watchdogLateMs` + `processFrozen`. Yeni sayaçlar `anrDonmusSurec_yanlisPozitif`,
+  `anrToplamKayit`, **`anrOlcumGuvenilir`** (eski loglarda geri düşüş 258'in 185'ini yakalar → sayı tahmini).
+- **Çıkış telemetrisi (düzeltme DEĞİL):** `forceExit` ilk satırda `if (leavingRef.current) return;`
+  yapıyor; bayrak sahiplik satırında sessizce kalkarsa geri tuşu hiçbir şey yapmaz. Kanıtlanmadı →
+  `ADD_PLAYLIST_EXIT_IGNORED` + `leavingReason/leavingSinceMs/teardownMs/busy` eklendi.
+- **Abartma yok:** gerçek 4346 ms donmanın kök nedeni çözülmedi; "çıkamıyorum" düzeltilmedi, ölçüldü.
+
+## 9-eski-18733. v18.7.33 RC1 — dal `codex/v18.7.33-proxy-validation-speed`
 
 Kullanıcı onaylı proxy ikinci aşama hız paketi: Yavaş16/Güvenli32/Hızlı64/Ultra128/Manuel1–128; butonlarda gerçek sayı. TCP ayrı ve eski fiilî yükü koruyan migration; aktif/paused/interrupted runId sahibi canlı hız güncelleme, disk input yazımı sonuç kilidi dışında, bounded dinamik scheduler, input-journal-before-speed, native/progress/bildirim gerçek sınırları, tamamlanmış bitlerin korunması. 145 master PASS/tsc PASS; üretim Kotlin 1/7/16/32/64/128 ölçümü + canlı değişim/pause/resume/input-write-failure/no-repeat PASS. NPM deps/player/Room/hesap taraması değişmedi. Kullanıcı commit/push/manuel normal build/PC DEV ve gerektiğinde otomatik düzeltme yetkisi verdi, telefonu çıkardı. Ayrıntı ve gerçek teslim: `AI-DEVIR-v18.7.33.md`.
 

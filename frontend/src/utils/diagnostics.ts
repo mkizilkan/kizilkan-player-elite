@@ -672,10 +672,46 @@ function buildAutoSummary(events: any[]): Record<string, any> {
   };
 }
 
+/**
+ * v18.7.34 — DONMUŞ SÜREÇ ANR YANLIŞ POZİTİFİ
+ * ---------------------------------------------------------------------------
+ * CİHAZ KANITI (13.10.2026, OnePlus 7 Pro, 18.7.33): `anrOnPlan` 265 diyordu;
+ * kayıtların lag değerleri 77 saniye ile 43 DAKİKA arasındaydı ve yığınların
+ * tepesinde `MessageQueue.nativePollOnce` vardı (ana iş parçacığı UYUYOR).
+ * Gerçek bir ön plan bloğunda sistem uygulamayı ~5 saniyede öldürür; 43
+ * dakikalık ön plan kilitlenmesi mümkün değildir.
+ *
+ * SEBEP: v17.7.0 `uptimeMillis()`e geçerek DERİN UYKU yanlış pozitifini
+ * çözmüştü (`sleptMs`). Ama OEM süreç DONDURMASI (OnePlus OplusHansManager /
+ * cgroup freezer) farklıdır: cihaz uyanıktır, `uptimeMillis` ilerler,
+ * `sleptMs` 0 kalır — yalnız uygulamanın thread'leri koşmaz. Bekçi bunu
+ * kilitlenme sanıyordu. `_fg` bayrağı da dondurma öncesinden kalma olduğu
+ * için kayıt "ön plan" görünüyordu.
+ *
+ * ÇÖZÜM: Uydurma bir süre eşiği KOYULMADI. Asıl ayrım NativeBlackBox'ta
+ * yapılır: bekçi ana thread'den BAĞIMSIZ bir thread'de koşar; süreç
+ * dondurulduysa o thread de tikleyemez (`watchdogLateMs`), ana thread gerçekten
+ * bloke ise normal tikler. Karar `processFrozen` alanıyla gelir.
+ *
+ * ESKİ LOGLAR (18.7.33 ve öncesi) bu alanı taşımaz. Onlar için yığın imzasına
+ * düşülür: tepe çerçeve `MessageQueue.nativePollOnce` (looper boşta) ya da
+ * yığında bekçinin KENDİ kalp atışı varsa, ana thread uygulama kodu
+ * çalıştırmıyordu. Bu geri düşüş eksik sayar (cihaz kanıtında 258 kaydın
+ * 185'ini yakalar), bu yüzden `anrOlcumGuvenilir` bayrağı okuyucuya sayının
+ * güvenilir olup olmadığını SÖYLER. Hiçbir kayıt gizlenmez; sayaçlar ayrıdır.
+ */
+function anrLooksFrozen(data: any): boolean {
+  if (typeof data?.processFrozen === "boolean") return data.processFrozen;
+  const stack: unknown = data?.stack;
+  if (!Array.isArray(stack) || stack.length === 0) return false;
+  if (/MessageQueue\.nativePollOnce/.test(String(stack[0] || ""))) return true;
+  return stack.some(frame => /startAnrWatchdog\$beat/.test(String(frame || "")));
+}
+
 function buildAutoSummaryFor(events: any[]): Record<string, any> {
   const sig = new Map<string, number>();
   const engineFail = new Map<string, number>();
-  let firstFrames = 0, sessions = 0, anrFg = 0, anrBg = 0;
+  let firstFrames = 0, sessions = 0, anrFg = 0, anrBg = 0, anrFrozen = 0, anrMeasured = 0;
   const firstFrameMs: number[] = [];
 
   for (const e of events) {
@@ -693,7 +729,13 @@ function buildAutoSummaryFor(events: any[]): Record<string, any> {
       if (ms > 0) firstFrameMs.push(ms);
     }
     if (ev === "PLAYBACK_SESSION_START" || ev === "ENGINE_ATTEMPT") sessions++;
-    if (ev === "ANR_WATCHDOG_STALL") { if (e?.data?._fg === false) anrBg++; else anrFg++; }
+    if (ev === "ANR_WATCHDOG_STALL") {
+      if (typeof d.processFrozen === "boolean") anrMeasured++;
+      // Sıra önemli: arka plan > donmuş süreç > gerçek ön plan bloğu.
+      if (d._fg === false) anrBg++;
+      else if (anrLooksFrozen(d)) anrFrozen++;
+      else anrFg++;
+    }
   }
 
   const top = [...sig.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)
@@ -709,8 +751,16 @@ function buildAutoSummaryFor(events: any[]): Record<string, any> {
     oturumSayisi: sessions,
     ilkKareOraniYuzde: sessions > 0 ? Math.round((firstFrames / sessions) * 100) : null,
     ortalamaIlkKareMs: avg,
+    // v18.7.34: üç sayaç ayrı. `anrOnPlan` artık YALNIZ ana iş parçacığının
+    // gerçekten iş yaptığı (yığın boşta olmayan) ön plan bloklarını sayar.
     anrOnPlan: anrFg,
     anrArkaPlan_yanlisPozitifOlabilir: anrBg,
+    anrDonmusSurec_yanlisPozitif: anrFrozen,
+    anrToplamKayit: anrFg + anrBg + anrFrozen,
+    // Tüm kayıtlar native ölçümü (processFrozen) taşıyorsa sayı güvenilirdir.
+    // Aksi halde eski kayıtlar yığın imzasıyla tahmin edilmiştir ve `anrOnPlan`
+    // OLDUĞUNDAN YÜKSEK çıkabilir — okuyucu bunu bilmeli.
+    anrOlcumGuvenilir: anrFg + anrBg + anrFrozen === 0 ? true : anrMeasured === anrFg + anrBg + anrFrozen,
     mpvKullanilabilir: undefined as any,   // PlayerHost tarafından doldurulur
   };
 }

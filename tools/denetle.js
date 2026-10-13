@@ -61,6 +61,7 @@ const CHECKS = [
   ["check-v18723-release.js", "v18.7.23 account-card auto-prime (derive MAG username from a Room channel's create_link without playing) + auto-run content (görüntü var/yok) test", ""],
   ["check-v18724-release.js", "v18.7.24 bulk-add selection screen content visibility: MAG per-result görüntü var/yok (liveCount) + filter; Xtream combo on-demand get_live_streams probe + 'select only with content'", ""],
   ["check-v18725-release.js", "v18.7.25 combo-scan TS fixes: B content-test speed (conc 20, 10s, keep-alive) + C parallelism UI consolidation + A last-saved-archive label + E-MAG scan safety-backup TXT", ""],
+  ["check-v18734-release.js", "v18.7.34 sticky add-playlist UI (playback-test banner gated on real pending count, safety-TXT status cleared/never lies) + ANR watchdog frozen-process vs main-thread-stall measurement + add-playlist exit telemetry", ""],
   ["check-v18713-release.js", "v18.7.13 manual portal pick (traces selectable) + username enrichment (full-param get_profile real login) + A01 base64 MAC decode in matcher + strict exact scope (only entered port/path)", ""],
   ["check-v18712-release.js", "v18.7.12 MAG multi-IP DNS failover (DoH all A-records + live IP pin + IP-at-boundary connect/logical translation; player had host failover, MAG scan did not)", ""],
   ["check-v18711-release.js", "v18.7.11 MAG profile-compat core (MAG320 full-param get_profile variants + empty-profile-yet-live-accessible = valid) + safe username presence telemetry + discovery wall budget", ""],

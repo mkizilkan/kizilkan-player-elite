@@ -162,9 +162,23 @@ export default function MagBulkScreen() {
   const [playbackTests, setPlaybackTests] = useState<PlaybackTestAccount[]>([]);
   const [playbackResume,setPlaybackResume]=useState(false);
   const resumePlaybackTests=async()=>{const owner=profileRef.current;try{const jobs=await pendingPlaybackTests(owner,'mac-frame');
-    if(profileRef.current!==owner||!mountedRef.current)return;if(!jobs.length){Alert.alert('Görüntü testi','Kalan kayıtlı görüntü testi yok.');return;}
+    if(profileRef.current!==owner||!mountedRef.current)return;setPlaybackRecoveryCount(jobs.length);
+    if(!jobs.length){Alert.alert('Görüntü testi','Kalan kayıtlı görüntü testi yok.');return;}
     setPlaybackResume(true);setPlaybackTests(jobs);
   }catch{Alert.alert('Kurtarma','Görüntü test kaydı okunamadı; mevcut dosya korunuyor.');}};
+  /**
+   * v18.7.34 — YAPIŞIK BANT (add-playlist.tsx ile AYNI hata, ikinci kod yolu)
+   * Buton koşulsuz çiziliyordu; yarım test olmasa da görünüp basınca "Kalan
+   * kayıtlı görüntü testi yok." diyordu. Gerçek bekleyen iş sayısına bağlandı.
+   */
+  const [playbackRecoveryCount,setPlaybackRecoveryCount]=useState(0);
+  // Not: `mountedRef` bu satırdan SONRA tanımlıdır; TDZ kapısına takılmamak
+  // için burada kullanılmaz. Sahiplik kontrolü `profileRef` ile yapılır.
+  const refreshPlaybackRecovery=useCallback(async(owner:string)=>{
+    try{const jobs=await pendingPlaybackTests(owner,'mac-frame');
+      if(profileRef.current===owner)setPlaybackRecoveryCount(jobs.length);
+    }catch{/* okunamadı: bant gösterilmez, kayıt silinmez */}
+  },[]);
   const [testScope, setTestScope] = useState<'selected' | 'all'>('selected');
   const [safetyStatus, setSafetyStatus] = useState('');
   const [adding, setAdding] = useState(false);
@@ -229,6 +243,8 @@ export default function MagBulkScreen() {
       try { KizilkanNativeCore.stopForegroundKeepAlive(`mac-scan:${backupNameRef.current}`); KizilkanNativeCore.stopForegroundKeepAlive(`mac-add:${profileRef.current}`); } catch {}
     };
   }, []);
+  // v18.7.34: yapışık bandı önlemek için gerçek bekleyen görüntü testi sayısı.
+  useEffect(() => { void refreshPlaybackRecovery(activeProfile.id); }, [activeProfile.id, refreshPlaybackRecovery]);
   useEffect(() => {
     let alive = true;
     const owner = activeProfile.id;
@@ -317,7 +333,9 @@ export default function MagBulkScreen() {
     let heartbeatDone=0,heartbeatTotal=0;
     backupNameRef.current = archiveId;
     setPortalReports([]); setPortalChoices({}); portalChoicesRef.current = {}; setScanPhase("discovery");
-    setPaused(false); setScanning(true); setResults([]); setStageMsg("Portal kaynağı hazırlanıyor…"); setProgress({ done: 0, total: 0, current: "" });
+    // v18.7.34: önceki çalıştırmanın emniyet TXT metni yeni taramaya sızmasın
+    // (eski run'ın "hazırlanıyor" yazısı yeni run'ın durumu sanılıyordu).
+    setPaused(false); setScanning(true); setResults([]); setSafetyStatus(''); setStageMsg("Portal kaynağı hazırlanıyor…"); setProgress({ done: 0, total: 0, current: "" });
     // v18.7.6 (A2): tarama sürerken ekran/CPU uykuya geçmesin (cihaz uykusu taramayı yarıda
     // kesiyordu). Ayrı keep-awake paketi yok; native pencere bayrağı kullanılır.
     try { KizilkanNativeCore.setKeepScreenOn(true); } catch {}
@@ -652,7 +670,7 @@ export default function MagBulkScreen() {
 
   return (
     <SafeAreaView style={S.root} edges={["top", "bottom"]}>
-      {!!playbackTests.length && <AccountPlaybackTestQueue owner={activeProfile.id} kind="mac-frame" resume={playbackResume} accounts={playbackTests} onClose={() => setPlaybackTests([])} onEvidence={(key, evidence) => {
+      {!!playbackTests.length && <AccountPlaybackTestQueue owner={activeProfile.id} kind="mac-frame" resume={playbackResume} accounts={playbackTests} onClose={() => { setPlaybackTests([]); void refreshPlaybackRecovery(activeProfile.id); }} onEvidence={(key, evidence) => {
         const target = results.find(r => magIdentity(r.portal, r.mac) === key); if (!target || !mountedRef.current) return;
         const endpoints = mergeEndpointEvidence(target.endpoints || [], evidence);
         setResults(prev => prev.map(r => magIdentity(r.portal, r.mac) === key ? { ...r, endpoints } : r));
@@ -711,7 +729,7 @@ export default function MagBulkScreen() {
 
         {hostMode !== 'manual' && <PanelScopePicker scope="all" target={magPanelTarget} directory={magDirectory} onScope={()=>{}} onTarget={setMagPanelTarget} onLoad={()=>void loadMagDirectory()} busy={scanning||adding||saving||magDirectoryBusy}/>}
         <FocusButton disabled={scanning||adding||saving} onPress={()=>void restorePendingMacJobs()} style={S.chip}><Text style={S.chipText}>Kayıtlı belirsiz MAC denemelerini getir</Text></FocusButton>
-        <FocusButton disabled={scanning||adding||saving||playbackTests.length>0} onPress={()=>void resumePlaybackTests()} style={S.chip}><Text style={S.chipText}>Yarım kalan görüntü testlerini devam ettir</Text></FocusButton>
+        {playbackRecoveryCount>0 && <FocusButton disabled={scanning||adding||saving||playbackTests.length>0} onPress={()=>void resumePlaybackTests()} style={S.chip}><Text style={S.chipText}>Kalan {playbackRecoveryCount} görüntü testini devam ettir</Text></FocusButton>}
         {/* MAC girişi */}
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: SPACING.md }}>
           <Text style={S.label}>MAC ADRESLERİ</Text>

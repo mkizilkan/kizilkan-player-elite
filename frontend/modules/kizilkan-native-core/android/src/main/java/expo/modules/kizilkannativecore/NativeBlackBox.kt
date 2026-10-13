@@ -68,6 +68,15 @@ object NativeBlackBox {
    * kullanıcı verisi taşımaz.
    */
   private val lastMainAckUptime = java.util.concurrent.atomic.AtomicLong(SystemClock.uptimeMillis())
+  /**
+   * v18.7.34 — DONMUŞ SÜREÇ AYRIMI
+   * Bekçinin KENDİ zamanlayıcı thread'inin son tik anı (uptime). Süreç OEM
+   * tarafından dondurulduğunda (OnePlus OplusHansManager / cgroup freezer)
+   * uygulamanın BÜTÜN thread'leri durur, bu zamanlayıcı da tikleyemez. Gerçek
+   * bir ana-thread bloğunda ise bu ayrı thread normal tiklemeye devam eder.
+   * Fark, "ana thread bloke" ile "tüm süreç donduruldu"yu kesin ayırır.
+   */
+  private val lastWatchdogTickUptime = java.util.concurrent.atomic.AtomicLong(0L)
   @Volatile private var currentTask: String = "idle"
   @Volatile private var currentTaskStartedAt: Long = 0L
 
@@ -357,6 +366,30 @@ object NativeBlackBox {
         val nowUptime = SystemClock.uptimeMillis()
         val lagUptime = nowUptime - lastMainAckUptime.get()
         val sleptMs = (lag - lagUptime).coerceAtLeast(0L)
+        /**
+         * v18.7.34 — "ANA THREAD BLOKE" ile "SÜREÇ DONDURULDU" AYRIMI
+         * ---------------------------------------------------------------------
+         * CİHAZ KANITI (13.10.2026, OnePlus 7 Pro): 258 kaydın 257'si sahteydi;
+         * lag değerleri 77 saniye ile 43 DAKİKA arasındaydı. Gerçek bir ön plan
+         * bloğunda sistem uygulamayı ~5 saniyede öldürür. Yığınların tepesinde
+         * uygulama kodu değil, looper/OEM izleme çerçeveleri (nativePollOnce,
+         * OplusTheiaUIMonitor, LooperMessageSuperviser) vardı; 11 kayıtta ise
+         * doğrudan bu bekçinin KENDİ kalp atışı görünüyordu.
+         *
+         * SEBEP: v17.7.0 uptimeMillis'e geçerek DERİN UYKU'yu elemişti, ama OEM
+         * süreç dondurması farklıdır — cihaz uyanıktır, uptimeMillis ilerler,
+         * sleptMs 0 kalır, yalnız uygulamanın thread'leri koşmaz.
+         *
+         * ÇÖZÜM: Bu bekçi ANA THREAD'DEN BAĞIMSIZ bir thread'de çalışır. Süreç
+         * dondurulduysa BU thread de tikleyemez; gecikmesi ana thread'inkiyle
+         * birlikte büyür. Ana thread gerçekten bloke ise bu thread normal tikler.
+         * Uydurma süre eşiği yoktur; ölçüt iki thread'in göreli gecikmesidir.
+         */
+        val previousTick = lastWatchdogTickUptime.getAndSet(nowUptime)
+        val watchdogLate = if (previousTick > 0L) (nowUptime - previousTick - WATCHDOG_PERIOD_MS).coerceAtLeast(0L) else 0L
+        // Bekçi de en az ana thread kadar geciktiyse duran şey tek bir thread
+        // değil, bütün süreçtir. Tolerans bir tik periyodudur.
+        val processFrozen = watchdogLate >= (lagUptime - WATCHDOG_PERIOD_MS).coerceAtLeast(0L) && watchdogLate >= WATCHDOG_PERIOD_MS
         val previous = lastAnrRecord.get()
         if (lagUptime >= WATCHDOG_WARN_MS && now - previous >= WATCHDOG_REPEAT_MS && lastAnrRecord.compareAndSet(previous, now)) {
           val mainThread = Looper.getMainLooper().thread
@@ -364,12 +397,17 @@ object NativeBlackBox {
           val payload = JSONObject()
             .put("at", System.currentTimeMillis())
             .put("elapsedRealtimeMs", now)
-            .put("kind", "MAIN_THREAD_STALL")
+            .put("kind", if (processFrozen) "PROCESS_FROZEN" else "MAIN_THREAD_STALL")
             // v17.7.0: lagMs artık GERÇEK kilitlenme (uyku hariç). Diğer ikisi
             // karşılaştırma için: toplam geçen süre ve uykuda geçen kısım.
             .put("lagMs", lagUptime)
             .put("wallLagMs", lag)
             .put("sleptMs", sleptMs)
+            // v18.7.34: bekçinin KENDİ thread'inin gecikmesi ve türetilen karar.
+            // Kayıt silinmez; yalnız doğru etiketlenir, böylece eski loglar da
+            // karşılaştırılabilir kalır.
+            .put("watchdogLateMs", watchdogLate)
+            .put("processFrozen", processFrozen)
             .put("thread", mainThread.name)
             .put("stack", JSONArray(stack))
             .put("memory", JSONObject(runtimeMemory(context)))
@@ -377,26 +415,29 @@ object NativeBlackBox {
             // v17.6.0: kilitlenme anındaki JS iş etiketi ve o işin yaşı.
             .put("task", currentTask)
             .put("taskAgeMs", if (currentTaskStartedAt > 0L) System.currentTimeMillis() - currentTaskStartedAt else 0L)
-          writeCriticalSync(context, payload)
+          // v18.7.34: Dondurulmuş süreç bir çökme/kilitlenme değildir. Kritik
+          // dosyaya yazılmaz — yoksa gerçek kayıtları taşırıp dışarı iter
+          // (cihazda 258 kaydın 257'si bu türdendi). Olay yine de yazılır.
+          if (!processFrozen) writeCriticalSync(context, payload)
           try {
             insertEvent(
               context = context,
               domain = "system",
               event = "ANR_WATCHDOG_STALL",
-              severity = "critical",
+              severity = if (processFrozen) "warn" else "critical",
               sessionId = appSessionId,
               runId = "",
               traceId = "anr-$appSessionId",
               operationId = "anr-watchdog",
-              stage = "main-thread-stall",
+              stage = if (processFrozen) "process-frozen" else "main-thread-stall",
               durationMs = lag,
               outcome = "failure",
-              errorClass = "MAIN_THREAD_STALL",
+              errorClass = if (processFrozen) "PROCESS_FROZEN" else "MAIN_THREAD_STALL",
               payloadJson = payload.toString(),
-              critical = true,
+              critical = !processFrozen,
             )
           } catch (_: Throwable) {}
-          setCheckpoint(context, "anr-watchdog;lag:${lag}ms")
+          setCheckpoint(context, "anr-watchdog;${if (processFrozen) "frozen" else "stall"};lag:${lag}ms;wdLate:${watchdogLate}ms")
         }
       } catch (_: Throwable) {}
     }, WATCHDOG_PERIOD_MS, WATCHDOG_PERIOD_MS, TimeUnit.MILLISECONDS)

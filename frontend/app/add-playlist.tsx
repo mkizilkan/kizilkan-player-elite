@@ -212,8 +212,28 @@ export default function AddPlaylist() {
   const leavingRef = React.useRef(false);
   const screenOwnerRef = React.useRef(activeProfile.id);
   const screenAliveRef = React.useRef(true);
-  if (screenOwnerRef.current !== activeProfile.id) leavingRef.current = true;
-  React.useEffect(() => () => { screenAliveRef.current = false; leavingRef.current = true; }, []);
+  /**
+   * v18.7.34 — "EKRANDAN ÇIKAMIYORUM" İÇİN ÖLÇÜM (düzeltme değil)
+   * -------------------------------------------------------------------------
+   * KULLANICI BİLDİRİMİ (13.10.2026): "Oynatma Listesi Ekle" ekranından uzun
+   * süre çıkılamadı. Uçuş kaydında çıkışın kendisi çalışmış görünüyor
+   * (ADD_PLAYLIST_FORCE_EXIT + ROUTE_CHANGED), bu yüzden kör düzeltme
+   * YAPILMIYOR. Ancak kodda somut bir şüpheli var: `forceExit` ilk satırda
+   * `if (leavingRef.current) return;` ile çıkar. `leavingRef` aşağıdaki
+   * sahiplik satırında (profil değişince) sessizce true olursa geri tuşu ve
+   * "Zorla çık" HİÇBİR ŞEY YAPMAZ — kullanıcı için ekran kilitlenmiş görünür.
+   *
+   * Bu yüzden: bayrağın NE ZAMAN ve NEDEN kalktığı işaretlenir, yok sayılan
+   * her çıkış denemesi `ADD_PLAYLIST_EXIT_IGNORED` olarak kaydedilir ve başarılı
+   * çıkışın süresi ölçülür. Kök neden bir sonraki cihaz logundan kanıtlanacak.
+   */
+  const leavingSinceRef = React.useRef(0);
+  const leavingReasonRef = React.useRef("");
+  const markLeaving = (reason: string) => {
+    if (!leavingRef.current) { leavingRef.current = true; leavingSinceRef.current = Date.now(); leavingReasonRef.current = reason; }
+  };
+  if (screenOwnerRef.current !== activeProfile.id) markLeaving("profile-changed");
+  React.useEffect(() => () => { screenAliveRef.current = false; markLeaving("unmount"); }, []);
 
   // v16.13.6 — Aynı sağlayıcı hesabının yanlışlıkla tekrar eklenmesini görünür kıl.
   // Parola/token fingerprint'e girmez; canonical kimlik yalnız kaynak + normalize endpoint + kullanıcı/MAC bilgisidir.
@@ -330,9 +350,32 @@ export default function AddPlaylist() {
   const [playbackTests, setPlaybackTests] = useState<PlaybackTestAccount[]>([]);
   const [playbackResume,setPlaybackResume]=useState(false);
   const resumePlaybackTests=async()=>{const owner=activeProfile.id;try{const jobs=await pendingPlaybackTests(owner,'xtream-frame');
-    if(screenOwnerRef.current!==owner)return;if(!jobs.length){Alert.alert('Görüntü testi','Kalan kayıtlı görüntü testi yok.');return;}
+    if(screenOwnerRef.current!==owner)return;setPlaybackRecoveryCount(jobs.length);
+    if(!jobs.length){Alert.alert('Görüntü testi','Kalan kayıtlı görüntü testi yok.');return;}
     setPlaybackResume(true);setPlaybackTests(jobs);
   }catch{Alert.alert('Kurtarma','Görüntü test kaydı okunamadı; mevcut dosya korunuyor.');}};
+  /**
+   * v18.7.34 — YAPIŞIK "YARIM KALAN GÖRÜNTÜ TESTİ" BANDI
+   * -------------------------------------------------------------------------
+   * CİHAZ KANITI (13.10.2026, 18.7.33): Kullanıcının ekran görüntüsünde form
+   * bomboşken (hiç tarama yok, DB 0 sonuç) kırmızı "Yarım kalan görüntü
+   * testlerini devam ettir" bandı duruyordu. Sebep: buton HİÇBİR KOŞULA
+   * bağlanmamıştı; hemen altındaki kardeşi ise `catalogRecoveryCount>0` ile
+   * korunuyordu. Basınca "Kalan kayıtlı görüntü testi yok." uyarısı çıkıyordu.
+   *
+   * ÇÖZÜM: Kardeş butonun kalıbı birebir izlenir — gerçek bekleyen iş sayısı
+   * profil başına okunur ve bant yalnız sayı > 0 iken çizilir. Sayı, testler
+   * kapandığında ve devam denemesinde yeniden okunur ki bant iş bitince
+   * kendiliğinden kaybolsun. Aynı hata `mag-bulk.tsx`te de vardı (§7 "aynı
+   * işlevin iki kod yolu").
+   */
+  const [playbackRecoveryCount,setPlaybackRecoveryCount]=useState(0);
+  const refreshPlaybackRecovery=React.useCallback(async(owner:string)=>{
+    try{const jobs=await pendingPlaybackTests(owner,'xtream-frame');
+      if(screenOwnerRef.current===owner)setPlaybackRecoveryCount(jobs.length);
+    }catch{/* okunamadı: bant gösterilmez, kayıt silinmez */}
+  },[]);
+  React.useEffect(()=>{const owner=activeProfile.id;void refreshPlaybackRecovery(owner);},[activeProfile.id,refreshPlaybackRecovery]);
   const [bulkContentTesting, setBulkContentTesting] = useState(false);
   const [bulkContentTestProgress, setBulkContentTestProgress] = useState({ done: 0, total: 0 });
   const bulkContentAbortRef = React.useRef<AbortController | null>(null);
@@ -399,6 +442,9 @@ export default function AddPlaylist() {
   React.useEffect(()=>{if(screenOwnerRef.current!==activeProfile.id){setPlaybackTests([]);bulkEvidenceRunIdRef.current='';}},[activeProfile.id]);
   const [nativeScanRunning, setNativeScanRunning] = useState(false);
   const [scanSafetyStatus, setScanSafetyStatus] = useState("");
+  // v18.7.34: terminal + belirsiz emniyet TXT durumu run başına BİR KEZ
+  // telemetriye yazılsın (yoklama 850 ms'de bir çalışıyor).
+  const safetyIndeterminateRef = React.useRef("");
   const [nativeScanPaused, setNativeScanPaused] = useState(false);
   const [nativeScanStopping, setNativeScanStopping] = useState(false);
   const nativePreparationAbortRef = React.useRef<AbortController | null>(null);
@@ -1507,14 +1553,41 @@ export default function AddPlaylist() {
         if(scan.runId)bulkEvidenceRunIdRef.current=String(scan.runId);
         if (scan.runId && await scanRecoveryDeferred(activeProfile.id, scan.runId)) bulkResultsDismissedRef.current = true;
         const { playlists, bulkAdding, commitPreparedPlaylist } = recoveryContextRef.current;
-        if (!cancelled && scan.safetyBackup) {
-          const backup = scan.safetyBackup;
-          setScanSafetyStatus(backup.ok === true
-            ? `TXT doğrulandı: ${backup.count || 0} · DB: ${scan.found || 0} · ${backup.path || ''}`
-            : backup.ok === false ? `TXT yazım hatası: ${backup.error || 'Yazım doğrulanamadı'}. DB sonuçları korunuyor.`
-            : `Emniyet TXT hazırlanıyor · DB: ${scan.found || 0} sonuç`);
-        }
         const scanTerminal = ["COMPLETED", "CANCELLED", "FAILED"].includes(String(scan.state || ""));
+        /**
+         * v18.7.34 — YAPIŞIK "EMNİYET TXT HAZIRLANIYOR" METNİ
+         * -------------------------------------------------------------------
+         * CİHAZ KANITI (13.10.2026, 18.7.33): Kullanıcı bomboş bir "Oynatma
+         * Listesi Ekle" ekranında "Emniyet TXT hazırlanıyor · DB: 0 sonuç"
+         * yazısını görüyordu. İki ayrı kusur vardı:
+         *   1) Durum YALNIZ set ediliyordu; anlık görüntüde `safetyBackup`
+         *      kalmadığında temizlenmiyordu, eski metin ekranda kalıyordu.
+         *   2) Tarama BİTMİŞ (terminal) ama yazım sonucu hiç bildirilmemişse
+         *      "hazırlanıyor" deniyordu. Hiçbir şey hazırlanmıyordu; bu
+         *      kullanıcıyı yanıltan bir ifadeydi (§2.2).
+         *
+         * ÇÖZÜM: Kesin sonuç (ok true/false) her zaman gösterilir. Belirsiz
+         * durum YALNIZ tarama sürerken "hazırlanıyor" olarak gösterilir.
+         * Terminal + belirsizse metin temizlenir ve durum bir kez telemetriye
+         * yazılır — bilgi kaybolmaz, ekranda yalan kalmaz.
+         */
+        if (!cancelled) {
+          const backup = scan.safetyBackup;
+          if (!backup) setScanSafetyStatus("");
+          else if (backup.ok === true) setScanSafetyStatus(`TXT doğrulandı: ${backup.count || 0} · DB: ${scan.found || 0} · ${backup.path || ''}`);
+          else if (backup.ok === false) setScanSafetyStatus(`TXT yazım hatası: ${backup.error || 'Yazım doğrulanamadı'}. DB sonuçları korunuyor.`);
+          else if (!scanTerminal) setScanSafetyStatus(`Emniyet TXT hazırlanıyor · DB: ${scan.found || 0} sonuç`);
+          else {
+            setScanSafetyStatus("");
+            const runKey = String(scan.runId || "");
+            if (runKey && safetyIndeterminateRef.current !== runKey) {
+              safetyIndeterminateRef.current = runKey;
+              void recordDiagnostic("scan", "BULK_TXT_EXPORT_INDETERMINATE", {
+                state: String(scan.state || ""), found: Number(scan.found || 0),
+              });
+            }
+          }
+        }
         if (scan.runId) {
           await readJournal(scan.runId, scanTerminal, rows => {
             if (scan.mode === 'single') mergeStreamingMatches(rows, 'Panel taraması', 'Kalıcı sonuçlar yükleniyor…');
@@ -2986,9 +3059,22 @@ ${pub.path}`, [
     { key: "bulk", label: "Çoklu Hesap", icon: "people" },
   ];
 
-  const forceExit = React.useCallback(() => {
-    if (leavingRef.current) return;
+  const forceExit = React.useCallback((trigger: string = "button") => {
+    const startedAt = Date.now();
+    if (leavingRef.current) {
+      // v18.7.34: yok sayılan çıkış denemesi. Kullanıcının "çıkamıyorum"
+      // dediği durumun bu yol olup olmadığını kanıtlayacak kayıt.
+      void recordDiagnostic('scan', 'ADD_PLAYLIST_EXIT_IGNORED', {
+        trigger,
+        leavingReason: leavingReasonRef.current || 'unknown',
+        leavingSinceMs: leavingSinceRef.current ? startedAt - leavingSinceRef.current : 0,
+        busy: { loading, bulkAdding, bulkContentTesting, playbackTests: playbackTests.length, archiveRestoring },
+      });
+      return;
+    }
     leavingRef.current = true;
+    leavingSinceRef.current = startedAt;
+    leavingReasonRef.current = trigger;
     bulkResultsDismissedRef.current = true;
     bulkContentAbortRef.current?.abort(); setPlaybackTests([]);
     bulkPreparationAbortRef.current?.abort();
@@ -3004,20 +3090,25 @@ ${pub.path}`, [
     try{if (KizilkanNativeCore.available && bulkImportOwnedByScreenRef.current) void KizilkanNativeCore.pauseBulkImport().catch(() => {});}catch{}
     void clearScanRecoveryIntent();
     setShowBulkCandidates(false); setShowDiscoveryMatches(false); setLoading(false);
-    void recordDiagnostic('scan', 'ADD_PLAYLIST_FORCE_EXIT', { runId: scan.runId, preserved: true, profileId: activeProfile.id });
+    // v18.7.34: çıkışın gerçekten ne kadar sürdüğü ve o an neyin meşgul olduğu.
+    void recordDiagnostic('scan', 'ADD_PLAYLIST_FORCE_EXIT', {
+      runId: scan.runId, preserved: true, profileId: activeProfile.id, trigger,
+      teardownMs: Date.now() - startedAt,
+      busy: { loading, bulkAdding, bulkContentTesting, playbackTests: playbackTests.length, archiveRestoring },
+    });
     router.replace(Platform.isTV ? '/tv-home' : '/(tabs)');
-  }, [router, activeProfile.id]);
+  }, [router, activeProfile.id, loading, bulkAdding, bulkContentTesting, playbackTests.length, archiveRestoring]);
   React.useEffect(() => {
-    const listener = BackHandler.addEventListener('hardwareBackPress', () => { forceExit(); return true; });
+    const listener = BackHandler.addEventListener('hardwareBackPress', () => { forceExit('hardware-back'); return true; });
     return () => listener.remove();
   }, [forceExit]);
-  const exitButton = () => <FocusButton testID="force-exit-add-playlist" onPress={forceExit} style={{ padding: 12 }}>
+  const exitButton = () => <FocusButton testID="force-exit-add-playlist" onPress={() => forceExit('button')} style={{ padding: 12 }}>
     <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold }}>Zorla çık</Text>
   </FocusButton>;
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top", "bottom"]} testID="add-playlist-screen">
-      {!!playbackTests.length && <AccountPlaybackTestQueue owner={activeProfile.id} kind="xtream-frame" resume={playbackResume} accounts={playbackTests} onClose={() => setPlaybackTests([])} onEvidence={(key, evidence) => {
+      {!!playbackTests.length && <AccountPlaybackTestQueue owner={activeProfile.id} kind="xtream-frame" resume={playbackResume} accounts={playbackTests} onClose={() => { setPlaybackTests([]); void refreshPlaybackRecovery(activeProfile.id); }} onEvidence={(key, evidence) => {
         if(leavingRef.current || !screenAliveRef.current || screenOwnerRef.current!==activeProfile.id)return;
         const target=bulkCandidates.find(c=>c.key===key);if(!target)return;
         const endpoints=mergeEndpointEvidence(target.endpoints||[],evidence);
@@ -3032,7 +3123,7 @@ ${pub.path}`, [
         keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 16}
       >
         <View style={styles.header}>
-          <FocusButton testID="close-btn" onPress={() => { if (router.canGoBack() && !loading) router.back(); else forceExit(); }} hitSlop={12}>
+          <FocusButton testID="close-btn" onPress={() => { if (router.canGoBack() && !loading) router.back(); else forceExit("close-button"); }} hitSlop={12}>
             <Ionicons name="chevron-back" size={26} color={colors.onSurface} />
           </FocusButton>
           <Text style={[styles.title, { color: colors.onSurface }]}>Oynatma Listesi Ekle</Text>
@@ -3049,7 +3140,7 @@ ${pub.path}`, [
           }}
         >
           {!!scanSafetyStatus && <Text selectable style={{ color: colors.onSurfaceSecondary, marginBottom: SPACING.md }}>{scanSafetyStatus}</Text>}
-          <FocusButton disabled={loading||bulkContentTesting||playbackTests.length>0} onPress={()=>void resumePlaybackTests()} style={{padding:12}}><Text style={{color:colors.brandPrimary}}>Yarım kalan görüntü testlerini devam ettir</Text></FocusButton>
+          {playbackRecoveryCount>0 && <FocusButton disabled={loading||bulkContentTesting||playbackTests.length>0} onPress={()=>void resumePlaybackTests()} style={{padding:12}}><Text style={{color:colors.brandPrimary}}>Kalan {playbackRecoveryCount} görüntü testini devam ettir</Text></FocusButton>}
           {catalogRecoveryCount>0 && <FocusButton disabled={loading||bulkContentTesting} onPress={()=>void testBulkContent(true)} style={{padding:12}}><Text style={{color:colors.brandPrimary}}>Kalan {catalogRecoveryCount} katalog testini devam ettir</Text></FocusButton>}
           <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary }]}>KAYNAK TÜRÜ</Text>
           <View style={styles.methodGrid}>
@@ -3828,7 +3919,7 @@ ${pub.path}`, [
         {/* v18.7.17 (E1): tekli MAG eklemede görsel hazırlık modalı (Canlı/Film/Dizi kartları + süre + iptal).
             v18.7.14 (A): İptal + donanım geri tuşu işlemi durdurur (back-trap). */}
         <CatalogPreparationModal
-          onExit={forceExit}
+          onExit={() => forceExit("modal-exit")}
           visible={loading && method === "stalker"}
           presentation="modal"
           title="MAG Portal hazırlanıyor"
@@ -3842,7 +3933,7 @@ ${pub.path}`, [
           visible={showBulkCandidates}
           transparent
           animationType="fade"
-          onRequestClose={forceExit}
+          onRequestClose={() => forceExit("modal-request-close")}
         >
           <View style={styles.matchModalBackdrop}>
             <View style={[styles.matchModalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -4099,7 +4190,7 @@ ${pub.path}`, [
           visible={showDiscoveryMatches}
           transparent
           animationType="fade"
-          onRequestClose={forceExit}
+          onRequestClose={() => forceExit("modal-request-close")}
         >
           <View style={styles.matchModalBackdrop}>
             <View style={[styles.matchModalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -4302,7 +4393,7 @@ ${pub.path}`, [
       </Modal>
 
       {/* v16.5.0: MAG için üstteki özel katman var; burada çift göstermiyoruz. */}
-      <Modal visible={loading && method !== "stalker"} transparent animationType="fade" onRequestClose={forceExit}>
+      <Modal visible={loading && method !== "stalker"} transparent animationType="fade" onRequestClose={() => forceExit("loading-modal-close")}>
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.88)", alignItems: "center", justifyContent: "center", padding: SPACING.lg }}>
           {exitButton()}
           <ActivityIndicator size="large" color={colors.brandPrimary} />
