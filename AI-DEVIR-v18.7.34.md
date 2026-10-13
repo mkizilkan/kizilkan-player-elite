@@ -125,3 +125,24 @@ alanlarının hem VARLIĞI hem de stall dalındaki doğru değeri (sırasıyla `
 - "Ekrandan çıkamıyorum" sorunu **düzeltilmedi**, ölçüldü.
 - Room veritabanı 552 MB / `mediaCount` 489.706. Bu turda dokunulmadı.
 - OEM süreç dondurmasını engellemiyoruz; yalnız doğru etiketliyoruz.
+
+## 9. Teslim kaydı — Opus, 13.10.2026
+
+- Commit **`29994eea`**, dal `v18.7.34-rc1-ui-stale-anr-telemetry` origin'e push edildi.
+  Ana dal değiştirilmedi.
+- Manuel normal build [38371114946](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/38371114946)
+  — **success**. `build_type=release`, `make_release=true`, `new_architecture=true`.
+- Release **build-157**: `KIZILKAN-PLAYER-ELITE-v18.7.34-build157.apk` (**367 MB**) + boyut raporu.
+- **Actions artifact da oluştu** (172 MB sıkıştırılmış) — v18.7.34 öncesi eklenen CI görünürlük
+  düzeltmesi (`0707d19d`) ikinci build'de de çalıştı. Adımlar: "GitHub Release olustur" success ·
+  "Calisma ozeti (APK nerede?)" success · "Artifact olarak yukle" success.
+- **CİHAZA KURULMADI:** telefon bağlı değildi. §7'deki 6 kabul senaryosunun hiçbiri yapılmadı.
+  Derlemenin geçmesi çalıştığı anlamına gelmez (CLAUDE.md §7).
+
+### Sıradaki oturumda yapılacak
+
+1. Telefona build-157'yi kur (ya da telefondan `releases/latest`), açılış kontrolü + logcat.
+2. §7'deki 6 senaryoyu geç; özellikle **temiz profille boş ekran** (bant ve TXT yazısı
+   GÖRÜNMEMELİ) ve **arka plan/dönüş sonrası** `anrOlcumGuvenilir: true` + `anrOnPlan` artmaması.
+3. Yeni uçuş kaydında `ADD_PLAYLIST_EXIT_IGNORED` varsa "çıkamıyorum" kök nedeni kanıtlanmış olur;
+   düzeltme ancak o zaman yapılır.
