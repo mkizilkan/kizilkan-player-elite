@@ -47,8 +47,8 @@ Kullanıcı HOST V38.20 analizindeki 12 maddelik paketi tek build için onaylad�
 - Yeni üretim TS testleri: `tools/test-v18735-host-integration.js`, **11 davranış grubu PASS**. Ortak IP/origin, case/password/ID, parser/provenance, bounded writer, RTT ve büyük katalog timeout koruması, cache TTL/ağ, ortak çağıran iptali, doğrulama/rapor, kalıcı resume/storage failure, ETA ve native import metadata sahipliği.
 - Yeni native test: `tools/test-dns-route-runtime.js`, gerçek `DnsRouteRequest.kt` ve `NativeDnsRoutes.kt` derlenip çalıştırıldı. Yerel HTTP/TLS sunucularında **4 test grubu PASS**: virtual Host/ortak IP/body cap, ön/aktif iptal ve timeout, gerçek SNI + yanlış hostname sertifika reddi, 512 kayıt/ağ bağlamı sınırı. Android Context/Connectivity sınırı PC testinde stub; gerçek TLS/OkHttp/DNS request kodu üretim kodudur.
 - Native değişiklik sonrası temiz Expo prebuild + `assembleDebug`: **BUILD SUCCESSFUL, 18m 7s, 475 task**. Windows/JDK geçici soket yolu proje içi `.jdk-sockets` ile verildi; ilk loopback hatası bu ortam ayarıyla giderildi.
-- Son DEV APK için son JS bundle yeniden üretilecek. Normal GitHub release derlemesi manuel tetiklenecek. Bu dosyanın teslim bölümü gerçek SHA/run/link ile güncellenecek.
-- Yeni DNS ve importer fonksiyonları Activity yapıcısında servis/bağlam açmıyor. ADB ile son kontrolde bağlı cihaz yok; hazır AVD bulunmadı. Telefon/emülatör açılış ve gerçek hesap ilk kare kabulü bu PC doğrulamasının yerine geçmez.
+- Son DEV APK için son JS bundle yeniden üretildi: BUILD SUCCESSFUL, 2m 38s. Normal GitHub release derlemesi build 158 olarak manuel tetiklendi ve başarıyla tamamlandı; APK Release'e yüklendi.
+- Yeni DNS ve importer fonksiyonları Activity yapıcısında servis/bağlam açmıyor. Kullanıcı telefonu bağladıktan sonra OnePlus GM1910 üzerine DEV kurulumu ve soğuk açılış kontrolü yapıldı. Gerçek hesap taraması/ilk kare kabulü açılış kontrolünden ayrı olarak cihazda denenmelidir.
 
 ## Opus / cihaz kabul kontrolü
 
@@ -71,4 +71,14 @@ Kullanıcı HOST V38.20 analizindeki 12 maddelik paketi tek build için onaylad�
 
 ## Teslim durumu
 
-Commit/push, manuel NORMAL GitHub run ve son PC DEV APK bilgileri henüz bu bölüme yazılmadı; tamamlandıkça gerçek sonuçlar eklenecek. Kod ve testler dışındaki hesap arşivleri, ham loglar, Python kaynakları, APK'lar ve signing sırları git'e eklenmeyecek.
+- Uygulama commit/push: `45eb12801fdf225b4f3402b73d0c2836a636cf10`. 51 dosya, 1470 ekleme/219 çıkarma; kaynak/test/rapor kapsamı. Dal `codex/v18.7.35-host-integration`.
+- Manuel **NORMAL release** build **158**, run `38597990171`: https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/38597990171 . Kaynak SHA yukarıdaki uygulama commit'i; build_type=release, make_release=true, new_architecture=true. Son kontrol: completed / success; tüm zorunlu kapılar ve Release yüklemesi başarılı.
+- Normal APK: https://github.com/mkizilkan/kizilkan-player-elite/releases/download/build-158/KIZILKAN-PLAYER-ELITE-v18.7.35-build158.apk . GitHub asset state=uploaded, boyut 385575519 byte, SHA256 `b6605c6b40229f64897afe102ba6995dd55a76489ddaa1a7e9fb48b183c6a7f1`.
+- PC son DEV: `C:/Projeler/kizilkan-player-elite/artifacts/KIZILKAN-18.7.35-RC1-DEV.apk`, **487474662 byte**.
+- DEV SHA256: `b540a9daad9e2a5f29b50d5381e924598d05c320c59c2ddfad7bf6f3622694f6`.
+- DEV paket `com.gpt.kizilkan.player.dev`, versionCode `180735`, versionName `18.7.35-dev`, etiket `KIZILKAN DEV`; normal uygulamanın üstüne yazmaz.
+- Final APK: standalone `assets/index.android.bundle`, yeni DNS/batch sınıfları DEX'te, APK imzası v2 PASS. MPVLib DEX + libmpv/libc++ ve from_chars dahil C++ sembolleri **dört ABI için PASS**.
+- Kullanılan son derleme komutu: `tools/build-dev.ps1 -SkipChecks` (kontroller önceden PASS).
+- Cihaz teslimi: OnePlus GM1910 / seri `c3a4097e`, `adb install -r -g` sonucu Success. Paket versionCode=180735 ve versionName=18.7.35-dev doğrulandı; telefondaki base.apk SHA256 yukarıdaki yerel DEV SHA256 ile birebir eşleşti. Veri silme/uninstall yapılmadı.
+- DEV soğuk açılış: MainActivity Status=ok, TotalTime=3085 ms; 12 saniye sonraki kontrolde süreç çalışıyor ve DEV ekranı önde. Yalnız bu açılış zaman aralığında crash tamponunda DEV paket eşleşmesi 0, süreç logunda FATAL EXCEPTION/Fatal signal/JavascriptException 0, ReactNativeJS TypeError/ReferenceError/Invariant Violation 0. Bu, gerçek hesap/tarama/oynatma testi yapıldığı anlamına gelmez.
+- Doc-only teslim commit'leri uygulama kaynak SHA'sını değiştirmez. Hesap arşivleri, ham loglar, Python kaynakları, APK'lar ve signing sırları git'e eklenmedi.
