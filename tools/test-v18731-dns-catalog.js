@@ -67,7 +67,7 @@ function controlUI(playlist) {
     'expo-router': { useFocusEffect: fn => { const i = cursor++; if (!slots.has(i)) { slots.set(i, true); effects.push(() => { focusCleanup = fn(); }); } } },
     '@/src/store/PlaylistContext': { usePlaylists: () => ({ updatePlaylist: (id, payload) => new Promise((resolve, reject) => writes.push({ id, payload, resolve, reject })) }) },
     '@/src/store/ProfileContext': { useProfiles: () => ({ activeProfile: { id: 'fixture-profile' } }) }, '@/src/theme/ThemeContext': { useTheme: () => ({ colors: { error: 'red' } }) },
-    './DnsManager': { DnsManager: 'DNS' }, '@/src/player/hostFailover': { rememberWorkingHost: async (_, host) => { preferences.push(host); } },
+    './PortalHealthCard': {PortalHealthCard:'Health'}, './DnsManager': { DnsManager: 'DNS' }, '@/src/player/hostFailover': { rememberWorkingHost: async (_, host) => { preferences.push(host); } },
     '@/src/utils/panelDnsFailover': { boundPanelDnsCandidates: async () => [], magDnsCandidate: x => x } });
   const Component = load('src/components/PlaylistDnsControls.tsx').PlaylistDnsControls;
   const render = () => { cursor = 0; effects = []; tree = Component({ playlist }); effects.forEach(fn => fn()); return tree; };

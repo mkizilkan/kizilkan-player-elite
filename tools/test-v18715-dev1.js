@@ -151,6 +151,7 @@ function pass(message) { groups++; console.log('PASS DEV1: ' + message); }
   }
   {
     const e = environment(() => new Promise(() => {})), s = e.load('src/utils/stalker.ts');
+    e.load('src/utils/adaptiveNetworkPolicy.ts'); // warm VM transpilation before the 80 ms transport deadline; production modules remain cached
     const { MagDiscoveryBudget } = e.load('src/utils/magDiscoveryBudget.ts'), budget = new MagDiscoveryBudget({ deadlineMs: 80 });
     try {
       const started = Date.now();

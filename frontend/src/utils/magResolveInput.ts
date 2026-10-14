@@ -11,7 +11,7 @@ export async function resolveMagInput(cred: StalkerCreds, options: { signal?: Ab
   if (!host || parsed.invalid.length || parsed.hosts.length !== 1) throw new Error('Geçersiz MAG portal adresi.');
   const literalApi = /\.php$/i.test(new URL(host.host).pathname);
   const scope = options.scope || (literalApi ? 'exact' : 'fallback');
-  const budget = new MagDiscoveryBudget({ signal: options.signal });
+  const budget = new MagDiscoveryBudget({ signal: options.signal,operationId:cred.operationId||cred.requestScope?.operationId });
   const control = { signal: options.signal }, gate = createMagRequestGate(control, options.onStage);
   try {
     const passive = magPassiveDiscoveryBudget(budget);
@@ -29,7 +29,7 @@ export async function resolveMagInput(cred: StalkerCreds, options: { signal?: Ab
     const candidates = scope === 'exact' ? [host.host] : host.hasPort
       ? magFamilyEndpoints(host.host).filter(value => /\.php$/i.test(new URL(value).pathname))
       : portalDiscoveryCandidates(host);
-    const found = await discoverMagPortal({ ...cred, portal: host.host, requestScope: { ...gate, transport: 'direct', signal: options.signal, discoveryBudget: budget } }, candidates, {
+    const found = await discoverMagPortal({ ...cred, portal: host.host, requestScope: { ...gate, operationId:budget.operationId,transport: 'direct', signal: options.signal, discoveryBudget: budget } }, candidates, {
       signal: options.signal, timeoutMs: 6000,
       onProbe: (_endpoint, i, t) => options.onStage?.(`Portal aranıyor · handshake ${i + 1}/${t}`),
     });

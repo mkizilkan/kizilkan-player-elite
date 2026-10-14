@@ -285,6 +285,9 @@ export default function StatsScreen() {
           }}>
             <Ionicons name="share-social" size={18} color="#fff" /><Text style={styles.diagButtonText}>Flight Recorder Raporunu Paylaş</Text>
           </FocusButton>
+          {(['md','csv'] as const).map(format=><FocusButton key={format} testID={'diagnostics-share-'+format} style={[styles.diagButton,{backgroundColor:colors.brandPrimary}]} onPress={async()=>{
+            try{await exportDiagnosticReport({runtimeMemory,storageFootprint,exitHistory,scanDiagnostics,lastScanCrash,blackBoxHealth},format);}catch(e:any){Alert.alert('Rapor',String(e?.message||e));}
+          }}><Ionicons name="document-text" size={18} color="#fff"/><Text style={styles.diagButtonText}>Tanı raporu · {format.toUpperCase()}</Text></FocusButton>)}
           <FocusButton testID="diagnostics-clear-btn" style={[styles.diagButton, { borderWidth:1, borderColor: colors.border }]} onPress={() => Alert.alert("Tanılama geçmişi", "Player, uygulama ve tarama tanılama geçmişinin tamamı silinsin mi?", [{text:"Vazgeç",style:"cancel"},{text:"Sil",style:"destructive",onPress:async()=>{
             await clearDiagnostics();
             if (PanelScan.available) PanelScan.clearDiagnostics();

@@ -332,7 +332,7 @@ export async function fetchAndParseM3UConditional(url:string,validators?:{etag?:
 // XTREAM CODES CLIENT
 // ============================================================================
 
-export interface XtreamCredentials { server: string; username: string; password: string; }
+export interface XtreamCredentials { operationId?:string; server: string; username: string; password: string; }
 export interface XtreamAccountInfo {
   username?: string;
   status?: string;
@@ -350,7 +350,12 @@ function normalizeServer(server: string): string {
   return s.replace(/\/+$/, '');
 }
 
-async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSignal, scanProxy = false): Promise<T> {
+async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSignal, scanProxy = false,operationId?:string): Promise<T> {
+  let timing:typeof import('./adaptiveNetworkPolicy')|undefined;try{timing=await import('./adaptiveNetworkPolicy');}catch{}
+  const timingStage=/action=get_(live|vod|series)/i.test(url)?'catalog':'account';
+  const transport=scanProxy?'proxy':'direct';
+  const requestedTimeoutMs=timeoutMs;
+  timeoutMs=timing?.adaptiveTimeout?.(url,timingStage,requestedTimeoutMs,Infinity,transport)??requestedTimeoutMs;
   const { acquireHostRequest, deferHost, retryAfterMilliseconds, abortableDelay } = await import('./hostRequestPolicy');
   const host = new URL(url).hostname.toLowerCase();
   let last: any = null;
@@ -358,6 +363,7 @@ async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSi
     throwIfExternallyAborted(externalSignal);
     const release = await acquireHostRequest(host, externalSignal);
     const { controller, cleanup } = linkedAbortController(timeoutMs, externalSignal);
+    const timingStarted=Date.now();
     try {
       const requestHeaders = { 'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16', 'Accept': 'application/json,*/*' };
       const res = scanProxy ? await (async()=>{
@@ -379,14 +385,16 @@ async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSi
       const text = await res.text();
       throwIfExternallyAborted(externalSignal);
       if(scanResponseFailure(res.status,{'cf-mitigated':res.headers.get('cf-mitigated')||''},text)==='protected')throw Object.assign(new Error('Sunucu doğrulama/koruma istiyor.'),{kind:'PROTECTION'});
-      try { return JSON.parse(text) as T; } catch { throw Object.assign(new Error(/^\s*</.test(text) ? 'API yerine HTML / doğrulama sayfası döndü.' : 'Geçersiz JSON'), { kind: /^\s*</.test(text) ? 'HTML_RESPONSE' : 'INVALID_JSON' }); }
+      try { const value=JSON.parse(text) as T;timing?.rememberHostTiming?.(url,timingStage,Date.now()-timingStarted,'success',transport);void import('@/src/utils/diagnostics').then(d=>d.recordDiagnostic('network','XTREAM_REQUEST_TIMING',{status:res.status,timeoutMs,transport},{operationId,stage:timingStage,durationMs:Date.now()-timingStarted,outcome:'success'})).catch(()=>{});return value; } catch { throw Object.assign(new Error(/^\s*</.test(text) ? 'API yerine HTML / doğrulama sayfası döndü.' : 'Geçersiz JSON'), { kind: /^\s*</.test(text) ? 'HTML_RESPONSE' : 'INVALID_JSON' }); }
     } catch (e:any) {
       if (externalSignal?.aborted) throwIfExternallyAborted(externalSignal);
       last = e;
+      void import('@/src/utils/diagnostics').then(d=>d.recordDiagnostic('network','XTREAM_REQUEST_TIMING',{status:e?.status,errorKind:e?.kind,timeoutMs,transport},{operationId,stage:timingStage,durationMs:Date.now()-timingStarted,outcome:'failed'})).catch(()=>{});
+      timing?.rememberHostTiming?.(url,timingStage,Date.now()-timingStarted,controller.signal.aborted&&!externalSignal?.aborted?'timeout':'other',transport);
       if (scanProxy || e?.kind === 'PROTECTION' || e?.kind === 'RATE_LIMIT' || e?.kind === 'ACCOUNT_REJECTED' || e?.kind === 'HTML_RESPONSE' || e?.kind === 'INVALID_JSON' || (e?.status && ![429, 500, 502, 503, 504].includes(e.status))) throw e;
       if (controller.signal.aborted) last = Object.assign(new Error('API yanıtı zaman aşımına uğradı.'), { kind: 'TIMEOUT' });
     } finally { cleanup(); release(); }
-    if (attempt === 0) await abortableDelay(500, externalSignal);
+    if (attempt === 0) {timeoutMs=requestedTimeoutMs;await abortableDelay(500, externalSignal);}
   }
   throw last || new Error('Xtream isteği başarısız');
 }
@@ -394,7 +402,7 @@ async function xtGet<T>(url: string, timeoutMs = 60000, externalSignal?: AbortSi
 export async function xtreamLogin(cred: XtreamCredentials, signal?: AbortSignal): Promise<{ user_info: XtreamAccountInfo; server_info: any }> {
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}`;
-  const data = await xtGet<any>(url, 30000, signal);
+  const data = await xtGet<any>(url, 30000, signal, false, cred.operationId);
   if (!data?.user_info || explicitScanAuth(data.user_info.auth) === null) throw Object.assign(new Error('Hesap doğrulama kanıtı eksik; yeniden denenebilir.'),{kind:'INVALID_JSON'});
   if (explicitScanAuth(data.user_info.auth) === false) throw Object.assign(new Error('Kullanıcı adı veya şifre hatalı'),{kind:'ACCOUNT_REJECTED'});
   // v5.6.0: Panelin gönderdiği TÜM ek alanları koru.
@@ -422,14 +430,14 @@ export async function xtreamLogin(cred: XtreamCredentials, signal?: AbortSignal)
 
 export async function xtreamLiveCategories(cred: XtreamCredentials, signal?: AbortSignal): Promise<XtreamCategory[]> {
   const base = normalizeServer(cred.server);
-  return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_categories`, 60000, signal);
+  return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_categories`, 60000, signal, false, cred.operationId);
 }
 
 export async function xtreamLiveStreams(cred: XtreamCredentials, signal?: AbortSignal): Promise<Channel[]> {
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_streams`;
   const [streams, cats] = await Promise.all([
-    xtGet<any[]>(url, 120000, signal),
+    xtGet<any[]>(url, 120000, signal, false, cred.operationId),
     xtreamLiveCategories(cred, signal).catch(() => [] as XtreamCategory[]),
   ]);
   const catMap = new Map<string, string>(cats.map(c => [String(c.category_id), c.category_name]));
@@ -463,7 +471,7 @@ export async function xtreamLiveSample(cred: XtreamCredentials, signal?: AbortSi
   const base = cred.server.replace(/\/+$/, '');
   const login = await xtreamLogin(cred, signal);
   if (![1, '1', true, 'true'].includes((login?.user_info as any)?.auth)) throw new Error('Xtream hesabı doğrulanamadı.');
-  const rows = await xtGet<unknown>(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_streams`, 10000, signal);
+  const rows = await xtGet<unknown>(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_streams`, 10000, signal, false, cred.operationId);
   if (!Array.isArray(rows)) throw new Error('Canlı katalog yanıtı geçersiz.');
   const valid = rows.filter(r => r && /^\d+$/.test(String(r.stream_id)) && Number(r.stream_id)>0);
   if (!valid.length) throw new Error('Test edilecek canlı kanal bulunamadı.');
@@ -474,21 +482,21 @@ export async function xtreamLiveSample(cred: XtreamCredentials, signal?: AbortSi
 
 export async function xtreamLiveCatalogProbe(cred: XtreamCredentials, signal?: AbortSignal, scanProxy = false): Promise<number> {
   const base = normalizeServer(cred.server);
-  const rows = await xtGet<unknown>(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_streams`, 10000, signal, scanProxy);
+  const rows = await xtGet<unknown>(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_live_streams`, 10000, signal, scanProxy, cred.operationId);
   if (!Array.isArray(rows)) throw new Error('Canlı katalog API yanıtı dizi değil.');
   return rows.filter(row => row && typeof row === 'object' && /^\d+$/.test(String(row.stream_id))).length;
 }
 
 export async function xtreamVodCategories(cred: XtreamCredentials, signal?: AbortSignal): Promise<XtreamCategory[]> {
   const base = normalizeServer(cred.server);
-  return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_vod_categories`, 60000, signal);
+  return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_vod_categories`, 60000, signal, false, cred.operationId);
 }
 
 export async function xtreamVod(cred: XtreamCredentials, signal?: AbortSignal): Promise<VodItem[]> {
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_vod_streams`;
   const [items, cats] = await Promise.all([
-    xtGet<any[]>(url, 120000, signal),
+    xtGet<any[]>(url, 120000, signal, false, cred.operationId),
     xtreamVodCategories(cred, signal).catch(() => [] as XtreamCategory[]),
   ]);
   const catMap = new Map<string, string>(cats.map(c => [String(c.category_id), c.category_name]));
@@ -527,14 +535,14 @@ export async function xtreamVod(cred: XtreamCredentials, signal?: AbortSignal): 
 
 export async function xtreamSeriesCategories(cred: XtreamCredentials, signal?: AbortSignal): Promise<XtreamCategory[]> {
   const base = normalizeServer(cred.server);
-  return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_series_categories`, 60000, signal);
+  return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_series_categories`, 60000, signal, false, cred.operationId);
 }
 
 export async function xtreamSeries(cred: XtreamCredentials, signal?: AbortSignal): Promise<SeriesItem[]> {
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_series`;
   const [items, cats] = await Promise.all([
-    xtGet<any[]>(url, 120000, signal),
+    xtGet<any[]>(url, 120000, signal, false, cred.operationId),
     xtreamSeriesCategories(cred, signal).catch(() => [] as XtreamCategory[]),
   ]);
   const catMap = new Map<string, string>(cats.map(c => [String(c.category_id), c.category_name]));
@@ -571,7 +579,7 @@ export async function xtreamSeries(cred: XtreamCredentials, signal?: AbortSignal
 export async function xtreamSeriesInfo(cred: XtreamCredentials, series_id: string, signal?: AbortSignal): Promise<{ info: any; seasons: { season: string; episodes: any[] }[] }> {
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_series_info&series_id=${encodeURIComponent(series_id)}`;
-  const data = await xtGet<any>(url, 60000, signal);
+  const data = await xtGet<any>(url, 60000, signal, false, cred.operationId);
   const eps = data?.episodes || {};
   const seasons = Object.keys(eps).map(k => ({
     season: k,
@@ -586,7 +594,7 @@ export async function xtreamSeriesInfo(cred: XtreamCredentials, series_id: strin
 export async function xtreamVodInfo(cred: XtreamCredentials, vod_id: string, signal?: AbortSignal): Promise<{ info: any; movie_data: any }> {
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_vod_info&vod_id=${encodeURIComponent(vod_id)}`;
-  const data = await xtGet<any>(url, 60000, signal);
+  const data = await xtGet<any>(url, 60000, signal, false, cred.operationId);
   return { info: data?.info || {}, movie_data: data?.movie_data || {} };
 }
 
@@ -622,7 +630,7 @@ export async function xtreamCatchupEpg(
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_simple_data_table&stream_id=${encodeURIComponent(stream_id)}`;
   try {
-    const data = await xtGet<any>(url, 30000, signal);
+    const data = await xtGet<any>(url, 30000, signal, false, cred.operationId);
     const list = data?.epg_listings || data?.epg || [];
 
     const decode = decodeBase64Utf8;
@@ -650,7 +658,7 @@ export async function xtreamShortEpg(cred: XtreamCredentials, stream_id: string,
   const base = normalizeServer(cred.server);
   const url = `${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_short_epg&stream_id=${encodeURIComponent(stream_id)}&limit=${limit}`;
   try {
-    const data = await xtGet<any>(url, 20000);
+    const data = await xtGet<any>(url, 20000, undefined, false, cred.operationId);
     const list = data?.epg_listings || data?.epg || [];
     return list.map((p: any) => {
       // Xtream titles/descriptions are base64 (UTF-8 farkında çözücü — Türkçe düzeltmesi)

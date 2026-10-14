@@ -53,9 +53,10 @@ export default function SettingsTab() {
   const { toggleHiddenGroup, isGroupHidden, hiddenGroups, clearAllProgress } = useLibrary();
   const router = useRouter();
   const { colors, themeName, setTheme } = useTheme();
-  const { playlists, activePlaylist, setActivePlaylist, removePlaylist, updatePlaylist, autoRefreshGlobal, setAutoRefreshGlobal } = usePlaylists();
+  const { playlists, activePlaylist, setActivePlaylist, removePlaylist, updatePlaylist, autoRefreshGlobal, setAutoRefreshGlobal,refreshPlaylistKinds } = usePlaylists();
   const [nativeGroups, setNativeGroups] = useState<string[]>([]);
   const { profiles, activeProfile, switchProfile, removeProfile, setPin: setProfPin, verifyAdminPin, adminHasPin, authorizeProfileSession } = useProfiles();
+  const refreshOwnerRef=useRef(activeProfile.id);refreshOwnerRef.current=activeProfile.id;
   const { settings: parental, setPin, clearPin, toggleCategoryLock, setAdultHidden, verifyPinAsync, isCategoryLocked } = useParental();
   const [epgInput, setEpgInput] = useState<string>(activePlaylist?.epgUrl || "");
   const [epgLoading, setEpgLoading] = useState(false);
@@ -170,6 +171,7 @@ export default function SettingsTab() {
     if (refreshingAllPlaylists || playlists.length === 0) return;
     setRefreshingAllPlaylists(true);
     setRefreshAllPlaylistProgress(`0/${playlists.length} tamamlandı`);
+    const owner=activeProfile.id;
     let cursor = 0;
     let completed = 0;
     let ok = 0;
@@ -180,14 +182,8 @@ export default function SettingsTab() {
         if (idx >= playlists.length) return;
         const pl = playlists[idx];
         setRefreshAllPlaylistProgress(`${completed}/${playlists.length} · ${pl.name} güncelleniyor`);
-        const res = await refreshPlaylistContent(pl);
-        if (res.ok && res.patch) {
-          await updatePlaylist(pl.id, res.patch);
-          ok++;
-        } else {
-          if (res.patch) await updatePlaylist(pl.id, res.patch);
-          failed.push(`${pl.name}: ${res.message}`);
-        }
+        try{await refreshPlaylistKinds(pl.id,['live','vod','series'],p=>setRefreshAllPlaylistProgress(`${completed}/${playlists.length} · ${pl.name} · ${p.message}`),()=>refreshOwnerRef.current===owner);ok++;}
+        catch(error:any){failed.push(`${pl.name}: ${String(error?.message||error)}`);}
         completed++;
         setRefreshAllPlaylistProgress(`${completed}/${playlists.length} tamamlandı`);
       }

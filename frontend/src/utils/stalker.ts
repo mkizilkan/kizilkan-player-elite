@@ -68,6 +68,8 @@ const PORTAL_PATHS = MAG_LEGACY_API_PATHS;
 export type StalkerTimezoneMode = "auto" | "portal" | "device" | "manual";
 
 export interface StalkerCreds {
+  /** Request correlation only; never sent to a portal. */
+  operationId?:string;
   portal: string;
   mac: string;
   serial?: string;
@@ -100,6 +102,7 @@ export type MagProtectionObservation = {
 };
 
 export type StalkerRequestScope = {
+  operationId?:string;
   transport: "direct" | "proxy";
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -895,7 +898,17 @@ async function req(url: string, headers: Record<string, string>, options: number
       reject(Object.assign(new Error('MAG istek süre sınırı doldu'), { kind: 'TIMEOUT' })); controller.abort();
     }, Math.max(1, opts.timeoutCapMs!));
   });
-  try { budget?.check(); return await Promise.race([reqTransport(url, headers, { ...opts, signal: controller.signal }), stopped]); }
+  let policy:typeof import('./adaptiveNetworkPolicy')|undefined;
+  try{policy=await import('./adaptiveNetworkPolicy');}catch{}
+  let stage='api';try{stage=new URL(url).searchParams.get('action')||'api';}catch{}
+  const timingStage=/get_all|get_ordered|stream|vod|series/i.test(stage)?'catalog':stage;
+  const transport=scope?.transport||'direct',started=Date.now();
+  const limit=policy?.adaptiveTimeout?.(url,timingStage,opts.timeoutCapMs??opts.timeoutMs??scope?.timeoutMs??20000,budget?.remainingMs??Infinity,transport);
+  try { budget?.check();const result=await Promise.race([reqTransport(url, headers, { ...opts,...(limit?{timeoutCapMs:limit}:{}), signal: controller.signal }), stopped]);
+    policy?.rememberHostTiming?.(url,timingStage,Date.now()-started,'success',transport);
+    void recordDiagnostic('network','MAG_REQUEST_TIMING',{durationMs:Date.now()-started,timeoutMs:limit,transport},{operationId:scope?.operationId||budget?.operationId||headerOwners.get(headers)?.operationId,stage,durationMs:Date.now()-started,outcome:'success'});
+    return result;
+  }catch(error:any){policy?.rememberHostTiming?.(url,timingStage,Date.now()-started,error?.kind==='TIMEOUT'?'timeout':'other',transport);void recordDiagnostic('network','MAG_REQUEST_TIMING',{durationMs:Date.now()-started,timeoutMs:limit,transport,errorKind:error?.kind},{operationId:scope?.operationId||budget?.operationId||headerOwners.get(headers)?.operationId,stage,durationMs:Date.now()-started,outcome:error?.kind==='CANCELLED'?'cancelled':'failed'});throw error;}
   finally { if (timer) clearTimeout(timer); for (const remove of listeners) remove(); }
 }
 async function reqTransport(url: string, headers: Record<string, string>, options: number | ReqOptions = 20000): Promise<any> {
@@ -938,7 +951,7 @@ async function reqTransport(url: string, headers: Record<string, string>, option
     } catch { return { path:"",type:"",action:"",page:"",host:"" }; }
   })();
   try {
-    let res:any;
+    let res:any;let responseTransportUrl=url;
     // v16.13.8 — PCAP/Loader MAG320 profili Android'de RN fetch yerine native
     // OkHttp exact transport kullanır. Böylece Cookie/UA/X-UA/Referer'ın native
     // request üzerinde gerçekten var olduğu güvenli fingerprint telemetrisiyle
@@ -980,6 +993,7 @@ async function reqTransport(url: string, headers: Record<string, string>, option
         throw error;
       };
       for (let hop = 0; ; hop++) {
+        let transportUrl=target;
         checkScopeRuntime(runtime);
         if (c.signal.aborted) throw scopeCancelledError();
         if (panel) {
@@ -996,12 +1010,16 @@ async function reqTransport(url: string, headers: Record<string, string>, option
         } else {
           // v18.7.12: çoklu-IP failover — canlı IP sabitlenmişse bağlantı o IP'ye (Host başlığı hostname).
           const conn = hostFailover ? hostFailover.connectInfo(target) : { url: target };
+          transportUrl=conn.url;
           const connHdrs = conn.host ? { ...hdrs, Host: conn.host } : hdrs;
-          res = await exactFetch!(conn.url, { method, headers: connHdrs, ...(method === "POST" ? { body } : {}), signal: c.signal, redirect: "manual", credentials: "omit" });
+          const init={method,headers:connHdrs,...(method==='POST'?{body}:{}),signal:c.signal,redirect:'manual' as const,credentials:'omit' as const};
+          const cap=opts.maxResponseBytes||(/action=(?:handshake|get_profile|get_main_info|get_genres|get_categories)/.test(target)?1048576:undefined);
+          res=hostFailover?.fetchWithDns?await hostFailover.fetchWithDns(target,init,cap,timeoutMs,exactFetch!):await exactFetch!(conn.url,init);
         }
+        responseTransportUrl=transportUrl;
         const discard = async () => { try { await res.body?.cancel(); } catch {} };
         const responseUrl = String(res.url || target);
-        if (!sameApi(hostFailover ? hostFailover.logicalUrl(responseUrl) : responseUrl)) { await discard(); stop("response-endpoint-mismatch"); }
+        if (!sameApi(hostFailover ? hostFailover.logicalUrl(responseUrl,target,transportUrl) : responseUrl)) { await discard(); stop("response-endpoint-mismatch"); }
         const isRedirect = [301, 302, 303, 307, 308].includes(Number(res.status));
         if (!isRedirect) {
           if (res.redirected || res.type === "opaqueredirect") { await discard(); stop("transport-followed-redirect"); }
@@ -1099,16 +1117,18 @@ async function reqTransport(url: string, headers: Record<string, string>, option
       if ((opts as any).postForm) {
         const u = new URL(url);
         const body = u.searchParams.toString();
-        res = await fetch(u.origin + u.pathname, {
-          method: "POST",
-          headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
-          body,
-          signal: c.signal,
-        });
+        const target=u.origin+u.pathname;
+        const init={method:'POST',headers:{...headers,'Content-Type':'application/x-www-form-urlencoded'},body,signal:c.signal};
+        const cap=opts.maxResponseBytes||(/action=(?:handshake|get_profile|get_main_info|get_genres|get_categories)/.test(url)?1048576:undefined);
+        responseTransportUrl=hostFailover?.connectInfo(target).url||target;
+        res=hostFailover?.fetchWithDns?await hostFailover.fetchWithDns(target,init,cap,timeoutMs,fetch):await fetch(target,init);
       } else {
         // v18.7.12: çoklu-IP failover — canlı IP sabitlenmişse bağlantı o IP'ye (Host başlığı hostname).
         const conn = hostFailover ? hostFailover.connectInfo(url) : { url };
-        res = await fetch(conn.url, { headers: conn.host ? { ...headers, Host: conn.host } : headers, signal: c.signal });
+        responseTransportUrl=conn.url;
+        const init={headers:conn.host?{...headers,Host: conn.host}:headers,signal:c.signal};
+        const cap=opts.maxResponseBytes||(/action=(?:handshake|get_profile|get_main_info|get_genres|get_categories)/.test(url)?1048576:undefined);
+        res=hostFailover?.fetchWithDns?await hostFailover.fetchWithDns(url,init,cap,timeoutMs,fetch):await fetch(conn.url,init);
       }
     }
     catch (cause:any) {
@@ -1116,14 +1136,14 @@ async function reqTransport(url: string, headers: Record<string, string>, option
       const err:any=new Error(cause?.name==="AbortError"
         ? (parentAbort ? "İşlem kullanıcı/üst seviye tarafından iptal edildi" : `Bağlantı zaman aşımı (${timeoutMs} ms)`)
         : `Network request failed: ${String(cause?.message || cause || "bilinmeyen ağ hatası")}`);
-      err.kind=cause?.name==="AbortError" ? (parentAbort ? "CANCELLED" : "TIMEOUT") : "NETWORK";
+      err.kind=cause?.kind|| (cause?.name==="AbortError" ? (parentAbort ? "CANCELLED" : "TIMEOUT") : "NETWORK");
       err.causeName=String(cause?.name||"");
       void recordDiagnostic("mag","STALKER_HTTP_TRANSPORT_ERROR",{...requestMeta,elapsedMs:Date.now()-startedAt,timeoutMs,kind:err.kind,causeName:err.causeName,message:err.message});
       throw err;
     }
     const contentType=String(res.headers?.get?.("content-type")||"");
     const rawFinalUrl=String((res as any).url||url);
-    const finalUrl=hostFailover ? hostFailover.logicalUrl(rawFinalUrl) : rawFinalUrl;
+    const finalUrl=hostFailover ? hostFailover.logicalUrl(rawFinalUrl,url,responseTransportUrl) : rawFinalUrl;
     const redirected=!!(res as any).redirected;
     const {boundedPortalText}=await import('@/src/utils/boundedPortalSample');
     const text=await boundedPortalText(res,opts.maxResponseBytes,opts.sampleArray);

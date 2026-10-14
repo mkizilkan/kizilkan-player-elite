@@ -231,6 +231,7 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
     // v18.7.6 (A3): aday bulundukça raporu CANLI yayınla (kullanıcı anında görsün).
     const emitLive = () => { report.candidates = [...candidates.values()]; opts.onHost?.({ ...report, candidates: report.candidates }); };
     const raw = async (url: string, base: string, redirects = 0): Promise<Raw> => {
+      let timing:typeof import('./adaptiveNetworkPolicy')|undefined;try{timing=await import('./adaptiveNetworkPolicy');}catch{}
       await pause(opts.control);
       const stage = (requests: number) => { const u = new URL(url); opts.onStage?.(`Portal keşfi · ${u.host}${u.pathname} · aday ${seen.size}/${Math.min(maxCandidates, planned.size)} · ${requests} istek`); };
       stage(report.probes);
@@ -241,10 +242,10 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
         budget.check();
         await budget.run(controlled(Promise.resolve(gate.beforeRequest?.(url, controller.signal)), opts.control, controller.signal, cancel));
         budget.consume();
-        const requestTimeout = Math.min(timeoutMs, budget.remainingMs);
+        const requestTimeout = Math.min(timing?.adaptiveTimeout?.(url,'discovery',timeoutMs,budget.remainingMs,opts.useProxy?'proxy':'direct')??timeoutMs, budget.remainingMs);
         check(opts.control); timer = setTimeout(cancel, requestTimeout); const started = Date.now(); report.probes++; stage(report.probes);
         const headers = { Accept: "text/html, application/json;q=0.9, */*;q=0.1" };
-        let response: any;
+        let response: any; let transportUrl=url;
         if (opts.useProxy) {
           const { PanelScan } = await import("@/modules/panel-scan");
           const value = await budget.run(controlled(PanelScan.proxiedRequest(url, "GET", headers, "", requestTimeout, controller.signal, BODY_LIMIT), opts.control, controller.signal, cancel));
@@ -260,12 +261,14 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
           // (Host başlığı hostname kalır). IP yalnız burada görünür; finalUrl mantıksal hostname'e çevrilir.
           const hf = await loadHostFailover();
           const conn = hf ? hf.connectInfo(url) : { url };
+          transportUrl=conn.url;
           const fetchHeaders = conn.host ? { ...headers, Host: conn.host } : headers;
-          response = await budget.run(controlled(portalFetch(conn.url, { method: "GET", headers: fetchHeaders, credentials: "omit", redirect: "manual", signal: controller.signal }), opts.control, controller.signal, cancel));
+          const init={method:"GET",headers:fetchHeaders,credentials:"omit" as const,redirect:"manual" as const,signal:controller.signal};
+          response = await budget.run(controlled(hf?.fetchWithDns?hf.fetchWithDns(url,init,BODY_LIMIT,requestTimeout,portalFetch):portalFetch(conn.url,init), opts.control, controller.signal, cancel));
         }
         const hfBack = await loadHostFailover();
         const rawFinal = String(response.url || url);
-        const finalUrl = hfBack ? hfBack.logicalUrl(rawFinal) : rawFinal;
+        const finalUrl = hfBack ? hfBack.logicalUrl(rawFinal,url,transportUrl) : rawFinal;
         if (!resolveLocal(finalUrl, url, base)) throw fault("FOREIGN_REDIRECT", "Portal başka origin veya kurulum dizinine yönlendirdi");
         const location = String(response.headers?.get?.("location") || "");
         if (response.status >= 300 && response.status < 400 && location) {
@@ -276,6 +279,9 @@ export async function discoverMagHosts(hosts: MagHostEntry[], opts: MagPortalDis
         const body = await budget.run(controlled(limitedText(response, controller.signal), opts.control, controller.signal, cancel));
         const result: Raw = { status: Number(response.status), body, headers: {}, finalUrl, elapsedMs: Date.now() - started };
         for (const key of MAG_SAFE_RESPONSE_HEADERS) result.headers[key] = String(response.headers?.get?.(key) || "").slice(0, 256);
+        const observation=observeMagProtection({endpoint:result.finalUrl,stage:'discovery',status:result.status,body:result.body,headers:result.headers,transport:opts.useProxy?'proxy':'direct'});
+        timing?.rememberHostTiming?.(url,'discovery',result.elapsedMs,result.status===200&&observation.state!=='present'?'success':'other',opts.useProxy?'proxy':'direct');
+        void recordDiagnostic('network','MAG_DISCOVERY_REQUEST_TIMING',{path:new URL(url).pathname,status:result.status,timeoutMs:requestTimeout},{operationId:budget.operationId,stage:'discovery',durationMs:result.elapsedMs,outcome:result.status===200?'success':'failed'});
         return result;
       } finally { if (timer) clearTimeout(timer); parent?.removeEventListener("abort", cancel); budget.signal.removeEventListener('abort', cancel); }
     };

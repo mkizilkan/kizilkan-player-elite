@@ -250,7 +250,7 @@ function uiAction(name, values, req) {
   let arrow; function walk(node) { if (ts.isVariableDeclaration(node) && node.name.getText(ast) === name) arrow = node.initializer.arguments[0]; ts.forEachChild(node, walk); } walk(ast);
   assert.ok(arrow, name + ' callback exists');
   const exports = {};
-  vm.runInNewContext(compile('exports.action = ' + arrow.getText(ast)), { exports, require: req, console, AbortController, ...values }, { filename: name + '.tsx' });
+  vm.runInNewContext(compile('exports.action = ' + arrow.getText(ast)), { exports, require: req, console, AbortController, randomPlaylistUuid:crypto.randomUUID, ...values }, { filename: name + '.tsx' });
   return exports.action;
 }
 async function selectedActionsAndArchive() {

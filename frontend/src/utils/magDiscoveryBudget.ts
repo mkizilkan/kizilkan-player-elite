@@ -8,6 +8,7 @@ export const MAG_DISCOVERY_LIMITS = {
 export class MagDiscoveryBudget {
   readonly controller = new AbortController();
   readonly startedAt = Date.now();
+  readonly operationId:string;
   deadlineAt: number;
   maxRequests: number;
   requests = 0;
@@ -18,12 +19,13 @@ export class MagDiscoveryBudget {
   readonly sharedBudget?: MagDiscoveryBudget;
   private onParent = () => this.stop('cancelled');
   private onShared = () => this.stop(this.sharedBudget?.stopReason === 'cancelled' ? 'cancelled' : this.sharedBudget?.stopReason === 'requests' ? 'requests' : 'deadline');
-  constructor(options: { deadlineMs?: number; maxRequests?: number; signal?: AbortSignal; speed?: MagDiscoverySpeed; sharedBudget?: MagDiscoveryBudget } = {}) {
+  constructor(options: { deadlineMs?: number; maxRequests?: number; signal?: AbortSignal; speed?: MagDiscoverySpeed; sharedBudget?: MagDiscoveryBudget;operationId?:string } = {}) {
     const limits = MAG_DISCOVERY_LIMITS[options.speed || 'balanced'];
     this.deadlineAt = this.startedAt + Math.max(1, options.deadlineMs ?? limits.deadlineMs);
     this.maxRequests = Math.max(1, Math.floor(options.maxRequests ?? limits.maxRequests));
     this.parent = options.signal;
     this.sharedBudget = options.sharedBudget;
+    this.operationId=options.operationId||options.sharedBudget?.operationId||`discovery-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
     this.timer = setTimeout(() => this.stop('deadline'), Math.max(1, this.deadlineAt - Date.now()));
     this.parent?.addEventListener('abort', this.onParent, { once: true });
     this.sharedBudget?.signal.addEventListener('abort', this.onShared, { once: true });

@@ -38,13 +38,13 @@ need(/_setHostFailoverEnabled/.test(failover) && /navigator\?\.product === "Reac
 need(/async function loadHostFailover/.test(stalker) && /await import\("@\/src\/utils\/magHostFailover"\)/.test(stalker), 'stalker tembel failover yükleyicisi yok');
 need(/hostFailover\.connectInfo\(url\)[\s\S]*?Host: conn\.host/.test(stalker), 'stalker düz fetch failover bağlanmamış');
 need(/hostFailover\.connectInfo\(target\)/.test(stalker), 'stalker exactFetch failover bağlanmamış');
-need(/hostFailover\.logicalUrl\(rawFinalUrl\)/.test(stalker), 'stalker finalUrl mantıksal çeviri yok');
-need(/sameApi\(hostFailover \? hostFailover\.logicalUrl\(responseUrl\)/.test(stalker), 'exactFetch sameApi mantıksal çeviri yok');
+need(/hostFailover\.logicalUrl\(rawFinalUrl,url,responseTransportUrl\)/.test(stalker), 'stalker finalUrl istek bağlamlı mantıksal çeviri yok');
+need(/sameApi\(hostFailover \? hostFailover\.logicalUrl\(responseUrl,target,transportUrl\)/.test(stalker), 'exactFetch sameApi istek bağlamlı mantıksal çeviri yok');
 need((stalker.match(/hf\?\.ensureLiveHostIp\(/g) || []).length >= 2, 'stalker proaktif pin (discoverMagPortal + handshake) eksik');
 
 // magPortalDiscovery wiring
 need(/async function loadHostFailover/.test(disc), 'discovery tembel failover yükleyicisi yok');
-need(/hf\.connectInfo\(url\)/.test(disc) && /hfBack\.logicalUrl\(rawFinal\)/.test(disc), 'discovery raw() failover bağlanmamış');
+need(/hf\.connectInfo\(url\)/.test(disc) && /hfBack\.logicalUrl\(rawFinal,url,transportUrl\)/.test(disc), 'discovery raw() istek bağlamlı failover bağlanmamış');
 need(/hf\?\.ensureLiveHostIp\(entered/.test(disc), 'discovery proaktif pin yok');
 
 if (fail.length) { console.log(fail.map(f => '✗ ' + f).join('\n')); console.log('BAŞARISIZ'); process.exit(1); }

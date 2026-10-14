@@ -41,6 +41,8 @@ if (process.cwd() !== PROJECT_ROOT) process.chdir(PROJECT_ROOT);
 // TypeScript artık tools/_ts.js ile taşınabilir şekilde çözülür (sabit yol yok).
 
 const CHECKS = [
+  ["check-v18735-release.js", "v18.7.35 HOST integration and preservation contracts", ""],
+  ["test-v18735-host-integration.js", "v18.7.35 shared-IP, credentials, bounded writer, RTT, recovery, import and report runtime", ""],
   ["test-v18732-background.js", "v18.7.32 durable tests, source downloads and encrypted paid-proxy configuration", ""],
   ["test-proxy-speed.js", "five verification speeds, strict manual input and independent TCP concurrency", ""],
   ["test-proxy-socket-runtime.js", "production SOCKS4/5 protocol, authentication and remote DNS", ""],

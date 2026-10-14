@@ -1,3 +1,4 @@
+import {randomUUID as randomPlaylistUuid} from 'expo-crypto';
 /**
  * KIZILKAN PLAYER v18.7.0 — ÇOKLU MAC (MAG) EKLEME EKRANI.
  * ===========================================================================
@@ -84,12 +85,7 @@ function protectionLabel(r: MagScanResult): string {
   return r.protection?.state === "not_observed" ? "Koruma görülmedi" : "Koruma belirlenemedi";
 }
 
-function stableId(prefix: string, identity: string): string {
-  const key = String(identity || "").trim();
-  let h = 0x811c9dc5;
-  for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 0x01000193); }
-  return `pl-${prefix}-${(h >>> 0).toString(16).padStart(8, "0")}`;
-}
+
 function magIdentity(portal: string, mac: string): string {
   return magAccountIdentity(portal, mac);
 }
@@ -483,7 +479,7 @@ export default function MagBulkScreen() {
       let latestProtection = r.protection;
       let createdAccountInfo: Playlist["accountInfo"];
       try {
-        const id = stableId("mag", magIdentity(r.portal, r.mac));
+        const id = "pl-mag-"+randomPlaylistUuid();
         if (playlists.some(pl => pl.id === id)) continue;
         setActionProgress(`${added + 1}/${toAdd.length} · ${r.mac} · hesap doğrulanıyor`);
         setAddTitle(`${added + 1}/${toAdd.length} · ${r.mac}`); setAddProgress(null); setAddProgressAt(Date.now());

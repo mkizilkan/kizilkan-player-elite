@@ -334,7 +334,9 @@ if (fs.existsSync(panelScanTsPath)) {
 }
 if (fs.existsSync(addPlaylistPath)) {
   const ap = fs.readFileSync(addPlaylistPath,'utf8');
-  requireText(ap, 'stableXtreamPlaylistId', 'idempotent Xtream playlist identity');
+  requireText(ap, 'reusableXtreamPlaylistId', 'existing Xtream storage identity retained');
+  requireText(ap, 'allocatedXtreamIdsRef.current.get(key)', 'idempotent Xtream identity within an import');
+  requireText(ap, 'preparedPlaylistId:', 'allocated identity persisted across import recovery');
   requireText(ap, 'directImportLocksRef', 'duplicate tap in-flight guard');
   requireText(ap, 'PanelScan.startUnifiedScan', 'all bulk locator modes native discovery');
   requireText(ap, 'PENDING_BULK_SCAN_KEY', 'native scan secure restore state');

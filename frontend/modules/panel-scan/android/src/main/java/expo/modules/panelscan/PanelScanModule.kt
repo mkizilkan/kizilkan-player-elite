@@ -146,6 +146,13 @@ class PanelScanModule : Module() {
     }.runOnQueue(appContext.backgroundCoroutineScope)
     AsyncFunction("cancelProxiedRequest") { requestId: String -> ScanProxyPool.cancelProxiedRequest(requestId) }
       .runOnQueue(proxyCancelScope)
+    Function("getDnsNetworkContext") { DnsRouteRequest.networkContext(appContext.reactContext ?: throw IllegalStateException("Android context yok")) }
+    Function("publishDnsRoute") { host:String,port:Int,ip:String,expiresAt:Double -> DnsRouteRequest.publish(appContext.reactContext?:throw IllegalStateException("Android context yok"),host,port,ip,expiresAt.toLong()) }
+    AsyncFunction("dnsRoutedRequest") { id:String,url:String,method:String,headers:String,body:String,ips:String,timeoutMs:Int,maxBytes:Int ->
+      val context=appContext.reactContext?:throw IllegalStateException("Android context yok")
+      DnsRouteRequest.request(context,id,url,method,headers,body,ips,timeoutMs.coerceIn(250,30000),maxBytes).toString()
+    }.runOnQueue(appContext.backgroundCoroutineScope)
+    AsyncFunction("cancelDnsRoutedRequest") { id:String -> DnsRouteRequest.cancel(id) }.runOnQueue(proxyCancelScope)
 
     // v17.1.1: Büyük TXT/CSV dosyaları JS `response.text()` yoluna alınmaz.
     // ContentResolver InputStream satır satır okunur; ham dosya hiçbir zaman tek

@@ -251,6 +251,12 @@ export const KizilkanNativeCore = {
   getExitHistory: (maxNum = 5): Record<string, any>[] => native ? (native.getExitHistory?.(maxNum) || []) : [],
   initializeBlackBox: (): Record<string, any> => native ? (native.initializeBlackBox?.() || {}) : {},
   appendBlackBoxEvent: async (eventJson: string): Promise<boolean> => native ? !!(await native.appendBlackBoxEvent?.(eventJson)) : false,
+  appendBlackBoxEventsBatch:async(eventsJson:string):Promise<boolean>=>{
+    if(!native)return false;
+    if(native.appendBlackBoxEventsBatch)return !!await native.appendBlackBoxEventsBatch(eventsJson);
+    for(const row of JSON.parse(eventsJson))if(!await native.appendBlackBoxEvent?.(JSON.stringify(row)))return false;
+    return true;
+  },
   appendCriticalBlackBoxEvent: (eventJson: string): boolean => native ? !!native.appendCriticalBlackBoxEvent?.(eventJson) : false,
   getBlackBoxSnapshot: async (limit = 1500): Promise<Record<string, any>> => native ? ((await native.getBlackBoxSnapshot?.(limit)) || {}) : {},
   getBlackBoxHealth: async (): Promise<Record<string, any>> => native ? ((await native.getBlackBoxHealth?.()) || {}) : {},

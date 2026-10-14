@@ -1,9 +1,13 @@
+import {randomUUID as randomPlaylistUuid} from 'expo-crypto';
+import {HitFileImport} from '@/src/components/HitFileImport';
+import {importHitRecord} from '@/src/utils/importHitRecord';
 import {PanelDnsPicker} from "@/src/components/PanelDnsPicker";
 import {mergeEndpointEvidence,playlistEndpoints} from "@/src/utils/playlistEndpoints";
 import {CatalogProgressCards} from "@/src/components/CatalogProgressCards";
 import type {RefreshProgress} from "@/src/utils/refreshPlaylist";
 import {PanelScopePicker} from "@/src/components/PanelScopePicker";
 import { loadTestQueue, runTestQueue } from '@/src/utils/durableTestQueue';
+import { accountServerIdentity, xtreamCandidateIdentity, reusableXtreamPlaylistId } from '@/src/utils/accountIdentity';
 import React, { useMemo, useState } from "react";
 import {
   View,
@@ -57,7 +61,7 @@ import { loadScanProxyConfig, saveScanProxyConfig, setScanProxyUse } from "@/src
 import { ScanProxyLiveLine, ScanProxyToggleRow } from "@/src/components/ScanProxyControls";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
 import { storage } from "@/src/utils/storage";
-import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
+import { beginDiagnosticTrace, markTask, recordDiagnostic } from "@/src/utils/diagnostics";
 import { clearScanRecoveryIntent, deferScanRecovery, scanRecoveryDeferred } from "@/src/utils/appSession";
 import { useProfiles } from "@/src/store/ProfileContext";
 import { buildKizilkanAccountArchive } from "@/src/utils/accountArchive";
@@ -74,6 +78,7 @@ type Method = "m3u_url" | "m3u_file" | "xtream" | "stalker" | "code" | "bulk";
 type CodeMode = "code" | "directory" | "auto";
 type ScanSpeed = "very_safe" | "safe" | "balanced" | "fast" | "turbo";
 type BulkResolvedCandidate = {
+  preparedPlaylistId?: string;
   sources?:ServerCodeBinding["sources"];
   key: string;
   sourceRow: number;
@@ -119,16 +124,16 @@ function stableStreamingFileFingerprint(uri: string, name: string, size: number,
   return `v172-file-${h.toString(16).padStart(8, "0")}`;
 }
 
-function stablePlaylistId(prefix: string, identity: string): string {
-  const key = String(identity || "").trim().toLowerCase();
+function stablePlaylistId(prefix: string, identity: string, caseSensitive=false): string {
+  const raw = String(identity || "").trim();
+  const key = caseSensitive ? raw : raw.toLowerCase();
   let h = 0x811c9dc5;
   for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 0x01000193); }
   return `pl-${prefix}-${(h >>> 0).toString(16).padStart(8, "0")}`;
 }
 
-function stableXtreamPlaylistId(server: string, username: string): string {
-  return stablePlaylistId("xt", `${String(server).replace(/\/+$/, "").toLowerCase()}\u0000${username}`);
-}
+/** New storage IDs are collision-resistant; existing account IDs remain authoritative. */
+function newXtreamPlaylistId():string{return 'pl-xt-'+randomPlaylistUuid();}
 
 
 function formatScanDuration(ms: number): string {
@@ -273,6 +278,18 @@ export default function AddPlaylist() {
   }, [addPreparedPlaylist, resolveDuplicateTarget]);
   const playlistServerKeysRef = React.useRef<Set<string>>(new Set());
   const directImportLocksRef = React.useRef<Set<string>>(new Set());
+  const allocatedXtreamIdsRef = React.useRef<Map<string,string>>(new Map());
+  const allocatedXtreamId = (server:string,username:string,password:string):string => {
+    const key=xtreamCandidateIdentity(server,username,password);
+    const existing=reusableXtreamPlaylistId(playlists,server,username,password);
+    if(existing)return existing;
+    const assigned=allocatedXtreamIdsRef.current.get(key);if(assigned)return assigned;
+    let id=newXtreamPlaylistId();
+    // Different credentials must not overwrite a prepared Room snapshot of an existing list.
+    const occupied=(value:string)=>playlists.some(pl=>pl.id===value)||Array.from(allocatedXtreamIdsRef.current.values()).includes(value);
+    while(occupied(id))id=newXtreamPlaylistId();
+    allocatedXtreamIdsRef.current.set(key,id);return id;
+  };
   const restoredImportAdoptedRef = React.useRef<Set<string>>(new Set());
   const bulkImportOwnedByScreenRef = React.useRef(false);
   /** v17.8.0 RC3: kullanıcı "Duraklat" dedi mi (iptalden ayırt etmek için). */
@@ -283,7 +300,7 @@ export default function AddPlaylist() {
     playlistServerKeysRef.current = new Set(
       playlists
         .filter((pl:any) => pl.source === "xtream" && pl.xtreamServer && pl.xtreamUsername)
-        .map((pl:any) => `${String(pl.xtreamUsername)}\u0000${String(pl.xtreamServer).replace(/\/+$/, "").toLowerCase()}`)
+        .map((pl:any) => xtreamCandidateIdentity(String(pl.xtreamServer),String(pl.xtreamUsername),String(pl.xtreamPassword||'')))
     );
   }, [playlists]);
 
@@ -1170,8 +1187,8 @@ export default function AddPlaylist() {
     backupHosts: string[] = [],
     endpointEvidence: PlaylistEndpoint[] = [],
   ): Promise<boolean> => {
-    const normalizedServer = cred.server.replace(/\/+$/, "").toLowerCase();
-    const accountKey = `${cred.username}\u0000${normalizedServer}`;
+    const normalizedServer = accountServerIdentity(cred.server);
+    const accountKey = xtreamCandidateIdentity(normalizedServer,cred.username,cred.password);
     if (playlistServerKeysRef.current.has(accountKey)) {
       setError(`${displayName?.trim() || "Bu hesap"} zaten ekli.`);
       return false;
@@ -1180,12 +1197,14 @@ export default function AddPlaylist() {
       setError("Bu hesap için ekleme işlemi zaten devam ediyor.");
       return false;
     }
+    const trace=beginDiagnosticTrace('import','XTREAM_ADD',{usernamePresent:!!cred.username});
+    let succeeded=false;cred={...cred,operationId:trace.operationId} as typeof cred;
     directImportLocksRef.current.add(accountKey);
     if (manageLoading) setLoading(true);
     setProgress("Kimlik doğrulanıyor (Xtream)...");
     setCatalogProgress({phase:"login",message:"Hesap doğrulanıyor…"});
     try {
-      const id = stableXtreamPlaylistId(cred.server, cred.username);
+      const id = allocatedXtreamId(cred.server, cred.username,cred.password);
 
       // v15.2.4 Android: Tek Xtream ekleme de çoklu ekleme ile aynı native
       // foreground importer'ı kullanır. Böylece 50-100 bin içerik JS'e taşınmaz,
@@ -1197,6 +1216,7 @@ export default function AddPlaylist() {
           username: cred.username, password: cred.password,
           panelName: serverCodeBinding?.panelName || hostName(cred.server), code: serverCodeBinding?.code || "",
           server: cred.server, login: {}, validatedHosts: Array.from(new Set([cred.server, ...(serverCodeBinding?.validatedHosts || []), ...backupHosts])), direct: !serverCodeBinding, endpoints: endpointEvidence,
+          preparedPlaylistId:id,
         };
         await storage.secureSet(PENDING_BULK_IMPORT_KEY, JSON.stringify([candidate]));
         bulkImportOwnedByScreenRef.current = true;
@@ -1231,7 +1251,7 @@ export default function AddPlaylist() {
         playlistServerKeysRef.current.add(accountKey);
         setProgress("Playlist Room/SQLite üzerinde hazır.");
         if (navigateAfter) router.replace("/(tabs)");
-        return true;
+        succeeded=true;await trace.stage('room-verified');return true;
       }
 
       const login = await xtLoginLocal(cred);
@@ -1268,13 +1288,14 @@ export default function AddPlaylist() {
       setProgress(`Cihaza kaydediliyor...\n${channels.length} kanal · ${vod.length} film · ${series.length} dizi`);
       if (!(await commitPlaylist(playlist))) return false;
       setProgress("Playlist hazır. +18 filtresi arka planda hazırlanıyor...");
-      playlistServerKeysRef.current.add(`${cred.username}\u0000${normalizedServer}`);
+      playlistServerKeysRef.current.add(accountKey);
       if (navigateAfter) router.replace("/(tabs)");
-      return true;
+      succeeded=true;await trace.stage('room-verified');return true;
     } catch (e: any) {
       setError(e.message || "Bilinmeyen hata");
       return false;
     } finally {
+      void trace.finish(succeeded?'success':'failed');
       directImportLocksRef.current.delete(accountKey);
       bulkImportOwnedByScreenRef.current = false;
       if (manageLoading) {
@@ -2537,10 +2558,14 @@ ${pub.path}`, [
       const preferred = rows.find(isActiveBulkCandidate) || rows[0];
       return {
         ...preferred,
+        preparedPlaylistId:preferred.preparedPlaylistId||allocatedXtreamId(preferred.server,preferred.username,preferred.password),
         validatedHosts: Array.from(new Set(bulkUseAllValidatedHosts ? allRows.flatMap(x => x.validatedHosts?.length ? x.validatedHosts : [x.server]) : rows.map(x => x.server))),
         endpoints: (bulkUseAllValidatedHosts ? allRows : rows).flatMap(x => x.endpoints || ([1, '1', true, 'true'].includes(x.login?.user_info?.auth) ? [{ url: x.server, kind: 'xtream' as const, source: 'scan' as const, accountVerifiedAt: new Date().toISOString() }] : [])),
       };
     });
+    const duplicates=chosen.filter(c=>reusableXtreamPlaylistId(playlists,c.server,c.username,c.password));
+    for(const c of duplicates)chosen.splice(chosen.indexOf(c),1);
+    if(duplicates.length)Alert.alert('Mevcut hesaplar korundu',`${duplicates.length} hesap zaten ekli. Kataloglarına tekrar yazılmadı; güncellemek için playlist güncellemesini kullanın.`);
     if (!chosen.length) return;
     /**
      * v17.8.0 RC3 — YARIŞ DURUMU DÜZELTMESİ
@@ -2565,7 +2590,7 @@ ${pub.path}`, [
       bulkImportOwnedByScreenRef.current = true;
       const jobs = chosen.map((c) => ({
         jobKey: c.key,
-        playlistId: stableXtreamPlaylistId(c.server, c.username),
+        playlistId: c.preparedPlaylistId||allocatedXtreamId(c.server, c.username,c.password),
         displayName: chosen.length === 1 ? c.name : `${c.name} · ${hostName(c.server)}`,
         server: c.server, username: c.username, password: c.password,
       }));
@@ -2654,7 +2679,7 @@ ${pub.path}`, [
                 catalogSync: { initialSyncState: row.state === 'completed' ? 'ready' : 'enriching' },
               };
               await addPreparedPlaylist(playlist);
-              playlistServerKeysRef.current.add(`${c.username}\u0000${String(c.server).replace(/\/+$/, "").toLowerCase()}`);
+              playlistServerKeysRef.current.add(xtreamCandidateIdentity(c.server,c.username,c.password));
               adopted.add(row.playlistId);
               ok++;
             }
@@ -2734,6 +2759,7 @@ ${pub.path}`, [
     });
 
   const submit = async () => {
+    let magTrace:ReturnType<typeof beginDiagnosticTrace>|undefined;let magOutcome='cancelled';
     setError(null);
     if (method === "bulk") {
       try { await submitBulkAccounts(); } catch (e: any) { setError(e?.message || "Toplu hesap eklenemedi."); }
@@ -2806,7 +2832,7 @@ ${pub.path}`, [
       if (method === "m3u_url") {
         if (!m3uUrl.trim()) throw new Error("M3U URL boş olamaz");
         const canonicalM3u = canonicalUrlIdentity(m3uUrl);
-        id = stablePlaylistId("m3u", canonicalM3u);
+        id = "pl-m3u-"+randomPlaylistUuid();
         if (playlists.some(pl => pl.id === id || (pl.m3uUrl && canonicalUrlIdentity(pl.m3uUrl) === canonicalM3u))) {
           throw new Error("Bu M3U kaynağı zaten ekli.");
         }
@@ -2876,7 +2902,7 @@ ${pub.path}`, [
         if (!stPortal.trim() || !stMac.trim())
           throw new Error("Portal adresi ve MAC adresi gereklidir");
         let canonicalMag = canonicalMagIdentity(stPortal, stMac);
-        id = stablePlaylistId("mag", canonicalMag);
+        id = "pl-mag-"+randomPlaylistUuid();
         if (playlists.some(pl => pl.id === id || (pl.stalkerPortal && pl.stalkerMac && canonicalMagIdentity(pl.stalkerPortal, pl.stalkerMac) === canonicalMag))) {
           throw new Error("Bu MAG/Portal hesabı zaten ekli.");
         }
@@ -2898,6 +2924,7 @@ ${pub.path}`, [
           // v15.2.25 RC1: modern varsayılan cihaz. MAG250 yalnız kontrollü
           // compatibility fallback olarak stalker.ts içinde korunur.
           deviceModel: "MAG320" as const,
+          operationId:(magTrace=beginDiagnosticTrace('import','MAG_ADD',{playlistId:id})).operationId,
         };
 
         // v18.7.2/v18.7.8: PORTSUZ ADRESTE PORT/PORTAL KEŞFİ. v18.7.8 (keşif #11): tekli ekleme artık
@@ -2908,7 +2935,7 @@ ${pub.path}`, [
         const resolved = await resolveMagInput(cred, { signal: stalkerAddAbortRef.current?.signal, onStage: setProgress });
         cred.portal = resolved.endpoint; cred.resolvedPortal = resolved; cred.endpointPolicy = 'exact';
         canonicalMag = canonicalMagIdentity(cred.portal, cred.mac);
-        id = stablePlaylistId('mag', canonicalMag);
+        // Keep the newly allocated ID when discovery resolves the real endpoint.
         if (playlists.some(pl => pl.id === id || (pl.stalkerPortal && pl.stalkerMac && canonicalMagIdentity(pl.stalkerPortal, pl.stalkerMac) === canonicalMag))) throw new Error('Bu MAG/Portal hesabı zaten ekli.');
         setProgress(`Portal API bulundu: ${new URL(cred.portal).pathname}`);
 
@@ -2941,6 +2968,7 @@ ${pub.path}`, [
         setProgress("Portal doğrulandı · hesap cihaza kaydediliyor...");
         void recordDiagnostic("catalog","STALKER_ACCOUNT_PERSIST_START",{playlistId:id,endpoint:session.endpoint});
         if (!(await commitPlaylist(shell))) return false;
+        magOutcome='success';await magTrace?.stage('account-persisted',{playlistId:id});
         void recordDiagnostic("catalog","STALKER_ACCOUNT_PERSIST_OK",{playlistId:id,endpoint:session.endpoint});
 
         const bootstrap = async (interactiveSelection:boolean) => {
@@ -3009,9 +3037,10 @@ ${pub.path}`, [
       }
     } catch (e: any) {
       const message = e.message || "Bilinmeyen hata";
-      if (method === "stalker") void recordDiagnostic("catalog", "STALKER_ADD_ERROR", { message });
+      if (method === "stalker") {magOutcome='failed';void recordDiagnostic("catalog", "STALKER_ADD_ERROR", { message });}
       setError(message);
     } finally {
+      void magTrace?.finish(magOutcome);
       setLoading(false);
       setProgress("");
     }
@@ -3142,6 +3171,16 @@ ${pub.path}`, [
           {!!scanSafetyStatus && <Text selectable style={{ color: colors.onSurfaceSecondary, marginBottom: SPACING.md }}>{scanSafetyStatus}</Text>}
           {playbackRecoveryCount>0 && <FocusButton disabled={loading||bulkContentTesting||playbackTests.length>0} onPress={()=>void resumePlaybackTests()} style={{padding:12}}><Text style={{color:colors.brandPrimary}}>Kalan {playbackRecoveryCount} görüntü testini devam ettir</Text></FocusButton>}
           {catalogRecoveryCount>0 && <FocusButton disabled={loading||bulkContentTesting} onPress={()=>void testBulkContent(true)} style={{padding:12}}><Text style={{color:colors.brandPrimary}}>Kalan {catalogRecoveryCount} katalog testini devam ettir</Text></FocusButton>}
+          <HitFileImport ownerId={activeProfile.id} playlists={playlists} disabled={loading||bulkAdding||archiveRestoring} onImport={async(records,signal,onProgress)=>{
+            const owner=activeProfile.id;let ok=0,failed=0;const known=[...playlists];
+            const owns=()=>screenAliveRef.current&&!leavingRef.current&&screenOwnerRef.current===owner;
+            for(const record of records){if(signal.aborted||!owns())throw new Error('Dosya içe aktarma iptal edildi.');
+              onProgress(`${ok+failed+1}/${records.length} · ${record.name} doğrulanıyor…`);
+              try{await importHitRecord(record,{signal,ownerId:owner,owns,playlists:known,commit:async(pl,prepared)=>{const saved=await(prepared?commitPreparedPlaylist(pl):commitPlaylist(pl));if(saved)known.push(pl);return saved;},update:async(id,patch)=>{if(signal.aborted||!owns())throw new Error('İçe aktarma sahipliği değişti.');await updatePlaylist(id,patch);const index=known.findIndex(p=>p.id===id);if(index>=0)known[index]={...known[index],...patch};},progress:onProgress});ok++;}
+              catch(error:any){if(signal.aborted||!owns())throw error;failed++;onProgress(`${record.name}: ${String(error?.message||error)}`);}
+            }
+            onProgress(`Tamamlandı: ${ok} eklendi · ${failed} eklenemedi/mevcut. Mevcut kayıtlar korundu.`);
+          }}/>
           <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary }]}>KAYNAK TÜRÜ</Text>
           <View style={styles.methodGrid}>
             {methods.map(m => {

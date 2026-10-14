@@ -256,6 +256,16 @@ export const PanelScan = {
     try { return JSON.parse(native.getScanProxyStatus()); } catch { return emptyProxyStatus(""); }
   },
   /** JS keşfini proxy'ye yönlendir (serverCode.ts). */
+  getDnsNetworkContext:():string=>native?.getDnsNetworkContext?.()||'unsupported',
+  publishDnsRoute:(host:string,port:number,ip:string,expiresAt:number):boolean=>!!native?.publishDnsRoute?.(host,port,ip,expiresAt),
+  dnsRoutedRequest:async(url:string,method:string,headers:Record<string,string>,body:string,ips:string[],timeoutMs:number,signal?:AbortSignal,maxBodyBytes=1048576):Promise<{ok:boolean;status:number;body:string;headers?:Record<string,string>;url?:string;ip?:string;error?:string}>=>{
+    if(!native?.dnsRoutedRequest)throw new Error('DNS transport için güncel native APK gerekli.');
+    if(signal?.aborted)throw Object.assign(new Error('İşlem iptal edildi'),{kind:'CANCELLED'});
+    const id=`dns_${Date.now()}_${++proxyRequestSequence}`;
+    const stop=()=>{void Promise.resolve(native.cancelDnsRoutedRequest?.(id)).catch(()=>{});};signal?.addEventListener('abort',stop,{once:true});
+    try{if(signal?.aborted){stop();throw Object.assign(new Error('İptal edildi'),{kind:'CANCELLED'});}const result=await native.dnsRoutedRequest(id,url,method,JSON.stringify(headers),body,JSON.stringify(ips),timeoutMs,maxBodyBytes);if(signal?.aborted)throw Object.assign(new Error('İptal edildi'),{kind:'CANCELLED'});return JSON.parse(result);}
+    finally{signal?.removeEventListener('abort',stop);}
+  },
   proxiedProbe: async (url: string, timeoutMs: number): Promise<{ ok: boolean; status: number; body: string; headers?:Record<string,string>; error?: string }> => {
     if (!native?.proxiedProbe) return { ok: false, status: 0, body: "", error: "native-unavailable" };
     try { return JSON.parse(await native.proxiedProbe(url, timeoutMs)); }

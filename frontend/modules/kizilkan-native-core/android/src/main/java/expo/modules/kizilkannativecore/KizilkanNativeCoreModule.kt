@@ -223,7 +223,10 @@ class KizilkanNativeCoreModule : Module() {
           routeAddressFamily = try { if (connection.route().socketAddress.address.address.size == 4) "IPv4" else "IPv6" } catch (_: Throwable) { "" }
         }
       }
+      val logicalTarget=URL(url)
+      val logicalPort=if(logicalTarget.port>0)logicalTarget.port else if(logicalTarget.protocol=="https")443 else 80
       val client = magBaseClient.newBuilder()
+        .dns(NativeDnsRoutes.resolver(context(),logicalTarget.host,logicalPort))
         .connectTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
         .readTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
         .writeTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
@@ -820,6 +823,15 @@ class KizilkanNativeCoreModule : Module() {
 
     AsyncFunction("appendBlackBoxEvent") { rawJson: String ->
       NativeBlackBox.appendJson(context(), rawJson)
+    }
+    AsyncFunction("appendBlackBoxEventsBatch") { rawJson: String ->
+      require(rawJson.toByteArray(Charsets.UTF_8).size<=512*1024){"Tanı partisi çok büyük"}
+      val rows=JSONArray(rawJson);require(rows.length() in 1..25){"Tanı partisi 1–25 olay içermeli"}
+      val app=context()
+      KizilkanNativeDatabase.get(app).runInTransaction {
+        for(i in 0 until rows.length())check(NativeBlackBox.appendJson(app,rows.getJSONObject(i).toString())){"Tanı olayı kaydedilemedi"}
+      }
+      true
     }
 
     Function("appendCriticalBlackBoxEvent") { rawJson: String ->

@@ -18,18 +18,19 @@ import {
 } from "./iptv";
 import type { Playlist } from "@/src/types";
 import { resolveBoundPanel } from "@/src/utils/serverCode";
-import { markTask, recordDiagnostic } from "@/src/utils/diagnostics";
+import { markTask, recordDiagnostic, beginDiagnosticTrace } from "@/src/utils/diagnostics";
 import { normalizeHost } from "@/src/player/hostFailover";
 import { boundPanelDnsCandidates, magDnsCandidate, canTryDnsAlternative, canTryPlaylistDnsAlternative } from './panelDnsFailover';
 import { applyContentSelection } from "@/src/utils/contentSelection";
 import { KizilkanNativeCore } from "@/modules/kizilkan-native-core";
-import { applyCatalogProgress } from '@/src/utils/catalogProgress';
+import { createCatalogProgressEstimator, applyCatalogProgress } from '@/src/utils/catalogProgress';
 import { mergeEndpointEvidence, playlistEndpoints, selectedMagDnsCandidate } from './playlistEndpoints';
 
 export type CatalogKind="live"|"vod"|"series";
 export type CatalogProgressState="waiting"|"saving"|"done"|"error"|"skipped";
-export type IncrementalCatalogDelivery={kind:CatalogKind;items:any[];fetchElapsedMs:number;rawCount:number;filteredCount:number};
+export type IncrementalCatalogDelivery={kind:CatalogKind;items:any[];fetchElapsedMs:number;rawCount:number;filteredCount:number;metadataPatch?:Partial<Playlist>};
 export type RefreshOptions={
+  operationId?:string;ownerId?:string;
   ignoreContentSelection?:boolean;
   kinds?:CatalogKind[];
   forceUnconditional?:boolean;
@@ -44,6 +45,8 @@ export type RefreshOptions={
   incrementalDelivery?: (delivery:IncrementalCatalogDelivery)=>Promise<void>|void;
   /** Canlı hazırken VOD/Series geçici hata verirse mevcut kısmi katalog korunur. */
   allowPartialRecovery?:boolean;
+  /** Normal Xtream retains parallel fetches; each completed kind is durably committed with backpressure. */
+  preparedKindDelivery?: (delivery:IncrementalCatalogDelivery)=>Promise<void>;
 };
 export type RefreshPhase = "dns" | "login" | "content" | "save" | "done" | "error";
 export type RefreshProgress = {
@@ -57,6 +60,8 @@ export type RefreshProgress = {
   liveTotal?: number; vodTotal?: number; seriesTotal?: number;
   livePage?: number; vodPage?: number; seriesPage?: number;
   activeKind?: CatalogKind;
+  estimatedRemainingMs?:number;
+  saveCompleted?:number;saveTotal?:number;saveElapsedMs?:number;
 };
 
 export interface RefreshResult {
@@ -84,7 +89,7 @@ export function formatRefreshProgress(p:RefreshProgress):string {
   return `Canlı ${mark(p.live,p.liveCount)} · Film ${mark(p.vod,p.vodCount)} · Dizi ${mark(p.series,p.seriesCount)}`;
 }
 
-export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: RefreshProgress) => void, options?: RefreshOptions): Promise<RefreshResult> {
+async function refreshPlaylistContentImpl(pl: Playlist, onProgress?: (p: RefreshProgress) => void, options?: RefreshOptions): Promise<RefreshResult> {
   const requested=new Set<CatalogKind>(options?.kinds??['live','vod','series']);
   if(!requested.size)return{ok:false,message:'Güncellenecek katalog türü seçilmedi.'};
   const scoped=(patch:Partial<Playlist>):Partial<Playlist>=>{
@@ -144,7 +149,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
         }
       }
 
-      const cred = { server: resolvedServer, username: pl.xtreamUsername, password: pl.xtreamPassword };
+      const cred = { server: resolvedServer, username: pl.xtreamUsername, password: pl.xtreamPassword,operationId:options?.operationId };
       onProgress?.({ phase: "login", message: "Hesap doğrulanıyor..." });
       /**
        * v18.2.0 — YEDEK DNS İLE YENİLEME: birincil adres yanıt vermezse (veya
@@ -270,9 +275,9 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
         }
 
         const capabilities:any=baseCapability();
-        if(requested.has('live'))capabilities.live=failedKinds.includes('live')?'error':'supported';
-        if(requested.has('vod'))capabilities.vod=unsupported.has('vod')?'unsupported_404':failedKinds.includes('vod')?'error':'supported';
-        if(requested.has('series'))capabilities.series=unsupported.has('series')?'unsupported_404':failedKinds.includes('series')?'error':'supported';
+        if(requested.has('live'))capabilities.live=failedKinds.includes('live')?'error':(state.liveCount||0)>0?'supported':'empty';
+        if(requested.has('vod'))capabilities.vod=unsupported.has('vod')?'unsupported_404':failedKinds.includes('vod')?'error':(state.vodCount||0)>0?'supported':'empty';
+        if(requested.has('series'))capabilities.series=unsupported.has('series')?'unsupported_404':failedKinds.includes('series')?'error':(state.seriesCount||0)>0?'supported':'empty';
         const partial=failedKinds.length>0;
         if(deliveredTotal<=0 && !unsupported.size){
           return{ok:false,partial,failedKinds,message:'Xtream katalogları alındı ancak kullanılabilir içerik bulunamadı.'};
@@ -297,6 +302,13 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
         try{
           const value=await fn();
           (state as any)[kind]="done"; (state as any)[`${kind}Count`]=value.length; (state as any)[`${kind}ElapsedMs`]=Date.now()-started; emit();
+          if(options?.preparedKindDelivery){
+            const selected=applyContentSelection({channels:kind==='live'?value:[],vod:kind==='vod'?value:[],series:kind==='series'?value:[]},options.ignoreContentSelection?null:pl.contentSelection);
+            const items=kind==='live'?selected.channels:kind==='vod'?selected.vod:selected.series;
+            (state as any)[kind]='saving';(state as any)[`${kind}Count`]=items.length;emit();
+            await options.preparedKindDelivery({kind,items,rawCount:value.length,filteredCount:items.length,fetchElapsedMs:Date.now()-started,metadataPatch:metadataPatch()});
+            (state as any)[kind]='done';emit();return [];
+          }
           return value;
         }catch(e){
           (state as any)[kind]="error"; (state as any)[`${kind}ElapsedMs`]=Date.now()-started; emit(); throw e;
@@ -319,18 +331,18 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       const vodValue=vodRes.status==="fulfilled"?vodRes.value:[]; const seriesValue=serRes.status==="fulfilled"?serRes.value:[];
       const filtered = applyContentSelection({ channels: chRes.value, vod: vodValue, series: seriesValue }, options?.ignoreContentSelection ? null : pl.contentSelection);
       const channels = filtered.channels; const vod = filtered.vod; const series = filtered.series;
-      onProgress?.({ phase: "save", message: `${isUnsupported404(vodRes)||isUnsupported404(serRes) ? "Desteklenen kataloglar doğrulandı" : "Üç katalog da doğrulandı"}; kayda hazırlanıyor...`, live: "done", vod: isUnsupported404(vodRes)?'skipped':"done", series: isUnsupported404(serRes)?'skipped':"done", liveCount: channels.length, vodCount: vod.length, seriesCount: series.length,liveElapsedMs:state.liveElapsedMs,vodElapsedMs:state.vodElapsedMs,seriesElapsedMs:state.seriesElapsedMs });
+      onProgress?.({ phase: "save", message: `${isUnsupported404(vodRes)||isUnsupported404(serRes) ? "Desteklenen kataloglar doğrulandı" : "Üç katalog da doğrulandı"}; kayda hazırlanıyor...`, live: "done", vod: isUnsupported404(vodRes)?'skipped':"done", series: isUnsupported404(serRes)?'skipped':"done", liveCount: options?.preparedKindDelivery?state.liveCount:channels.length, vodCount: options?.preparedKindDelivery?state.vodCount:vod.length, seriesCount: options?.preparedKindDelivery?state.seriesCount:series.length,liveElapsedMs:state.liveElapsedMs,vodElapsedMs:state.vodElapsedMs,seriesElapsedMs:state.seriesElapsedMs });
       return {
         ok: true,
         patch: {
-          ...scoped({channels,vod,series}),
+          ...(options?.preparedKindDelivery?{}:scoped({channels,vod,series})),
           ...metadataPatch(),
           catalogCapabilities:{...baseCapability(),
-            ...(requested.has('live')?{live:'supported' as const}:{}),
-            ...(requested.has('vod')?{vod:isUnsupported404(vodRes)?'unsupported_404' as const:'supported' as const}:{}),
-            ...(requested.has('series')?{series:isUnsupported404(serRes)?'unsupported_404' as const:'supported' as const}:{})},
+            ...(requested.has('live')?{live:(options?.preparedKindDelivery?state.liveCount:channels.length)?'supported' as const:'empty' as const}:{}),
+            ...(requested.has('vod')?{vod:isUnsupported404(vodRes)?'unsupported_404' as const:(options?.preparedKindDelivery?state.vodCount:vod.length)?'supported' as const:'empty' as const}:{}),
+            ...(requested.has('series')?{series:isUnsupported404(serRes)?'unsupported_404' as const:(options?.preparedKindDelivery?state.seriesCount:series.length)?'supported' as const:'empty' as const}:{})},
         },
-        message: `${channels.length} kanal • ${vod.length} film • ${series.length} dizi güncellendi${isUnsupported404(vodRes) ? " • VOD desteklenmiyor (404)" : ""}${isUnsupported404(serRes) ? " • Dizi desteklenmiyor (404)" : ""}${resolvedServer !== pl.xtreamServer ? " • DNS otomatik güncellendi" : ""}`,
+        message: `${options?.preparedKindDelivery?state.liveCount||0:channels.length} kanal • ${options?.preparedKindDelivery?state.vodCount||0:vod.length} film • ${options?.preparedKindDelivery?state.seriesCount||0:series.length} dizi güncellendi${isUnsupported404(vodRes) ? " • VOD desteklenmiyor (404)" : ""}${isUnsupported404(serRes) ? " • Dizi desteklenmiyor (404)" : ""}${resolvedServer !== pl.xtreamServer ? " • DNS otomatik güncellendi" : ""}`,
       };
     }
 
@@ -370,6 +382,8 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
       }
       const { stalkerLogin, stalkerCatalog, stalkerCredsFromPlaylist, stalkerAccountSnapshot, mergeStalkerAccountInfo, terminalMagError } = await import("@/src/utils/stalker");
       const cred = stalkerCredsFromPlaylist(pl);
+      cred.operationId=options?.operationId;
+      if(cred.requestScope)cred.requestScope={...cred.requestScope,operationId:options?.operationId};
       onProgress?.({ phase: "login", message: "Portal doğrulanıyor..." });
       if(options?.signal?.aborted){const e:any=new Error('İşlem uygulama arka plana geçtiği için bekletildi.');e.kind='BACKGROUND_PAUSE';throw e;}
       let magLogin: Awaited<ReturnType<typeof stalkerLogin>>;
@@ -434,7 +448,7 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
             (magProgress as any)[`${kind}Count`]=filtered.length;
             magProgress.message=`${kindLabel[kind]} kataloğu alındı; cihaza kaydediliyor...`;
             onProgress?.({...magProgress});
-            await options.incrementalDelivery!({kind,items:filtered,fetchElapsedMs:meta.elapsedMs,rawCount:meta.rawCount,filteredCount:filtered.length});
+            await options.incrementalDelivery!({kind,items:filtered,fetchElapsedMs:meta.elapsedMs,rawCount:meta.rawCount,filteredCount:filtered.length,metadataPatch:{stalkerPortal:session.endpoint,stalkerResolvedPortal:session.resolvedPortal}});
             (magProgress as any)[kind]='done';
             magProgress.message=`${kindLabel[kind]} kataloğu hazır.`;
             onProgress?.({...magProgress});
@@ -527,4 +541,13 @@ export async function refreshPlaylistContent(pl: Playlist, onProgress?: (p: Refr
   } finally {
     finishTask();
   }
+}
+
+export async function refreshPlaylistContent(pl:Playlist,onProgress?:(p:RefreshProgress)=>void,options?:RefreshOptions):Promise<RefreshResult>{
+  const trace=typeof beginDiagnosticTrace==='function'?beginDiagnosticTrace('catalog','PLAYLIST_REFRESH',{playlistId:pl.id,source:pl.source},{operationId:options?.operationId}):undefined;
+  const estimate=createCatalogProgressEstimator();
+  try {
+    const result=await refreshPlaylistContentImpl(pl,p=>{void trace?.stage(p.phase,{playlistId:pl.id,live:p.live,vod:p.vod,series:p.series});onProgress?.(estimate(p));},{...options,operationId:trace?.operationId||options?.operationId});
+    void trace?.finish(result.ok?'success':'failed',{playlistId:pl.id,partial:result.partial,message:result.message});return result;
+  }catch(error:any){void trace?.finish('failed',{playlistId:pl.id,errorKind:error?.kind});throw error;}
 }

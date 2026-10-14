@@ -1376,6 +1376,7 @@ export default function PlayerHost() {
         const forceFresh = stalkerForceFreshRequestedRef.current;
         stalkerForceFreshRequestedRef.current = false;
         const traceId = lifecycleTraceRef.current || getCurrentFlightRecorderTrace();
+        cred.requestScope={...cred.requestScope,operationId:traceId} as typeof cred.requestScope;
         void recordFlightRecorderStage(traceId, 'urlResolve', { playlistId: String(activePlaylist?.id || ''), channelId: String(channel.id), forceFresh, origin: 'stalker_create_link' }, 'started');
         const { url, headers } = await stalkerResolveStream(cred, null, String(channel.url), { forceFresh });
         if (alive && generation===stalkerResolveGenerationRef.current) {

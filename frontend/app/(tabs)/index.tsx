@@ -124,8 +124,9 @@ function ClassicLiveTvScreen() {
   useEffect(() => { if (returnFocus.restoreRequest) setSegFocusHold(true); }, [returnFocus.restoreRequest?.nonce]);
   const router = useRouter();
   const { colors } = useTheme();
-  const { activePlaylist, playlists, toggleFavorite, isFavorite, addToRecent, updatePlaylist, ensureHeavyLoaded, nativeSummary,freshnessStatus, lastRefreshSummary, clearRefreshSummary} = usePlaylists();
+  const { activePlaylist, playlists, toggleFavorite, isFavorite, addToRecent, updatePlaylist, ensureHeavyLoaded, nativeSummary,freshnessStatus, lastRefreshSummary, clearRefreshSummary,refreshPlaylistKinds} = usePlaylists();
   const { activeProfile } = useProfiles();
+  const refreshOwnerRef=useRef(activeProfile.id);refreshOwnerRef.current=activeProfile.id;
   const { settings: parental, isCategoryLocked, isUnlockedInSession, toggleCategoryLock } = useParental();
   const { isItemHidden, isGroupHidden, hiddenModeUnlocked, toggleHiddenItem, toggleHiddenGroup, toggleWatchlist, inWatchlist } = useLibrary();
   const [tab, setTab] = useState<Tab>("live");
@@ -159,16 +160,10 @@ function ClassicLiveTvScreen() {
     haptic.medium();
     setRefreshing(true);
     try {
-      const res = await refreshPlaylistContent(activePlaylist);
-      if (res.ok && res.patch) {
-        await updatePlaylist(activePlaylist.id, res.patch);
-        haptic.success();
-        Alert.alert("Liste güncellendi", res.message);
-      } else {
-        if (res.patch) await updatePlaylist(activePlaylist.id, res.patch);
-        haptic.error();
-        Alert.alert("Yenilenemedi", res.message);
-      }
+      const owner=activeProfile.id;
+      const res=await refreshPlaylistKinds(activePlaylist.id,['live','vod','series'],undefined,()=>refreshOwnerRef.current===owner);
+      haptic.success();Alert.alert('Liste güncellendi',res.message);
+    }catch(error:any){haptic.error();Alert.alert('Yenilenemedi',String(error?.message||error));
     } finally {
       setRefreshing(false);
     }

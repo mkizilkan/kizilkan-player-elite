@@ -1,0 +1,21 @@
+#!/usr/bin/env node
+const fs=require('node:fs'),path=require('node:path'),root=path.resolve(__dirname,'..');
+const read=f=>fs.readFileSync(path.join(root,f),'utf8');const failed=[];const need=(ok,text)=>{if(!ok)failed.push(text);};
+const app=JSON.parse(read('frontend/app.json')),pkg=JSON.parse(read('frontend/package.json')),version=app.expo.version,m=/^(\d+)\.(\d+)\.(\d+)$/.exec(version),code=m?+m[1]*10000 + +m[2]*100 + +m[3]:0;
+need(code>=180735&&pkg.version===version&&app.expo.ios.buildNumber===version&&app.expo.android.versionCode===code&&app.expo.extra.kizilkanReleaseLabel===`GPT ELITE v${version} RC1`,'Five version fields');
+const dns=read('frontend/src/utils/magHostFailover.ts'),nativeDns=read('frontend/modules/panel-scan/android/src/main/java/expo/modules/panelscan/DnsRouteRequest.kt'),core=read('frontend/modules/kizilkan-native-core/android/src/main/java/expo/modules/kizilkannativecore/KizilkanNativeCoreModule.kt');
+need(dns.includes('originalUrl?: string, transportUrl?: string')&&dns.includes('routes.size!==1'),'Request-local reverse origin and ambiguous IP guard');
+need(dns.includes('MAX_DNS_HOSTS=512')&&dns.includes('type=AAAA')&&dns.includes('flight.waiters')&&dns.includes('generation!==cacheGeneration'),'Bounded TTL DNS, AAAA, per-caller cancellation and network ownership');
+need(nativeDns.includes('.proxy(java.net.Proxy.NO_PROXY)')&&nativeDns.includes('.url(url)')&&nativeDns.includes('.callTimeout(')&&!nativeDns.includes('hostnameVerifier(')&&!nativeDns.includes('sslSocketFactory('),'HTTPS original hostname, real deadline and default certificate verification');
+need(core.includes('NativeDnsRoutes.resolver(context(),logicalTarget.host,logicalPort)')&&core.includes('appendBlackBoxEventsBatch'),'Native exact MAG routed DNS and batch journal');
+const add=read('frontend/app/add-playlist.tsx'),context=read('frontend/src/store/PlaylistContext.tsx');
+need(add.includes('reusableXtreamPlaylistId')&&add.includes('randomPlaylistUuid()')&&add.includes('preparedPlaylistId:')&&add.includes('xtreamCandidateIdentity(c.server,c.username,c.password)'),'Credentials case, collision-resistant new IDs and persisted import IDs');
+need(context.includes('openCatalogRefreshJournal')&&context.includes('verifiedRefreshKinds')&&context.includes('await saveCatalogRefreshJournal(journal)')&&context.includes('getPlaylistSummaryVerified(id)')&&context.includes('MAG_REFRESH_SHRINK_GUARD'),'Journal completion after real Room commit, profile ownership and shrink protection');
+for(const file of ['frontend/app/(tabs)/settings.tsx','frontend/app/(tabs)/index.tsx','frontend/app/playlist-select.tsx'])need(read(file).includes('refreshPlaylistKinds'),'Ordinary refresh uses canonical journal: '+file);
+const importer=read('frontend/src/components/HitFileImport.tsx');need(importer.includes('multiple:true')&&importer.includes('FlatList')&&importer.includes('HIT_IMPORT_LIMITS')&&importer.includes('hitExistingStatus'),'Bounded multi-file preview, selection, existing/conflicting accounts');
+need(read('frontend/src/utils/importHitRecord.ts').includes('xtreamLogin(cred,ctx.signal)')&&read('frontend/src/utils/importHitRecord.ts').includes('st.stalkerAccountSnapshot'),'Imported file claims revalidated by real APIs');
+const diagnostics=read('frontend/src/utils/diagnostics.ts');need(diagnostics.includes('createDiagnosticWriter')&&diagnostics.includes('writerHealth:')&&diagnostics.includes('JSON.parse(redacted.text) as CanonicalDiagnosticReport'),'Bounded writer and all export formats fed final redacted V7 projection');
+need(read('frontend/src/components/DnsManager.tsx').includes('dns-retest-uncertain')&&read('frontend/src/components/PlaylistDnsControls.tsx').includes('PortalHealthCard'),'Shared evidence card and uncertainty retest');
+need(read('frontend/src/utils/catalogProgress.ts').includes('now-before.at>=250')&&read('frontend/src/components/CatalogProgressCards.tsx').includes('Room kaydı:'),'Measured ETA and Room save phase');
+need(read('tools/check-v18734-release.js').includes('ADD_PLAYLIST_EXIT_IGNORED'),'Existing exit/ANR physical-evidence telemetry preserved');
+if(failed.length){console.error(failed.join('\n'));process.exit(1);}console.log('PASS: v18.7.35 HOST integration, identity/DNS/recovery/import/report architecture TEMIZ');

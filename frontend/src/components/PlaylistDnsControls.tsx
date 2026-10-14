@@ -5,6 +5,7 @@ import type { Playlist, PlaylistEndpoint } from '@/src/types';
 import { usePlaylists } from '@/src/store/PlaylistContext';
 import { useProfiles } from '@/src/store/ProfileContext';
 import { useTheme } from '@/src/theme/ThemeContext';
+import { PortalHealthCard } from './PortalHealthCard';
 import { DnsManager } from './DnsManager';
 import { playlistEndpoints, mergeEndpointEvidence } from '@/src/utils/playlistEndpoints';
 import { playlistDnsAddresses, playlistDnsPatch } from '@/src/utils/playlistDnsManagement';
@@ -64,6 +65,7 @@ export function PlaylistDnsControls({ playlist }: { playlist: Playlist }) {
   if (!focused || !['stalker', 'xtream'].includes(draft.source)) return null;
   const primary = draft.source === 'stalker' ? draft.stalkerPortal || '' : draft.xtreamServer || '';
   return <View>
+    <PortalHealthCard endpoints={playlistEndpoints(draft)} capabilities={draft.catalogCapabilities} />
     <DnsManager primary={primary} hosts={playlistDnsAddresses(draft).filter(h => h !== primary)} kind={draft.source === 'stalker' ? 'stalker' : 'xtream'}
       username={draft.xtreamUsername || ''} password={draft.xtreamPassword || ''} mac={draft.stalkerMac} serial={draft.stalkerSerial} profileId={activeProfile.id}
       endpoints={draft.endpoints} onEvidence={accept}

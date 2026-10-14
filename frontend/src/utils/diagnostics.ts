@@ -2,6 +2,8 @@ import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { storage } from '@/src/utils/storage';
 import { KizilkanNativeCore } from '@/modules/kizilkan-native-core';
+import { createDiagnosticWriter } from './diagnosticWriter';
+import { renderDiagnosticReport, type DiagnosticReportFormat, type CanonicalDiagnosticReport } from './diagnosticReport';
 
 export type DiagnosticDomain = 'system' | 'player' | 'scan' | 'catalog' | 'backup' | 'navigation' | 'network' | 'database' | 'import' | 'lifecycle' | 'mag' | 'xtream';
 
@@ -87,7 +89,28 @@ function shortHash(input: string): string {
   for (let i=0;i<input.length;i++) { h ^= input.charCodeAt(i); h = Math.imul(h, 0x01000193); }
   return (h >>> 0).toString(16).padStart(8, '0');
 }
-let writeQueue: Promise<void> = Promise.resolve();
+let nativeWriteFailures=0;
+const diagnosticWriter=createDiagnosticWriter<DiagnosticEvent>({maxRows:2048,maxBytes:4*1024*1024,batchSize:25,maxBatchBytes:480*1024,
+  write:async items=>{
+    let saved=false;
+    try {saved=!!await KizilkanNativeCore.appendBlackBoxEventsBatch(JSON.stringify(items));}catch{}
+    if(!saved)nativeWriteFailures++;
+    try {KizilkanNativeCore.setBlackBoxCheckpoint?.(checkpointSummary(items[items.length-1]));}catch{}
+    for(const item of items){
+      jsJournalSequence++;
+      if(!saved||item.critical||item.severity==='warn'||jsJournalSequence % JS_JOURNAL_SAMPLE_EVERY===0)appendPersistentJournal(item);
+    }
+    const prev=await ensureJsEventCache();jsEventCache=[...items.slice().reverse(),...prev].slice(0,MAX_JS_FALLBACK_EVENTS);
+    jsDirtyEvents+=items.length;
+    if(items.some(item=>item.critical)||jsDirtyEvents>=JS_STORAGE_FLUSH_EVERY){await storage.setItem(KEY,JSON.stringify(jsEventCache));jsDirtyEvents=0;}
+  },
+  importantOverflow:item=>{
+    const encoded=JSON.stringify(item);let saved=false;
+    try{saved=!!KizilkanNativeCore.appendCriticalBlackBoxEvent?.(encoded);}catch{}
+    // An overflow is visible in writerHealth; important evidence still has a durable path.
+    appendPersistentJournal(item);if(!saved&&KizilkanNativeCore.available)nativeWriteFailures++;
+  },
+});
 let jsEventCache: DiagnosticEvent[] | null = null;
 let jsDirtyEvents = 0;
 let jsJournalSequence = 0;
@@ -425,7 +448,7 @@ export async function recordDiagnostic(
     sessionId: ctx.sessionId ? String(ctx.sessionId).slice(0, 120) : undefined,
     runId: ctx.runId ? String(ctx.runId).slice(0, 120) : undefined,
     traceId: ctx.traceId ? String(ctx.traceId).slice(0, 120) : undefined,
-    operationId: ctx.operationId ? String(ctx.operationId).slice(0, 120) : undefined,
+    operationId: (ctx.operationId||ctx.traceId||ctx.runId||ctx.sessionId) ? String(ctx.operationId||ctx.traceId||ctx.runId||ctx.sessionId).slice(0,120) : undefined,
     stage: ctx.stage ? String(ctx.stage).slice(0, 80) : undefined,
     durationMs: Number.isFinite(Number(ctx.durationMs)) && Number(ctx.durationMs) >= 0 ? Math.round(Number(ctx.durationMs)) : undefined,
     outcome: ctx.outcome ? String(ctx.outcome).slice(0, 32) : undefined,
@@ -452,29 +475,7 @@ export async function recordDiagnostic(
     // native senkron ölüm-journalına düşer. Native taraf hatayı asla yutmaz/değiştirmez.
     try { KizilkanNativeCore.appendCriticalBlackBoxEvent?.(JSON.stringify(item)); } catch {}
   }
-  writeQueue = writeQueue.then(async () => {
-    // Native Room/WAL uçuş kaydı ilk kalıcılık katmanıdır. Başarısız olsa bile
-    // sampled JSONL + küçük AsyncStorage recent-cache geri dönüş yolu kalır.
-    try { await KizilkanNativeCore.appendBlackBoxEvent?.(JSON.stringify(item)); } catch {}
-    try { KizilkanNativeCore.setBlackBoxCheckpoint?.(checkpointSummary(item)); } catch {}
-
-    // JS thread üzerinde her eventte senkron dosya append + 50k JSON stringify
-    // yapılmaz. Kritik/error/warn olaylar daima; normal olaylar örneklemeli journal'a
-    // gider. Tam normal geçmiş native Room'da 100k kapasiteyle korunur.
-    jsJournalSequence += 1;
-    if (critical || severity === 'warn' || jsJournalSequence % JS_JOURNAL_SAMPLE_EVERY === 0) {
-      appendPersistentJournal(item);
-    }
-
-    const prev = await ensureJsEventCache();
-    jsEventCache = [item, ...prev].slice(0, MAX_JS_FALLBACK_EVENTS);
-    jsDirtyEvents += 1;
-    if (critical || jsDirtyEvents >= JS_STORAGE_FLUSH_EVERY) {
-      await storage.setItem(KEY, JSON.stringify(jsEventCache));
-      jsDirtyEvents = 0;
-    }
-  }).catch(() => {});
-  await writeQueue;
+  await diagnosticWriter.enqueue(item,JSON.stringify(item).length*3,critical||severity==='warn'?'important':'normal').catch(()=>{});
 }
 
 
@@ -531,7 +532,7 @@ export async function measureDiagnosticStage<T>(domain: DiagnosticDomain, event:
 }
 
 export async function loadDiagnostics(limit = MAX_EVENTS): Promise<DiagnosticEvent[]> {
-  await writeQueue.catch(() => {});
+  await diagnosticWriter.flush().catch(() => {});
   const bounded = Math.max(1, Math.min(MAX_EVENTS, limit));
   // Android'de tam geçmişin authority'si Room/WAL'dır. Böylece 50k event yüklemek
   // için her record sırasında dev AsyncStorage blob'u yeniden yazılmaz.
@@ -547,7 +548,7 @@ export async function loadDiagnostics(limit = MAX_EVENTS): Promise<DiagnosticEve
 }
 
 export async function clearDiagnostics(): Promise<void> {
-  await writeQueue.catch(() => {});
+  await diagnosticWriter.flush().catch(() => {});
   jsEventCache = [];
   jsDirtyEvents = 0;
   jsJournalSequence = 0;
@@ -815,7 +816,7 @@ function finalRedactionPass(serialized: string): { text: string; replacements: n
 
 let diagnosticExportInFlight: Promise<string> | null = null;
 
-async function exportDiagnosticReportInternal(extra: Record<string, any> = {}): Promise<string> {
+async function exportDiagnosticReportInternal(extra: Record<string, any> = {},format:DiagnosticReportFormat='json'): Promise<string> {
   const exportStartedAt = Date.now();
   ensureNativeBlackBox();
 
@@ -895,6 +896,7 @@ async function exportDiagnosticReportInternal(extra: Record<string, any> = {}): 
       };
     })(),
     schemaVersion: 7,
+    writerHealth:{...diagnosticWriter.health(),nativeWriteFailures},
     structuredTraceSchema: 2,
     lifecycleCorrelation: { version: 7, stages: ['playlistSelect','roomVerify','catalogRecovery','channelSelect','urlResolve','enginePrepare','httpResponse','fallback','firstFrame'] },
     eventCapacity: MAX_EVENTS,
@@ -938,7 +940,7 @@ async function exportDiagnosticReportInternal(extra: Record<string, any> = {}): 
     (payload as any).exportScope.perDomainMin = EXPORT_PER_DOMAIN_MIN;
   }
   const sanitizeMs = Date.now() - sanitizeStartedAt;
-  const name = `kizilkan-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  const name = `kizilkan-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.${format}`;
   const file = new File(Paths.cache, name);
   if (file.exists) file.delete();
   file.create();
@@ -950,7 +952,8 @@ async function exportDiagnosticReportInternal(extra: Record<string, any> = {}): 
   const redacted = finalRedactionPass(serialized);
   const redactionMs = Date.now() - redactionStartedAt;
   const writeStartedAt = Date.now();
-  file.write(redacted.text);
+  const canonical=JSON.parse(redacted.text) as CanonicalDiagnosticReport;
+  file.write(format==='json'?redacted.text:renderDiagnosticReport(canonical,format));
   const writeMs = Date.now() - writeStartedAt;
   const preShareReadyAt = Date.now();
 
@@ -961,7 +964,7 @@ async function exportDiagnosticReportInternal(extra: Record<string, any> = {}): 
   try { sharingAvailable = await Sharing.isAvailableAsync(); } catch {}
   const shareRequestedAt = Date.now();
   if (sharingAvailable) {
-    await Sharing.shareAsync(file.uri, { mimeType: 'application/json', dialogTitle: 'KIZILKAN Flight Recorder Raporunu Paylaş' });
+    await Sharing.shareAsync(file.uri, { mimeType: format==='json'?'application/json':format==='md'?'text/markdown':'text/csv', dialogTitle: 'KIZILKAN Flight Recorder Raporunu Paylaş' });
   }
   const shareFinishedAt = Date.now();
 
@@ -990,12 +993,15 @@ async function exportDiagnosticReportInternal(extra: Record<string, any> = {}): 
   return file.uri;
 }
 
-export async function exportDiagnosticReport(extra: Record<string, any> = {}): Promise<string> {
+let diagnosticExportFormat:DiagnosticReportFormat='json';
+export async function exportDiagnosticReport(extra: Record<string, any> = {},format:DiagnosticReportFormat='json'): Promise<string> {
   if (diagnosticExportInFlight) {
+    if(format!==diagnosticExportFormat)throw new Error('Önceki rapor hazırlanıyor; bitince diğer biçimi seçin.');
     void recordDiagnostic('system', 'EXPORT_SINGLE_FLIGHT_REUSED', {}, { stage: 'export', outcome: 'suppressed' });
     return diagnosticExportInFlight;
   }
-  const run = exportDiagnosticReportInternal(extra);
+  diagnosticExportFormat=format;
+  const run = exportDiagnosticReportInternal(extra,format);
   diagnosticExportInFlight = run;
   try {
     return await run;

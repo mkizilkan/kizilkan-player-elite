@@ -1,3 +1,4 @@
+import {needsVerificationRetest} from '@/src/utils/verificationState';
 import React, { useCallback, useState, useEffect, useRef } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -145,6 +146,7 @@ export function DnsManager({ primary, hosts, username, password, onChange, onMak
     <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm, fontWeight: FONT.weight.bold }}>SUNUCU ADRESLERİ (DNS / PORTAL)</Text>
     <View style={styles.actions}>
       {button('dns-test-all', 'DNS adreslerini test et', () => startVideo(all))}
+      {button('dns-retest-uncertain', 'Belirsiz adresleri yeniden test et', () => startVideo(all.filter(h=>{const e=proofs.find(p=>p.url===h);return !e||needsVerificationRetest(e);}))) }
       {button('dns-select-best', 'En iyi çalışanı seç', () => startVideo(all, true))}
       {button('dns-test-accounts', 'Tüm hesapları test et', () => void testAccounts())}
       {busy && <FocusButton testID="dns-cancel" onPress={cancel} style={[styles.button, { borderColor: colors.error }]}><Text style={{ color: colors.error }}>Testi iptal et</Text></FocusButton>}

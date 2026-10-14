@@ -189,7 +189,14 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.34 RC1 — dal `v18.7.34-rc1-ui-stale-anr-telemetry`)
+## 9. Mevcut durum (v18.7.35 RC1 — `codex/v18.7.35-host-integration`)
+
+Kullanıcı HOST V38.20 planındaki 12 maddeyi tek build için onayladı; commit/push/manuel NORMAL GitHub build ve PC DEV yetkisi var. Ayrıntı: `AI-DEVIR-v18.7.35.md`. Request-local ortak-IP reverse origin, credentials case/parola kimliği + mevcut ID reuse/yeni UUID, operation trace, bounded 25-event native diagnostic batch, TTL/network/AAAA DNS + özgün HTTPS hostname/SNI/native exact MAG route, küçük API RTT deadline, ortak PortalHealthCard/belirsiz retest, seçimli çoklu hit dosyası revalidation, Room-verified per-kind kalıcı ordinary refresh resume, gerçek ilerlemeli ETA/DB kayıt, redakte V7 JSON/MD/CSV. Room/PlayerHost/live-first/tek upstream/retention/deps korunur. Eski stabil ID'ler migrate edilmez; yeni import ID'si pending kayda yazılır. Büyük katalog timeout'u küçük eski yanıt yüzünden kısaltılmaz. Native import tamamlanma metadata update'inde shell boş dizilerini Room'a yazma!
+
+**Kabul sınırı:** Kullanıcı v34'ü henüz test etmedi. Çıkış/4346 ms ANR kökü çözüldü denmedi; telemetri korunur, fiziksel kabul bekler. Telefon çıkarılmıştı. PC native TLS fixture'da SNI/yanlış hostname sertifika reddi/iptal/timeout PASS; bu Android cihaz kabulü değildir. Son commit/run/APK teslim bilgileri devir dosyasına eklenecek.
+
+## 9-eski-18734. v18.7.34 RC1 — `v18.7.34-rc1-ui-stale-anr-telemetry`
+
 
 Cihaz kanıtına (13.10.2026 ekran görüntüsü + uçuş kaydı) dayalı 4 maddelik paket; kullanıcı
 "hepsi" dedi ve commit/push/tetikleme yetkisini verdi. Ayrıntı: `AI-DEVIR-v18.7.34.md`.

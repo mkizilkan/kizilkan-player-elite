@@ -1,8 +1,9 @@
+import {openCatalogRefreshJournal,saveCatalogRefreshJournal,verifiedRefreshKinds,type CatalogRefreshJournal} from '@/src/utils/catalogRefreshJournal';
 import {withCatalogLock,freshnessDue,beginCatalogRestore,isCatalogRestoreActive,isCatalogRestoreWriting} from "@/src/utils/catalogOperations";
 import { libraryItemKey, libraryScopePrefix, libraryScopedIds } from '@/src/utils/libraryScope';
 import { endpointProjection } from '@/src/utils/playlistEndpoints';
 import { claimLibraryLegacyOwner } from '@/src/utils/libraryLegacyOwner';
-import {refreshPlaylistContent,type CatalogKind,type RefreshProgress,type IncrementalCatalogDelivery} from "@/src/utils/refreshPlaylist";
+import {refreshPlaylistContent,type CatalogKind,type RefreshProgress,type IncrementalCatalogDelivery,type RefreshResult} from "@/src/utils/refreshPlaylist";
 /**
  * KIZILKAN PLAYER — Oynatma Listesi Deposu (Context)
  * Dosya   : frontend/src/store/PlaylistContext.tsx
@@ -147,7 +148,7 @@ interface PlaylistContextValue {
   enrichPlaylistMedia: (id: string, patch: { vod?: Playlist["vod"]; series?: Playlist["series"] }) => Promise<void>;
   removePlaylist: (id: string) => Promise<void>;
   cleanupPlaylistContent:(id:string,kinds:Array<CatalogKind|'epg'>)=>Promise<number>;
-  refreshPlaylistKinds:(id:string,kinds:Array<CatalogKind|'epg'>,progress?:(p:RefreshProgress)=>void,valid?:()=>boolean)=>Promise<void>;
+  refreshPlaylistKinds:(id:string,kinds:Array<CatalogKind|'epg'>,progress?:(p:RefreshProgress)=>void,valid?:()=>boolean)=>Promise<RefreshResult>;
   freshnessStatus:PlaylistFreshnessStatus|null;
   autoRefreshGlobal:boolean;
   setAutoRefreshGlobal:(enabled:boolean)=>void;
@@ -992,8 +993,9 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
     return withCatalogLock(id,async()=>{
       assertMetadataReady();
       const owns=()=>metadataReadyPid.current===pid&&currentPid()===pid&&valid()&&playlistsRef.current.some(p=>p.id===id);
-      if(!owns())return;
+      if(!owns())throw new Error('Güncellemenin profil/liste sahipliği değişti.');
       const pl=playlistsRef.current.find(p=>p.id===id)!;
+      let completedMessage='Seçilen içerikler güncellendi.';
       const catalogKinds=kinds.filter((k):k is CatalogKind=>k!=='epg');
       if(catalogKinds.length){
         const keepAliveOwner = `refresh:${pid}:${id}:${Date.now()}`;
@@ -1010,9 +1012,45 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
          * yerde üretilir.
          */
         const beforeSnapshot={channels:pl.channels,vod:pl.vod,series:pl.series};
-        const result=await refreshPlaylistContent(pl,progress,{kinds:catalogKinds,forceUnconditional,signal:refreshController.signal});
-        if(!owns())return;
+        let journal:CatalogRefreshJournal|undefined;
+        const durable=KizilkanNativeCore.available&&(pl.source==='xtream'||pl.source==='stalker');
+        const perKindDiff:any={};let saveTail:Promise<void>=Promise.resolve();
+        if(durable)journal=await openCatalogRefreshJournal(pid,pl,catalogKinds,forceUnconditional);
+        const verified=journal?verifiedRefreshKinds(journal,await KizilkanNativeCore.getPlaylistSummaryVerified(id),pl):[];
+        const remaining=catalogKinds.filter(k=>!verified.includes(k));
+        if(journal)journal.completed=Object.fromEntries(verified.map(k=>[k,journal!.completed[k]]));
+        const preparedKindDelivery=durable?async(delivery:IncrementalCatalogDelivery)=>{
+          const saving=saveTail.then(async()=>{
+            if(!owns()||refreshController.signal.aborted)throw new Error('Katalog işleminin profil/iptal sahipliği değişti.');
+            const before=await KizilkanNativeCore.queryItems(id,delivery.kind,{limit:1});
+            if(!forceUnconditional&&before.total>20&&delivery.items.length<before.total*0.5){
+              void recordDiagnostic('catalog','MAG_REFRESH_SHRINK_GUARD',{playlistId:id,kind:delivery.kind,roomCount:before.total,newCount:delivery.items.length,kept:true},{operationId:journal?.generation});
+              throw new Error('Eksik sunucu kataloğu saptandı; mevcut dolu katalog korundu.');
+            }
+            const field=delivery.kind==='live'?'channels':delivery.kind;
+            const at=Date.now();progress?.({phase:'save',message:'Doğrulanan katalog Room veritabanına kaydediliyor…',activeKind:delivery.kind,[delivery.kind]:'saving',[`${delivery.kind}Count`]:delivery.items.length,saveTotal:delivery.items.length,saveCompleted:0});
+            await commitPlaylistUpdate(id,{...delivery.metadataPatch,[field]:delivery.items,lastRefreshOk:false});
+            if(!owns())throw new Error('Katalog kaydedildi; profil değiştiği için eski devam kaydı tamamlanmadı.');
+            const summary=await KizilkanNativeCore.getPlaylistSummaryVerified(id);
+            const count=delivery.kind==='live'?summary?.channels:summary?.[delivery.kind];
+            if(!summary?.roomIndexed||count!==delivery.items.length)throw new Error('Room katalog sayısı doğrulanamadı.');
+            const latest=playlistsRef.current.find(p=>p.id===id)!;
+            if(journal){journal.completed[delivery.kind]={count,fingerprint:latest.catalogSync?.[delivery.kind==='live'?'liveFingerprint':delivery.kind==='vod'?'vodFingerprint':'seriesFingerprint']};await saveCatalogRefreshJournal(journal);}
+            Object.assign(perKindDiff,lastNativeDiffRef.current.get(id)||{});
+            progress?.({phase:'save',message:'Room kaydı doğrulandı.',activeKind:delivery.kind,[delivery.kind]:'done',[`${delivery.kind}Count`]:count,saveCompleted:count,saveTotal:count,saveElapsedMs:Date.now()-at});
+            void recordDiagnostic('catalog','CATALOG_REFRESH_KIND_COMMITTED',{playlistId:id,kind:delivery.kind,count,commitElapsedMs:Date.now()-at},{operationId:journal?.generation});
+          });saveTail=saving.catch(()=>{});return saving;
+        }:undefined;
+        let result;
+        try{
+          result=remaining.length?await refreshPlaylistContent(pl,progress,{kinds:remaining,forceUnconditional,signal:refreshController.signal,operationId:journal?.generation,ownerId:pid,...(pl.source==='stalker'?{incrementalDelivery:preparedKindDelivery}:{preparedKindDelivery})}):{ok:true,patch:{},message:'Önceki işlemde bütün kataloglar Room kaydıyla doğrulandı.'};
+          await saveTail;
+          if(!result.ok&&journal){journal.state='interrupted';await saveCatalogRefreshJournal(journal);}
+        }catch(error){await saveTail;if(journal){journal.state='interrupted';await saveCatalogRefreshJournal(journal);}throw error;}
+        if(Object.keys(perKindDiff).length)lastNativeDiffRef.current.set(id,perKindDiff);
+        if(!owns())throw new Error('Güncellemenin profil/liste sahipliği değişti.');
         if(!result.ok||!result.patch)throw new Error(result.message);
+        completedMessage=result.message;
         // v18.7.17 (G1): YIKICI DİFF KORUMASI. Cihaz kanıtı: yavaş MAG sunucuda yenileme TIME_BUDGET'e
         // takılıp eksik çekince (dizi 16800→6776) native diff çekilmeyeni SİLİYORDU. Otomatik yenilemede
         // (forceUnconditional DEĞİL) bir tür mevcut Room sayısının yarısından aza düşüyorsa o türü patch'ten
@@ -1032,6 +1070,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           }
         }
         await commitPlaylistUpdate(id,{...guardedPatch,lastRefreshedAt:new Date().toISOString(),lastRefreshOk:true,lastFreshnessCheckAt:Date.now()});
+        if(journal){journal.state='completed';await saveCatalogRefreshJournal(journal);}
         const previousDns=pl.source==='stalker'?pl.stalkerPortal:pl.xtreamServer;
         const currentDns=pl.source==='stalker'?guardedPatch.stalkerPortal:guardedPatch.xtreamServer;
         if(currentDns && currentDns!==previousDns)void recordDiagnostic('network','DNS_AUTO_SWAP',{playlistId:id,source:pl.source,previousHost:(()=>{try{return new URL(previousDns||'').host;}catch{return '';}})(),currentHost:(()=>{try{return new URL(currentDns).host;}catch{return '';}})(),committed:true});
@@ -1053,6 +1092,7 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           };
           const diff=diffFromNative(nativeDiff)||buildRefreshDiff(beforeSnapshot,after);
           void recordDiagnostic('catalog','PLAYLIST_REFRESH_DIFF',{playlistId:id,diffSource:nativeDiff?'native':'js',...diffTelemetry(diff,forceUnconditional?'manual':'auto')});
+          completedMessage=formatRefreshDiff(diff)+'\n'+result.message;
           setLastRefreshSummary({playlistId:id,playlistName:pl.name,text:formatRefreshDiff(diff),suspicious:diff.suspiciousDrop,at:Date.now()});
         }catch(e:any){
           void recordDiagnostic('catalog','PLAYLIST_REFRESH_DIFF_ERROR',{playlistId:id,error:String(e?.message||e)});
@@ -1063,11 +1103,13 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         if(!pl.epgUrl)throw new Error('Bu liste için EPG adresi tanımlı değil.');
         progress?.({phase:'content',message:'EPG indiriliyor ve doğrulanıyor…'});
         const {fetchAndCacheEpg}=await import('@/src/utils/epg');await fetchAndCacheEpg(pl.epgUrl,id);
-        if(!owns())return;
+        if(!owns())throw new Error('Güncellemenin profil/liste sahipliği değişti.');
         const current=playlistsRef.current.find(p=>p.id===id)!;
         await commitPlaylistUpdate(id,{cleanedKinds:(current.cleanedKinds||[]).filter(k=>k!=='epg'),catalogRevision:Date.now()});
       }
-      progress?.({phase:'done',message:'Seçilen içerikler güncellendi.'});
+      if(!owns())throw new Error('Güncelleme sonrasında profil/liste sahipliği değişti.');
+      progress?.({phase:'done',message:completedMessage});
+      return {ok:true,message:completedMessage};
     });
   },[commitPlaylistUpdate,assertMetadataReady]);
 
@@ -1271,12 +1313,14 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
 
     try{
       const expectedKinds:CatalogKind[]=['live','vod','series'];
-      const completedKinds=new Set<CatalogKind>();
+      const recoveredSummary=await KizilkanNativeCore.getPlaylistSummaryVerified(id).catch(()=>null);
+      const completedKinds=new Set<CatalogKind>((broken.catalogRecovery?.completedKinds||[]).filter(k=>recoveredSummary?.roomIndexed&&Number(k==='live'?recoveredSummary.channels:recoveredSummary[k])===Number(k==='live'?broken.channelsCount:k==='vod'?broken.vodCount:broken.seriesCount)));
       await updatePlaylist(id,{
-        catalogRecovery:{state:'running',startedAt,expectedKinds,completedKinds:[]},
+        catalogRecovery:{state:'running',startedAt,expectedKinds,completedKinds:Array.from(completedKinds)},
         lastRefreshOk:false,
       });
 
+      const deferredEmptyKinds=new Set<CatalogKind>();
       const incrementalDelivery = (broken.source==='xtream'||broken.source==='stalker') ? async (delivery:IncrementalCatalogDelivery) => {
         if(activeSwitchGeneration.current!==generation)throw new Error('Playlist seçimi değişti; eski onarım sonucu uygulanmadı.');
         const commitStarted=Date.now();
@@ -1285,8 +1329,8 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
         // gerçek ve tamamlanmış sayılır; ilk non-empty kind snapshot'ı kurduğunda
         // diğer kind sayıları zaten 0 olarak güvenli şekilde temsil edilir.
         if(delivery.items.length===0 && !existingSummary?.roomIndexed){
-          completedKinds.add(delivery.kind);
-          await updatePlaylist(id,{catalogRecovery:{state:'running',startedAt,expectedKinds,completedKinds:Array.from(completedKinds)},lastRefreshOk:false});
+          completedKinds.add(delivery.kind);deferredEmptyKinds.add(delivery.kind);
+          await updatePlaylist(id,{catalogRecovery:{state:'running',startedAt,expectedKinds,completedKinds:Array.from(completedKinds).filter(k=>!deferredEmptyKinds.has(k))},lastRefreshOk:false});
           void recordDiagnostic('catalog','PLAYLIST_REPAIR_EMPTY_KIND_DEFERRED',{
             playlistId:id,kind:delivery.kind,rawCount:delivery.rawCount,fetchElapsedMs:delivery.fetchElapsedMs,
           },{traceId,stage:'catalogRecovery',outcome:'success'});
@@ -1296,7 +1340,8 @@ export function PlaylistProvider({ children }: { children: React.ReactNode }) {
           await KizilkanNativeCore.beginChunkedPlaylistKindReplace(id,'series'); try{ for(let o=0;o<delivery.items.length;o+=400){ await KizilkanNativeCore.appendPlaylistKindChunk(id,'series',JSON.stringify(delivery.items.slice(o,o+400))); await new Promise<void>(r=>setTimeout(r,0)); } const staged=await KizilkanNativeCore.finishChunkedPlaylistKindReplace(id,'series'); if(!staged?.roomIndexed||Number(staged.series||0)!==delivery.items.length)throw new Error('MAG Series chunk staging Room doğrulaması başarısız.'); await updatePlaylist(id,{seriesCount:delivery.items.length,catalogRecovery:{state:'running',startedAt,expectedKinds,completedKinds:Array.from(completedKinds)},lastRefreshOk:false}); }catch(e){try{await KizilkanNativeCore.cancelChunkedPlaylistKindReplace(id,'series')}catch{} throw e}
         }else{ const patch:Partial<Playlist>=delivery.kind==='live'?{channels:delivery.items as Playlist['channels']}:delivery.kind==='vod'?{vod:delivery.items as Playlist['vod']}:{series:delivery.items as Playlist['series']}; await updatePlaylist(id,{...patch,catalogRecovery:{state:'running',startedAt,expectedKinds,completedKinds:Array.from(completedKinds)},lastRefreshOk:false}); }
         const summary=await KizilkanNativeCore.getPlaylistSummary(id).catch(()=>null);
-        if(!summary?.roomIndexed)throw new Error(`${delivery.kind} kataloğu Room'a yazıldı ancak snapshot doğrulanamadı.`);
+        if(!summary?.roomIndexed||Number(delivery.kind==='live'?summary.channels:summary[delivery.kind])!==delivery.items.length)throw new Error(`${delivery.kind} kataloğu Room'a yazıldı ancak snapshot/sayı doğrulanamadı.`);
+        for(const kind of deferredEmptyKinds)if(Number(kind==='live'?summary.channels:summary[kind])===0)deferredEmptyKinds.delete(kind);
         completedKinds.add(delivery.kind);
         await updatePlaylist(id,{catalogRecovery:{state:'running',startedAt,expectedKinds,completedKinds:Array.from(completedKinds)},lastRefreshOk:false});
         void recordDiagnostic('catalog','PLAYLIST_REPAIR_KIND_COMMITTED',{

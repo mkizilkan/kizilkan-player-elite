@@ -34,7 +34,7 @@ export default function PlaylistSelect() {
   const params = useLocalSearchParams<{ manage?: string }>();
   const managementMode = String(params.manage || "") === "1";
   const { colors } = useTheme();
-  const { playlists, activePlaylist, setActivePlaylist, isLoading, loadedProfileId, loadError, reloadAfterRestore, updatePlaylist, removePlaylist, heavyLoading, repairFailedId} = usePlaylists();
+  const { playlists, activePlaylist, setActivePlaylist, isLoading, loadedProfileId, loadError, reloadAfterRestore, updatePlaylist, removePlaylist, heavyLoading, repairFailedId,refreshPlaylistKinds} = usePlaylists();
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [refreshAllProgress, setRefreshAllProgress] = useState("");
@@ -42,6 +42,8 @@ export default function PlaylistSelect() {
   const [refreshOneProgress, setRefreshOneProgress] = useState("");
 
   const { activeProfile } = useProfiles();
+  const refreshOwnerRef=useRef(activeProfile.id);refreshOwnerRef.current=activeProfile.id;
+  const refreshStoredPlaylist=(pl:Playlist,onProgress?:(p:import('@/src/utils/refreshPlaylist').RefreshProgress)=>void)=>{const owner=activeProfile.id;return refreshPlaylistKinds(pl.id,['live','vod','series'],onProgress,()=>refreshOwnerRef.current===owner);};
   const navigationStartedRef = useRef(false);
   const autoCancelledRef = useRef(false);
   const autoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -106,27 +108,9 @@ export default function PlaylistSelect() {
        * "değişiklik yok" demek değildir.
        * Olağandışı kayıpta kullanıcı açıkça uyarılır.
        */
-      const beforeSnapshot = { channels: pl.channels, vod: pl.vod, series: pl.series };
-      const res = await refreshPlaylistContent(pl, (p) => setRefreshOneProgress(`${pl.name} · ${formatRefreshProgress(p)}`));
-      if (res.ok && res.patch) {
-        setRefreshOneProgress(`${pl.name} · Cihaza kaydediliyor...`);
-        await updatePlaylist(pl.id, { ...res.patch, lastRefreshedAt: new Date().toISOString(), lastRefreshOk: true });
-        const diff = buildRefreshDiff(beforeSnapshot, {
-          channels: (res.patch as any).channels ?? pl.channels,
-          vod: (res.patch as any).vod ?? pl.vod,
-          series: (res.patch as any).series ?? pl.series,
-        });
-        void recordDiagnostic('catalog', 'PLAYLIST_REFRESH_DIFF', {
-          playlistId: pl.id, ...diffTelemetry(diff, 'manual'),
-        });
-        Alert.alert(
-          diff.suspiciousDrop ? "Liste güncellendi — dikkat" : "Liste güncellendi",
-          `${formatRefreshDiff(diff)}\n\n${res.message}`,
-        );
-      } else {
-        await updatePlaylist(pl.id,{...(res.patch || {}),lastRefreshedAt:new Date().toISOString(),lastRefreshOk:false});
-        Alert.alert("Yenilenemedi", res.message);
-      }
+      const res=await refreshStoredPlaylist(pl,p=>setRefreshOneProgress(`${pl.name} · ${formatRefreshProgress(p)}`));
+      Alert.alert('Liste güncellendi',res.message);
+    }catch(error:any){Alert.alert('Yenilenemedi',String(error?.message||error));
     } finally {
       setRefreshingId(null);
       setRefreshOneProgress("");
@@ -186,14 +170,13 @@ export default function PlaylistSelect() {
         status.set(pl.name, "Başlıyor...");
         publish();
         try {
-          const res = await refreshPlaylistContent(pl, (p) => {
+          const res = await refreshStoredPlaylist(pl, (p) => {
             status.set(pl.name, formatRefreshProgress(p));
             publish();
           });
-          if (res.ok && res.patch) {
+          if (res.ok) {
             status.set(pl.name, "Cihaza kaydediliyor...");
             publish();
-            await updatePlaylist(pl.id, { ...res.patch, lastRefreshedAt: new Date().toISOString(), lastRefreshOk: true });
             ok += 1;
             status.set(pl.name, `✅ ${res.message}`);
           } else {
@@ -230,7 +213,10 @@ export default function PlaylistSelect() {
   const toggleBulkSelection=(id:string)=>setBulkSelected(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n});
   const selectedPlaylists=()=>playlists.filter(p=>bulkSelected.has(p.id));
   const bulkPin=async(pinned:boolean)=>{for(const pl of selectedPlaylists())await updatePlaylist(pl.id,{pinned});setBulkSelected(new Set());setBulkMode(false)};
-  const bulkRefresh=async()=>{const targets=selectedPlaylists();if(!targets.length)return;setRefreshingAll(true);let ok=0;try{for(const pl of targets){const res=await refreshPlaylistContent(pl,p=>setRefreshAllProgress(`${pl.name} · ${formatRefreshProgress(p)}`));if(res.ok&&res.patch){await updatePlaylist(pl.id,{...res.patch,lastRefreshedAt:new Date().toISOString(),lastRefreshOk:true});ok++}else await updatePlaylist(pl.id,{...(res.patch || {}),lastRefreshedAt:new Date().toISOString(),lastRefreshOk:false});}Alert.alert('Toplu yenileme',`${ok}/${targets.length} playlist güncellendi.`)}finally{setRefreshingAll(false);setRefreshAllProgress('');setBulkSelected(new Set());setBulkMode(false)}};
+  const bulkRefresh=async()=>{const targets=selectedPlaylists();if(!targets.length)return;setRefreshingAll(true);let ok=0;const failed:string[]=[];
+    try{for(const pl of targets){try{await refreshStoredPlaylist(pl,p=>setRefreshAllProgress(`${pl.name} · ${formatRefreshProgress(p)}`));ok++;}catch(error:any){failed.push(`${pl.name}: ${String(error?.message||error)}`);}}
+      Alert.alert('Toplu yenileme',`${ok}/${targets.length} playlist güncellendi.${failed.length?'\n'+failed.join('\n'):''}`);
+    }finally{setRefreshingAll(false);setRefreshAllProgress('');setBulkSelected(new Set());setBulkMode(false)}};
   const bulkDelete=()=>{const targets=selectedPlaylists();if(!targets.length)return;Alert.alert('Playlistleri sil',`${targets.length} playlist ve cihazdaki kayıtlı içerikleri silinsin mi?`,[{text:'Vazgeç',style:'cancel'},{text:'Sil',style:'destructive',onPress:async()=>{for(const pl of targets)await removePlaylist(pl.id);setBulkSelected(new Set());setBulkMode(false)}}])};
 
   const togglePinned = async (pl:Playlist) => { cancelAuto(); await updatePlaylist(pl.id,{pinned:!pl.pinned}); };
