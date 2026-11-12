@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { FocusButton } from "@/src/components/FocusButton";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
@@ -133,9 +134,9 @@ export default function CatchupScreen() {
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top", "bottom"]} testID="catchup-screen">
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} hitSlop={12}>
+        <FocusButton testID="catchup-back" autoFocus onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="chevron-back" size={26} color={colors.onSurface} />
-        </TouchableOpacity>
+        </FocusButton>
         <View style={{ flex: 1, alignItems: "center" }}>
           <Text style={[styles.title, { color: colors.onSurface }]} numberOfLines={1}>{channel?.name}</Text>
           <Text style={[styles.subtitle, { color: colors.onSurfaceSecondary }]}>Geriye Dönük İzle</Text>
@@ -155,13 +156,13 @@ export default function CatchupScreen() {
           const archived = Number(p.has_archive) === 1;
           const isNow = Number(p.now_playing) === 1;
           return (
-            <TouchableOpacity
+            <FocusButton
               key={idx}
               testID={`catchup-prog-${idx}`}
               onPress={() => archived && playProgram(p)}
               disabled={!archived}
               activeOpacity={archived ? 0.7 : 1}
-              focusable
+              focusable={archived}
               style={[
                 styles.progItem,
                 { backgroundColor: colors.surfaceSecondary, borderColor: colors.border },
@@ -188,7 +189,7 @@ export default function CatchupScreen() {
                   <Text style={[styles.progDesc, { color: colors.onSurfaceSecondary }]} numberOfLines={2}>{p.description}</Text>
                 ) : null}
               </View>
-            </TouchableOpacity>
+            </FocusButton>
           );
         })}
       </ScrollView>

@@ -189,7 +189,15 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.35 RC1 — `codex/v18.7.35-host-integration`)
+## 9. Mevcut durum (v18.7.36 RC1 — `v18.7.36-rc1-player-prepwatchdog-tvfocus`)
+
+Kaynak: kullanıcı talebi (P1+P2+T1) + 13.10 uçuş kaydı (47 oynatma oturumu) + kod incelemesi. Ayrıntı: `AI-DEVIR-v18.7.36.md`. Kullanıcı commit/push/manuel NORMAL build/PC DEV yetkisi verdi.
+- **P1 — Hazırlanma bekçisi:** Media3 `readyToPlay`'e HİÇ ulaşamazsa (mevcut ilk-kare bekçisi `!exoReady` ile erken çıkıyordu) ekran sonsuz yükleniyordu — 47 oturumun 7'si 9–61 sn beklenip terk edilmişti. Yeni kardeş bekçi cömert süre (`PREPARE_TIMEOUT_LIVE/VOD_MS` = 14/18 sn) sonra motor zincirini (MPV→VLC→hata) ilerletir. §5 tek-bağlantı: yeni motordan önce Media3 pause+replace(null). `controller.ts`+`PlayerHost.tsx`.
+- **P2 — Yükleme kurtarma kontrolleri:** Yayın 4 sn'de açılmazsa ekranda "Kapat / Motoru Değiştir" kartı (`showRescueControls`, D-pad odaklı, ilk odak Kapat). Hızlı açılan kanal görmez. Telemetri `PLAYER_RESCUE_CLOSE/ENGINE`.
+- **T1 — TV odak:** 7 ekran (`epg`, `epg-timeline`, `catchup`, `multi-view`, `downloads`, `edit-playlist`, `hidden-manager`) ham `TouchableOpacity`→`FocusButton` + açılışta ilk odak. TV'de artık kumanda odağı görünür.
+- Doğrulama: tsc temiz · denetle TÜM TEMİZ · `check-v18736` PASS · native değişiklik YOK. **CİHAZ KABULÜ YAPILMADI** (telefon/TV bağlı değil). P1 sonsuz takılmayı kırar ama gerçek ANR/ağ yavaşlığının kökünü çözmez; T1 kod incelemesine dayanır, kullanıcının somut TV belirtisi henüz alınmadı.
+
+## 9-eski-18735. v18.7.35 RC1 (`codex/v18.7.35-host-integration`)
 
 Kullanıcı HOST V38.20 planındaki 12 maddeyi tek build için onayladı; commit/push/manuel NORMAL GitHub build ve PC DEV yetkisi var. Ayrıntı: `AI-DEVIR-v18.7.35.md`. Request-local ortak-IP reverse origin, credentials case/parola kimliği + mevcut ID reuse/yeni UUID, operation trace, bounded 25-event native diagnostic batch, TTL/network/AAAA DNS + özgün HTTPS hostname/SNI/native exact MAG route, küçük API RTT deadline, ortak PortalHealthCard/belirsiz retest, seçimli çoklu hit dosyası revalidation, Room-verified per-kind kalıcı ordinary refresh resume, gerçek ilerlemeli ETA/DB kayıt, redakte V7 JSON/MD/CSV. Room/PlayerHost/live-first/tek upstream/retention/deps korunur. Eski stabil ID'ler migrate edilmez; yeni import ID'si pending kayda yazılır. Büyük katalog timeout'u küçük eski yanıt yüzünden kısaltılmaz. Native import tamamlanma metadata update'inde shell boş dizilerini Room'a yazma!
 

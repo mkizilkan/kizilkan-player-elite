@@ -4,6 +4,22 @@ export const LIVE_FAST_BUFFER_MS = 450;
 export const FIRST_FRAME_TIMEOUT_LIVE_MS = 3200;
 export const FIRST_FRAME_TIMEOUT_VOD_MS = 5000;
 
+/**
+ * v18.7.36 — HAZIRLANMA (readyToPlay-ÖNCESİ) BEKÇİSİ EŞİKLERİ
+ * ---------------------------------------------------------------------------
+ * CİHAZ KANITI (13.10.2026 uçuş kaydı, 47 oynatma oturumu): 7 oturum 9–61 sn
+ * boyunca görüntü GELMEDEN terk edildi. Kök neden: mevcut ilk-kare bekçisi
+ * yalnız Media3 `readyToPlay` OLDUKTAN SONRA başlıyor (`!exoReady` ile erken
+ * çıkıyor). Sunucuya hiç bağlanılamaz/akış hazır olamazsa `readyToPlay` hiç
+ * gelmez, hiçbir bekçi tetiklenmez ve ekran sonsuza dek "yükleniyor" kalır.
+ *
+ * Bu eşikler, ilk-kare eşiklerinden belirgin DAHA CÖMERTTİR; çünkü bu süreye
+ * ağ bağlantısı + manifest/segment indirme de dahildir. Yavaş ama sağlıklı
+ * yayınları kesmemek için uzun tutulur; amaç sonsuz takılmayı kırmaktır.
+ */
+export const PREPARE_TIMEOUT_LIVE_MS = 14000;
+export const PREPARE_TIMEOUT_VOD_MS = 18000;
+
 export function defaultProfile(isTv: boolean): EngineProfile {
   return { engine: "media3", surface: "surfaceView" };
 }

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, Alert } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Image, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { FocusButton } from "@/src/components/FocusButton";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { useDownloads, DownloadItem } from "@/src/store/DownloadContext";
@@ -116,14 +117,14 @@ export default function DownloadsScreen() {
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top"]} testID="downloads-screen">
       <View style={styles.header}>
-        <TouchableOpacity testID="downloads-back-btn" onPress={() => router.back()} hitSlop={12}>
+        <FocusButton testID="downloads-back-btn" autoFocus onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="close" size={26} color={colors.onSurface} />
-        </TouchableOpacity>
+        </FocusButton>
         <Text style={[styles.title, { color: colors.onSurface }]}>İndirilenler</Text>
         {completed.length > 0 ? (
-          <TouchableOpacity testID="clear-completed-btn" onPress={clearCompleted} hitSlop={10}>
+          <FocusButton testID="clear-completed-btn" onPress={clearCompleted} hitSlop={10}>
             <Text style={[styles.clearText, { color: colors.brandPrimary }]}>Temizle</Text>
-          </TouchableOpacity>
+          </FocusButton>
         ) : <View style={{ width: 26 }} />}
       </View>
 
@@ -138,7 +139,7 @@ export default function DownloadsScreen() {
               KAYITLAR ({recordings.length})
             </Text>
             {recordings.map(r => (
-              <TouchableOpacity
+              <FocusButton
                 key={r.uri}
                 testID={`rec-${r.name}`}
                 onPress={() => void openRecording(r)}
@@ -157,7 +158,7 @@ export default function DownloadsScreen() {
                     {(r.size / 1048576).toFixed(1)} MB
                   </Text>
                 </View>
-                <TouchableOpacity
+                <FocusButton
                   hitSlop={10}
                   onPress={() => {
                     Alert.alert("Kaydı sil", r.name, [
@@ -176,8 +177,8 @@ export default function DownloadsScreen() {
                   }}
                 >
                   <Ionicons name="trash-outline" size={18} color={colors.error} />
-                </TouchableOpacity>
-              </TouchableOpacity>
+                </FocusButton>
+              </FocusButton>
             ))}
           </View>
         )}
@@ -215,18 +216,18 @@ export default function DownloadsScreen() {
                   </View>
                   <View style={styles.actions}>
                     {item.status === "downloading" && (
-                      <TouchableOpacity testID={`pause-${item.id}`} onPress={() => { haptic.soft(); pause(item.id); }} hitSlop={8}>
+                      <FocusButton testID={`pause-${item.id}`} onPress={() => { haptic.soft(); pause(item.id); }} hitSlop={8}>
                         <Ionicons name="pause" size={22} color={colors.brandPrimary} />
-                      </TouchableOpacity>
+                      </FocusButton>
                     )}
                     {(item.status === "paused" || item.status === "failed") && (
-                      <TouchableOpacity testID={`resume-${item.id}`} onPress={() => { haptic.soft(); resume(item.id); }} hitSlop={8}>
+                      <FocusButton testID={`resume-${item.id}`} onPress={() => { haptic.soft(); resume(item.id); }} hitSlop={8}>
                         <Ionicons name="play" size={22} color={colors.brandPrimary} />
-                      </TouchableOpacity>
+                      </FocusButton>
                     )}
-                    <TouchableOpacity testID={`cancel-${item.id}`} onPress={() => { haptic.warning(); cancel(item.id); }} hitSlop={8}>
+                    <FocusButton testID={`cancel-${item.id}`} onPress={() => { haptic.warning(); cancel(item.id); }} hitSlop={8}>
                       <Ionicons name="close-circle" size={22} color={colors.error} />
-                    </TouchableOpacity>
+                    </FocusButton>
                   </View>
                 </View>
               );
@@ -240,7 +241,7 @@ export default function DownloadsScreen() {
               TAMAMLANAN ({completed.length})
             </Text>
             {completed.map(item => (
-              <TouchableOpacity
+              <FocusButton
                 key={item.id}
                 testID={`play-download-${item.id}`}
                 onPress={() => openDownloaded(item)}
@@ -266,7 +267,7 @@ export default function DownloadsScreen() {
                   </Text>
                 </View>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm }}>
-                  <TouchableOpacity
+                  <FocusButton
                     testID={`export-${item.id}`}
                     onPress={async (e) => {
                       e.stopPropagation?.();
@@ -276,19 +277,19 @@ export default function DownloadsScreen() {
                     hitSlop={8}
                   >
                     <Ionicons name="folder-open-outline" size={21} color={colors.brandPrimary} />
-                  </TouchableOpacity>
-                  <TouchableOpacity
+                  </FocusButton>
+                  <FocusButton
                     testID={`share-${item.id}`}
                     onPress={async (e) => { e.stopPropagation?.(); await share(item.id); }}
                     hitSlop={8}
                   >
                     <Ionicons name="share-social-outline" size={21} color={colors.onSurfaceSecondary} />
-                  </TouchableOpacity>
-                  <TouchableOpacity testID={`remove-${item.id}`} onPress={() => confirmRemove(item)} hitSlop={8}>
+                  </FocusButton>
+                  <FocusButton testID={`remove-${item.id}`} onPress={() => confirmRemove(item)} hitSlop={8}>
                     <Ionicons name="trash-outline" size={22} color={colors.onSurfaceSecondary} />
-                  </TouchableOpacity>
+                  </FocusButton>
                 </View>
-              </TouchableOpacity>
+              </FocusButton>
             ))}
           </>
         )}

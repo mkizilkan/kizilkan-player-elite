@@ -1,10 +1,11 @@
 import React, { useMemo, useState } from "react";
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Image, FlatList,
+  View, Text, StyleSheet, ScrollView, TextInput, Image, FlatList,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { FocusButton } from "@/src/components/FocusButton";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
 import { usePlaylists } from "@/src/store/PlaylistContext";
@@ -72,9 +73,9 @@ export default function HiddenManagerScreen() {
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top"]} testID="hidden-manager-screen">
       <View style={styles.header}>
-        <TouchableOpacity testID="hidden-back-btn" onPress={() => router.back()} hitSlop={12}>
+        <FocusButton testID="hidden-back-btn" autoFocus onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="close" size={26} color={colors.onSurface} />
-        </TouchableOpacity>
+        </FocusButton>
         <View style={{ flex: 1, alignItems: "center" }}>
           <Text style={[styles.title, { color: colors.onSurface }]}>Gizli İçerikler</Text>
           <Text style={[styles.subtitle, { color: colors.onSurfaceSecondary }]}>
@@ -82,14 +83,14 @@ export default function HiddenManagerScreen() {
           </Text>
         </View>
         {hiddenModeUnlocked ? (
-          <TouchableOpacity
+          <FocusButton
             testID="lock-hidden-btn"
             onPress={() => { haptic.warning(); lockHiddenSession(); }}
             hitSlop={10}
             style={styles.iconBtn}
           >
             <Ionicons name="lock-closed" size={22} color={colors.brandPrimary} />
-          </TouchableOpacity>
+          </FocusButton>
         ) : (
           <View style={{ width: 30 }} />
         )}
@@ -109,9 +110,9 @@ export default function HiddenManagerScreen() {
             autoCorrect={false}
           />
           {q.length > 0 && (
-            <TouchableOpacity onPress={() => setQ("")} hitSlop={10}>
+            <FocusButton onPress={() => setQ("")} hitSlop={10}>
               <Ionicons name="close-circle" size={18} color={colors.onSurfaceSecondary} />
-            </TouchableOpacity>
+            </FocusButton>
           )}
         </View>
       </View>
@@ -120,7 +121,7 @@ export default function HiddenManagerScreen() {
         {kindDefs.map(k => {
           const active = kind === k.key;
           return (
-            <TouchableOpacity
+            <FocusButton
               key={k.key}
               testID={`hidden-tab-${k.key}`}
               onPress={() => { haptic.soft(); setKind(k.key); }}
@@ -133,7 +134,7 @@ export default function HiddenManagerScreen() {
               <Text style={[styles.chipText, { color: active ? colors.onBrandPrimary : colors.onSurfaceSecondary }]}>
                 {k.label} ({k.count})
               </Text>
-            </TouchableOpacity>
+            </FocusButton>
           );
         })}
       </ScrollView>
@@ -145,7 +146,7 @@ export default function HiddenManagerScreen() {
         renderItem={({ item }) => {
           const hidden = isHidden(item.id);
           return (
-            <TouchableOpacity
+            <FocusButton
               testID={`hidden-item-${item.id}`}
               onPress={() => toggle(item.id)}
               activeOpacity={0.75}
@@ -179,7 +180,7 @@ export default function HiddenManagerScreen() {
                 size={22}
                 color={hidden ? colors.brandPrimary : colors.onSurfaceTertiary}
               />
-            </TouchableOpacity>
+            </FocusButton>
           );
         }}
         ListEmptyComponent={

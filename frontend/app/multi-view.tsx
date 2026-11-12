@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState, useRef } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, FlatList, Modal, Pressable, Alert, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, TextInput, FlatList, Modal, Pressable, Alert, ActivityIndicator } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { FocusButton } from "@/src/components/FocusButton";
 import { VideoView, useVideoPlayer } from "expo-video";
 import * as ScreenOrientation from "expo-screen-orientation";
 import { useTheme } from "@/src/theme/ThemeContext";
@@ -160,17 +161,17 @@ export default function MultiView() {
        */
       edges={["top", "bottom"]} testID="multi-view-screen">
       <View style={styles.header}>
-        <TouchableOpacity testID="mv-back-btn" onPress={goBack} hitSlop={12} style={styles.hBtn}>
+        <FocusButton testID="mv-back-btn" autoFocus onPress={goBack} hitSlop={12} style={styles.hBtn}>
           <Ionicons name="chevron-back" size={22} color="#fff" />
-        </TouchableOpacity>
+        </FocusButton>
         <Text style={styles.title}>Çoklu Ekran</Text>
         <View style={styles.layoutSwitch}>
-          <TouchableOpacity testID="mv-layout-2" onPress={() => setLayout(2)} style={[styles.layoutBtn, layout === 2 && { backgroundColor: colors.brandPrimary }]}>
+          <FocusButton testID="mv-layout-2" onPress={() => setLayout(2)} style={[styles.layoutBtn, layout === 2 && { backgroundColor: colors.brandPrimary }]}>
             <Text style={[styles.layoutText, { color: layout === 2 ? colors.onBrandPrimary : "#fff" }]}>2 Ekran</Text>
-          </TouchableOpacity>
-          <TouchableOpacity testID="mv-layout-4" onPress={() => setLayout(4)} style={[styles.layoutBtn, layout === 4 && { backgroundColor: colors.brandPrimary }]}>
+          </FocusButton>
+          <FocusButton testID="mv-layout-4" onPress={() => setLayout(4)} style={[styles.layoutBtn, layout === 4 && { backgroundColor: colors.brandPrimary }]}>
             <Text style={[styles.layoutText, { color: layout === 4 ? colors.onBrandPrimary : "#fff" }]}>4 Ekran</Text>
-          </TouchableOpacity>
+          </FocusButton>
         </View>
       </View>
 
@@ -198,7 +199,7 @@ export default function MultiView() {
 
             {/* KAYNAK SEÇİMİ (v8.0.0): tüm listeler mi, sadece aktif liste mi */}
             {playlists.length > 1 && (
-              <TouchableOpacity
+              <FocusButton
                 testID="mv-source-toggle"
                 onPress={() => setAllChannelsMode(v => !v)}
                 style={{
@@ -219,7 +220,7 @@ export default function MultiView() {
                     : `Yalnızca: ${activePlaylist?.name || "-"}`}
                 </Text>
                 <Text style={{ color: colors.brandPrimary, fontSize: 12, fontWeight: "700" }}>DEĞİŞTİR</Text>
-              </TouchableOpacity>
+              </FocusButton>
             )}
             <View style={[styles.searchWrap, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
               <Ionicons name="search" size={16} color={colors.onSurfaceSecondary} />
@@ -234,9 +235,9 @@ export default function MultiView() {
                 style={[styles.searchInput, { color: colors.onSurface }]}
               />
               {search.length > 0 && (
-                <TouchableOpacity onPress={() => setSearch("")} hitSlop={8}>
+                <FocusButton onPress={() => setSearch("")} hitSlop={8}>
                   <Ionicons name="close-circle" size={16} color={colors.onSurfaceSecondary} />
-                </TouchableOpacity>
+                </FocusButton>
               )}
             </View>
             <View style={{ flex: 1 }}>
@@ -245,7 +246,7 @@ export default function MultiView() {
                 keyExtractor={c => `${c.__plId}:${c.id}`}
                 initialNumToRender={12}
                 renderItem={({ item }) => (
-                  <TouchableOpacity
+                  <FocusButton
                     testID={`mv-pick-${item.id}`}
                     onPress={() => { if (pickerFor !== null) void pickChannel(pickerFor, item); }}
                     style={[styles.pickerRow, { borderBottomColor: colors.border }]}
@@ -261,14 +262,14 @@ export default function MultiView() {
                       ) : null}
                     </View>
                     <Text style={[styles.pickerRowGroup, { color: colors.onSurfaceTertiary }]} numberOfLines={1}>{item.group}</Text>
-                  </TouchableOpacity>
+                  </FocusButton>
                 )}
               />
               {(pickerLoading || resolvingSlot !== null) && <ActivityIndicator color={colors.brandPrimary} />}
             </View>
-            <TouchableOpacity onPress={dismissPicker} style={[styles.closeBtn, { backgroundColor: colors.surfaceSecondary }]}>
+            <FocusButton onPress={dismissPicker} style={[styles.closeBtn, { backgroundColor: colors.surfaceSecondary }]}>
               <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold }}>Kapat</Text>
-            </TouchableOpacity>
+            </FocusButton>
           </Pressable>
         </Pressable>
       </Modal>
@@ -299,23 +300,23 @@ function Slot({ index, url, name, request, isAudio, onPickChannel, onSetAudio, o
           <View style={styles.slotOverlay} pointerEvents="box-none">
             <View style={styles.slotTop}>
               <Text style={styles.slotName} numberOfLines={1}>{name}</Text>
-              <TouchableOpacity testID={`mv-clear-${index}`} onPress={onClear} style={styles.slotBtn} hitSlop={8}>
+              <FocusButton testID={`mv-clear-${index}`} onPress={onClear} style={styles.slotBtn} hitSlop={8}>
                 <Ionicons name="close" size={16} color="#fff" />
-              </TouchableOpacity>
+              </FocusButton>
             </View>
             <View style={styles.slotBottom}>
-              <TouchableOpacity testID={`mv-audio-${index}`} onPress={onSetAudio} style={[styles.audioBtn, isAudio && { backgroundColor: colors.brandPrimary }]}>
+              <FocusButton testID={`mv-audio-${index}`} onPress={onSetAudio} style={[styles.audioBtn, isAudio && { backgroundColor: colors.brandPrimary }]}>
                 <Ionicons name={isAudio ? "volume-high" : "volume-mute"} size={14} color="#fff" />
                 <Text style={styles.audioText}>{isAudio ? "SES AÇIK" : "SESSİZ"}</Text>
-              </TouchableOpacity>
+              </FocusButton>
             </View>
           </View>
         </>
       ) : (
-        <TouchableOpacity testID={`mv-add-${index}`} onPress={onPickChannel} style={styles.emptySlot}>
+        <FocusButton testID={`mv-add-${index}`} onPress={onPickChannel} style={styles.emptySlot}>
           <Ionicons name="add-circle-outline" size={38} color="#666" />
           <Text style={styles.emptyText}>Kanal Seç</Text>
-        </TouchableOpacity>
+        </FocusButton>
       )}
     </View>
   );

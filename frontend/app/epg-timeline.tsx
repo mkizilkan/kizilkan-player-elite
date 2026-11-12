@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, Dimensions } from "react-native";
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Image, Dimensions } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { FocusButton } from "@/src/components/FocusButton";
 import { useTheme } from "@/src/theme/ThemeContext";
 import { useRemoteKeys } from "@/src/hooks/useRemoteKeys";
 import { SPACING, RADIUS, FONT } from "@/src/theme/themes";
@@ -312,9 +313,9 @@ export default function EpgTimeline() {
         ) : null}
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} hitSlop={12}>
+          <FocusButton testID="epg-timeline-back-empty" autoFocus onPress={() => router.back()} hitSlop={12}>
             <Ionicons name="close" size={26} color={colors.onSurface} />
-          </TouchableOpacity>
+          </FocusButton>
           <View style={{ flex: 1, alignItems: "center" }}>
             <Text style={[styles.title, { color: colors.onSurface }]}>TV Rehberi</Text>
             {/* HANGİ GÜN (v7.6.0): 24 saat atlarken kullanıcı kaybolmasın */}
@@ -339,9 +340,9 @@ export default function EpgTimeline() {
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top", "bottom"]} testID="epg-timeline-screen">
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} hitSlop={12} testID="epg-close-btn">
+        <FocusButton onPress={() => router.back()} hitSlop={12} testID="epg-close-btn">
           <Ionicons name="close" size={26} color={colors.onSurface} />
-        </TouchableOpacity>
+        </FocusButton>
         <Text style={[styles.title, { color: colors.onSurface }]}>TV Rehberi (7 Gün)</Text>
         {loading ? <ActivityIndicator size="small" color={colors.brandPrimary} /> : <View style={{ width: 26 }} />}
       </View>
@@ -426,7 +427,7 @@ export default function EpgTimeline() {
                         const now = Date.now();
                         const isNow = new Date(p.start).getTime() <= now && now <= new Date(p.stop).getTime();
                         return (
-                          <TouchableOpacity
+                          <FocusButton
                             key={i}
                             testID={`epg-cell-${ch.id}-${i}`}
                             onPress={() => openProgram(ch, p)}
@@ -447,7 +448,7 @@ export default function EpgTimeline() {
                             >
                               {p.title}
                             </Text>
-                          </TouchableOpacity>
+                          </FocusButton>
                         );
                       })}
                     </View>
@@ -470,7 +471,7 @@ export default function EpgTimeline() {
 function Chip({ label, active, onPress, testID, preferredFocus, onLayout }: { label: string; active: boolean; onPress: () => void; testID: string; preferredFocus?: boolean; onLayout?: (x: number) => void }) {
   const { colors } = useTheme();
   return (
-    <TouchableOpacity
+    <FocusButton
       testID={testID}
       onPress={onPress}
       focusable
@@ -484,7 +485,7 @@ function Chip({ label, active, onPress, testID, preferredFocus, onLayout }: { la
       <Text style={[styles.chipText, { color: active ? colors.onBrandPrimary : colors.onSurfaceSecondary }]} numberOfLines={1}>
         {label}
       </Text>
-    </TouchableOpacity>
+    </FocusButton>
   );
 }
 

@@ -41,6 +41,8 @@ import {
   LIVE_FAST_BUFFER_MS,
   FIRST_FRAME_TIMEOUT_LIVE_MS,
   FIRST_FRAME_TIMEOUT_VOD_MS,
+  PREPARE_TIMEOUT_LIVE_MS,
+  PREPARE_TIMEOUT_VOD_MS,
   PLAYER_BUFFER_KEY,
   PLAYER_BUFFER_V2_MIGRATION_KEY,
   PLAYER_BUFFER_V15_MIGRATION_KEY,
@@ -769,6 +771,10 @@ export default function PlayerHost() {
   const [v2Phase, setV2Phase] = useState<PlaybackPhase>("idle");
   const [technicalError, setTechnicalError] = useState<string | null>(null);
   const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
+  // v18.7.36 (P2): yayın birkaç saniyede açılmazsa kullanıcıya ekranda kurtarma
+  // kontrolleri (Kapat / Motoru değiştir) göster. Hızlı açılan kanallar
+  // (medyan ~1,7 sn) bu süreyi görmez; takılan kanalda kullanıcı mahsur kalmaz.
+  const [showRescueControls, setShowRescueControls] = useState(false);
   const [playbackRetryNonce, setPlaybackRetryNonce] = useState(0);
   const v2ProfileKey =
     v2Profile.engine === "media3"
@@ -4174,6 +4180,84 @@ export default function PlayerHost() {
   }, []);
 
   /**
+   * v18.7.36 (P2) — YÜKLEME KURTARMA KONTROLLERİ ZAMANLAYICISI
+   * -------------------------------------------------------------------------
+   * Yayın oynamaya başlamışsa kontrolleri gizle. Oynamıyor ve hata da yoksa
+   * RESCUE_DELAY sonra "Kapat / Motoru değiştir" kontrollerini göster; böylece
+   * 9–61 sn takılan kanalda kullanıcı mahsur kalmaz. Oturum/kanal değişiminde
+   * sıfırlanır.
+   */
+  const playingNow = v2Phase === "playing" || (successfulSessionRef.current === activeSessionId && isPlaying);
+  useEffect(() => {
+    if (!visible || !channel || error || playingNow) { setShowRescueControls(false); return; }
+    const RESCUE_DELAY_MS = 4000;
+    const t = setTimeout(() => setShowRescueControls(true), RESCUE_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [visible, channel?.id, activeSessionId, error, playingNow]);
+
+  /**
+   * v18.7.36 — PLAYER V2 HAZIRLANMA (readyToPlay-ÖNCESİ) BEKÇİSİ
+   * -------------------------------------------------------------------------
+   * CİHAZ KANITI (13.10.2026 uçuş kaydı): 47 oturumun 7'si görüntü GELMEDEN
+   * 9–61 sn bekleyip terk edildi. Aşağıdaki ilk-kare bekçisi `!exoReady` ile
+   * erken çıktığı için, Media3 `readyToPlay`'e HİÇ ulaşamazsa (sunucuya
+   * bağlanılamıyor / akış hazır olmuyor) hiçbir bekçi tetiklenmiyor ve ekran
+   * sonsuza dek "yükleniyor" kalıyordu.
+   *
+   * Bu bekçi tam o boşluğu kapatır: Media3 oturumu başladığı hâlde
+   * `readyToPlay` CÖMERT bir süre içinde gelmezse motor zincirini ilerletir.
+   * Yüzey değiştirme adımı YOKTUR — sorun görüntü yüzeyi değil, akışın hiç
+   * hazır olmamasıdır; doğrudan MPV/VLC'ye geçilir. §5 TEK BAĞLANTI: yeni motor
+   * açılmadan ÖNCE Media3 pause + replace(null) ile durdurulur (aynı kanala iki
+   * upstream bağlantı açılmaz). Zincir/koşullar ilk-kare bekçisiyle birebir aynı.
+   */
+  useEffect(() => {
+    if (!visible || !channel || !enginePlaybackRequest?.url || playbackRequest?.expectsVideo === false || useVLC || v2Profile.engine !== "media3" || exoReady || exoFirstFrame) return;
+    const sid = activeSessionId;
+    const timeoutMs = sessionKind === "live" ? PREPARE_TIMEOUT_LIVE_MS : PREPARE_TIMEOUT_VOD_MS;
+    const t = setTimeout(() => {
+      // Oturum hâlâ geçerli ve Media3 hâlâ hazır değilse (readyToPlay gelmediyse).
+      if (!sessionGateRef.current.isActive(sid) || useVLC || exoReady || exoFirstFrame) return;
+      if (transitioningSessionRef.current === sid) return;
+      transitioningSessionRef.current = sid;
+
+      recordEngineFailure(String(channel.id), v2Profile, "timeout", `Media3 ${timeoutMs}ms içinde readyToPlay üretmedi (hazırlanma zaman aşımı)`).catch(() => {});
+      // §5 tek bağlantı: yeni motor açılmadan Media3 upstream'i kapat.
+      try { player?.pause?.(); } catch {}
+      try { (player as any)?.replace?.(null); } catch {}
+      lastExoUrlRef.current = null;
+
+      if (engine === "auto" && mpvEngineUsable()) {
+        setRecoveryMessage("Yayın hazırlanamadı; MPV / FFmpeg motoru deneniyor…");
+        setV2Phase("switch_engine");
+        setV2Profile({ engine: "mpv", decoder: "auto" });
+        setUseVLC(false);
+        setMpvVideoMetaReady(false);
+        setMpvVideoReady(false);
+        setMpvForceSoftware(false);
+        setMpvRecoveryGeneration(g => g + 1);
+      } else if (engine === "auto" && VLC_AVAILABLE && Platform.OS !== "web") {
+        setRecoveryMessage("Yayın hazırlanamadı; VLC donanım motoru deneniyor…");
+        setV2Phase("switch_engine");
+        setV2Profile({ engine: "vlc", decoder: "hw" });
+        setUseVLC(true);
+        setVlcAutoSoftware(false);
+        setVlcVideoMetaReady(false);
+        setVlcVideoReady(false);
+        setVlcRecoveryGeneration(g => g + 1);
+      } else {
+        setRecoveryMessage(null);
+        setV2Phase("final_error");
+        setTechnicalError(`Media3 ${timeoutMs}ms içinde yayını hazırlayamadı (readyToPlay gelmedi).`);
+        setError("Yayın açılamadı.");
+      }
+      setIsBuffering(engine === "auto");
+      setTimeout(() => { if (sessionGateRef.current.isActive(sid)) transitioningSessionRef.current = null; }, 80);
+    }, timeoutMs);
+    return () => clearTimeout(t);
+  }, [visible, channel?.id, activeSessionId, sessionKind, playbackRequest?.expectsVideo, useVLC, v2Profile, exoReady, exoFirstFrame, engine, player, enginePlaybackRequest?.url]);
+
+  /**
    * PLAYER V2 FIRST-FRAME WATCHDOG
    * Sayaç yalnız Media3 "readyToPlay" olduktan sonra başlar; ağ bağlantı süresi
    * bu süreye dahil edilmez. Live ve VOD için ayrı kısa eşikler kullanılır.
@@ -5609,6 +5693,51 @@ export default function PlayerHost() {
         </View>
       )}
 
+      {/**
+        * v18.7.36 (P2) — YÜKLEME KURTARMA KONTROLLERİ
+        * Yayın RESCUE_DELAY içinde açılmazsa: kanal adı + Kapat + Motoru değiştir.
+        * TV'de D-pad ile odaklanabilir (FocusButton); ilk odak "Kapat"tadır.
+        * pointerEvents="box-none" → arka plan dokunuşları alta geçer, yalnız
+        * butonlar etkileşimli. Hata ekranı açılırsa bu katman görünmez (error).
+        */}
+      {channel && !error && showRescueControls && !playingNow && (
+        <View style={styles.rescueOverlay} pointerEvents="box-none">
+          <View style={styles.rescueCard}>
+            <ActivityIndicator size="small" color={colors.brandPrimary} />
+            <Text style={styles.rescueTitle} numberOfLines={1}>{String(channel?.name || "Yayın")} açılıyor…</Text>
+            <Text style={styles.rescueHint}>Yayın beklenenden uzun sürüyor.</Text>
+            <View style={styles.rescueRow}>
+              <FocusButton
+                testID="player-rescue-close-btn"
+                autoFocus
+                focusable
+                onPress={() => {
+                  void recordDiagnostic("player", "PLAYER_RESCUE_CLOSE", { phase: v2Phase, engine: v2Profile.engine, buffering: isBuffering, resolving });
+                  setShowRescueControls(false);
+                  closePlayer();
+                }}
+                style={[styles.rescueBtn, { backgroundColor: colors.brandPrimary }]}
+              >
+                <Text style={styles.rescueBtnText}>Kapat</Text>
+              </FocusButton>
+              <FocusButton
+                testID="player-rescue-engine-btn"
+                focusable
+                onPress={() => {
+                  void recordDiagnostic("player", "PLAYER_RESCUE_ENGINE", { phase: v2Phase, engine: v2Profile.engine });
+                  setShowRescueControls(false);
+                  setShowControls(true);
+                  setSheet("engine");
+                }}
+                style={[styles.rescueBtn, { backgroundColor: "transparent", borderWidth: 1, borderColor: colors.brandPrimary }]}
+              >
+                <Text style={[styles.rescueBtnText, { color: colors.brandPrimary }]}>Motoru Değiştir</Text>
+              </FocusButton>
+            </View>
+          </View>
+        </View>
+      )}
+
       {/* Bottom Sheet */}
       <Modal visible={!!channel && sheet !== null} transparent animationType="fade" onRequestClose={() => setSheet(null)}>
         {/* KLAVYE DÜZELTMESİ (v5.5.0): Dikey modda telefon klavyesi açılınca
@@ -6338,6 +6467,20 @@ const styles = StyleSheet.create({
     position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
     alignItems: "center", justifyContent: "center",
   },
+  // v18.7.36 (P2) — yükleme kurtarma kontrolleri
+  rescueOverlay: {
+    position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+    alignItems: "center", justifyContent: "center", zIndex: 25,
+  },
+  rescueCard: {
+    maxWidth: "90%", alignItems: "center", gap: 10, paddingHorizontal: 24,
+    paddingVertical: 20, borderRadius: 16, backgroundColor: "rgba(0,0,0,0.82)",
+  },
+  rescueTitle: { color: "#fff", fontSize: FONT.size.base, fontWeight: FONT.weight.bold, textAlign: "center", maxWidth: 420 },
+  rescueHint: { color: "#bbb", fontSize: FONT.size.sm, textAlign: "center", marginBottom: 4 },
+  rescueRow: { flexDirection: "row", gap: 12, marginTop: 4 },
+  rescueBtn: { paddingHorizontal: SPACING.xl, height: 44, borderRadius: RADIUS.pill, alignItems: "center", justifyContent: "center" },
+  rescueBtnText: { color: "#fff", fontWeight: FONT.weight.bold, fontSize: FONT.size.base },
   sheetBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "flex-end" },
   sheet: { padding: SPACING.lg, borderTopLeftRadius: RADIUS.lg, borderTopRightRadius: RADIUS.lg, borderWidth: 1, gap: SPACING.md },
   sheetHandle: { width: 40, height: 4, borderRadius: 2, alignSelf: "center", marginBottom: SPACING.sm },

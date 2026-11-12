@@ -6,7 +6,6 @@ import {
   View,
   Text,
   StyleSheet,
-  TouchableOpacity,
   TextInput,
   ScrollView,
   ActivityIndicator,
@@ -341,9 +340,9 @@ export default function EditPlaylist() {
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top", "bottom"]} testID="edit-playlist-screen">
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <View style={styles.header}>
-          <TouchableOpacity testID="edit-close-btn" onPress={() => router.back()} hitSlop={12}>
+          <FocusButton testID="edit-close-btn" autoFocus onPress={() => router.back()} hitSlop={12}>
             <Ionicons name="chevron-back" size={26} color={colors.onSurface} />
-          </TouchableOpacity>
+          </FocusButton>
           <Text style={[styles.title, { color: colors.onSurface }]}>Hesabı Düzenle</Text>
           <View style={{ width: 26 }} />
         </View>
@@ -370,9 +369,9 @@ export default function EditPlaylist() {
           )}
 
           <Label text="LİSTE ADI" />
-          {!!pl.serverCodeBinding && <TouchableOpacity testID="edit-directory-dns-alternatives" onPress={()=>setDirectoryAlternatives(v=>!v)} style={[styles.tag,{borderColor:colors.border}]}>
+          {!!pl.serverCodeBinding && <FocusButton testID="edit-directory-dns-alternatives" onPress={()=>setDirectoryAlternatives(v=>!v)} style={[styles.tag,{borderColor:colors.border}]}>
             <Text style={[styles.tagText,{color:colors.onSurface}]}>Seçilen DNS erişilemezse aynı panel rehberindeki diğer adresleri doğrula: {directoryAlternatives?'Açık':'Kapalı'}</Text>
-          </TouchableOpacity>}
+          </FocusButton>}
           <TextInput
             testID="edit-name-input"
             value={name} onChangeText={setName}
@@ -438,7 +437,7 @@ export default function EditPlaylist() {
                     placeholderTextColor={colors.onSurfaceTertiary}
                     style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]}
                   />
-                  <TouchableOpacity
+                  <FocusButton
                     testID="edit-server-code-auto-resolve"
                     onPress={() => setServerCodeAutoResolve(v => !v)}
                     style={[styles.tag, { marginTop: SPACING.sm, backgroundColor: serverCodeAutoResolve ? colors.brandPrimary + "18" : colors.surfaceSecondary, borderColor: serverCodeAutoResolve ? colors.brandPrimary : colors.border }]}
@@ -447,7 +446,7 @@ export default function EditPlaylist() {
                     <Text style={[styles.tagText, { color: colors.onSurface, flex: 1 }]}>
                       DNS otomatik güncelle: {serverCodeAutoResolve ? "Açık" : "Kapalı"}
                     </Text>
-                  </TouchableOpacity>
+                  </FocusButton>
                   <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs, marginTop: 6 }}>
                     Kod değişirse yeni panel/DNS mevcut kullanıcı adı ve şifreyle doğrulanmadan kaydedilmez.
                   </Text>
@@ -484,7 +483,7 @@ export default function EditPlaylist() {
                     { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border, paddingRight: 48 },
                   ]}
                 />
-                <TouchableOpacity
+                <FocusButton
                   testID="toggle-pass-visibility"
                   onPress={() => setShowPass(v => !v)}
                   hitSlop={12}
@@ -495,7 +494,7 @@ export default function EditPlaylist() {
                     size={20}
                     color={colors.onSurfaceSecondary}
                   />
-                </TouchableOpacity>
+                </FocusButton>
               </View>
               <DnsManager
                 primary={xtServer || pl.xtreamServer || ""}
@@ -543,14 +542,14 @@ export default function EditPlaylist() {
                   ["device", "Cihaz"],
                   ["manual", "Manuel"],
                 ] as const).map(([mode, label]) => (
-                  <TouchableOpacity
+                  <FocusButton
                     key={mode}
                     testID={`edit-st-timezone-${mode}`}
                     onPress={() => setStTimezoneMode(mode)}
                     style={[styles.modeBtn, { borderColor: stTimezoneMode === mode ? colors.brandPrimary : colors.border, backgroundColor: stTimezoneMode === mode ? colors.brandPrimary + "18" : colors.surfaceSecondary }]}
                   >
                     <Text style={{ color: stTimezoneMode === mode ? colors.brandPrimary : colors.onSurface, fontWeight: FONT.weight.bold, fontSize: FONT.size.sm }}>{label}</Text>
-                  </TouchableOpacity>
+                  </FocusButton>
                 ))}
               </View>
               {stTimezoneMode === "manual" && (
@@ -570,7 +569,7 @@ export default function EditPlaylist() {
           )}
 
           {pl.source !== "m3u_file" && (
-            <TouchableOpacity
+            <FocusButton
               testID="reload-toggle-btn"
               onPress={() => setReloadContent(!reloadContent)}
               style={[styles.reloadToggle, { backgroundColor: colors.surfaceSecondary, borderColor: reloadContent ? colors.brandPrimary : colors.border }]}
@@ -586,7 +585,7 @@ export default function EditPlaylist() {
                   Kanallar, filmler, diziler ve hesap bilgileri yeniden çekilir
                 </Text>
               </View>
-            </TouchableOpacity>
+            </FocusButton>
           )}
 
           {error && (
@@ -607,7 +606,7 @@ export default function EditPlaylist() {
           onCancel={() => editAbortRef.current?.abort()}/>
 
         <View style={[styles.footer, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
-          <TouchableOpacity
+          <FocusButton
             testID="save-edit-btn"
             onPress={save}
             disabled={loading}
@@ -619,7 +618,7 @@ export default function EditPlaylist() {
                 <Text style={[styles.ctaText, { color: colors.onBrandPrimary }]}>Değişiklikleri Kaydet</Text>
               </>
             )}
-          </TouchableOpacity>
+          </FocusButton>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
