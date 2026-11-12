@@ -185,6 +185,7 @@
         }
       ],
       "./plugins/withLargeHeap",
+      "./plugins/withCastFrameworkPin",
       [
         "./plugins/withAndroidTV",
         {
