@@ -83,3 +83,37 @@ değişmez). Her ekrana açılışta ilk odak (`autoFocus`, genelde geri butonun
 **Abartma yok:** P1 sonsuz takılmayı kırar ama 4346 ms'lik gerçek ANR'ın veya ağ/sunucu kaynaklı
 yavaşlığın kökünü çözmez. T1 kod incelemesine dayanır; kullanıcının "TV arayüzü sıkıntılı" derken
 kastettiği somut belirti henüz doğrulanmadı — bu düzeltme odak görünürlüğünü hedefler.
+
+## 7. Derleme engeli: Chromecast bağımlılık kayması (bu kod değil)
+
+v18.7.36 derlemesi (yerel DEV + ilk CI run 43298132000) ÇÖKTÜ:
+`androidx.mediarouter:1.9.0-beta01 requires AGP 9.1.0` (proje AGP 8.11.0).
+
+`dependencyInsight` kanıtı: `react-native-google-cast` cast framework'ü İKİ yerde dinamik `'+'` ile
+çekiyor (kendi modülü + expo autolink'in `app/build.gradle`'a enjekte ettiği @generated satır). Google
+yeni cast 23.0.0 yayınlayınca `'+'` ona çözülüyor → geçişli mediarouter 1.9.0-beta01 (AGP 9.1 ister).
+`ext.castFrameworkVersion` sabitlemesi TEK BAŞINA yetmedi (app autolink'in `'+'`ı bağımsız; Gradle en
+yükseği seçti). Bu, projenin KENDİ kodu değil — dış bağımlılık kayması. v18.7.35 (14.10) yalnız o an
+`'+'` 22.3.1'e, mediarouter 1.8.0-beta01'e çözüldüğü için derlenmişti (ikisi de AGP 8.11 ile derlenir;
+yalnız 1.9.0-beta01 AGP 9.1 ister).
+
+**Çözüm (`plugins/withCastFrameworkPin.js`, commit `2f413f50`):** Kök build.gradle'a `allprojects
+resolutionStrategy.force` yazıp 14.10'da başarıyla derlenen kombinasyonu kilitler: cast-framework
+22.3.1 + cast 22.3.1 + mediarouter 1.8.0-beta01. Projenin `plugins/with*.js` kalıbıyla aynı;
+package.json/yarn.lock'a dokunmaz. Doğrulama: temiz prebuild + dependencyInsight →
+`mediarouter:1.8.0-beta01 (forced)`, 1.9.0-beta01 yok.
+
+## 8. Gerçek teslim kaydı — Opus, 12-13.11.2026
+
+- Commit `b3d611f4` (P1+P2+T1) + `2f413f50` (Chromecast sabitleme), dal
+  `v18.7.36-rc1-player-prepwatchdog-tvfocus` origin'e push edildi. Ana dal değiştirilmedi.
+- **PC DEV derlemesi:** `:app:assembleDebug` **BUILD SUCCESSFUL** (17dk41sn). APK
+  `frontend/android/app/build/outputs/apk/debug/app-debug.apk` (482 MB),
+  `com.gpt.kizilkan.player.dev` / versionCode **180736** / versionName **18.7.36-dev** / "KIZILKAN DEV".
+- **İlk CI run 43298132000:** FAILURE (aynı mediarouter hatası — fix öncesi, beklenen).
+- **Fix'li CI run [43305400801](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/43305400801):**
+  **success**. Adımlar: APK derle · GitHub Release olustur · Calisma ozeti · Artifact olarak yukle —
+  hepsi success.
+- **Release build-160:** `KIZILKAN-PLAYER-ELITE-v18.7.36-build160.apk` (367 MB) + boyut raporu.
+  Actions artifact da oluştu (172 MB sıkıştırılmış).
+- **CİHAZ KABULÜ YAPILMADI:** telefon/TV bağlı değil. §6'daki 3 senaryo da bekliyor.

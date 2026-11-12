@@ -175,6 +175,14 @@ node tools/denetle.js        # sonunda başarısız kapı olmamalı
   try/catch ile sar. Kapı: `check-v18700-release.js`.
 - **Derleme geçti ≠ çalışıyor.** `tsc` + denetim + `assembleDebug` açılış çöküşünü YAKALAMAZ. Native yaşam döngüsü/
   başlangıç koduna dokunan sürümü, kullanıcıya vermeden önce cihazda/emülatörde AÇ (adb install + logcat).
+- **Chromecast bağımlılık kayması (12.11.2026 — kod değil, dış kayma):** `react-native-google-cast`
+  cast framework'ü İKİ yerde dinamik `'+'` ile çeker (kendi modülü + expo autolink'in `app/build.gradle`'a
+  enjekte ettiği @generated satır). Google yeni cast yayınlayınca `'+'` AGP 9.1 isteyen
+  `mediarouter:1.9.0-beta01`'i getirip derlemeyi kırdı (yerel + CI). **Bir sürüm aniden derlenmezken TS/
+  denetim temizse** `androidx.mediarouter ... requires Android Gradle plugin 9.1` hatasını ara; `ext`
+  sabitlemesi YETMEZ (ikinci `'+'` bağımsız), `resolutionStrategy.force` gerekir. Düzeltme kalıcı:
+  `plugins/withCastFrameworkPin.js` cast 22.3.1 + mediarouter 1.8.0-beta01 kilitler. Cast'i bilerek
+  yükseltmek gerekirse AGP de yükseltilip bu plugin güncellenir.
 
 ## 8. Log (tanı dosyası) analizi
 
