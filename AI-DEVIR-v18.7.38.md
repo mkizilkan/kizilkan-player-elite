@@ -36,6 +36,7 @@ Yalnız `edit-playlist.tsx`. **Native değişiklik YOK.**
   (Kurulum yapıldı; kullanıcı dokunma testini yapacak.)
 
 ## 5. Gerçek teslim kaydı — Opus, 13.11.2026
-- Commit `<doldurulacak>` → dal `v18.7.37-rc1-add-account-ux-speed` (aynı dal, v18.7.38 patch).
-- CI manuel release: `<doldurulacak>`.
-- v18.7.37 cihazda: release+DEV çökmeden açıldı, 13 kurtarılan hesap tam katalogla duruyor (doğrulandı).
+- Commit **`3791514b`** → dal `v18.7.37-rc1-add-account-ux-speed` (aynı dal, v18.7.38 patch) push.
+- CI manuel release: [run 43392876063](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/43392876063) (teslim anında in_progress).
+- **18.7.38-dev** cihaza kuruldu (`install -r` Success, veri korundu); kullanıcı düzenleme ekranı dokunma testini yapacak.
+- v18.7.37 cihazda: release (CI [run 43368305677](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/43368305677) **success**) + DEV çökmeden açıldı, 13 kurtarılan hesap tam katalogla duruyor (doğrulandı).
