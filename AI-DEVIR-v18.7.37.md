@@ -47,8 +47,13 @@ kullanıcı isteğiyle PC DEV derlemesi yine yapıldı (§5 altına kaydedilecek
 ## 4. Doğrulama (PC)
 - `yarn tsc --noEmit`: **PASS** (22.8 sn).
 - `node tools/check-v18737-release.js`: **PASS** (7 madde + 5 sürüm alanı).
-- `node tools/denetle.js`: <doldurulacak>.
-- PC DEV `assembleDebug`: <doldurulacak>.
+- `node tools/denetle.js`: **TÜM 154 KAPI TEMİZ** (exit 0). İlk turda 2 eski kapı
+  (`check-v17011`, `checkplayercore`) #4'ün kaldırdığı "Taramanın Bitmesini Bekleyin" faz-bariyerini
+  eski metinle doğruluyordu → ikisi de yeni "durdur-sonra-ekle" invariant'ına güncellendi, PASS.
+- PC DEV `assembleDebug`: **BUILD SUCCESSFUL**. `app-debug.apk` (482 MB),
+  `com.gpt.kizilkan.player.dev` / versionCode **180737** / versionName **18.7.37-dev**.
+  (İlk run `:app:packageDebug` IncrementalSplitter'da geçici hata verdi — kod değil, incremental
+  paketleme; aynı komut yeniden çalıştırılınca 51 sn'de BUILD SUCCESSFUL.)
 - Satır-sonu: `git diff --check` temiz; diff 4 dosya / ~91 ekleme (CRLF şişmesi yok).
 
 ## 5. Cihaz kabul senaryoları (YAPILMADI — telefon çıkarıldı)
@@ -65,4 +70,11 @@ resume mantığının tek güvenli gate'ini ekler, tam davranışı cihazda doğ
 kendisi (9314 adres) doğası gereği yavaş kalır — asıl hızlı yol dosyadan içe aktarmadır (#6/#7).
 
 ## 6. Gerçek teslim kaydı — Opus, 13.11.2026
-<commit/push/run/APK bilgileri doldurulacak>
+- Commit **`64e6bb18`** (9 dosya, +295/-29) → dal `v18.7.37-rc1-add-account-ux-speed` origin'e push.
+  Ana dal değiştirilmedi. Kaynak değişen: `app-playlist.tsx`, `HitFileImport.tsx`, `app.json`,
+  `package.json` + kapılar `check-v17011`, `checkplayercore`, yeni `check-v18737-release.js`.
+- **CI tetiklendi (manuel, release):** [run 43368305677](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/43368305677)
+  — teslim anında in_progress; release APK + rapor üretecek. Sonuç/APK linki cihaz kabulünden önce eklenecek.
+- **PC DEV APK:** `frontend/android/app/build/outputs/apk/debug/app-debug.apk` (482 MB, 18.7.37-dev).
+  Telefon çıkarıldığı için KURULMADI; tekrar takılınca `adb install -r` ile yanına kurulabilir.
+- **Cihaz kabulü BEKLİYOR** (§5 senaryoları). Build geçti ≠ çalışıyor.

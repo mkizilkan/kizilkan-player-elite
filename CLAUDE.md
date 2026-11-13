@@ -210,7 +210,7 @@ Kullanıcı 7 maddenin tamamını + commit/push/CI/PC DEV yetkisini verdi; telef
 **#5** deferred tarama artık auto-recovery'den muaf (her girişte diriltilmiyordu); **#6** `startStreamingFileScanV172`
 dizini `sources` çıkarılarak sıkıştırılır (Binder `TransactionTooLargeException: 1.29 MB` → çözüldü, §5);
 **#7** dosyadan toplu içe aktarımda genel ilerleme ("Hesap X/N") — yanıltıcı "0/1" yerine.
-Doğrulama: tsc PASS · `check-v18737` PASS · denetle <doldurulacak> · PC DEV <doldurulacak>. **CİHAZ KABULÜ YAPILMADI** (telefon çıkarıldı).
+Doğrulama: tsc PASS · `check-v18737` PASS · **denetle TÜM 154 KAPI TEMİZ** · PC DEV `assembleDebug` BUILD SUCCESSFUL (18.7.37-dev). Commit `64e6bb18` push; CI manuel release [run 43368305677](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/43368305677). **CİHAZ KABULÜ YAPILMADI** (telefon çıkarıldı). #4 faz-ayrımı (tarama+import eşzamanlı koşmaz) korunarak çözüldü: ekleme tarama sürerken yapılabilir ama commit'ten önce tarama durdurulur. İlk DEV packageDebug IncrementalSplitter'da geçici hata verdi (kod değil); yeniden çalıştırınca 51 sn'de başarılı.
 **Tuzak (bu oturumda öğrenildi):** combo "Çoklu Hesap → dosya" yolu her zaman native streaming tarama
 tetikler (keşif için); **sunucusu bilinen hesaplar için doğru yol üstteki "HOST/KIZILKAN/MAG/M3U içe aktar"**
 (`HitFileImport` → taramasız doğrudan ekler). adb ile uygulamaya `input tap` MIUI'de engellidir; RKStorage'ı
