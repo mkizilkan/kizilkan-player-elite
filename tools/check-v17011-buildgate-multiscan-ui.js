@@ -12,7 +12,10 @@ const scanControls=modal.indexOf('{!bulkScanFinished && ('); const list=modal.in
 ok(scanControls>=0&&scanControls<list&&dns>=0&&dns<list&&select>=0&&select<list,'çoklu hesap kritik aksiyonları virtualized listenin üstünde');
 ok(!modal.includes('bulkNativeScanRef.current || !!bulkPreparationAbortRef.current || bulkScanPaused || bulkScanStopping'),'Durdur görünürlüğü ref mount koşulundan bağımsız');
 ok(modal.includes('disabled={bulkAdding || bulkScanStopping || !bulkScanRunIdRef.current}')&&modal.includes('Hazırlanıyor'),'Duraklat hazırlık güvenliği korunuyor');
-ok(modal.includes('selectedBulkCandidateKeys.length===0 || !bulkScanFinished')&&modal.includes('Taramanın Bitmesini Bekleyin'),'ekleme tarama bitene kadar kilitli');
+// v18.7.37 #4: Ekleme artık TÜM taramanın (ikinci tur dahil) bitmesine KİLİTLİ DEĞİL —
+// bulunan hesaplar zaten doğrulanmış. Faz-ayrımı invariantı (tarama+import eşzamanlı KOŞMAZ)
+// korunur: commit'ten ÖNCE süren tarama durdurulur (BULK_ADD_STOPS_SCAN_FOR_PHASE_SEP).
+ok(modal.includes('disabled={bulkAdding || selectedBulkCandidateKeys.length===0} onPress={addSelectedBulkCandidates}')&&ui.includes('BULK_ADD_STOPS_SCAN_FOR_PHASE_SEP'),'ekleme tarama sürerken yapılabilir; faz ayrımı için önce tarama durdurulur');
 ok(modal.includes('<SectionList')&&modal.includes('bulkAccountProgress.map')&&modal.includes('bulkCandidates.map'),'SectionList hesap+aday sanallaştırması korunuyor');
 ok(ui.includes('maxHeight: "92%"')&&ui.includes('bulkFoundBadgeText'),'modal alanı ve Bulunan vurgusu korunuyor');
 console.log('PASS: v17.0.11 build-gate + multi-account UI corrective contract TEMİZ');

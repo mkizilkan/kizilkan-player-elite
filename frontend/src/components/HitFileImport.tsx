@@ -1,5 +1,6 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {ActivityIndicator,FlatList,Modal,Text,TextInput,View} from 'react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import {useTheme} from '@/src/theme/ThemeContext';
@@ -10,7 +11,7 @@ import {accountServerIdentity} from '@/src/utils/accountIdentity';
 import {KizilkanNativeCore} from '@/modules/kizilkan-native-core';
 
 export function HitFileImport({ownerId,playlists,disabled,onImport}:{ownerId:string;playlists:Playlist[];disabled:boolean;onImport:(records:HitFileRecord[],signal:AbortSignal,progress:(text:string)=>void)=>Promise<void>}){
-  const {colors}=useTheme();const [open,setOpen]=useState(false),[busy,setBusy]=useState(false),[rows,setRows]=useState<HitFileRecord[]>([]),[selected,setSelected]=useState<string[]>([]),[message,setMessage]=useState(''),[defaultServer,setDefaultServer]=useState('');
+  const {colors}=useTheme();const insets=useSafeAreaInsets();const [open,setOpen]=useState(false),[busy,setBusy]=useState(false),[rows,setRows]=useState<HitFileRecord[]>([]),[selected,setSelected]=useState<string[]>([]),[message,setMessage]=useState(''),[defaultServer,setDefaultServer]=useState('');
   const controller=useRef<AbortController|null>(null),generation=useRef(0),alive=useRef(true);
   useEffect(()=>{alive.current=true;generation.current++;setRows([]);setSelected([]);setOpen(false);return()=>{alive.current=false;generation.current++;controller.current?.abort();};},[ownerId]);
   const cancel=()=>{controller.current?.abort();setMessage('İptal istendi; yürüyen kayıt güvenli olarak durduruluyor.');};
@@ -49,7 +50,9 @@ export function HitFileImport({ownerId,playlists,disabled,onImport}:{ownerId:str
     <FocusButton testID="hit-files-pick" disabled={disabled||busy} onPress={()=>void pick()} style={{padding:12,borderWidth:1,borderColor:colors.brandPrimary,borderRadius:12}}><Text style={{color:colors.brandPrimary}}>HOST / KIZILKAN / MAG / M3U dosyalarını içe aktar</Text></FocusButton>
     {!open&&message?<Text style={{color:colors.onSurfaceSecondary,marginTop:6}}>{message}</Text>:null}
     <Modal visible={open} animationType="slide" onRequestClose={()=>{if(busy)cancel();else setOpen(false);}}>
-      <View style={{flex:1,padding:20,backgroundColor:colors.surface}}>
+      {/* v18.7.37 #1: Modal tam ekran; edge-to-edge cihazda alt "Seçilenleri doğrula ve ekle"
+          butonu gezinme çubuğunun ALTINDA kalıyordu. Safe-area inset ile üste çekiyoruz. */}
+      <View style={{flex:1,paddingHorizontal:20,paddingTop:20+insets.top,paddingBottom:12+Math.max(insets.bottom,8),backgroundColor:colors.surface}}>
         <Text style={{color:colors.onSurface,fontWeight:'bold',fontSize:20}}>Dosya önizlemesi · {selected.length} seçili</Text>
         <Text style={{color:colors.onSurfaceSecondary,marginVertical:8}}>{message}</Text>
         <Text style={{color:colors.onSurfaceSecondary}}>Dosyadaki “hit / aktif” bilgisi kanıt değildir. Seçtikleriniz yeniden doğrulanır; mevcut hesapların katalogları korunur.</Text>

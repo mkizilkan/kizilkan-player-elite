@@ -426,6 +426,10 @@ export default function AddPlaylist() {
   const [showBulkCandidates, setShowBulkCandidates] = useState(false);
   const bulkResultsDismissedRef = React.useRef(false);
   const [bulkScanFinished, setBulkScanFinished] = useState(false);
+  // v18.7.37 #7: Dosyadan toplu hesap içe aktarımında GENEL ilerleme ("Hesap X/N · <ad>").
+  // Eskiden overlay yalnız o anki tek listenin katalog ilerlemesini ("0/1 liste tamamlandı")
+  // gösteriyordu; kullanıcı 13'ten kaçının bittiğini / kaçıncısının işlendiğini göremiyordu.
+  const [hitImportOverall, setHitImportOverall] = useState<{done:number;total:number;name:string;failed:number}|null>(null);
   const [bulkStreamProgress,setBulkStreamProgress]=useState<{read:number;completed:number;tested:number;found:number;producerDone:boolean}|null>(null);
   const [bulkScanFailures, setBulkScanFailures] = useState<string[]>([]);
   const [fileName, setFileName] = useState<string>("");
@@ -1572,7 +1576,12 @@ export default function AddPlaylist() {
           else if(scan.runId && scan.mode) setShowDiscoveryMatches(false);
         }
         if(scan.runId)bulkEvidenceRunIdRef.current=String(scan.runId);
-        if (scan.runId && await scanRecoveryDeferred(activeProfile.id, scan.runId)) bulkResultsDismissedRef.current = true;
+        // v18.7.37 #5: Kullanıcı bu taramayı ertelediyse (ekrandan çıkınca forceExit
+        // defer+pause ediyor) yalnız sonuçları gizlemekle kalma; AUTO-RECOVERY'yi de
+        // ATLA. Eskiden deferred tarama her "Liste Ekle" girişinde PROCESS_RESTARTED
+        // yolundan diriltilip ikinci turu 56 dk boyunca yeniden koşturuyordu.
+        const scanDeferredByUser = !!(scan.runId && await scanRecoveryDeferred(activeProfile.id, scan.runId));
+        if (scanDeferredByUser) bulkResultsDismissedRef.current = true;
         const { playlists, bulkAdding, commitPreparedPlaylist } = recoveryContextRef.current;
         const scanTerminal = ["COMPLETED", "CANCELLED", "FAILED"].includes(String(scan.state || ""));
         /**
@@ -1625,7 +1634,7 @@ export default function AddPlaylist() {
 
         // v17.0.7: Process gerçekten öldüyse journal'daki şifreli session + konservatif
         // checkpoint kullanılarak tarama yeniden başlatılır. Sonuçlar DB'den korunur.
-        if (scan.recoverable && String(scan.terminalReason || "") === "PROCESS_RESTARTED_RECOVERABLE" && !interruptedRecoveryAttemptedRef.current) {
+        if (scan.recoverable && String(scan.terminalReason || "") === "PROCESS_RESTARTED_RECOVERABLE" && !interruptedRecoveryAttemptedRef.current && !scanDeferredByUser) {
           interruptedRecoveryAttemptedRef.current = true;
           // v17.1.1: Journal başka bir kaynak dosyasına aitse kör resume yok.
           // Şifreli pending hesapların fingerprint'i journal ile birebir eşleşmelidir.
@@ -2115,7 +2124,9 @@ export default function AddPlaylist() {
         if (bulkScanRunIdRef.current === runId) bulkScanRunIdRef.current = "";
         return { found:Number(snap.found || 0), completed, cancelled:!!snap.cancelled };
       }
-      await new Promise(resolve=>setTimeout(resolve,350));
+      // v18.7.37 #3: Retry (ikinci tur) fazında yeni sonuç nadir; dev progress string'i +
+      // re-render'ı her 350 ms yerine ~900 ms'de bir yap → JS thread yükü düşer (işlev aynı).
+      await new Promise(resolve=>setTimeout(resolve, snap.phase==='retry' ? 900 : 350));
     }
     } finally {
       finishScanTask();
@@ -2156,9 +2167,19 @@ export default function AddPlaylist() {
       const directory = directHostsForStream.length
         ? [...baseDirectory, { panelName: "Doğrudan DNS", code: "", hosts: directHostsForStream, sources: [] } as any]
         : baseDirectory;
+      /**
+       * v18.7.37 #6 — BINDER TAŞMASI DÜZELTMESİ (gerçek hata: cihazda
+       * TransactionTooLargeException: data parcel size 1.29 MB). Bu çağrı tüm panel
+       * dizinini `sources` (Firebase origin + iç host listeleri) ile gönderiyordu →
+       * Binder ~1 MB sınırını aşıp tarama REDDEDİLİYOR, 0 bulunuyordu. Native tarayıcı
+       * yalnız panelName/code/hosts ile probe eder; `sources` tarama sonrası JS'te
+       * directoryRef'ten çözülür (bkz. ~723). §5 "sources köprüden geçmez" kuralı.
+       */
+      const compactDirectory = directory.map((p:any)=>({ panelName:p.panelName, code:p.code, hosts:p.hosts, sources:[] }));
       void recordDiagnostic("scan", "V173_STREAM_DIRECTORY_READY", {
         panels: directory.length, hosts: directory.reduce((n,p)=>n+p.hosts.length,0),
         directHosts: directHostsForStream.length, fileBytes: source.size,
+        rawBytes: JSON.stringify(directory).length, compactBytes: JSON.stringify(compactDirectory).length,
       }, { stage:"scan-prepare" });
       const requestedConcurrency = Math.max(1, Math.min(250, cfg.requestedConcurrency ?? (cfg.concurrency * Math.max(1, cfg.accountConcurrency))));
       const batchSize = Math.max(5, Math.min(15, cfg.batchSize ?? 15));
@@ -2171,7 +2192,7 @@ export default function AddPlaylist() {
       bulkNativeScanRef.current = true;
       let runId = "";
       try {
-        runId = await startAcceptedScan(() => PanelScan.startStreamingFileScanV172(source.uri, directory, requestedConcurrency, cfg.timeoutMs, batchSize, sourceFingerprint));
+        runId = await startAcceptedScan(() => PanelScan.startStreamingFileScanV172(source.uri, compactDirectory, requestedConcurrency, cfg.timeoutMs, batchSize, sourceFingerprint));
         bulkScanRunIdRef.current = runId; bulkEvidenceRunIdRef.current = runId;
       } catch (e) {
         bulkNativeScanRef.current = false;
@@ -2232,7 +2253,8 @@ export default function AddPlaylist() {
           if (bulkScanRunIdRef.current === runId) bulkScanRunIdRef.current = "";
           return { found:Number(snap.found || 0), completed, cancelled:!!snap.cancelled, unmatched:Number(snap.skippedNoCandidate||0) };
         }
-        await new Promise(resolve => setTimeout(resolve, 350));
+        // v18.7.37 #3: retry fazında poll aralığını gevşet (JS thread yükü düşer).
+        await new Promise(resolve => setTimeout(resolve, snap.phase==='retry' ? 900 : 350));
       }
     } finally {
       finishScanTask();
@@ -2539,6 +2561,27 @@ ${pub.path}`, [
   const addSelectedBulkCandidates = async () => {
     const selectedRaw = bulkCandidates.filter(c => selectedBulkCandidateKeys.includes(c.key));
     if (!selectedRaw.length) return;
+
+    /**
+     * v18.7.37 #4 — FAZ AYRIMI KORUNARAK ERKEN EKLEME
+     * -------------------------------------------------------------------
+     * Eskiden ekleme, TÜM tarama (ikinci tur dahil) bitene kadar KİLİTLİYDİ
+     * (buton "bekleyin" diyordu) → kullanıcı 56 dk bekliyordu. Bulunan
+     * hesaplar zaten doğrulanmış; ikinci tur yalnız DAHA FAZLA arar.
+     * Faz-ayrımı invariantı (tarama ve import ASLA eşzamanlı KOŞMAZ) korunur:
+     * commit'ten ÖNCE süren tarama durdurulur. Bulunan sonuçlar korunur.
+     */
+    if (bulkScanRunIdRef.current && !bulkScanFinished) {
+      bulkScanCancelledRef.current = true;
+      bulkScanPausedRef.current = false;
+      setBulkScanPaused(false);
+      bulkPreparationAbortRef.current?.abort();
+      const owned = bulkScanRunIdRef.current;
+      try { if (owned) await PanelScan.cancelScan(owned).catch(() => false); } catch {}
+      setBulkScanStopping(false);
+      setBulkScanFinished(true);
+      void recordDiagnostic("scan", "BULK_ADD_STOPS_SCAN_FOR_PHASE_SEP", { runId: owned, selected: selectedRaw.length });
+    }
 
     // v15.2.11: aynı hesap+panelin birden fazla çalışan DNS'i ayrı playlist
     // değildir. Seçim DNS satırlarından yapılsa bile import tek abonelik olarak
@@ -3174,12 +3217,18 @@ ${pub.path}`, [
           <HitFileImport ownerId={activeProfile.id} playlists={playlists} disabled={loading||bulkAdding||archiveRestoring} onImport={async(records,signal,onProgress)=>{
             const owner=activeProfile.id;let ok=0,failed=0;const known=[...playlists];
             const owns=()=>screenAliveRef.current&&!leavingRef.current&&screenOwnerRef.current===owner;
-            for(const record of records){if(signal.aborted||!owns())throw new Error('Dosya içe aktarma iptal edildi.');
-              onProgress(`${ok+failed+1}/${records.length} · ${record.name} doğrulanıyor…`);
-              try{await importHitRecord(record,{signal,ownerId:owner,owns,playlists:known,commit:async(pl,prepared)=>{const saved=await(prepared?commitPreparedPlaylist(pl):commitPlaylist(pl));if(saved)known.push(pl);return saved;},update:async(id,patch)=>{if(signal.aborted||!owns())throw new Error('İçe aktarma sahipliği değişti.');await updatePlaylist(id,patch);const index=known.findIndex(p=>p.id===id);if(index>=0)known[index]={...known[index],...patch};},progress:onProgress});ok++;}
-              catch(error:any){if(signal.aborted||!owns())throw error;failed++;onProgress(`${record.name}: ${String(error?.message||error)}`);}
-            }
-            onProgress(`Tamamlandı: ${ok} eklendi · ${failed} eklenemedi/mevcut. Mevcut kayıtlar korundu.`);
+            // v18.7.37 #7: genel ilerlemeyi overlay'e akıt (Hesap X/N · <ad>).
+            setHitImportOverall({done:0,total:records.length,name:records[0]?.name||'',failed:0});
+            try{
+              for(const record of records){if(signal.aborted||!owns())throw new Error('Dosya içe aktarma iptal edildi.');
+                setHitImportOverall({done:ok+failed,total:records.length,name:record.name,failed});
+                onProgress(`Hesap ${ok+failed+1}/${records.length} · ${record.name} doğrulanıyor…`);
+                try{await importHitRecord(record,{signal,ownerId:owner,owns,playlists:known,commit:async(pl,prepared)=>{const saved=await(prepared?commitPreparedPlaylist(pl):commitPlaylist(pl));if(saved)known.push(pl);return saved;},update:async(id,patch)=>{if(signal.aborted||!owns())throw new Error('İçe aktarma sahipliği değişti.');await updatePlaylist(id,patch);const index=known.findIndex(p=>p.id===id);if(index>=0)known[index]={...known[index],...patch};},progress:onProgress});ok++;}
+                catch(error:any){if(signal.aborted||!owns())throw error;failed++;onProgress(`${record.name}: ${String(error?.message||error)}`);}
+                setHitImportOverall({done:ok+failed,total:records.length,name:record.name,failed});
+              }
+              onProgress(`Tamamlandı: ${ok} eklendi · ${failed} eklenemedi/mevcut. Mevcut kayıtlar korundu.`);
+            } finally { setHitImportOverall(null); }
           }}/>
           <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary }]}>KAYNAK TÜRÜ</Text>
           <View style={styles.methodGrid}>
@@ -3212,6 +3261,7 @@ ${pub.path}`, [
                 testID="playlist-name-input"
                 value={name}
                 onChangeText={setName}
+                onFocus={revealCredentialFields}
                 placeholder="Örn: MAG254 Aboneliğim"
                 placeholderTextColor={colors.onSurfaceTertiary}
                 returnKeyType="next"
@@ -3232,6 +3282,7 @@ ${pub.path}`, [
                 ref={refM3uUrl}
                 value={m3uUrl}
                 onChangeText={setM3uUrl}
+                onFocus={revealCredentialFields}
                 placeholder="https://example.com/playlist.m3u"
                 placeholderTextColor={colors.onSurfaceTertiary}
                 autoCapitalize="none"
@@ -3270,6 +3321,7 @@ ${pub.path}`, [
               <TextInput
                 testID="xtream-server-input"
                 ref={refXtServer}
+                onFocus={revealCredentialFields}
                 value={xtServer}
                 returnKeyType="next"
                 blurOnSubmit={false}
@@ -3387,6 +3439,7 @@ ${pub.path}`, [
                   <TextInput
                     testID="panel-directory-search"
                     value={panelSearch}
+                    onFocus={revealCredentialFields}
                     onChangeText={setPanelSearch}
                     placeholder="Panel adı veya sunucu kodu ara"
                     placeholderTextColor={colors.onSurfaceTertiary}
@@ -3526,6 +3579,7 @@ ${pub.path}`, [
                       <TextInput
                         testID="code-value-input"
                         value={codeVal}
+                        onFocus={revealCredentialFields}
                         onChangeText={t => { setCodeVal(t); setSelectedPanelItem(null); setSelectedPanelName(""); }}
                         placeholder="Örn: 0001"
                         placeholderTextColor={colors.onSurfaceTertiary}
@@ -3615,6 +3669,7 @@ ${pub.path}`, [
                   <TextInput
                     testID="code-source-input"
                     value={codeSource}
+                    onFocus={revealCredentialFields}
                     onChangeText={t => {
                       setCodeSource(t);
                       setPanelDirectory([]);
@@ -3670,7 +3725,7 @@ ${pub.path}`, [
                   <Text style={{ color: colors.onSurface, fontWeight: FONT.weight.bold, fontSize: FONT.size.sm }}>Paralel analiz sayısı (tek ayar)</Text>
                   <Text style={{ color: colors.onSurfaceTertiary, fontSize: FONT.size.xs }}>Boş → mod varsayılanı. 1–250; girilen = çalışan. “Özel paralellik → İstenen paralellik” ile AYNI değer. “Parti boyutu” ayrı (motor öbek boyutu).</Text>
                 </View>
-                <TextInput testID="combo-parallel-input" value={comboParallelText} onChangeText={t => setComboParallelText(t.replace(/[^0-9]/g, "").slice(0, 3))}
+                <TextInput testID="combo-parallel-input" onFocus={revealCredentialFields} value={comboParallelText} onChangeText={t => setComboParallelText(t.replace(/[^0-9]/g, "").slice(0, 3))}
                   placeholder="mod" placeholderTextColor={colors.onSurfaceTertiary} keyboardType="number-pad"
                   style={[styles.input, { width: 72, textAlign: "center", color: colors.onSurface, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]} />
               </View>
@@ -3694,6 +3749,7 @@ ${pub.path}`, [
                     <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, marginBottom: 5 }}>İstenen paralellik (1–250) · yukarıdaki “Paralel analiz sayısı” ile AYNI alan</Text>
                     <TextInput
                       testID="bulk-requested-concurrency-input"
+                      onFocus={revealCredentialFields}
                       value={comboParallelText}
                       onChangeText={v => setComboParallelText(v.replace(/[^0-9]/g, "").slice(0, 3))}
                       keyboardType="number-pad"
@@ -3706,6 +3762,7 @@ ${pub.path}`, [
                     <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, marginBottom: 5 }}>Parti boyutu (5–15)</Text>
                     <TextInput
                       testID="bulk-batch-size-input"
+                      onFocus={revealCredentialFields}
                       value={bulkBatchSize}
                       onChangeText={v => setBulkBatchSize(v.replace(/[^0-9]/g, "").slice(0, 2))}
                       keyboardType="number-pad"
@@ -3843,6 +3900,7 @@ ${pub.path}`, [
               <TextInput
                 testID="stalker-portal-input"
                 ref={refStPortal}
+                onFocus={revealCredentialFields}
                 value={stPortal}
                 returnKeyType="next"
                 blurOnSubmit={false}
@@ -3859,6 +3917,7 @@ ${pub.path}`, [
               <TextInput
                 testID="stalker-mac-input"
                 ref={refStMac}
+                onFocus={revealCredentialFields}
                 value={stMac}
                 returnKeyType="next"
                 blurOnSubmit={false}
@@ -3876,6 +3935,7 @@ ${pub.path}`, [
               <TextInput
                 testID="stalker-serial-input"
                 ref={refStSerial}
+                onFocus={revealCredentialFields}
                 value={stSerial}
                 returnKeyType="done"
                 onChangeText={setStSerial}
@@ -4125,9 +4185,12 @@ ${pub.path}`, [
                   style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
                   <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>{selectedBulkCandidateKeys.length===bulkCandidates.length && bulkCandidates.length?"Seçimi Kaldır":"Tümünü Seç"}</Text>
                 </FocusButton>
-                <FocusButton focusable disabled={bulkAdding || selectedBulkCandidateKeys.length===0 || !bulkScanFinished} onPress={addSelectedBulkCandidates}
-                  style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedBulkCandidateKeys.length && bulkScanFinished?1:0.5}]}>
-                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{!bulkScanFinished ? "Taramanın Bitmesini Bekleyin" : `${new Set(bulkCandidates.filter(c=>selectedBulkCandidateKeys.includes(c.key)).map(bulkSubscriptionKey)).size} Aboneliği Doğrula ve Ekle`}</Text>}
+                {/* v18.7.37 #4: Bulunan hesaplar zaten doğrulanmış; ikinci tur (retry)
+                    yalnız DAHA FAZLA arar. Eklemeyi tüm taramanın bitmesine kilitlemek
+                    kullanıcıyı 56 dk bekletiyordu. Artık tarama sürerken de eklenebilir. */}
+                <FocusButton focusable disabled={bulkAdding || selectedBulkCandidateKeys.length===0} onPress={addSelectedBulkCandidates}
+                  style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedBulkCandidateKeys.length?1:0.5}]}>
+                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{`${new Set(bulkCandidates.filter(c=>selectedBulkCandidateKeys.includes(c.key)).map(bulkSubscriptionKey)).size} Aboneliği Doğrula ve Ekle`}{!bulkScanFinished ? " · tarama sürüyor" : ""}</Text>}
                 </FocusButton>
               </View>
 
@@ -4330,7 +4393,13 @@ ${pub.path}`, [
                 }} style={[styles.bulkBtn,{borderColor:colors.border,backgroundColor:colors.surfaceSecondary}]}>
                   <Text style={{color:colors.onSurface,fontWeight:FONT.weight.bold}}>Aktifleri Seç / Kaldır</Text>
                 </FocusButton>
-                <FocusButton testID="discovery-add-selected" focusable disabled={bulkAdding || selectedDiscoveryKeys.length===0 || nativeScanRunning} onPress={async()=>{
+                <FocusButton testID="discovery-add-selected" focusable disabled={bulkAdding || selectedDiscoveryKeys.length===0} onPress={async()=>{
+                  // v18.7.37 #4: Faz ayrımını koru — commit'ten önce süren keşif taramasını durdur.
+                  if (nativeScanRunIdRef.current && nativeScanRunning) {
+                    try { const owned = nativeScanRunIdRef.current; if (owned) await PanelScan.cancelScan(owned).catch(() => false); } catch {}
+                    setNativeScanRunning(false); setNativeScanStopping(false);
+                    void recordDiagnostic("scan", "DISCOVERY_ADD_STOPS_SCAN_FOR_PHASE_SEP", { selected: selectedDiscoveryKeys.length });
+                  }
                   const chosen=discoveryMatches.filter(m=>selectedDiscoveryKeys.includes(discoveryKey(m))); setBulkAdding(true); let ok=0; const failed:string[]=[];
                   try {
                     const hostsByPanel = new Map<string, string[]>();
@@ -4367,8 +4436,8 @@ ${pub.path}`, [
                     Alert.alert("Panel Ekleme",`${ok}/${panelGroups.length} playlist eklendi.`+(failed.length?`\nEklenemeyen: ${failed.join(", ")}`:""));
                     if(ok>0) router.replace("/(tabs)");
                   } finally { setBulkAdding(false); setLoading(false); setProgress(""); }
-                }} style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedDiscoveryKeys.length && !nativeScanRunning?1:0.5}]}>
-                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{nativeScanRunning ? "Taramanın Bitmesini Bekleyin" : `${new Set(discoveryMatches.filter(m=>selectedDiscoveryKeys.includes(discoveryKey(m))).map(m=>`${m.code}\u0000${m.panelName}`)).size} Seçileni Doğrula ve Ekle`}</Text>}
+                }} style={[styles.bulkBtn,{backgroundColor:colors.brandPrimary,opacity:selectedDiscoveryKeys.length?1:0.5}]}>
+                  {bulkAdding?<ActivityIndicator color={colors.onBrandPrimary}/>:<Text style={{color:colors.onBrandPrimary,fontWeight:FONT.weight.bold}}>{`${new Set(discoveryMatches.filter(m=>selectedDiscoveryKeys.includes(discoveryKey(m))).map(m=>`${m.code}\u0000${m.panelName}`)).size} Seçileni Doğrula ve Ekle`}{nativeScanRunning ? " · tarama sürüyor" : ""}</Text>}
                 </FocusButton>
               </View>
 
@@ -4432,7 +4501,7 @@ ${pub.path}`, [
       </Modal>
 
       {/* v16.5.0: MAG için üstteki özel katman var; burada çift göstermiyoruz. */}
-      <Modal visible={loading && method !== "stalker"} transparent animationType="fade" onRequestClose={() => forceExit("loading-modal-close")}>
+      <Modal visible={(loading || !!hitImportOverall) && method !== "stalker"} transparent animationType="fade" onRequestClose={() => forceExit("loading-modal-close")}>
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.88)", alignItems: "center", justifyContent: "center", padding: SPACING.lg }}>
           {exitButton()}
           <ActivityIndicator size="large" color={colors.brandPrimary} />
@@ -4442,6 +4511,25 @@ ${pub.path}`, [
           <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.sm, marginTop: SPACING.sm, textAlign: "center", lineHeight: 20 }}>
             {progress || "Hazırlanıyor…"}
           </Text>
+          {/* v18.7.37 #7: Dosyadan toplu içe aktarımda GENEL ilerleme. Eskiden yalnız
+              o anki tek listenin "0/1 liste tamamlandı"sı görünüyordu; kullanıcı 13'ten
+              kaçının bittiğini / kaçıncısının işlendiğini göremeyip "takıldı" sanıyordu. */}
+          {!!hitImportOverall && hitImportOverall.total > 0 && (() => {
+            const pct = Math.round((hitImportOverall.done / hitImportOverall.total) * 100);
+            return (
+              <View style={{ marginTop: SPACING.md, width: "100%", maxWidth: 420 }}>
+                <Text testID="hit-import-overall" style={{ color: colors.brandPrimary, fontSize: FONT.size.base, fontWeight: FONT.weight.bold, textAlign: "center" }}>
+                  {`Hesap ${Math.min(hitImportOverall.done + 1, hitImportOverall.total)}/${hitImportOverall.total} işleniyor · ${hitImportOverall.done} eklendi`}{hitImportOverall.failed ? ` · ${hitImportOverall.failed} atlandı` : ""}
+                </Text>
+                <View style={{ height: 6, borderRadius: 3, backgroundColor: colors.border, marginTop: SPACING.sm, overflow: "hidden" }}>
+                  <View style={{ height: "100%", width: `${pct}%`, backgroundColor: colors.brandPrimary }} />
+                </View>
+                <Text style={{ color: colors.onSurfaceSecondary, fontSize: FONT.size.xs, marginTop: SPACING.xs, textAlign: "center" }} numberOfLines={1}>
+                  {hitImportOverall.name}
+                </Text>
+              </View>
+            );
+          })()}
           {/**
             * v17.7.0 — TOPLU EKLEMEDE İLERLEME GÖRÜNÜYOR
             * -------------------------------------------------------------------
@@ -4452,6 +4540,7 @@ ${pub.path}`, [
             * Veri zaten vardı (bulkImportStatuses), sadece gösterilmiyordu.
             */}
           {(() => {
+            if (hitImportOverall) return null; // v18.7.37 #7: genel satır zaten var; tek-liste "0/1" göstermeyiz
             const rows = Object.values(bulkImportStatuses || {}) as any[];
             if (!rows.length) return null;
             const done = rows.filter(r => r?.state === "completed").length;

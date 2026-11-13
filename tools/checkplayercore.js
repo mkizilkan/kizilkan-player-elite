@@ -553,7 +553,9 @@ try {
   requireText(panelTs, '"CANCELLING"', 'panel scan cancelling state');
   requireText(add, 'Bulunan sonuçlar canlı eklenecek; seçim yapılmadan hiçbir playlist eklenmez', 'scan UI explicit selection contract');
   requireText(add, 'Seçileni Doğrula ve Ekle', 'explicit import action');
-  requireText(add, 'Taramanın Bitmesini Bekleyin', 'scan/import phase barrier');
+  // v18.7.37 #4: Faz bariyeri artık "durdur-sonra-ekle" ile uygulanıyor (ekleme tarama
+  // bitmesine kilitli değil; commit'ten önce süren tarama durdurulur → eşzamanlı KOŞMAZ).
+  requireText(add, 'BULK_ADD_STOPS_SCAN_FOR_PHASE_SEP', 'scan/import phase barrier (v18.7.37: stop-then-add)');
   requireText(add, 'Hesapları Analiz Et', 'bulk discovery-only CTA');
   requireText(add, 'Hesabımı Analiz Et', 'server discovery-only CTA');
   if (add.includes('const addDiscoveredMatch = async')) problem('v15.2.11 tekli discovery otomatik import helper geri gelmis');

@@ -197,7 +197,27 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.36 RC1 — `v18.7.36-rc1-player-prepwatchdog-tvfocus`)
+## 9. Mevcut durum (v18.7.37 RC1 — `v18.7.37-rc1-add-account-ux-speed`)
+
+Kaynak: **13.11.2026 canlı cihaz oturumu** (Poco X3). Kullanıcı combo çoklu-hesap taramasında
+"Liste ekleniyor"da takıldı; adb teşhisiyle **donma değil** olduğu kanıtlandı (JS saturasyonu + Binder
+taşması + kilitli ekleme butonu). 13 hesap bulunmuştu ama listeye yazılamamıştı; emniyet TXT'sinden
+`get.php` URL dosyası üretip **HitFileImport (taramasız) yoluyla** 13 hesap tam katalogla kurtarıldı.
+Kullanıcı 7 maddenin tamamını + commit/push/CI/PC DEV yetkisini verdi; telefonu çıkardı. Ayrıntı: `AI-DEVIR-v18.7.37.md`.
+7 madde (hepsi TS, native YOK): **#1** HitFileImport modal safe-area (alt buton çubuk altındaydı);
+**#2** 12 TextInput'a `onFocus` kaydırma (MAG MAC/seri klavye altındaydı); **#3** retry fazında poll
+350→900 ms (JS yükü); **#4** "Doğrula ve Ekle" kilidi kaldırıldı — bulunanlar tarama sürerken eklenebilir;
+**#5** deferred tarama artık auto-recovery'den muaf (her girişte diriltilmiyordu); **#6** `startStreamingFileScanV172`
+dizini `sources` çıkarılarak sıkıştırılır (Binder `TransactionTooLargeException: 1.29 MB` → çözüldü, §5);
+**#7** dosyadan toplu içe aktarımda genel ilerleme ("Hesap X/N") — yanıltıcı "0/1" yerine.
+Doğrulama: tsc PASS · `check-v18737` PASS · denetle <doldurulacak> · PC DEV <doldurulacak>. **CİHAZ KABULÜ YAPILMADI** (telefon çıkarıldı).
+**Tuzak (bu oturumda öğrenildi):** combo "Çoklu Hesap → dosya" yolu her zaman native streaming tarama
+tetikler (keşif için); **sunucusu bilinen hesaplar için doğru yol üstteki "HOST/KIZILKAN/MAG/M3U içe aktar"**
+(`HitFileImport` → taramasız doğrudan ekler). adb ile uygulamaya `input tap` MIUI'de engellidir; RKStorage'ı
+`/sdcard` veya `/data/local/tmp` üzerinden run-as geri yazma SELinux/scoped-storage nedeniyle BAŞARISIZ —
+`base64 -d` ile stdin üzerinden yazılır (`adb shell`, exec-out DEĞİL — exec-out stdin EOF vermez, takılır).
+
+## 9-eski-18736. v18.7.36 RC1 — `v18.7.36-rc1-player-prepwatchdog-tvfocus`
 
 Kaynak: kullanıcı talebi (P1+P2+T1) + 13.10 uçuş kaydı (47 oynatma oturumu) + kod incelemesi. Ayrıntı: `AI-DEVIR-v18.7.36.md`. Kullanıcı commit/push/manuel NORMAL build/PC DEV yetkisi verdi.
 - **P1 — Hazırlanma bekçisi:** Media3 `readyToPlay`'e HİÇ ulaşamazsa (mevcut ilk-kare bekçisi `!exoReady` ile erken çıkıyordu) ekran sonsuz yükleniyordu — 47 oturumun 7'si 9–61 sn beklenip terk edilmişti. Yeni kardeş bekçi cömert süre (`PREPARE_TIMEOUT_LIVE/VOD_MS` = 14/18 sn) sonra motor zincirini (MPV→VLC→hata) ilerletir. §5 tek-bağlantı: yeni motordan önce Media3 pause+replace(null). `controller.ts`+`PlayerHost.tsx`.
