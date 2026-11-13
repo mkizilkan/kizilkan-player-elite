@@ -74,6 +74,10 @@ class ScanJournalStore private constructor(context: Context) : SQLiteOpenHelper(
     val v = ContentValues().apply {put("attempts",attempts);put("state",state);put("due_at",dueAt);put("payload_enc",enc(payload.toString()))}
     check(writableDatabase.update("scan_retry",v,"run_id=? AND job_key=?",arrayOf(runId,key)) == 1)
   }
+  /** v18.7.39: İkinci tur bütçesi dolunca kalan tüm "pending" işleri "unresolved" yapar (ikinci tur garanti biter). */
+  @Synchronized fun markAllPendingUnresolved(runId: String) {
+    writableDatabase.execSQL("UPDATE scan_retry SET state='unresolved' WHERE run_id=? AND state='pending'", arrayOf(runId))
+  }
   @Synchronized fun seedArchiveRetries(runId: String, profileId: String, rows: JSONArray) {
     check(ownerOf(runId)==profileId) { "Tarama başka profile ait" }
     check(rows.length()<=128) { "Kuyruk partisi çok büyük" }

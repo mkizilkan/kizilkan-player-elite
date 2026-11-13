@@ -4501,7 +4501,12 @@ ${pub.path}`, [
       </Modal>
 
       {/* v16.5.0: MAG için üstteki özel katman var; burada çift göstermiyoruz. */}
-      <Modal visible={(loading || !!hitImportOverall) && method !== "stalker"} transparent animationType="fade" onRequestClose={() => forceExit("loading-modal-close")}>
+      {/* v18.7.39 #4: Bloke "Liste ekleniyor" perdesi, "Bulunan Çoklu Hesaplar"/keşif
+          sonuç kutusu açıkken GÖSTERİLMEZ. Eskiden tarama sırasında kurtarma döngüsü
+          loading=true yapınca bu perde kutunun üstünü kaplıyor, kullanıcı bulunanları
+          seçip ekleyemiyordu ("kutu yok" sanılıyordu). Kutu zaten kendi ilerlemesini
+          ve ekle butonunu gösterir; perde yalnız kutu KAPALIyken (saf commit) gerekir. */}
+      <Modal visible={(loading || !!hitImportOverall) && method !== "stalker" && !showBulkCandidates && !showDiscoveryMatches} transparent animationType="fade" onRequestClose={() => forceExit("loading-modal-close")}>
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.88)", alignItems: "center", justifyContent: "center", padding: SPACING.lg }}>
           {exitButton()}
           <ActivityIndicator size="large" color={colors.brandPrimary} />

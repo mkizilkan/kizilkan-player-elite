@@ -612,7 +612,15 @@ class PanelScanService : Service() {
     val snapshot = JSONObject(getSharedPreferences(PREFS,0).getString(KEY_SNAPSHOT,"{}") ?: "{}")
     if(snapshot.has("error")) return
     patchSnapshot { it.put("running",true).put("phase","retry").put("state","RUNNING") }
+    // v18.7.39: ikinci tur duvar-saati bütçesi — dolunca kalan belirsizleri işaretle, bitir.
+    val retryPhaseDeadline = System.currentTimeMillis() + RETRY_PHASE_BUDGET_MS
     while(!cancelled.get()) {
+      if(System.currentTimeMillis() > retryPhaseDeadline) {
+        journal.markAllPendingUnresolved(currentRunId)
+        recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("state","RETRY_BUDGET_EXHAUSTED").put("budgetMs", RETRY_PHASE_BUDGET_MS))
+        patchSnapshot { it.put("retryPending",0).put("retryUnresolved",journal.retryCount(currentRunId,"unresolved")) }
+        break
+      }
       val job = journal.nextRetry(currentRunId) ?: break
       while(paused.get() && !cancelled.get()) Thread.sleep(100)
       if(cancelled.get()) break
@@ -763,8 +771,10 @@ class PanelScanService : Service() {
           if (code == 429 || code == 503) {
             permit.rateLimited()
             val now = System.currentTimeMillis()
-            val retryMs = scanRetryAfterMillis(opened.getHeaderField("Retry-After"), now)
-            val deadline = now + minOf(retryMs, Long.MAX_VALUE - now)
+            // v18.7.39: Sunucunun Retry-After'ı ne olursa olsun tarama backoff'u en fazla 30 sn.
+            // Eskiden sınırsızdı → panel "Retry-After: saatler" verince ikinci tur bitmiyordu.
+            val retryMs = scanRetryAfterMillis(opened.getHeaderField("Retry-After"), now).coerceAtMost(SCAN_MAX_BACKOFF_MS)
+            val deadline = now + retryMs
             hostBackoffUntil.compute(hostKey) { _, previous -> maxOf(previous ?: 0L, deadline) }
             hostBackoffUntil.compute(groupKey) { _, previous -> maxOf(previous ?: 0L, deadline) }
             recordExternalDiagnostic(applicationContext, JSONObject().put("runId", currentRunId).put("state", "HOST_BACKOFF").put("host", hostKey).put("httpCode", code).put("backoffMs", retryMs))

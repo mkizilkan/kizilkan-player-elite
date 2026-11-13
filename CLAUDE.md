@@ -197,7 +197,26 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.38 RC1 — dal `v18.7.37-rc1-add-account-ux-speed`)
+## 9. Mevcut durum (v18.7.39 RC1 — dal `v18.7.39-rc1-retry-budget-modal-keyboard`)
+
+Kaynak: **13.11.2026 canlı cihaz izleme oturumu**. Kullanıcı çoklu-hesap taramasını "sunucu bilmiyorum"
+(keşif) modunda yaptı; **ilk tur sorunsuz** ama **ikinci tur (drainDeferredProbes) bir türlü bitmiyordu**;
+ayrıca ilk hesap bulununca bloke "Liste ekleniyor" perdesi "Bulunan Çoklu Hesaplar" kutusunu örtüyordu.
+**Kök nedenler (kod+ekran kanıtı):** (1) `scanBackoffDeadline` + host backoff **ÜST SINIRSIZ** — panel
+429/503 + büyük `Retry-After` verince ikinci tur saatlerce erteleniyordu; (2) ikinci turun **bütçesi yoktu**;
+(4) kurtarma döngüsü `setLoading(!!scan.running)` yapınca bloke perde sonuç kutusunu kaplıyordu;
+(6) v18.7.38 klavye düzeltmesi tek başına scrollResponder ile tutmadı.
+**Düzeltmeler (native+JS):** #1 backoff'a **30 sn tavan** (`SCAN_MAX_BACKOFF_MS`); #2 ikinci tura **~2 dk
+duvar-saati bütçesi** (`RETRY_PHASE_BUDGET_MS` + `markAllPendingUnresolved`) → **ikinci tur her zaman biter**,
+bulunanlar korunur; #4 bloke perde `showBulkCandidates`/`showDiscoveryMatches` açıkken gösterilmez;
+#6 edit-playlist'e **klavye yüksekliği kadar alt boşluk**. Ertelendi: #5 "sunucu yazılıysa önce dene"
+(hız optimizasyonu, ayrı build). Ayrıntı `AI-DEVIR-v18.7.39.md`.
+Doğrulama: tsc PASS · `check-v18739` PASS · denetle/assembleDebug/cihaz <doldurulacak>.
+**🔴 Yeni tuzak (kalıcı):** Tarama retry/backoff'u SINIRSIZ bırakma — rate-limit eden panel `Retry-After`
+ile ikinci turu sonsuza kilitler. Her backoff `SCAN_MAX_BACKOFF_MS` (30 sn) ile, retry fazı
+`RETRY_PHASE_BUDGET_MS` (2 dk) ile sınırlı. Yeni retry yolu eklersen ikisini de uygula.
+
+## 9-eski-18738. v18.7.38 RC1 — dal `v18.7.37-rc1-add-account-ux-speed`
 
 Kaynak: **13.11.2026 cihaz oturumu**. Kullanıcı v18.7.37'yi (release + DEV) telefona kurdu; her ikisi de
 **çökmeden açıldı**, kurtarılan 13 hesap tam katalogla duruyor (DEV veri korundu). Sonra "Oynatma listesini

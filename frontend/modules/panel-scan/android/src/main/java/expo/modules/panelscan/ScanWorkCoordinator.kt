@@ -175,7 +175,21 @@ internal fun scanRetryAfterMillis(value: String?, now: Long): Long {
   return date?.let { (it - now).coerceAtLeast(0L) } ?: 2000L
 }
 
-internal fun scanBackoffDeadline(delay:Long,now:Long=System.currentTimeMillis()):Long = now + delay.coerceIn(0L,Long.MAX_VALUE-now)
+/**
+ * v18.7.39: Tarama retry backoff'una ÜST SINIR. Eskiden sınırsızdı — bir panel
+ * kendini korumak için "Retry-After: 3600" (1 saat) gönderince ikinci tur (drainDeferredProbes)
+ * o işi 1 saat sonrasına erteleyip 500 ms uykularla bekliyor, "bir türlü bitmiyordu".
+ * Tarama bağlamında 30 sn'den uzun backoff uygulanmaz (düşmanca sunucuyu ödüllendirme).
+ */
+internal const val SCAN_MAX_BACKOFF_MS = 30_000L
+/**
+ * v18.7.39: İkinci tur (drainDeferredProbes) DUVAR-SAATİ BÜTÇESİ. Eskiden bütçe yoktu —
+ * yalnız iş kalmayınca biterdi; rate-limit eden sunucu onu süresiz tutabiliyordu.
+ * Bu süre dolunca ikinci tur sonlanır, kalan "belirsiz" işler unresolved işaretlenir,
+ * BULUNANLAR korunur. Garanti: ikinci tur her zaman biter.
+ */
+internal const val RETRY_PHASE_BUDGET_MS = 120_000L
+internal fun scanBackoffDeadline(delay:Long,now:Long=System.currentTimeMillis()):Long = now + delay.coerceIn(0L, SCAN_MAX_BACKOFF_MS)
 
 /** Reread the deadline after every short wait: a concurrent 429 may extend the cooldown. */
 internal fun awaitScanHostBackoff(deadline: () -> Long, cancelled: AtomicBoolean): Boolean {

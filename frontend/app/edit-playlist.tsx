@@ -342,10 +342,19 @@ export default function EditPlaylist() {
   // ona dokunMUYORUZ. Düzeltme KAV'dan BAĞIMSIZ: odaklanınca o alanı ScrollView ile klavyenin
   // üstüne kaydır (scrollResponderScrollNativeHandleToKeyboard — klavye yüksekliğini kendi hesaplar).
   const formScrollRef = useRef<ScrollView>(null);
+  // v18.7.39 #6: Asıl çözüm — klavye yüksekliği kadar alt boşluk aç; böylece ScrollView
+  // odaklanan alanı klavyenin ÜSTÜNE kaydırabilir. (v18.7.38'de tek başına
+  // scrollResponderScrollNativeHandleToKeyboard tutmadı — KAV=undefined + yetersiz kaydırma alanı.)
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    const show = Keyboard.addListener("keyboardDidShow", e => setKeyboardHeight(e.endCoordinates?.height || 0));
+    const hide = Keyboard.addListener("keyboardDidHide", () => setKeyboardHeight(0));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
   const revealField = React.useCallback((e: any) => {
     if (Platform.OS === "web") return;
     const target = e?.target; if (!target) return;
-    setTimeout(() => { (formScrollRef.current as any)?.scrollResponderScrollNativeHandleToKeyboard?.(target, 48, true); }, 80);
+    setTimeout(() => { (formScrollRef.current as any)?.scrollResponderScrollNativeHandleToKeyboard?.(target, 64, true); }, 120);
   }, []);
 
   return (
@@ -359,7 +368,7 @@ export default function EditPlaylist() {
           <View style={{ width: 26 }} />
         </View>
 
-        <ScrollView ref={formScrollRef} contentContainerStyle={{ padding: SPACING.lg, paddingBottom: SPACING.xxxl }} keyboardShouldPersistTaps="handled">
+        <ScrollView ref={formScrollRef} contentContainerStyle={{ padding: SPACING.lg, paddingBottom: SPACING.xxxl + (keyboardHeight > 0 ? keyboardHeight : 0) }} keyboardShouldPersistTaps="handled">
           <View style={[styles.tag, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
             <Ionicons
               name={pl.source === "xtream" ? "server" : pl.source === "stalker" ? "hardware-chip" : pl.source === "m3u_file" ? "document-attach" : "link"}
