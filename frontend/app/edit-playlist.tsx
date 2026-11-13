@@ -336,6 +336,18 @@ export default function EditPlaylist() {
     }
   };
 
+  // v18.7.38 #2b: "Hesabı Düzenle" ekranında da klavye alt alanları (kullanıcı adı/
+  // şifre/MAC/seri) örtüyordu. Alanlarda odak kaydırması yoktu. KAV behavior'ı Android'de
+  // DELİBERE undefined (bkz. check-v1711 — "height" daha önce layout sorunu yapmıştı), o yüzden
+  // ona dokunMUYORUZ. Düzeltme KAV'dan BAĞIMSIZ: odaklanınca o alanı ScrollView ile klavyenin
+  // üstüne kaydır (scrollResponderScrollNativeHandleToKeyboard — klavye yüksekliğini kendi hesaplar).
+  const formScrollRef = useRef<ScrollView>(null);
+  const revealField = React.useCallback((e: any) => {
+    if (Platform.OS === "web") return;
+    const target = e?.target; if (!target) return;
+    setTimeout(() => { (formScrollRef.current as any)?.scrollResponderScrollNativeHandleToKeyboard?.(target, 48, true); }, 80);
+  }, []);
+
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.surface }]} edges={["top", "bottom"]} testID="edit-playlist-screen">
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
@@ -347,7 +359,7 @@ export default function EditPlaylist() {
           <View style={{ width: 26 }} />
         </View>
 
-        <ScrollView contentContainerStyle={{ padding: SPACING.lg, paddingBottom: SPACING.xxxl }} keyboardShouldPersistTaps="handled">
+        <ScrollView ref={formScrollRef} contentContainerStyle={{ padding: SPACING.lg, paddingBottom: SPACING.xxxl }} keyboardShouldPersistTaps="handled">
           <View style={[styles.tag, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
             <Ionicons
               name={pl.source === "xtream" ? "server" : pl.source === "stalker" ? "hardware-chip" : pl.source === "m3u_file" ? "document-attach" : "link"}
@@ -430,6 +442,7 @@ export default function EditPlaylist() {
                   <Label text="SUNUCU KODU" mt />
                   <TextInput
                     testID="edit-server-code-input"
+                    onFocus={revealField}
                     value={serverCode}
                     onChangeText={setServerCode}
                     autoCapitalize="none" autoCorrect={false}
@@ -453,12 +466,12 @@ export default function EditPlaylist() {
                 </>
               )}
               <Label text="SUNUCU" mt copy={xtServer || pl.xtreamServer || ""} />
-              <TextInput testID="edit-xt-server-input" value={xtServer} onChangeText={setXtServer}
+              <TextInput testID="edit-xt-server-input" onFocus={revealField} value={xtServer} onChangeText={setXtServer}
                 autoCapitalize="none" autoCorrect={false} keyboardType="url"
                 placeholderTextColor={colors.onSurfaceTertiary}
                 style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]} />
               <Label text="KULLANICI ADI" mt copy={xtUser || pl.xtreamUsername || ""} />
-              <TextInput testID="edit-xt-user-input" value={xtUser} onChangeText={setXtUser}
+              <TextInput testID="edit-xt-user-input" onFocus={revealField} value={xtUser} onChangeText={setXtUser}
                 autoCapitalize="none" autoCorrect={false}
                 placeholderTextColor={colors.onSurfaceTertiary}
                 style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]} />
@@ -472,6 +485,7 @@ export default function EditPlaylist() {
               <View style={{ position: "relative", justifyContent: "center" }}>
                 <TextInput
                   testID="edit-xt-pass-input"
+                  onFocus={revealField}
                   value={xtPass}
                   onChangeText={setXtPass}
                   autoCapitalize="none"
@@ -519,17 +533,17 @@ export default function EditPlaylist() {
                 profileId={activeProfile.id} endpoints={endpointEvidence} onEvidence={acceptEvidence} onChange={setMacPortals}
                 onMakePrimary={url => { const old = canonicalEndpointUrl(stPortal || pl.stalkerPortal || ''); setMacPortals(prev => [...new Set([...prev.filter(p => p !== url), old].filter(Boolean))]); setStPortal(url); }} />
               <Label text="PORTAL URL" mt copy={stPortal || pl.stalkerPortal || ""} />
-              <TextInput testID="edit-st-portal-input" value={stPortal} onChangeText={setStPortal}
+              <TextInput testID="edit-st-portal-input" onFocus={revealField} value={stPortal} onChangeText={setStPortal}
                 autoCapitalize="none" autoCorrect={false} keyboardType="url"
                 placeholderTextColor={colors.onSurfaceTertiary}
                 style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]} />
               <Label text="MAC ADRESİ" mt copy={stMac || pl.stalkerMac || ""} />
-              <TextInput testID="edit-st-mac-input" value={stMac} onChangeText={t => setStMac(t.toUpperCase())}
+              <TextInput testID="edit-st-mac-input" onFocus={revealField} value={stMac} onChangeText={t => setStMac(t.toUpperCase())}
                 autoCapitalize="characters" autoCorrect={false}
                 placeholderTextColor={colors.onSurfaceTertiary}
                 style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]} />
               <Label text="SERIAL NUMBER (isteğe bağlı)" mt />
-              <TextInput testID="edit-st-serial-input" value={stSerial} onChangeText={setStSerial}
+              <TextInput testID="edit-st-serial-input" onFocus={revealField} value={stSerial} onChangeText={setStSerial}
                 autoCapitalize="none" autoCorrect={false}
                 placeholderTextColor={colors.onSurfaceTertiary}
                 style={[styles.input, { backgroundColor: colors.surfaceSecondary, color: colors.onSurface, borderColor: colors.border }]} />

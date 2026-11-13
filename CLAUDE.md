@@ -197,7 +197,20 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.37 RC1 — `v18.7.37-rc1-add-account-ux-speed`)
+## 9. Mevcut durum (v18.7.38 RC1 — dal `v18.7.37-rc1-add-account-ux-speed`)
+
+Kaynak: **13.11.2026 cihaz oturumu**. Kullanıcı v18.7.37'yi (release + DEV) telefona kurdu; her ikisi de
+**çökmeden açıldı**, kurtarılan 13 hesap tam katalogla duruyor (DEV veri korundu). Sonra "Oynatma listesini
+düzenle → Kullanıcı adı"na dokununca klavye alanı örttü (şifre/MAC/seri de). **Kök neden:** v18.7.37 #2
+yalnız `add-playlist.tsx`'i düzeltmişti; `edit-playlist.tsx` ("Hesabı Düzenle") atlanmıştı — orada
+`KeyboardAvoidingView` Android'de `behavior=undefined` (no-op) + alanlarda odak kaydırması yoktu.
+**#2b düzeltmesi:** KAV `"height"` + `revealField` (odaklanan alanı klavyenin üstüne kaydır) + 7 kritik
+alana `onFocus`. Yalnız `edit-playlist.tsx`, native YOK. Ayrıntı `AI-DEVIR-v18.7.38.md`.
+Doğrulama: tsc PASS · `check-v18738` PASS · `check-v18737` PASS · denetle/DEV/cihaz <doldurulacak>.
+**Tuzak:** bir UX düzeltmesi yaparken AYNI alanın başka ekrandaki kopyasını ara (klavye kaydırması
+add-playlist'te düzeltildi ama edit-playlist'te eksikti; §7 "aynı işlevin iki kod yolu" kuralının UX hâli).
+
+## 9-eski-18737. v18.7.37 RC1 — dal `v18.7.37-rc1-add-account-ux-speed`
 
 Kaynak: **13.11.2026 canlı cihaz oturumu** (Poco X3). Kullanıcı combo çoklu-hesap taramasında
 "Liste ekleniyor"da takıldı; adb teşhisiyle **donma değil** olduğu kanıtlandı (JS saturasyonu + Binder
