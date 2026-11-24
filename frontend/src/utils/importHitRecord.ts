@@ -30,13 +30,16 @@ export async function importHitRecord(record:HitFileRecord,ctx:HitImportContext)
         const cancel=()=>{if(!cancelRequested&&runId&&KizilkanNativeCore.getBulkImportSnapshot().runId===runId){cancelRequested=true;void KizilkanNativeCore.cancelBulkImport().catch(()=>trace.stage('cancel-failed'));}};
         ctx.signal.addEventListener('abort',cancel,{once:true});
         try{
-          runId=await KizilkanNativeCore.startBulkImport([{jobKey:id,playlistId:id,displayName:record.name,...cred}],1);if(!runId)throw new Error('Native hesap ekleme başlatılamadı.');if(ctx.signal.aborted)cancel();
+          // v18.7.40 (C): native katalog ekleme aşama süreleri — "neden yavaş" teşhisi, uçuş kaydına.
+          const importStart=Date.now();let liveReadyMs=0;
+          runId=await trace.measure('bulk-start',()=>KizilkanNativeCore.startBulkImport([{jobKey:id,playlistId:id,displayName:record.name,...cred}],1));if(!runId)throw new Error('Native hesap ekleme başlatılamadı.');if(ctx.signal.aborted)cancel();
           while(true){check();const snapshot=KizilkanNativeCore.getBulkImportSnapshot();if(snapshot.runId!==runId)throw new Error('İçe aktarma iş sahipliği değişti.');
             const row=snapshot.jobs?.find((j:any)=>j.jobKey===id);ctx.progress(row?.message||'Native katalog hazırlanıyor…');
-            if(row?.liveReady&&!adopted){const summary=await KizilkanNativeCore.getPlaylistSummaryVerified(id);check();if(summary?.roomIndexed&&(summary.channels||0)>0){await commit({...playlist,channelsCount:summary.channels,vodCount:summary.vod,seriesCount:summary.series,catalogSync:{initialSyncState:'live_ready',roomVerified:true,updatedAt:new Date().toISOString()}},true);adopted=true;}}
+            if(row?.liveReady&&!adopted){const summary=await KizilkanNativeCore.getPlaylistSummaryVerified(id);check();if(summary?.roomIndexed&&(summary.channels||0)>0){liveReadyMs=Date.now()-importStart;void trace.stage('live-ready',{ms:liveReadyMs,channels:summary.channels});await commit({...playlist,channelsCount:summary.channels,vodCount:summary.vod,seriesCount:summary.series,catalogSync:{initialSyncState:'live_ready',roomVerified:true,updatedAt:new Date().toISOString()}},true);adopted=true;}}
             if(row?.state==='failed')throw new Error(row.message||'Katalog alınamadı; doğrulanmış önceki kayıt korundu.');
             if(row?.state==='completed'){
               const summary=await KizilkanNativeCore.getPlaylistSummaryVerified(id);check();if(!summary?.roomIndexed||Number(summary.channels||0)+Number(summary.vod||0)+Number(summary.series||0)===0)throw new Error('Room katalog kaydı doğrulanamadı.');
+              void trace.stage('catalog-complete',{totalMs:Date.now()-importStart,liveReadyMs,vodSeriesMs:Date.now()-importStart-liveReadyMs,channels:summary.channels,vod:summary.vod,series:summary.series});
               const ready={...playlist,endpoints:playlist.endpoints?.map(e=>({...e,catalogVerifiedAt:new Date().toISOString()})),channelsCount:summary.channels,vodCount:summary.vod,seriesCount:summary.series,catalogSync:{initialSyncState:'ready' as const,roomVerified:true,updatedAt:new Date().toISOString()},lastRefreshOk:true};
               if(adopted){const {channels:_,vod:__,series:___,...metadata}=ready;await ctx.update(id,metadata);}else await commit(ready,true);break;
             }

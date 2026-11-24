@@ -986,6 +986,15 @@ function ClassicLiveTvScreen() {
           >
             <Text style={[styles.emptyBtnText, { color: colors.onBrandPrimary }]}>Liste Ekle</Text>
           </FocusButton>
+          {/* v18.7.40: M3U/MAC link testi kısayolu */}
+          <FocusButton
+            testID="empty-link-test-btn"
+            onPress={() => router.push("/link-test")}
+            style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12, paddingVertical: 10, paddingHorizontal: 18, borderWidth: 1, borderColor: colors.brandPrimary, borderRadius: 24 }}
+          >
+            <Ionicons name="flash-outline" size={18} color={colors.brandPrimary} />
+            <Text style={{ color: colors.brandPrimary, fontWeight: "600" }}>M3U Link Testi</Text>
+          </FocusButton>
         </View>
       </SafeAreaView>
     );

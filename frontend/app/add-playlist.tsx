@@ -1259,7 +1259,10 @@ export default function AddPlaylist() {
       }
 
       const login = await xtLoginLocal(cred);
+      // v18.7.40 (C): katalog alma süresi — "neden yavaş" teşhisi, uçuş kaydına.
+      const __fetchStart = Date.now();
       const { chRes, vodRes, serRes } = await loadXtreamContentWithProgress(cred);
+      void trace.stage('catalog-fetch', { ms: Date.now() - __fetchStart });
       const isUnsupported404=(r:any)=>r?.status === "rejected" && /HTTP\s+404\b/i.test(String(r.reason?.message || r.reason || ""));
       if (chRes.status === "rejected") throw new Error(`Xtream canlı katalog alınamadı; playlist kaydedilmedi. ${String(chRes.reason?.message || chRes.reason)}`);
       if ((vodRes.status === "rejected" && !isUnsupported404(vodRes)) || (serRes.status === "rejected" && !isUnsupported404(serRes))) {
@@ -1290,7 +1293,9 @@ export default function AddPlaylist() {
       const total = channels.length + vod.length + series.length;
       if (total === 0) throw new Error("Hiç içerik bulunamadı. Kaynağı kontrol edin.");
       setProgress(`Cihaza kaydediliyor...\n${channels.length} kanal · ${vod.length} film · ${series.length} dizi`);
+      const __commitStart = Date.now();
       if (!(await commitPlaylist(playlist))) return false;
+      void trace.stage('room-sync', { ms: Date.now() - __commitStart, channels: channels.length, vod: vod.length, series: series.length });
       setProgress("Playlist hazır. +18 filtresi arka planda hazırlanıyor...");
       playlistServerKeysRef.current.add(accountKey);
       if (navigateAfter) router.replace("/(tabs)");
@@ -3230,6 +3235,11 @@ ${pub.path}`, [
               onProgress(`Tamamlandı: ${ok} eklendi · ${failed} eklenemedi/mevcut. Mevcut kayıtlar korundu.`);
             } finally { setHitImportOverall(null); }
           }}/>
+          {/* v18.7.40: M3U/Xtream link testi (HITHUNTER tarzı: test → seç → ekle) */}
+          <FocusButton testID="open-link-test" onPress={() => router.push("/link-test")} style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderWidth: 1, borderColor: colors.brandPrimary, borderRadius: 12, marginTop: 8 }}>
+            <Ionicons name="flash-outline" size={18} color={colors.brandPrimary} />
+            <Text style={{ color: colors.brandPrimary }}>M3U Linklerini Test Et & Ekle (dosya/yapıştır)</Text>
+          </FocusButton>
           <Text style={[styles.sectionLabel, { color: colors.onSurfaceSecondary }]}>KAYNAK TÜRÜ</Text>
           <View style={styles.methodGrid}>
             {methods.map(m => {

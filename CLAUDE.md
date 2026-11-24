@@ -197,7 +197,21 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.39 RC1 — dal `v18.7.39-rc1-retry-budget-modal-keyboard`)
+## 9. Mevcut durum (v18.7.40 RC1 — dal `v18.7.40-rc1-link-test-tools`)
+
+Kaynak: kullanıcı isteği (HITHUNTER M3U Checker). **A — Yeni ekran `app/link-test.tsx`:** kirli/temiz
+TXT dosyası veya yapıştırılan metinden `get.php` linklerini ayıklar → **hızlı test** (durum/bitiş/maks
+bağlantı + Live/VOD/Series **kategori sayıları**) → kartlar → **karta tıkla**: tam stream sayısı
+(`xtream*CatalogProbe`, tembel) + kategori listeleri (sekmeli #id+ad) → tek/çoklu/tümü/aktifleri seç →
+`importHitRecord` ile ekle. **Paralel test 1–50** (ekranda giriş). **Erişim: Liste Ekle + Ayarlar + Ana ekran.**
+**B — MAC Portal sekmesi** mevcut Çoklu MAC (`mag-bulk`) motorunu açar (MAC'i aynı karta gömme v18.7.41).
+**C — Katalog süre ölçümü:** `add-playlist` (catalog-fetch/room-sync) + `importHitRecord` (live-ready/
+catalog-complete) trace.stage'leri uçuş kaydına → "başka playerlar hızlı, bizimki yavaş" teşhisi
+**logdan** yapılacak, SONRA düzeltilecek (kör düzeltme yok). Yeni util `src/utils/linkTest.ts`;
+`iptv.ts`'e 2 saf sayaç. Native YOK. Ayrıntı `AI-DEVIR-v18.7.40.md`.
+Doğrulama: tsc PASS · `check-v18740` PASS · denetle/DEV/cihaz <doldurulacak>.
+
+## 9-eski-18739. v18.7.39 RC1 — dal `v18.7.39-rc1-retry-budget-modal-keyboard`
 
 Kaynak: **13.11.2026 canlı cihaz izleme oturumu**. Kullanıcı çoklu-hesap taramasını "sunucu bilmiyorum"
 (keşif) modunda yaptı; **ilk tur sorunsuz** ama **ikinci tur (drainDeferredProbes) bir türlü bitmiyordu**;

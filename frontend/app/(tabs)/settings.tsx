@@ -428,6 +428,19 @@ export default function SettingsTab() {
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
           </FocusButton>
+          {/* v18.7.40: M3U/MAC link testi */}
+          <FocusButton
+            testID="feature-link-test-btn"
+            onPress={() => router.push("/link-test")}
+            style={[styles.linkBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+          >
+            <Ionicons name="flash" size={20} color={colors.brandPrimary} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.rowTitle, { color: colors.onSurface }]}>Link Test & Ekle</Text>
+              <Text style={[styles.rowSub, { color: colors.onSurfaceSecondary }]}>M3U/Xtream linklerini (dosya/yapıştır) ve MAC portal test et, seçip ekle</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
+          </FocusButton>
 
           <FocusButton
             testID="feature-epg-timeline-btn"

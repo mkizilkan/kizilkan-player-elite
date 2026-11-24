@@ -487,6 +487,22 @@ export async function xtreamLiveCatalogProbe(cred: XtreamCredentials, signal?: A
   return rows.filter(row => row && typeof row === 'object' && /^\d+$/.test(String(row.stream_id))).length;
 }
 
+/** v18.7.40: Link testi TAM sayımı için hafif VOD sayacı (mapping yok, yalnız say). */
+export async function xtreamVodCatalogProbe(cred: XtreamCredentials, signal?: AbortSignal, scanProxy = false): Promise<number> {
+  const base = normalizeServer(cred.server);
+  const rows = await xtGet<unknown>(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_vod_streams`, 120000, signal, scanProxy, cred.operationId);
+  if (!Array.isArray(rows)) throw new Error('VOD katalog API yanıtı dizi değil.');
+  return rows.filter(row => row && typeof row === 'object' && (/^\d+$/.test(String(row.stream_id)) || /^\d+$/.test(String(row.num)))).length;
+}
+
+/** v18.7.40: Link testi TAM sayımı için hafif Dizi sayacı (mapping yok, yalnız say). */
+export async function xtreamSeriesCatalogProbe(cred: XtreamCredentials, signal?: AbortSignal, scanProxy = false): Promise<number> {
+  const base = normalizeServer(cred.server);
+  const rows = await xtGet<unknown>(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_series`, 120000, signal, scanProxy, cred.operationId);
+  if (!Array.isArray(rows)) throw new Error('Dizi katalog API yanıtı dizi değil.');
+  return rows.filter(row => row && typeof row === 'object' && /^\d+$/.test(String(row.series_id))).length;
+}
+
 export async function xtreamVodCategories(cred: XtreamCredentials, signal?: AbortSignal): Promise<XtreamCategory[]> {
   const base = normalizeServer(cred.server);
   return xtGet(`${base}/player_api.php?username=${encodeURIComponent(cred.username)}&password=${encodeURIComponent(cred.password)}&action=get_vod_categories`, 60000, signal, false, cred.operationId);
