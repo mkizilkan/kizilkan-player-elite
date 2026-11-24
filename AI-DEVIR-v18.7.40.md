@@ -34,12 +34,17 @@ ayrıca paralel test sayısı (1–50) ve C (ekleme yavaşlığı) için detayl�
 - Ekleme `importHitRecord` ile → mevcut dedup/Room doğrulama korunur. Paket eklenmedi.
 
 ## 3. Doğrulama
-- `yarn tsc --noEmit`: **PASS** · `check-v18740`: **PASS** · denetle: <doldurulacak>.
-- Native değişiklik YOK → `assembleDebug` sözleşme gereği zorunlu değil; yine de DEV build + cihaz kurulumu yapılacak: <doldurulacak>.
+- `yarn tsc --noEmit`: **PASS** · `check-v18740`: **PASS** · `node tools/denetle.js`: **TÜM TEMİZ** (exit 0).
+- PC DEV `assembleDebug`: **BUILD SUCCESSFUL** (APK 482 MB, 18.7.40-dev). İlk packageDebug Gradle daemon
+  OOM verdi (kod değil); `GRADLE_OPTS=-Xmx6144m` ile incremental yeniden 48 sn'de başarılı.
+- **Telefon bağlı DEĞİL** → cihaz kurulumu/kabulü bekliyor (kullanıcı takınca).
 
 ## 4. Cihaz kabulü (YAPILACAK)
 1. **A:** Liste Ekle/Ayarlar/Ana ekrandan "M3U Link Testi" aç → dosya seç veya yapıştır → "N bulundu" → paralel sayı seç → Testi Başlat → kartlar (durum/bitiş/kategori) → karta tıkla (tam sayı + kategori listesi) → seç → ekle.
 2. **C:** Bir Xtream liste ekle → tanı raporunda `catalog-fetch`/`room-sync`/`live-ready`/`catalog-complete` sürelerini oku (asıl yavaşlığın hangi adımda olduğu).
 
 ## 5. Gerçek teslim kaydı — Opus, 25.11.2026
-<commit/push/run/APK + cihaz doğrulaması doldurulacak>
+- Commit **`7209812b`** → dal `v18.7.40-rc1-link-test-tools` push (ana dal değişmedi).
+- CI manuel release: [run 45499116706](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/45499116706) (teslim anında in_progress).
+- PC DEV APK hazır (`frontend/android/app/build/outputs/apk/debug/app-debug.apk`, 18.7.40-dev); telefon bağlanınca `adb install -r` ile kurulacak.
+- **Cihaz kabulü YAPILMADI** (telefon bağlı değil). §4 senaryoları bekliyor.

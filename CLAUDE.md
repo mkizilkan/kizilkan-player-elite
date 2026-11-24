@@ -209,7 +209,7 @@ bağlantı + Live/VOD/Series **kategori sayıları**) → kartlar → **karta t�
 catalog-complete) trace.stage'leri uçuş kaydına → "başka playerlar hızlı, bizimki yavaş" teşhisi
 **logdan** yapılacak, SONRA düzeltilecek (kör düzeltme yok). Yeni util `src/utils/linkTest.ts`;
 `iptv.ts`'e 2 saf sayaç. Native YOK. Ayrıntı `AI-DEVIR-v18.7.40.md`.
-Doğrulama: tsc PASS · `check-v18740` PASS · denetle/DEV/cihaz <doldurulacak>.
+Doğrulama: tsc PASS · `check-v18740` PASS · **denetle TÜM TEMİZ** · PC DEV `assembleDebug` BUILD SUCCESSFUL (18.7.40-dev). Commit `7209812b` push; CI [run 45499116706](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/45499116706). **Telefon bağlı değil → cihaz kabulü bekliyor.** DEV packageDebug ilk denemede Gradle daemon OOM verdi (kod değil); `GRADLE_OPTS=-Xmx6144m` ile başarılı — tuzak olarak not.
 
 ## 9-eski-18739. v18.7.39 RC1 — dal `v18.7.39-rc1-retry-budget-modal-keyboard`
 
