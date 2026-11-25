@@ -197,7 +197,36 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.40 RC1 — dal `v18.7.40-rc1-link-test-tools`)
+## 9. Mevcut durum (v18.7.41 RC1 — dal `v18.7.41-rc1-merge-dns-audio-freeze`)
+
+Kaynak: 25.11.2026 canlı cihaz oturumu (DEV, telefon 86e8bc80) + kullanıcı ekran görüntüleri. **Tümü TS/JS, native YOK.**
+Oturum teşhisi: DB **~2.5 GB / 1.83M öğe / 33 hesap** (çoğu combo kopyası, her biri tam katalog); görüntü açılmama =
+HTTP **456** sağlayıcı bloğu (uygulama değil); açılış yavaşlığı = ağ bağımlı (mobil 5.3 vs WiFi 63.7 Mbps, resolve ~300 ms);
+bazı dizide ses yok = Media3 **AC3/DTS** çözemiyor. Ayrıntı `AI-DEVIR-v18.7.41.md`.
+- **#1 Aynı hesapları birleştir (önizleme+onay, SEÇENEK A):** `src/utils/playlistMerge.ts` (saf) + `libraryMerge.ts` +
+  `components/DuplicateMergeModal.tsx` + `settings.tsx` bağlama (`merge-duplicates-btn`). Kopya ölçütü **kaynak+kimlik+PANEL**
+  (`accountMergeKey` panelName içerir → aynı user:pass farklı panelde **birleşmez**; kullanıcı uyarısı). Farklı DNS'ler
+  **sınırsız yedek** (`mergedBackupHosts`), favori/izlendi/kaldığın yer taşınır (`mergeLibraryScopes`, silmeden önce),
+  kopya katalog silinir → **DB küçülür** (#4'ün ilk kaldıracı). Otomatik/sessiz silme YOK.
+- **#2 Media3 sessiz → MPV (`PlayerHost.tsx`):** `readyToPlay`'de kullanılabilir ses yoksa (AC3/DTS) **yalnız Auto modda**,
+  video beklenen içerikte, **kanal başına bir kez** (`audioFallbackTriedRef`) → `setEngine("mpv")`. Oturum-global (storage'a
+  yazılmaz → açılışta Auto). Telemetri `MEDIA3_AUDIO_FALLBACK_MPV`.
+- **#3 Toplu/Link Test büyük dosya donması (`linkTest.ts`, `link-test.tsx`):** `extractXtreamLinksAsync` — ~1500 eşleşmede
+  yield eden, iptal edilebilir async ayıklama; eski senkron `extractXtreamLinks` kapı uyumu için korundu. `extracting` durumu.
+- **#5 Tanılama butonu yazı taşması (`stats.tsx`):** 4 buton tek satırda taşıyordu → paylaş tam-genişlik satır + MD/CSV/Temizle
+  ikinci satır + `numberOfLines`.
+- **Player DNS failover: zaten mevcut** (`playbackCandidates`/`alternateHostUrls` oynatmada 2./3./4. yedeği dener).
+- **#4 (liste güncelleme hızı) — dürüst karar, KONMADI:** çekme zaten tek Xtream çağrısı; darboğaz native Room yazma
+  (72.696 tam-JSON satır, `insertCollection` `rawJson=obj.toString()`), şişkin DB'de daha yavaş. #1 dedup ilk kaldıraç;
+  derin native (rawJson saklamama / ilerleme sayacı) ayrı riskli build — önce #1 sonrası `saveElapsedMs` ölç.
+- Doğrulama: tsc PASS · `check-v18741` PASS · `check-v18705` PASS (düzeltildi) · **denetle TÜM TEMİZ** (139 kapı).
+  **CİHAZ KABULÜ YAPILMADI.** #1 gerçek liste siler → DEV'de kopya hesapta önce denenmeli (favori/izlendi korunuyor mu,
+  yedek DNS oynatmada devreye giriyor mu). Commit/push/CI/DEV teslim bilgileri devir dosyasına eklenecek.
+- **🔴 Yeni tuzak (kalıcı):** Mevcut sürüm kapıları telemetri alanlarını `alanAdı:` biçimiyle regex'ler
+  (`check-v18705`: `audioCount:`/`suspectSilent:`). Bir obje literalini JS **shorthand**'e (`audioCount,`) çevirmek
+  bu kapıları kırar — telemetri alanlarında shorthand kullanma, açık `ad: değer` yaz.
+
+## 9-eski-18740. v18.7.40 RC1 — dal `v18.7.40-rc1-link-test-tools`
 
 Kaynak: kullanıcı isteği (HITHUNTER M3U Checker). **A — Yeni ekran `app/link-test.tsx`:** kirli/temiz
 TXT dosyası veya yapıştırılan metinden `get.php` linklerini ayıklar → **hızlı test** (durum/bitiş/maks

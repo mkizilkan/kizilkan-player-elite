@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { playlistExpiryText, playlistProtectionText, playlistCatalogStateText, playlistIsExpired, accountStatus, accountExpiryLabel } from '@/src/utils/accountCard';
 import { accountExpiryMs } from '@/src/utils/accountExpiry';
 import { getStreamDerivedCredentials } from '@/src/utils/stalker';
@@ -38,6 +38,8 @@ import { api } from "@/src/utils/api";
 import { FocusButton } from "@/src/components/FocusButton";
 import { refreshPlaylistContent } from "@/src/utils/refreshPlaylist";
 import { PlaylistDnsControls } from '@/src/components/PlaylistDnsControls';
+import { DuplicateMergeModal } from '@/src/components/DuplicateMergeModal';
+import { findDuplicateGroups } from '@/src/utils/playlistMerge';
 import { FRESHNESS_OPTIONS, freshnessLabel } from '@/src/utils/catalogOperations';
 import { playlistTypeLabel, playlistVisualColor, playlistTypeIcon } from "@/src/utils/playlistVisual";
 import { storage } from "@/src/utils/storage";
@@ -57,6 +59,9 @@ export default function SettingsTab() {
   const [nativeGroups, setNativeGroups] = useState<string[]>([]);
   const { profiles, activeProfile, switchProfile, removeProfile, setPin: setProfPin, verifyAdminPin, adminHasPin, authorizeProfileSession } = useProfiles();
   const refreshOwnerRef=useRef(activeProfile.id);refreshOwnerRef.current=activeProfile.id;
+  // v18.7.41 (#1): aynı hesabın kopya listelerini tek hesapta birleştir (DB şişmesi + yedek DNS).
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const dupGroups = useMemo(() => findDuplicateGroups(playlists), [playlists]);
   const { settings: parental, setPin, clearPin, toggleCategoryLock, setAdultHidden, verifyPinAsync, isCategoryLocked } = useParental();
   const [epgInput, setEpgInput] = useState<string>(activePlaylist?.epgUrl || "");
   const [epgLoading, setEpgLoading] = useState(false);
@@ -362,6 +367,15 @@ export default function SettingsTab() {
             </View>
             <View style={{ paddingHorizontal: SPACING.lg }}>
               <PlaylistDnsControls key={`${activeProfile.id}|${activePlaylist.id}`} playlist={activePlaylist} />
+              {dupGroups.length > 0 && (
+                <FocusButton testID="merge-duplicates-btn" onPress={() => setMergeOpen(true)}
+                  style={[styles.linkBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.brandPrimary, marginTop: SPACING.sm }]}>
+                  <Ionicons name="git-merge" size={18} color={colors.brandPrimary} />
+                  <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold, marginLeft: 8 }}>
+                    Aynı hesapları birleştir ({dupGroups.reduce((n, g) => n + g.members.length - 1, 0)} kopya)
+                  </Text>
+                </FocusButton>
+              )}
               <AccountInfoCard
             playlist={activePlaylist}
             provider={activePlaylist?.providerInfo}
@@ -1532,6 +1546,9 @@ export default function SettingsTab() {
           </KeyboardAvoidingView>
         </Pressable>
       </Modal>
+
+      {/* v18.7.41 (#1): Aynı hesapları birleştir — önizleme + onay (seçenek A). */}
+      <DuplicateMergeModal visible={mergeOpen} onClose={() => setMergeOpen(false)} playlists={playlists} profileId={activeProfile.id} updatePlaylist={updatePlaylist} removePlaylist={removePlaylist} />
 
       {/* PROFİL SİLME — YÖNETİCİ PIN MODALI (v6.1.0) */}
       <Modal visible={!!deleteFor} transparent animationType="fade" onRequestClose={() => { setDeleteFor(null); setDelPinInput(""); }}>

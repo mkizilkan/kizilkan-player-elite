@@ -278,30 +278,35 @@ export default function StatsScreen() {
           )) : <Text style={[styles.telemetryLine, { color: colors.onSurfaceTertiary }]}>Henüz kalıcı tarama olayı yok.</Text>}
         </View>
 
-        <View style={{ flexDirection: "row", gap: SPACING.sm }}>
+        {/* v18.7.41 (#5 UI): 4 buton tek satırda sığmayıp taşıyordu (her biri ~90px → "Flight
+            Recorder Raporunu Paylaş" 4 satıra sarıp dışarı taşıyordu). Paylaş butonu kendi tam-genişlik
+            satırına, diğer 3 kısa buton ikinci satıra alındı. Yazılar artık kutuya sığar. */}
+        <View style={{ gap: SPACING.sm }}>
           <FocusButton testID="diagnostics-share-btn" style={[styles.diagButton, { backgroundColor: colors.brandPrimary }]} onPress={async () => {
             try { await exportDiagnosticReport({ runtimeMemory, storageFootprint, exitHistory, scanDiagnostics, lastScanCrash, blackBoxHealth }); }
             catch (e:any) { Alert.alert("Tanılama", e?.message || "Rapor oluşturulamadı."); }
           }}>
-            <Ionicons name="share-social" size={18} color="#fff" /><Text style={styles.diagButtonText}>Flight Recorder Raporunu Paylaş</Text>
+            <Ionicons name="share-social" size={18} color="#fff" /><Text style={styles.diagButtonText} numberOfLines={1}>Flight Recorder Raporunu Paylaş</Text>
           </FocusButton>
-          {(['md','csv'] as const).map(format=><FocusButton key={format} testID={'diagnostics-share-'+format} style={[styles.diagButton,{backgroundColor:colors.brandPrimary}]} onPress={async()=>{
-            try{await exportDiagnosticReport({runtimeMemory,storageFootprint,exitHistory,scanDiagnostics,lastScanCrash,blackBoxHealth},format);}catch(e:any){Alert.alert('Rapor',String(e?.message||e));}
-          }}><Ionicons name="document-text" size={18} color="#fff"/><Text style={styles.diagButtonText}>Tanı raporu · {format.toUpperCase()}</Text></FocusButton>)}
-          <FocusButton testID="diagnostics-clear-btn" style={[styles.diagButton, { borderWidth:1, borderColor: colors.border }]} onPress={() => Alert.alert("Tanılama geçmişi", "Player, uygulama ve tarama tanılama geçmişinin tamamı silinsin mi?", [{text:"Vazgeç",style:"cancel"},{text:"Sil",style:"destructive",onPress:async()=>{
-            await clearDiagnostics();
-            if (PanelScan.available) PanelScan.clearDiagnostics();
-            setDiagnostics([]);
-            setScanDiagnostics([]);
-            setLastScanCrash({});
-            setLastExitInfo({});
-            setExitHistory([]);
-            setBlackBoxHealth(nativeData ? (await KizilkanNativeCore.getBlackBoxHealth?.() || {}) : {});
-            // v18.7.17 (S1): silme sessizdi (kullanıcı silindiğini anlamıyordu) → onay bildirimi.
-            Alert.alert("Tanılama geçmişi silindi", "Player, uygulama ve tarama tanılama geçmişinin tamamı temizlendi.");
-          }}])}>
-            <Ionicons name="trash-outline" size={18} color={colors.onSurface} /><Text style={[styles.diagButtonText,{color:colors.onSurface}]}>Geçmişi Temizle</Text>
-          </FocusButton>
+          <View style={{ flexDirection: "row", gap: SPACING.sm }}>
+            {(['md','csv'] as const).map(format=><FocusButton key={format} testID={'diagnostics-share-'+format} style={[styles.diagButton,{backgroundColor:colors.brandPrimary}]} onPress={async()=>{
+              try{await exportDiagnosticReport({runtimeMemory,storageFootprint,exitHistory,scanDiagnostics,lastScanCrash,blackBoxHealth},format);}catch(e:any){Alert.alert('Rapor',String(e?.message||e));}
+            }}><Ionicons name="document-text" size={18} color="#fff"/><Text style={styles.diagButtonText} numberOfLines={2}>Tanı raporu · {format.toUpperCase()}</Text></FocusButton>)}
+            <FocusButton testID="diagnostics-clear-btn" style={[styles.diagButton, { borderWidth:1, borderColor: colors.border }]} onPress={() => Alert.alert("Tanılama geçmişi", "Player, uygulama ve tarama tanılama geçmişinin tamamı silinsin mi?", [{text:"Vazgeç",style:"cancel"},{text:"Sil",style:"destructive",onPress:async()=>{
+              await clearDiagnostics();
+              if (PanelScan.available) PanelScan.clearDiagnostics();
+              setDiagnostics([]);
+              setScanDiagnostics([]);
+              setLastScanCrash({});
+              setLastExitInfo({});
+              setExitHistory([]);
+              setBlackBoxHealth(nativeData ? (await KizilkanNativeCore.getBlackBoxHealth?.() || {}) : {});
+              // v18.7.17 (S1): silme sessizdi (kullanıcı silindiğini anlamıyordu) → onay bildirimi.
+              Alert.alert("Tanılama geçmişi silindi", "Player, uygulama ve tarama tanılama geçmişinin tamamı temizlendi.");
+            }}])}>
+              <Ionicons name="trash-outline" size={18} color={colors.onSurface} /><Text style={[styles.diagButtonText,{color:colors.onSurface}]} numberOfLines={2}>Geçmişi Temizle</Text>
+            </FocusButton>
+          </View>
         </View>
 
         <Text style={[styles.footer, { color: colors.onSurfaceTertiary }]}>

@@ -449,6 +449,8 @@ export default function PlayerHost() {
   // Oynatıcı motoru ve donanım hızlandırma — kullanıcı ayarı.
   const [engine, setEngine] = useState<Engine>("auto");
   const [hwAccel, setHwAccel] = useState(true);
+  // v18.7.41 (#2): Media3'te ses parçası yok/çözülemiyor (AC3/DTS) → otomatik MPV'ye geç (içerik başına BİR kez, döngü yok).
+  const audioFallbackTriedRef = useRef<string>("");
   /**
    * YÜZEY TİPİ (v9.9.0). surfaceMode kullanıcı ayarı; decoderRetrySurface ise
    * "auto" modda decoder hatası sonrası bu kanal için SurfaceView'a geçildiğini
@@ -1694,16 +1696,31 @@ export default function PlayerHost() {
       try {
         const at = (player as any).availableAudioTracks || [];
         const active = (player as any).audioTrack;
+        const audioCount = Array.isArray(at) ? at.length : -1;
+        const suspectSilent = Array.isArray(at) && at.length > 0 && !active;
+        const expectsVideo = playbackRequest?.expectsVideo !== false;
         void recordDiagnostic("player", "MEDIA3_AUDIO_STATE", {
           stage, channelId: String(channel?.id || ""), source: playlistSource,
-          audioCount: Array.isArray(at) ? at.length : -1,
+          audioCount: audioCount,
           activeAudioId: active ? String(active.id ?? "") : "",
           activeAudioLabel: active ? String(active.label ?? active.language ?? "") : "",
           hasActiveAudio: !!active,
           // ŞÜPHE: parça var ama hiçbiri aktif değil → sessizlik adayı.
-          suspectSilent: Array.isArray(at) && at.length > 0 && !active,
-          expectsVideo: playbackRequest?.expectsVideo !== false,
+          suspectSilent: suspectSilent,
+          expectsVideo: expectsVideo,
         }, { sessionId: playerDiagnosticSessionRef.current, stage: "media3-audio" });
+        // v18.7.41 (#2): readyToPlay'de kullanılabilir ses yoksa (AC3/DTS Media3'te çözülemez) → otomatik MPV.
+        // Yalnız AUTO modda (kullanıcı Media3'ü ELLE seçtiyse saygı göster), video beklenen içerikte, içerik başına BİR kez.
+        // Bu olay zaten yalnız Media3 aktifken fırlar; MPV'ye geçince tekrar fırlamaz → döngü yok.
+        const chId = String(channel?.id || "");
+        if (stage === "readyToPlay" && engine === "auto" && expectsVideo && chId
+            && (audioCount === 0 || suspectSilent) && audioFallbackTriedRef.current !== chId && mpvEngineUsable()) {
+          audioFallbackTriedRef.current = chId;
+          void recordDiagnostic("player", "MEDIA3_AUDIO_FALLBACK_MPV", { channelId: chId, audioCount, suspectSilent }, { sessionId: playerDiagnosticSessionRef.current, stage: "media3-audio" });
+          flashMessage("Ses parçası yok — MPV motoruna geçiliyor…");
+          setEngine("mpv");
+          setPlaybackRetryNonce(n => n + 1);
+        }
       } catch {}
     };
 

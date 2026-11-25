@@ -37,6 +37,42 @@ export function extractXtreamLinks(text: string): { links: ExtractedLink[]; tota
   return { links, totalUrls, duplicates };
 }
 
+/**
+ * v18.7.41 (#3 donma düzeltmesi): Büyük dosya (ör. 2.7 MB) ana thread'i kilitlemesin diye
+ * URL ayıklamayı PARÇA PARÇA yapar ve her partide olay döngüsüne yield eder (UI donmaz).
+ * İptal edilebilir (signal) + ilerleme (onProgress). Davranış senkron sürümle birebir aynı,
+ * yalnız bloke etmez. Küçük girişlerde de doğru çalışır (tek parti).
+ */
+export async function extractXtreamLinksAsync(
+  text: string,
+  opts?: { signal?: AbortSignal; onProgress?: (processed: number, total: number, found: number) => void; chunk?: number },
+): Promise<{ links: ExtractedLink[]; totalUrls: number; duplicates: number; aborted: boolean }> {
+  const seen = new Set<string>();
+  const links: ExtractedLink[] = [];
+  let totalUrls = 0, duplicates = 0;
+  const matches = String(text || '').match(URL_RE) || [];
+  const chunk = Math.max(200, opts?.chunk ?? 1500);
+  const total = matches.length;
+  for (let i = 0; i < total; i++) {
+    if (opts?.signal?.aborted) return { links, totalUrls, duplicates, aborted: true };
+    const cleaned = matches[i].replace(/[),.;'"»]+$/, '');
+    const parsed = detectXtreamFromM3U(cleaned);
+    if (parsed && parsed.username && parsed.password && parsed.server) {
+      totalUrls++;
+      const key = `${parsed.server}\u0000${parsed.username}\u0000${parsed.password}`.toLowerCase();
+      if (seen.has(key)) duplicates++;
+      else { seen.add(key); links.push({ server: parsed.server, username: parsed.username, password: parsed.password, raw: cleaned }); }
+    }
+    // Her parti sonunda olay döngüsüne bırak → UI tepkisiz kalmaz.
+    if ((i + 1) % chunk === 0) {
+      opts?.onProgress?.(i + 1, total, links.length);
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+    }
+  }
+  opts?.onProgress?.(total, total, links.length);
+  return { links, totalUrls, duplicates, aborted: false };
+}
+
 export type FastTestResult = {
   ok: boolean;
   error?: string;

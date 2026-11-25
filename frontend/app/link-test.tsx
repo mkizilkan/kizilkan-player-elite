@@ -22,7 +22,7 @@ import { useProfiles } from "@/src/store/ProfileContext";
 import { importHitRecord } from "@/src/utils/importHitRecord";
 import { recordDiagnostic } from "@/src/utils/diagnostics";
 import {
-  extractXtreamLinks, fastTestXtream, fullCountsXtream,
+  extractXtreamLinks, extractXtreamLinksAsync, fastTestXtream, fullCountsXtream,
   type ExtractedLink, type FastTestResult, type FullCounts,
 } from "@/src/utils/linkTest";
 
@@ -49,20 +49,47 @@ export default function LinkTestScreen() {
   const [adding, setAdding] = useState(false);
   const [progress, setProgress] = useState("");
   const [parallelText, setParallelText] = useState("6"); // v18.7.40: paralel test sayısı 1–50
+  const [extracting, setExtracting] = useState(false); // v18.7.41 (#3): büyük dosya ayıklanırken UI donmasın
   const abortRef = useRef<AbortController | null>(null);
+  const extractAbortRef = useRef<AbortController | null>(null);
   const parallelN = Math.max(1, Math.min(50, Number(parallelText) || 6));
 
   const resetResults = () => { setResults({}); setFullCounts({}); setSelected(new Set()); setTested(0); };
 
-  const applyExtract = (text: string) => {
-    const { links: found, duplicates } = extractXtreamLinks(text);
-    setLinks(found);
-    setExtractInfo({ found: found.length, dup: duplicates });
-    resetResults();
-    void recordDiagnostic("import", "LINK_TEST_EXTRACT", { found: found.length, duplicates, chars: text.length });
+  /**
+   * v18.7.41 (#3 donma düzeltmesi): 2.7 MB dosya ayıklama ana thread'i kilitliyordu.
+   * Küçük metin senkron (hızlı), büyük metin PARÇA PARÇA async (UI tepkisiz kalmaz, iptal edilebilir).
+   */
+  const applyExtract = async (text: string) => {
+    const chars = text.length;
+    if (chars <= 50000) {
+      const { links: found, duplicates } = extractXtreamLinks(text);
+      setLinks(found);
+      setExtractInfo({ found: found.length, dup: duplicates });
+      resetResults();
+      void recordDiagnostic("import", "LINK_TEST_EXTRACT", { found: found.length, duplicates, chars });
+      return;
+    }
+    extractAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    extractAbortRef.current = ctrl;
+    setExtracting(true);
+    setProgress("Linkler ayıklanıyor…");
+    try {
+      const { links: found, duplicates, aborted } = await extractXtreamLinksAsync(text, {
+        signal: ctrl.signal,
+        onProgress: (p, t, f) => setProgress(`Linkler ayıklanıyor… %${Math.round((p / Math.max(1, t)) * 100)} · ${f} bulundu`),
+      });
+      if (aborted) return;
+      setLinks(found);
+      setExtractInfo({ found: found.length, dup: duplicates });
+      resetResults();
+      setProgress(found.length ? "" : "Bu dosyada geçerli get.php linki bulunamadı.");
+      void recordDiagnostic("import", "LINK_TEST_EXTRACT", { found: found.length, duplicates, chars });
+    } finally { setExtracting(false); if (extractAbortRef.current === ctrl) extractAbortRef.current = null; }
   };
 
-  const onPaste = (text: string) => { setPasteText(text); setFileName(""); applyExtract(text); };
+  const onPaste = (text: string) => { setPasteText(text); setFileName(""); void applyExtract(text); };
 
   const pickFile = async () => {
     try {
@@ -72,7 +99,7 @@ export default function LinkTestScreen() {
       const text = await FileSystem.readAsStringAsync(asset.uri);
       setFileName(asset.name || "dosya.txt");
       setPasteText("");
-      applyExtract(text);
+      await applyExtract(text);
     } catch (e: any) { Alert.alert("Dosya okunamadı", String(e?.message || e)); }
   };
 
