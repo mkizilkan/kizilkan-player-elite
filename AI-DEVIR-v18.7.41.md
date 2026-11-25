@@ -90,11 +90,15 @@ MPV geçişi, async ayıklama) cihazda test edilmeli. Özellikle **#1 birleştir
 verisiyle önce birkaç kopya hesapta denenmeli; birleştirme sonrası favori/izlendi korunuyor mu, yedek DNS'ler
 oynatmada devreye giriyor mu doğrulanmalı.
 
-## Teslim (doldurulacak)
-- Commit: `<doldurulacak>`
-- Push: dal `v18.7.41-rc1-merge-dns-audio-freeze`
-- CI (manuel, tip release): `<run doldurulacak>`
-- DEV APK / kurulum (86e8bc80): `<doldurulacak>`
+## Teslim
+- Commit: `5f58fbbd` (push: dal `v18.7.41-rc1-merge-dns-audio-freeze`).
+- CI (manuel, tip release): [run 45692096924](https://github.com/mkizilkan/kizilkan-player-elite/actions/runs/45692096924) → **SUCCESS** →
+  release **build-165**: [KIZILKAN-PLAYER-ELITE-v18.7.41-build165.apk](https://github.com/mkizilkan/kizilkan-player-elite/releases/download/build-165/KIZILKAN-PLAYER-ELITE-v18.7.41-build165.apk) (367.8 MB, imzalı, ana uygulama üstüne kurulur).
+- PC DEV: prebuild + `assembleDebug` → **BUILD SUCCESSFUL in 5m 14s** (26.11.2026 01:09). `app-debug.apk` 460 MB,
+  paket `com.gpt.kizilkan.player.dev`, versionCode 180741, versionName `18.7.41-dev`. `git diff package.json` temiz
+  (prebuild script bozmadı). Non-clean prebuild kullanıldı (JS-only; .cxx cache korundu → 5 dk, tam derleme değil).
+- **Cihaz kurulumu BEKLİYOR:** telefon (86e8bc80) adb'ye görünmüyor (`adb devices` boş). Bağlanınca DEV APK
+  `-r` ile (veri korunarak) kurulacak; kullanıcı önce DEV'de kopya hesapta #1 birleştirmeyi denemeli.
 
 ## Açık / riskli
 - #1 birleştirme geri alınamaz (kopya listeler silinir). Seçenek A önizlemesi bunu kullanıcı onayına bağlar;
