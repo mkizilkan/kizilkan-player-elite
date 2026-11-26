@@ -197,7 +197,30 @@ Kullanıcı `kizilkan-diagnostics-*.json` gönderir (Ayarlar → İstatistikler 
   `PLAYLIST_SELF_REPAIR_*`, `ENGINE_ERROR(errorKind)`, `ANR_WATCHDOG_STALL(task, lagMs)`,
   `PLAYER_SOURCE_FAILOVER(_OK)`, `BULK_SCAN_PLAN`, `ORPHAN_SNAPSHOT_AUDIT`.
 
-## 9. Mevcut durum (v18.7.41 RC1 — dal `v18.7.41-rc1-merge-dns-audio-freeze`)
+## 9. Mevcut durum (v18.7.42 RC1 — dal `v18.7.42-rc1-merge-servercodes-identity`)
+
+Kaynak: 26.11.2026 DEV deposu (RKStorage) incelemesi — 22 Xtream listesinin **15'i aslında yalnız 2 hesap**
+(`drmtv43_418080` 11 mağaza adıyla, `efebey1112` 4 mağaza adıyla; hepsinde `exp_date+created_at` aynı). **Tümü TS, native YOK.**
+Ayrıntı `AI-DEVIR-v18.7.42.md`.
+- **#1 Kimlik ölçütü (`playlistMerge.ts`):** birleştirme anahtarı artık **panelName DEĞİL**, hesabın gerçek kimliği
+  `accountInfo.exp_date + created_at` (MAG: MAC+exp). Aynı user:pass farklı panelde farklı hesap olabilir → ayırt edici
+  bu. `findDuplicateGroups` iki düzeyli (önce user+pass kovası, sunucu/DNS'e bakmaz; kova içinde farklı kimlik imzası
+  varsa böl). **Birincil = en zengin katalog** (`catalogScore`) → dizi=0 kopya birincil kalıp seri kaybetmez. Farklı
+  DNS'le eklenen Xtream hesaplar da gruplamaya girer (DNS yalnız yedek olur).
+- **#1 Sunucu kodu birleşimi:** `mergedServerCodeSources`/`buildMergedServerCodeBinding` — birleştirmede birincilin
+  `serverCodeBinding.sources` tüm üyelerin kaynaklarının birleşimi olur → DNS ölünce `resolveBoundPanel` 11 panelin
+  hepsini paralel sorup en hızlı tazeleyen panelden çeker. **Kod kaybolmaz.** Ölü DNS silinmez, yedekte kalır/sona atılır.
+- **#2 Modal UI (`DuplicateMergeModal.tsx`):** safe-area + sabit alt bar → buton navigasyon çubuğu altında kalmaz;
+  net istatistik "X birleştirildi · Y silindi · Z kaldı" (`merge-stats`) + ilerleme çubuğu.
+- **#3 Öneri (`settings.tsx`):** "Aynı Hesap Analizi" her zaman görünür; kopya varsa kapatılabilir uyarı şeridi
+  (`merge-banner`). dupGroups playlists'e bağlı → yedekten yükleme/çoklu ekleme/tekli ekleme sonrası otomatik yeniden
+  hesaplanır. Otomatik/sessiz birleştirme YOK (Seçenek A).
+- Doğrulama: tsc PASS · `check-v18742` PASS · `check-v18741` PASS (regresyon) · **denetle TÜM TEMİZ**. Cihaz kabulü/teslim
+  devir dosyasında. **🔴 Kalıcı tuzak:** birleştirme ölçütü panelName OLMAZ (aynı abonelik farklı mağaza adıyla gelir),
+  gerçek kimlik `exp_date+created_at`; birleştirmede `serverCodeBinding.sources` birleştirilmezse diğer panellerin
+  otomatik DNS tazelemesi kaybolur.
+
+## 9-eski-18741. v18.7.41 RC1 (dal `v18.7.41-rc1-merge-dns-audio-freeze`)
 
 Kaynak: 25.11.2026 canlı cihaz oturumu (DEV, telefon 86e8bc80) + kullanıcı ekran görüntüleri. **Tümü TS/JS, native YOK.**
 Oturum teşhisi: DB **~2.5 GB / 1.83M öğe / 33 hesap** (çoğu combo kopyası, her biri tam katalog); görüntü açılmama =

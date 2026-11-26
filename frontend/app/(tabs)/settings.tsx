@@ -62,6 +62,10 @@ export default function SettingsTab() {
   // v18.7.41 (#1): aynı hesabın kopya listelerini tek hesapta birleştir (DB şişmesi + yedek DNS).
   const [mergeOpen, setMergeOpen] = useState(false);
   const dupGroups = useMemo(() => findDuplicateGroups(playlists), [playlists]);
+  // v18.7.42 (#3): kopya uyarı şeridi kapatılabilir; yeni kopya eklenince (sayı artınca) yeniden görünür.
+  const [mergeDismissedCount, setMergeDismissedCount] = useState(0);
+  const dupCopyCount = useMemo(() => dupGroups.reduce((n, g) => n + g.members.length - 1, 0), [dupGroups]);
+  const showMergeBanner = dupGroups.length > 0 && dupGroups.length > mergeDismissedCount;
   const { settings: parental, setPin, clearPin, toggleCategoryLock, setAdultHidden, verifyPinAsync, isCategoryLocked } = useParental();
   const [epgInput, setEpgInput] = useState<string>(activePlaylist?.epgUrl || "");
   const [epgLoading, setEpgLoading] = useState(false);
@@ -335,6 +339,30 @@ export default function SettingsTab() {
           </View>
         </View>
 
+        {/* v18.7.42 (#3): Aynı Hesap Analizi — her zaman erişilebilir + kopya varsa kapatılabilir uyarı.
+            dupGroups playlists'e bağlı → yedekten yükleme / çoklu ekleme sonrası otomatik yeniden hesaplanır. */}
+        {showMergeBanner && (
+          <View testID="merge-banner" style={{ marginHorizontal: SPACING.lg, marginTop: SPACING.sm, padding: SPACING.md, borderRadius: RADIUS.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", gap: SPACING.sm }}>
+            <Ionicons name="git-merge" size={20} color={colors.brandPrimary} />
+            <Text style={{ flex: 1, color: colors.onSurface, fontSize: FONT.size.xs }}>
+              {dupCopyCount} kopya liste bulundu ({dupGroups.length} hesap). Birleştirip DB'yi küçültebilirsin; favori/izlendi korunur, DNS'ler ve sunucu kodları yedek olur.
+            </Text>
+            <FocusButton testID="merge-banner-review" onPress={() => setMergeOpen(true)} style={{ backgroundColor: colors.brandPrimary, paddingHorizontal: 12, paddingVertical: 8, borderRadius: RADIUS.sm }}>
+              <Text style={{ color: colors.onBrandPrimary, fontWeight: FONT.weight.bold, fontSize: FONT.size.xs }}>İncele</Text>
+            </FocusButton>
+            <FocusButton testID="merge-banner-dismiss" onPress={() => setMergeDismissedCount(dupGroups.length)} style={{ padding: 4 }}>
+              <Ionicons name="close" size={18} color={colors.onSurfaceTertiary} />
+            </FocusButton>
+          </View>
+        )}
+        <FocusButton testID="merge-duplicates-btn" onPress={() => setMergeOpen(true)}
+          style={[styles.linkBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, marginHorizontal: SPACING.lg, marginTop: SPACING.sm }]}>
+          <Ionicons name="git-merge" size={18} color={colors.brandPrimary} />
+          <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold, marginLeft: 8 }}>
+            Aynı Hesap Analizi{dupCopyCount > 0 ? ` (${dupCopyCount} kopya)` : ""}
+          </Text>
+        </FocusButton>
+
         {/* Hesap Bilgileri */}
         {activePlaylist && (activePlaylist.accountInfo || activePlaylist.source === 'xtream' || activePlaylist.source === 'stalker') ? (
           <>
@@ -367,15 +395,6 @@ export default function SettingsTab() {
             </View>
             <View style={{ paddingHorizontal: SPACING.lg }}>
               <PlaylistDnsControls key={`${activeProfile.id}|${activePlaylist.id}`} playlist={activePlaylist} />
-              {dupGroups.length > 0 && (
-                <FocusButton testID="merge-duplicates-btn" onPress={() => setMergeOpen(true)}
-                  style={[styles.linkBtn, { backgroundColor: colors.surfaceSecondary, borderColor: colors.brandPrimary, marginTop: SPACING.sm }]}>
-                  <Ionicons name="git-merge" size={18} color={colors.brandPrimary} />
-                  <Text style={{ color: colors.brandPrimary, fontWeight: FONT.weight.bold, marginLeft: 8 }}>
-                    Aynı hesapları birleştir ({dupGroups.reduce((n, g) => n + g.members.length - 1, 0)} kopya)
-                  </Text>
-                </FocusButton>
-              )}
               <AccountInfoCard
             playlist={activePlaylist}
             provider={activePlaylist?.providerInfo}
