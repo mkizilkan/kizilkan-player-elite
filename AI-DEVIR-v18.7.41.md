@@ -97,8 +97,13 @@ oynatmada devreye giriyor mu doğrulanmalı.
 - PC DEV: prebuild + `assembleDebug` → **BUILD SUCCESSFUL in 5m 14s** (26.11.2026 01:09). `app-debug.apk` 460 MB,
   paket `com.gpt.kizilkan.player.dev`, versionCode 180741, versionName `18.7.41-dev`. `git diff package.json` temiz
   (prebuild script bozmadı). Non-clean prebuild kullanıldı (JS-only; .cxx cache korundu → 5 dk, tam derleme değil).
-- **Cihaz kurulumu BEKLİYOR:** telefon (86e8bc80) adb'ye görünmüyor (`adb devices` boş). Bağlanınca DEV APK
-  `-r` ile (veri korunarak) kurulacak; kullanıcı önce DEV'de kopya hesapta #1 birleştirmeyi denemeli.
+- **Cihaz kurulumu YAPILDI (26.11.2026):** telefon **Poco X3 NFC** (surya, `86e8bc80`). İkisi de `adb install -r`
+  (veri korunarak) ile kuruldu ve doğrulandı:
+  - `com.gpt.kizilkan.player` → versionCode **180741**, versionName **18.7.41** (release build-165, ana uygulama üstüne).
+  - `com.gpt.kizilkan.player.dev` → versionCode **180741**, versionName **18.7.41-dev** (ayrı paket/veri).
+  - DEV soğuk açılış smoke testi: süreç ayakta (PID alındı), logcat'te **FATAL/crash YOK** → açılış sağlam.
+  - **Kalan (işlev kabulü — kullanıcı yapacak):** önce DEV'de kopya hesapta #1 birleştirmeyi dene → favori/izlendi
+    korunuyor mu, farklı DNS'ler yedek olarak eklendi mi, oynatmada biri ölünce diğerine geçiyor mu.
 
 ## Açık / riskli
 - #1 birleştirme geri alınamaz (kopya listeler silinir). Seçenek A önizlemesi bunu kullanıcı onayına bağlar;
